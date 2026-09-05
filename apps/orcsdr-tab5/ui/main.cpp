@@ -10350,11 +10350,10 @@ constexpr UiDocScreen kUiDocScreens[] = {
     {"p25.talkgroups", "live,demo"},
     {"p25.program", "live,demo"},
     {"p25.rf-health", "live,demo"},
-    {"adsb.radar", "live,demo"},
-    {"adsb.list", "live,demo"},
-    {"adsb.target", "live,demo"},
-    {"adsb.stats", "live,demo"},
-    {"adsb.settings", "demo"},
+    {"adsb.radar", "live"},
+    {"adsb.list", "live"},
+    {"adsb.target", "live"},
+    {"adsb.stats", "live"},
     {"lora.overview", "live,demo"},
     {"lora.nodes", "live,demo"},
     {"lora.traffic", "live,demo"},
@@ -10451,7 +10450,8 @@ bool ui_doc_self_check() {
   return ui_doc_screen_exists("settings.system") &&
          ui_doc_screen_exists("fm.settings") &&
          ui_doc_screen_exists("p25.rf-health") &&
-         ui_doc_screen_exists("adsb.settings") &&
+         ui_doc_screen_exists("adsb.stats") &&
+         !ui_doc_screen_exists("adsb.settings") &&
          ui_doc_screen_exists("lora.map") &&
          ui_doc_screen_exists("browse.capture");
 }
@@ -10662,22 +10662,13 @@ bool ui_doc_render(const char* screen_id, bool demo) {
     if (!ui_doc_view_for_suffix(screen_id + 4, &view)) return false;
     orcsdr::p25::show_documentation_view(view, ui_doc_p25_snapshot(demo));
   } else if (strncmp(screen_id, "adsb.", 5) == 0) {
-    static constexpr const char* names[] = {"radar", "list", "target", "stats", "settings"};
+    static constexpr const char* names[] = {"radar", "list", "target", "stats"};
     uint8_t view = 0;
     bool found = false;
     for (uint8_t i = 0; i < std::size(names); ++i)
       if (strcmp(screen_id + 5, names[i]) == 0) { view = i; found = true; }
     if (!found) return false;
-    auto settings = adsb_settings;
-    if (demo) {
-      settings.location_configured = true;
-      settings.latitude_e7 = 440522000;
-      settings.longitude_e7 = -1230867000;
-      settings.radar_range_nm = 25;
-      settings.atc_frequency_hz = 118900000;
-      strlcpy(settings.atc_label, "EUG TWR", sizeof(settings.atc_label));
-    }
-    orcsdr::adsb::show_documentation_view(view, settings, demo);
+    orcsdr::adsb::show_documentation_view(view, adsb_settings);
   } else if (strncmp(screen_id, "lora.", 5) == 0) {
     const char* suffix = screen_id + 5;
     static constexpr const char* names[] = {"overview", "nodes", "traffic", "map", "rf-health"};
@@ -10863,7 +10854,7 @@ bool ui_doc_pause_reception() {
       orcsdr::screens::finish_transition();
     } else if (ui_doc.band == RtlBand::adsb) {
       orcsdr::screens::begin_transition(orcsdr::screens::Id::adsb, millis());
-      orcsdr::adsb::show_documentation_view(ui_doc.adsb_view, adsb_settings, false);
+      orcsdr::adsb::show_documentation_view(ui_doc.adsb_view, adsb_settings);
       orcsdr::screens::finish_transition();
     } else if (ui_doc.band == RtlBand::lora) {
       orcsdr::screens::begin_transition(orcsdr::screens::Id::lora, millis());
@@ -11171,14 +11162,15 @@ void process_command(char* command) {
   }
   if (strcmp(command, "RTL_UI STATUS") == 0) {
     Serial.printf("RTL_UI_STATUS screen=%s band=%s frequency_hz=%u settings=%d fm=%d p25=%d "
-                  "adsb=%d lora=%d rf24=%d home_font=%d\n",
+                  "adsb=%d lora=%d rf24=%d home_font=%d graphics=%d\n",
                   orcsdr::screens::name(orcsdr::screens::status().active),
                   rtl_band_name(rtl_ui_band), rtl_ui_frequency_hz,
                   orcsdr::settings::active() ? 1 : 0, orcsdr::fm::active() ? 1 : 0,
                   orcsdr::p25::active() ? 1 : 0, orcsdr::adsb::active() ? 1 : 0,
                   orcsdr::lora::active() ? 1 : 0,
                   orcsdr::rf24::active() ? 1 : 0,
-                  M5.Display.getFont() == &fonts::Font0 ? 1 : 0);
+                  M5.Display.getFont() == &fonts::Font0 ? 1 : 0,
+                  rtl_graphics_enabled.load(std::memory_order_acquire) ? 1 : 0);
     return;
   }
   if (strcmp(command, "RTL_SERIAL VERBOSITY") == 0) {

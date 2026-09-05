@@ -55,22 +55,7 @@ struct DisplayAircraft {
   bool stale;
 };
 
-constexpr DisplayAircraft kDemoAircraft[] = {
-    {0xA1B2C3, "DAL123", "N123DA", "A320", "DELTA AIR LINES", 34000, 452, 45, 1280,
-     23.0f, 45, 44.3232f, -122.7097f, -45.0f, true, true, true, true, true, false},
-    {0xA4B5C6, "UAL456", "N456UA", "B738", "UNITED AIRLINES", 37000, 468, 310, -320,
-     31.0f, 310, 44.3844f, -123.6370f, -50.0f, true, true, true, true, true, false},
-    {0xA7B8C9, "AAL789", "N789AA", "A321", "AMERICAN AIRLINES", 28000, 425, 278, 640,
-     18.0f, 278, 44.0940f, -123.4997f, -53.0f, true, true, true, true, true, false},
-    {0xAA11BB, "SWA234", "N234SW", "B737", "SOUTHWEST AIRLINES", 31000, 410, 122, 0,
-     45.0f, 122, 43.6547f, -122.2027f, -58.0f, true, true, true, true, true, false},
-    {0xCC22DD, "N12345", "N12345", "C172", "PRIVATE", 12500, 250, 196, -160,
-     12.0f, 196, 43.8600f, -123.1634f, -61.0f, true, true, true, true, true, false},
-    {0xEE33FF, "FFT567", "N567FF", "A20N", "FRONTIER AIRLINES", 41000, 490, 70, 320,
-     67.0f, 70, 38.2100f, -121.6000f, -64.0f, true, true, true, true, false, false},
-};
-
-static_assert(static_cast<uint8_t>(View::count) == kDocumentationViewCount);
+static_assert(static_cast<uint8_t>(View::settings) == kDocumentationViewCount);
 static_assert(kRanges[0] == 10 && kRanges[1] == 25 && kRanges[2] == 50 &&
               kRanges[3] == 100);
 
@@ -88,7 +73,6 @@ size_t g_aircraft_count = 0;
 Snapshot g_live_snapshot{};
 uint32_t g_drawn_revision = 0;
 bool g_live = false;
-bool g_demo = false;
 bool g_atc_listening = false;
 constexpr size_t kHistorySamples = 12;
 float g_rate_history[kHistorySamples]{};
@@ -100,14 +84,12 @@ int32_t g_radar_cache_longitude_e7 = INT32_MIN;
 uint16_t g_radar_cache_range_nm = 0;
 
 uint8_t displayed_aircraft_count() {
-  return g_demo ? static_cast<uint8_t>(g_aircraft_count) : g_live_snapshot.aircraft_count;
+  return g_live_snapshot.aircraft_count;
 }
 
-float displayed_message_rate() { return g_demo ? 58.7f : g_live_snapshot.message_rate; }
+float displayed_message_rate() { return g_live_snapshot.message_rate; }
 
-uint32_t displayed_total_messages() {
-  return g_demo ? 15892u : g_live_snapshot.total_messages;
-}
+uint32_t displayed_total_messages() { return g_live_snapshot.total_messages; }
 
 void draw_radar_base() {
   constexpr int cx = kRadarPanelW / 2;
@@ -307,14 +289,12 @@ void draw_header() {
   snprintf(count, sizeof(count), "%u AIRCRAFT", static_cast<unsigned>(displayed_aircraft_count()));
   text(count, 337, 36, TFT_WHITE, 2, middle_left);
   M5.Display.drawFastVLine(510, 12, 52, kBorder);
-  if (!g_demo) {
-    text("MSG RATE", 545, 36, kMuted, 1, middle_left);
-    char rate[20];
-    snprintf(rate, sizeof(rate), "%.1f/s", displayed_message_rate());
-    text(rate, 655, 36, kGreen, 2, middle_left);
-    button(g_atc_listening ? "ATC" : (g_live ? "LIVE" : "WAIT"), 755, 14, 92, 44,
-           g_atc_listening ? TFT_DARKCYAN : (g_live ? TFT_DARKGREEN : TFT_DARKGREY));
-  }
+  text("MSG RATE", 545, 36, kMuted, 1, middle_left);
+  char rate[20];
+  snprintf(rate, sizeof(rate), "%.1f/s", displayed_message_rate());
+  text(rate, 655, 36, kGreen, 2, middle_left);
+  button(g_atc_listening ? "ATC" : (g_live ? "LIVE" : "WAIT"), 755, 14, 92, 44,
+         g_atc_listening ? TFT_DARKCYAN : (g_live ? TFT_DARKGREEN : TFT_DARKGREY));
   text("USB", 905, 29, TFT_WHITE, 1, middle_left);
   text("CONNECTED", 905, 51, kBlue, 1, middle_left);
   audio_header::draw_home_button();
@@ -435,12 +415,12 @@ void draw_radar() {
   card(14, 88, 210, 226);
   text("STATUS", 32, 113, TFT_WHITE, 2, middle_left);
   M5.Display.drawFastHLine(30, 137, 178, kBorder);
-  text(g_live ? "RECEIVING" : g_demo ? "DEMO TRAFFIC" : "WAITING",
-       54, 166, g_live || g_demo ? kGreen : TFT_ORANGE, 1, middle_left);
-  signal_bars(34, 218, g_live || g_demo ? 4 : 1);
+  text(g_live ? "RECEIVING" : "WAITING", 54, 166,
+       g_live ? kGreen : TFT_ORANGE, 1, middle_left);
+  signal_bars(34, 218, g_live ? 4 : 1);
   text("SIGNAL", 88, 204, TFT_LIGHTGREY, 1, middle_left);
-  text(g_live || g_demo ? "GOOD" : "--", 198, 204,
-       g_live || g_demo ? kGreen : kMuted, 1, middle_right);
+  text(g_live ? "GOOD" : "--", 198, 204,
+       g_live ? kGreen : kMuted, 1, middle_right);
   text(offline_map::available() ? "MAP READY" : "MAP UNAVAILABLE", 34, 269,
        offline_map::available() ? kBlue : kMuted, 1, middle_left);
 
@@ -490,7 +470,7 @@ void draw_radar() {
 
   card(234, 488, 646, 136);
   text("SIGNAL LEVEL", 250, 512, TFT_WHITE, 1, middle_left);
-  const float signal = g_live ? g_live_snapshot.strongest_signal_dbfs : -48.0f;
+  const float signal = g_live ? g_live_snapshot.strongest_signal_dbfs : -100.0f;
   const int bars = std::clamp(static_cast<int>((signal + 100.0f) / 5.0f), 0, 12);
   for (int i = 0; i < 12; ++i)
     M5.Display.fillRect(250 + i * 18, 582 - i * 3, 12, 18 + i * 3,
@@ -674,7 +654,7 @@ void draw_target() {
 
 void draw_stats() {
   char value[32];
-  const float signal = g_live ? g_live_snapshot.strongest_signal_dbfs : g_demo ? -48.0f : -100.0f;
+  const float signal = g_live ? g_live_snapshot.strongest_signal_dbfs : -100.0f;
   card(14, 88, 400, 226);
   text("SIGNAL STRENGTH", 36, 116, kBlue, 1, middle_left);
   snprintf(value, sizeof(value), "%.1f dBFS", signal);
@@ -691,11 +671,7 @@ void draw_stats() {
   text("MESSAGE RATE", 448, 116, kBlue, 1, middle_left);
   snprintf(value, sizeof(value), "%.1f msg/sec", displayed_message_rate());
   text(value, 448, 157, TFT_WHITE, 3, middle_left);
-  if (g_demo) {
-    constexpr int demo[] = {270, 212, 235, 280, 205, 235, 270, 190};
-    for (int i = 1; i < 8; ++i)
-      M5.Display.drawLine(450 + (i - 1) * 50, demo[i - 1], 450 + i * 50, demo[i], kBlue);
-  } else if (g_history_count > 1) {
+  if (g_history_count > 1) {
     const float max_rate = std::max(1.0f, *std::max_element(g_rate_history,
         g_rate_history + g_history_count));
     for (size_t i = 1; i < g_history_count; ++i) {
@@ -708,10 +684,10 @@ void draw_stats() {
   }
   card(838, 88, 428, 226);
   text("MODE-S ACTIVITY", 860, 116, kBlue, 1, middle_left);
-  const size_t activity_count = g_demo ? 10 : g_history_count;
+  const size_t activity_count = g_history_count;
   for (size_t i = 0; i < activity_count; ++i) {
-    const int height = g_demo ? 35 + static_cast<int>((i * 37) % 75)
-                              : std::clamp(static_cast<int>((g_signal_history[i] + 100.0f) * 1.2f), 10, 100);
+    const int height = std::clamp(
+        static_cast<int>((g_signal_history[i] + 100.0f) * 1.2f), 10, 100);
     M5.Display.drawRect(866 + static_cast<int>(i) * 35, 282 - height,
                         20, height, kBlue);
   }
@@ -722,7 +698,7 @@ void draw_stats() {
   struct Metric { const char* label; const char* value; uint16_t color; };
   char sample_rate[20], drops[20];
   snprintf(sample_rate, sizeof(sample_rate), "%.3f MS/s",
-           g_demo ? 2.048 : g_live_snapshot.effective_sps / 1000000.0);
+           g_live_snapshot.effective_sps / 1000000.0);
   snprintf(drops, sizeof(drops), "%lu / %lu", static_cast<unsigned long>(g_live_snapshot.usb_overruns),
            static_cast<unsigned long>(g_live_snapshot.consumer_drops));
   const Metric metrics[] = {{"AIRCRAFT", aircraft, kGreen},
@@ -919,7 +895,6 @@ void enter(const Settings& settings_value) {
   g_edit = EditField::none;
   g_selected = 0;
   g_locked = false;
-  g_demo = false;
   g_active = true;
   g_latitude_set = settings_value.location_configured;
   g_longitude_set = settings_value.location_configured;
@@ -930,7 +905,7 @@ void enter(const Settings& settings_value) {
 
 void leave() {
   g_active = false;
-  g_demo = false;
+  M5.Display.setFont(nullptr);
 }
 
 void draw() { if (g_active) redraw(); }
@@ -1071,36 +1046,23 @@ Action handle_touch(int32_t x, int32_t y) {
 const Settings& settings() { return g_settings; }
 bool active() { return g_active; }
 
-void show_documentation_view(uint8_t requested, const Settings& settings_value,
-                             bool demo) {
+void show_documentation_view(uint8_t requested, const Settings& settings_value) {
   if (requested >= static_cast<uint8_t>(View::count)) return;
   g_settings = settings_value;
   g_view = static_cast<View>(requested);
   g_edit = EditField::none;
   g_selected = 0;
   g_locked = false;
-  g_demo = demo;
   g_active = true;
-  g_live = !demo && g_live_snapshot.visible_count > 0;
   g_latitude_set = settings_value.location_configured;
   g_longitude_set = settings_value.location_configured;
-  if (g_live) {
-    apply_live_snapshot();
-  } else {
-    std::copy(std::begin(kDemoAircraft), std::end(kDemoAircraft), g_aircraft);
-    g_aircraft_count = std::size(kDemoAircraft);
-  }
+  apply_live_snapshot();
   redraw();
 }
 
 uint8_t view() { return static_cast<uint8_t>(g_view); }
 
 bool self_check() {
-  for (size_t i = 0; i < std::size(kDemoAircraft); ++i) {
-    if (kDemoAircraft[i].icao == 0 || kDemoAircraft[i].callsign[0] == '\0') return false;
-    for (size_t j = i + 1; j < std::size(kDemoAircraft); ++j)
-      if (kDemoAircraft[i].icao == kDemoAircraft[j].icao) return false;
-  }
   DisplayAircraft saved_aircraft[kVisibleAircraft];
   std::copy(std::begin(g_aircraft), std::end(g_aircraft), saved_aircraft);
   const size_t saved_count = g_aircraft_count;
@@ -1145,8 +1107,8 @@ bool self_check() {
   g_locked = saved_locked;
   g_live = saved_live;
 
-  return model_ok && kDemoAircraft[2].icao == 0xA7B8C9 &&
-         keep_stale_selection(true, true) && !keep_stale_selection(false, true) &&
+  return model_ok && keep_stale_selection(true, true) &&
+         !keep_stale_selection(false, true) &&
          keep_stale_selection(false, false) &&
          valid_coordinate(EditField::latitude, -90.0) &&
          valid_coordinate(EditField::latitude, 90.0) &&

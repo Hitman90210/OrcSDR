@@ -38,7 +38,6 @@ SCREENS = [
     ("adsb.list", "ad1"),
     ("adsb.target", "ad2"),
     ("adsb.stats", "ad3"),
-    ("adsb.settings", "ad4"),
     ("lora.overview", "lo0"),
     ("lora.nodes", "lo1"),
     ("lora.traffic", "lo2"),

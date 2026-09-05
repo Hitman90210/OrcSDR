@@ -6,6 +6,13 @@ Confirm sound is enabled, volume is nonzero, and the dashboard reports an active
 
 After a Wi-Fi scan/connect reset, the FM dashboard should reopen itself and force-restart the speaker (`RTL_SPEAKER_RESUME`). If the codec stays silent, leave FM and enter it again; that path calls `Speaker.end()` then `begin()` so the ES8388 amp is re-enabled. Boot logs `RTL_SPEAKER_RESUME ok=1`.
 
+## Audio quality
+
+The Tab5 built-in speaker is intended for compact monitoring and has limited
+fidelity. For full-quality listening, use the Tab5 3.5 mm output with an
+external speaker or headphones. Hardware testing confirmed that this output
+reproduces the decoded audio as intended.
+
 ## RTL-SDR offline
 
 Cold-boot with stable power and the dongle disconnected, then attach it after the Tab5 reaches its normal startup state. If the device repeatedly resets, capture a high-speed serial log before changing firmware.

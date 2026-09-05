@@ -1,6 +1,6 @@
 # FM DSP capture lab
 
-Updated: **2026-08-09**  
+Updated: **2026-09-05**
 Authority: [`../PROJECT_STATUS.md`](../PROJECT_STATUS.md)
 
 ## Purpose
@@ -58,8 +58,14 @@ immediately before calling `M5.Speaker.playRaw()`. A batch is therefore retained
 in PSRAM even when `playRaw` rejects it or the downstream DMA, codec, amplifier,
 or speaker reproduces it poorly.
 
-The observed split means the FM demodulator is no longer the first suspect.
-The next live-audio measurements must include:
+The observed split removed the FM demodulator as the first suspect. Subsequent
+operator testing confirmed that the same firmware sounds as intended through
+the Tab5 3.5 mm output and an external speaker. The reported quality difference
+comes from the built-in speaker's limited fidelity, rather than the DSP, queue,
+or DMA path.
+
+If a future report identifies actual stutter, missing audio, or growing drop
+counters, the next live-audio measurements should include:
 
 - accepted and rejected `playRaw` batch counts;
 - maximum time between accepted batches and queue starvation events;
@@ -160,5 +166,5 @@ exclusive.
 - At least three filter variants are scored from the same IQ.
 - The selected filter restores useful bandwidth without measurable clipping,
   dropouts, or unacceptable adjacent-channel/static increase.
-- Internal PCM and external speaker-loopback evidence identify whether any
-  remaining live-audio defect is queue/DMA loss or physical output coloration.
+- Any future live-audio defect is reproduced with telemetry that distinguishes
+  queue/DMA loss from physical output coloration.

@@ -202,6 +202,8 @@ RDS is live on air: groups are accepted in A–B–C–D order, PS slots have to
 
 RF Health is the “is the radio actually healthy?” page. You get the tuned frequency, stream status, effective sample rate versus the 960 kS/s target, USB overruns, consumer drops, audio underruns, DSP max time, Wi-Fi state, and driver state. If music stutters, this is the first place to look: a climbing overrun or underrun count means USB or audio is falling behind, not that the station vanished.
 
+The Tab5's built-in speaker is useful for monitoring but has limited fidelity. The same audio through the Tab5 3.5 mm output and an external speaker sounds as intended.
+
 #### FM Settings
 
 <p align="center">
@@ -283,55 +285,25 @@ P25 health adds trunking-specific numbers on top of the USB/DSP meters: TSBK goo
 
 ADS-B is the 1090 MHz aircraft dashboard. It is a radar plot, a list, a target card, and a stats page. Receiver location and radar range come from Settings so range/bearing have somewhere to be measured from.
 
-The captures below were taken with the **DEMO** badge on, using the built-in sample aircraft (DAL123 and friends). That is a documentation/demo path so the screens have something to show when the sky is empty. On a live dongle with an antenna, the same screens fill with real Mode-S traffic.
+Every ADS-B view displays live receiver data. When no valid aircraft are in range, the dashboard reports that it is waiting or searching instead of filling the screen with sample traffic.
 
 #### Radar
-
-<p align="center">
-  <img src="docs/images/dashboards/adsb-radar.png"
-       alt="ADS-B Radar: polar plot with aircraft around the receiver, DAL123 locked at 34000 ft"
-       width="100%">
-</p>
 
 Radar is the “look up” page. Your receiver is the center of a polar plot. Aircraft are plotted by bearing and range. Tap one to lock it. The right card shows callsign, ICAO, altitude, speed, range, and bearing. The header shows how many aircraft are known and the current message rate.
 
 #### List
 
-<p align="center">
-  <img src="docs/images/dashboards/adsb-list.png"
-       alt="ADS-B List: table of aircraft with altitude speed range, detail card for the selected callsign"
-       width="100%">
-</p>
-
 List is the same traffic as a table: callsign, tail / ICAO, altitude, speed, range. Select a row and the detail card updates. **Lock** keeps that aircraft selected while others come and go. Use List when you care about a specific flight more than the pretty plot.
 
 #### Target
-
-<p align="center">
-  <img src="docs/images/dashboards/adsb-target.png"
-       alt="ADS-B Target: DAL123 Delta Air Lines A320 with altitude, speed, heading, vertical rate, range, lat/lon"
-       width="100%">
-</p>
 
 Target is the full card for one aircraft: airline, type, altitude, speed, heading, vertical rate, range, bearing, latitude, longitude. This is the page you leave up when you have locked something interesting and want the numbers without the rest of the sky competing.
 
 #### Stats
 
-<p align="center">
-  <img src="docs/images/dashboards/adsb-stats.png"
-       alt="ADS-B Stats: signal strength, message rate, Mode-S activity, aircraft count, messages, strongest, gain"
-       width="100%">
-</p>
-
 Stats answers “is 1090 even alive?” Signal strength, message rate over time, Mode-S activity, aircraft count, total messages, strongest burst, and gain (automatic). If the radar is empty, Stats tells you whether the decoder is quiet or you simply have no aircraft in range.
 
 #### ADS-B Settings
-
-<p align="center">
-  <img src="docs/images/dashboards/adsb-settings.png"
-       alt="ADS-B Settings: receiver latitude and longitude, 25 NM radar range, auto RF gain, exit ADS-B"
-       width="100%">
-</p>
 
 Set the receiver lat/lon and radar range here (or from the global Location page). Gain is automatic and read-only on this radio. **Exit ADS-B** returns you to Home.
 
@@ -737,7 +709,7 @@ boundaries and [PORTING.md](docs/PORTING.md) for existing Waveshare validation.
 OrcSDR is moving from a working reference radio toward a more reusable embedded SDR platform. Current work includes:
 
 - Soak and harden USB streaming and unplug/replug recovery
-- Improve FM audio quality and RDS lock time on weak stations
+- Improve RDS lock time on weak stations
 - Finish remaining radio shells (AM, WX, CB, wide browse) to the same dashboard quality as FM / P25 / LoRa
 - Keep separating radio logic from the Tab5 UI
 - Extend board/version validation from the existing Tab5 and Waveshare P4 work
