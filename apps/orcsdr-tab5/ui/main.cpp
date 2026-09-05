@@ -4156,7 +4156,8 @@ bool sd_remove_path_allowed(const char* path) {
 }
 
 bool sd_transfer_radio_busy() {
-  return rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running ||
+  const RtlCaptureState state = rtl_capture_state.load(std::memory_order_acquire);
+  return state == RtlCaptureState::queued || state == RtlCaptureState::running ||
          g_audio_rec_active.load(std::memory_order_acquire);
 }
 

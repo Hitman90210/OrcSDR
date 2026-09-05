@@ -83,7 +83,7 @@ Install into any Python 3.10+ environment as needed per script:
 ## PR workflow
 
 - Open PRs from a branch created off `origin/main`, in its own git worktree.
-- CodeRabbit does not auto-review repos with fewer than 10 stars; trigger
-  it manually by commenting `@coderabbitai review` on the PR. It reviews
-  each pushed commit only once — comment `@coderabbitai review` again
-  after pushing any follow-up commit to get it re-reviewed.
+- CodeRabbit automatically reviews ready PRs and pushed updates; drafts are
+  excluded. Comment `@coderabbitai review` only when a manual re-review is
+  needed. If CodeRabbit is rate limited, use the read-only `grok-review` skill
+  as the fallback and report an unavailable or failed Grok run as inconclusive.
