@@ -2,6 +2,10 @@
 
 ADS-B uses 1090 MHz Mode S messages. The receiver location is entered locally in global Settings.
 
+The dashboard always shows live receiver state. When no valid aircraft are in
+range, it reports `WAITING` or `SEARCHING` and leaves unavailable fields empty.
+It does not insert sample aircraft.
+
 - **Radar** plots only aircraft with a valid decoded position.
 - **List** also retains aircraft that lack a position.
 - **Target** follows the same selected ICAO across views.

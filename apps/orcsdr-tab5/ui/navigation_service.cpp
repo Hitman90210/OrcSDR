@@ -29,6 +29,7 @@ void configure(const Hooks& hooks) { g_hooks = hooks; }
 void show_home(bool demo) {
   if (!ready()) return;
   screens::begin_transition(screens::Id::home, millis());
+  if (settings::active()) g_hooks.restore_graphics(g_restore_graphics);
   fm::leave();
   p25::leave();
   adsb::leave();

@@ -17,7 +17,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "docs" / "help_media" / "manifest.json"
 ASSETS = ROOT / "docs" / "user-guide" / "assets" / "screenshots"
-REQUIRED_PREFIX_COUNTS = {"settings.": 8, "fm.": 5, "p25.": 5, "adsb.": 5, "lora.": 5}
+REQUIRED_PREFIX_COUNTS = {"settings.": 8, "fm.": 5, "p25.": 5, "adsb.": 4, "lora.": 5}
 
 
 def load_manifest(path: Path = MANIFEST) -> dict:
@@ -228,8 +228,15 @@ def capture(args: argparse.Namespace) -> None:
                 if condition not in condition_cache:
                     condition_cache[condition] = client.wait_live(
                         condition, data["capture"]["live_timeout_seconds"])
-                source = "live" if condition_cache[condition] else "demo"
+                if not condition_cache[condition]:
+                    if "demo" not in device_screens[screen["id"]]:
+                        raise RuntimeError(
+                            f"{screen['id']}: live condition '{condition}' was not met")
+                    source = "demo"
             if source not in device_screens[screen["id"]]:
+                if "demo" not in device_screens[screen["id"]]:
+                    raise RuntimeError(
+                        f"{screen['id']}: source '{source}' is unavailable")
                 source = "demo"
             client.authenticate()
             client.send(f"UI_DOC_SHOW {screen['id']} {source}")

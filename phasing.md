@@ -368,6 +368,14 @@ one observer.
   exhaust it), not more application-level redraw tuning, given the "any
   mode" finding.
 
+Resolution (2026-09-05): operator testing compared the same firmware through
+the Tab5 built-in speaker and the 3.5 mm output. External-speaker playback
+sounded as intended, while the internal speaker retained its expected limited
+fidelity. Combined with the clean post-DSP WAV evidence, this resolves the
+reported quality difference as physical speaker coloration rather than a DSP,
+queue, or DMA defect. The investigation above remains as historical evidence;
+future queue/DMA work requires a new measured dropout or stutter report.
+
 Exit for the phase as a whole: FM dashboard shows real `PI` / `PS` /
 `PTY` / RadioText from an actual over-the-air broadcast, with BLER
 displayed, on the Tab5 hardware — not just a build that compiles.
@@ -466,9 +474,11 @@ for view separation. Do not copy their GPL tuner, decoder, or UI source.
 - [x] Route the existing ADS-B 1090 quick entry to a dedicated 1280x720 tool.
 - [x] Render all four data views from one deterministic aircraft snapshot;
       radar/list selection follows the same ICAO into Target.
-- [x] Mark every synthetic screen `DEMO`; live RF capture may run behind it,
-      but synthetic aircraft never claim to be received data. The badge changes
-      to `LIVE` only after a CRC-valid aircraft enters the live snapshot.
+- [x] During bring-up, mark every synthetic screen `DEMO` so sample aircraft
+      never claim to be received data.
+- [x] After live hardware acceptance, remove the synthetic aircraft and ADS-B
+      demo path. Empty traffic conditions now render `WAITING`/`SEARCHING` from
+      the live receiver state.
 - [x] Add Settings for signed receiver coordinates and 10/25/50/100 NM radar
       range, persisted through the existing NVS namespace. Gain remains an
       honest read-only `AUTO` until a measured driver API exists.
@@ -539,8 +549,7 @@ on-device without weakening CRC acceptance.
 - [x] Feed measured 2.048 MS/s blocks into the decoder and publish snapshots
       to the existing four views without changing UI touch behavior.
 - [x] Replace demo metrics with real frame rate, aircraft/message counts, and
-      relative strongest signal once live mode is entered. Retain `DEMO` until
-      the first CRC-valid live snapshot rather than switching on RF start alone.
+      relative strongest signal.
 - [x] Add read-only `RTL_ADSB_STATUS` diagnostics for frames, CRC pass/fail,
       message rate, aircraft count, drops, and strongest dBFS.
 - [x] Preserve selection by ICAO; locked stale targets retain last-known data
@@ -548,9 +557,9 @@ on-device without weakening CRC acceptance.
 
 Live IQ is delivered through a bounded four-block PSRAM queue to a separate
 decoder task. `RTL_ADSB_STATUS` reports transport/decoder/drop, aircraft,
-message, and relative-signal counters. Snapshot publication and stale-selection
-behavior are flashed; a new live CRC-valid frame and physical view/touch pass
-remain the acceptance gates.
+message, and relative-signal counters. Snapshot publication, stale-selection
+behavior, live startup, and continued reception have been accepted on the
+physical Tab5. The dashboard has no synthetic fallback.
 
 Final-pipeline soak (2026-08-11, COM17): at 570 seconds the flashed
 live-snapshot/DF11+DF17 build sustained 2,047,809 S/s, with five driver startup

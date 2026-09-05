@@ -169,7 +169,7 @@ function Connect-Authenticated {
 
 function Get-UiState {
   $line = Send-And-Wait 'RTL_UI STATUS' '^RTL_UI_STATUS '
-  if ($line -notmatch 'screen=(\S+) band=(\S+) frequency_hz=(\d+) settings=([01]) fm=([01]) p25=([01]) adsb=([01]) lora=([01]) rf24=([01]) home_font=([01])') {
+  if ($line -notmatch 'screen=(\S+) band=(\S+) frequency_hz=(\d+) settings=([01]) fm=([01]) p25=([01]) adsb=([01]) lora=([01]) rf24=([01]) home_font=([01]) graphics=([01])') {
     throw "Malformed UI status: $line"
   }
   return [pscustomobject]@{
@@ -178,6 +178,7 @@ function Get-UiState {
     Frequency = [uint32]$Matches[3]
     Active = @([int]$Matches[4], [int]$Matches[5], [int]$Matches[6], [int]$Matches[7], [int]$Matches[8], [int]$Matches[9])
     HomeFont = [int]$Matches[10]
+    Graphics = [int]$Matches[11]
   }
 }
 
@@ -207,7 +208,7 @@ function Wait-UiState([string]$Screen, [string]$Band) {
     $script:serial.WriteLine('PING')
     $state = Get-UiState
     if ($state.Screen -eq $Screen -and $state.Band -eq $Band -and
-        ($Screen -ne 'HOME' -or $state.HomeFont -eq 1) -and
+        ($Screen -eq 'ADSB' -or $state.HomeFont -eq 1) -and
         (Test-ExclusiveScreen $state $Screen)) {
       return $state
     }
@@ -1003,9 +1004,13 @@ try {
         [void](Open-Ui 'HOME' $target.Band)
         Watch-Responsive $DwellSeconds 'HOME' $target.Band
       }
+      $graphicsBeforeSettings = (Get-UiState).Graphics
       [void](Open-Ui 'SETTINGS' $targets[-1].Band)
       Watch-Responsive $DwellSeconds 'SETTINGS' $targets[-1].Band
-      [void](Open-Ui 'HOME' $targets[-1].Band)
+      $homeAfterSettings = Open-Ui 'HOME' $targets[-1].Band
+      if ($homeAfterSettings.Graphics -ne $graphicsBeforeSettings) {
+        throw "Settings navigation did not restore graphics: before=$graphicsBeforeSettings after=$($homeAfterSettings.Graphics)"
+      }
       [void](Open-Ui 'RF_LAB' $targets[-1].Band)
       [void](Send-And-Wait 'RTL_LAB SELF_CHECK' '^RTL_LAB_SELF_CHECK pass=1$')
       [void](Send-And-Wait 'RTL_LAB PAGE CONTROLS' '^RTL_LAB_OK page=CONTROLS$')

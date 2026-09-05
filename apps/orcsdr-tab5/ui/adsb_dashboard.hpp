@@ -15,7 +15,7 @@ struct Settings {
 };
 
 constexpr size_t kVisibleAircraft = 6;
-constexpr uint8_t kDocumentationViewCount = 5;
+constexpr uint8_t kDocumentationViewCount = 4;
 
 struct Aircraft {
   uint32_t icao = 0;
@@ -73,8 +73,7 @@ uint32_t atc_frequency_hz();
 Action handle_touch(int32_t x, int32_t y);
 const Settings& settings();
 bool active();
-void show_documentation_view(uint8_t view, const Settings& settings,
-                             bool demo = true);
+void show_documentation_view(uint8_t view, const Settings& settings);
 uint8_t view();
 bool self_check();
 

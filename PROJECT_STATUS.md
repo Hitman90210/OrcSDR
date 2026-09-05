@@ -47,12 +47,12 @@ this file when their paths, versions, or completion claims differ.
 | Graphics with audio enabled | **Open performance gate** | Establish before/after `RTL_SPECTRUM_FPS` and audio-drop evidence |
 | Audio/graphics optimization pass | **Implemented on this branch** | 10 FPS parity target, lighter DSP hot path, timing counters; hardware A/B pending |
 | FM post-DSP recording quality | **Hardware-verified** | Ten SD WAVs are valid 48 kHz mono PCM with no clipping or digital-zero gaps; a 12-second capture was clean enough for music fingerprinting |
-| Live speaker versus recorded PCM | **Open performance gate** | Recorder taps PCM immediately before `playRaw`; clean WAVs plus poor live sound isolate the remaining fault to speaker queue/DMA/output after the DSP tap |
+| Tab5 audio output | **Hardware-verified** | Recorded post-DSP PCM is clean, and operator testing confirmed that the Tab5 3.5 mm output through an external speaker sounds as intended. The built-in speaker's limited fidelity explains the reported quality difference; it is not evidence of a DSP, queue, or DMA defect. |
 | Paired FM IQ/WAV DSP lab | **Planned** | Buffer synchronized raw CU8 IQ, post-DSP PCM, and metadata in PSRAM; write after capture and evaluate filter variants offline |
 | AM/HF fidelity | **Experimental** | Do not claim calibrated HF/direct-sampling support |
 | Second ESP32-P4 board | **Recorded upstream** | Waveshare Module-DEV-KIT operation under OrcSDR is documented by the driver project; [PORTING.md](docs/PORTING.md#existing-implementation-and-evidence) links the provenance and FM application notes. Exact-version soak/recovery acceptance remains separate. |
 | rtl_tcp over Ethernet | **Planned** | App does not exist yet |
-| ADS-B 1090 | **Flashed — live pipeline implemented; acceptance pending** | COM17 upload hash-verified. Five-minute 1090 MHz run sustained 2,047,654 S/s (99.98% of 2.048 MS/s) with five startup drops and none afterward. A live RF trace reconstructed to CRC-valid DF17 `8DA2955158B505036BFB54BC90AC` (ICAO `A29551`, 35,000 ft), matching ASA1310's simultaneous independent track; the same captured magnitude waveform now passes the on-device fractional-sample replay check. The bounded aircraft table and revisioned dashboard snapshot are flashed. Dynamic updates no longer clear the full screen each second. A 315,547-record FAA index and the complete supplied FAA archive are SD hash-verified; live ICAO `A31111` resolved to `N297SF`. The UI honestly remains `DEMO` until a new on-device live frame passes CRC; physical view/touch acceptance remains open. |
+| ADS-B 1090 | **Hardware-verified** | COM17 upload hash-verified. Five-minute 1090 MHz runs sustained approximately 2.048 MS/s with startup-only drops and no later growth. Live CRC-valid DF17 traffic was decoded, cross-checked against an independent track, displayed on the Tab5, and enriched from the SD-backed FAA database. Operator testing confirmed that ADS-B starts and continues receiving normally. The dashboard now displays only live receiver state; an empty sky reports waiting/searching without synthetic aircraft or a `DEMO` fallback. |
 | User guide and media pipeline | **Build-verified** | Native build plus 44-screen manifest, capture tooling, strict MkDocs site, and local narrated-video scripts. Hardware captures, privacy review, voice approval, and rendered media remain pending. |
 
 ## Roadmap
@@ -70,8 +70,9 @@ this file when their paths, versions, or completion claims differ.
       do not write to SD in the real-time receive path.
 - [ ] Replay one IQ capture through at least three offline filter variants and
       compare SNR, bandwidth, clipping, discontinuities, and CPU cost.
-- [ ] Instrument `playRaw` accepts/rejects and perform an external-microphone
-      loopback comparison to separate DMA/queue loss from amplifier/speaker coloration.
+- [x] Compare the built-in speaker with the Tab5 3.5 mm output. External-speaker
+      playback sounds as intended; the reported fidelity difference comes from
+      the built-in speaker rather than the DSP, queue, or DMA path.
 - [ ] Confirm sound defaults off, NAV leaves animation live, and controls remain static.
 - [ ] Accept BROWSE panning/direct entry and US band-guide labels on the physical display.
 - [ ] Accept CB channel snapping, scope taps, dial, AM/USB/LSB voice,
@@ -114,17 +115,16 @@ operation is already recorded; disabled legacy code still needs deletion.
 
 ### P3 — ADS-B 1090
 
-- [x] Add an explicitly labeled deterministic-demo shell for Radar, List,
-      Target, RF Stats, and persisted receiver settings.
+- [x] Remove the bring-up-only synthetic aircraft and `DEMO` dashboard path;
+      Radar, List, Target, RF Stats, and Settings now show live receiver state.
 - [x] Measure the 2.048 MS/s driver path at 1090 MHz for five minutes.
 - [x] Complete replay-tested Mode-S/DF17 decode: validated 56-bit DF11 and
       112-bit DF17 extraction, CRC/ICAO, identity/altitude/velocity, global
       CPR, captured-waveform replay, and bounded 64-aircraft state.
-- [x] Connect the decoder table to a revisioned live dashboard snapshot while
-      preserving the explicit `DEMO` gate until a live CRC-valid frame arrives.
+- [x] Connect the decoder table to a revisioned live dashboard snapshot.
 - [x] Add SD-backed FAA registration, model, and registered-owner enrichment
       without dropping the complete source database or blocking the IQ callback.
-- [ ] Accept live aircraft against an independent receiver on the Tab5.
+- [x] Accept live aircraft against an independent receiver on the Tab5.
 
 Detailed gates and clean-room boundaries live in `phasing.md` Phase 6.
 

@@ -176,6 +176,7 @@ tune, change volume, or return passwords or coordinates.
 |---|---|---|
 | `RTL_STATUS` | no | `RTL_SDR_STATUS connected=... vid=... pid=... speed=... serial="..."` — is the RTL-SDR dongle itself present/enumerated. |
 | `RTL_SIGNAL` | no | `RTL_SIGNAL_STATUS band=... frequency_hz=... signal_dbfs=... stereo_locked=0\|1 left_dbfs=... right_dbfs=... rds_carrier=0\|1 rds_signal=...` — one-shot snapshot of everything the dashboard's meters show. |
+| `RTL_UI STATUS` | no | `RTL_UI_STATUS ... home_font=0\|1 graphics=0\|1` — active dashboard ownership plus the current display font and live spectrum/waterfall state. |
 
 `signal_dbfs` is the RF-level meter (matches the SIG bar). `left_dbfs`/
 `right_dbfs` are FM stereo decoder outputs — meaningful only when
@@ -483,6 +484,9 @@ through the hash-checked SD protocol, and always attempts state restoration.
 All four commands require the normal `PAIR`/`AUTH` session. Arbitrary editors
 cannot be selected; the only keyboard capture is a sanitized deterministic
 example, so saved credentials and private location fields are never exposed.
+ADS-B traffic screen IDs advertise `live` mode only and never substitute
+synthetic aircraft when the sky is empty. The ADS-B Settings view is omitted
+from documentation capture because it contains the receiver's saved location.
 
 ## IQ / LoRa capture
 
