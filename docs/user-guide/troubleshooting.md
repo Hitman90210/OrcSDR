@@ -9,7 +9,7 @@ After a Wi-Fi scan/connect reset, the FM dashboard should reopen itself and forc
 ## Audio quality
 
 The Tab5 built-in speaker is intended for compact monitoring and has limited
-fidelity. For full-quality listening, use the Tab5 3.5 mm output with an
+fidelity. For higher-fidelity listening, use the Tab5 3.5 mm output with an
 external speaker or headphones. Hardware testing confirmed that this output
 reproduces the decoded audio as intended.
 

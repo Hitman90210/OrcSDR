@@ -28,6 +28,7 @@ constexpr int kRadarPanelY = 88;
 constexpr int kRadarPanelW = 646;
 constexpr int kRadarPanelH = 390;
 constexpr uint16_t kRanges[] = {10, 25, 50, 100};
+constexpr size_t kAltitudeBins = 12;
 
 enum class View : uint8_t { radar, list, target, stats, settings, count };
 enum class EditField : uint8_t { none, latitude, longitude };
@@ -149,6 +150,11 @@ int aircraft_index(uint32_t icao) {
 }
 
 bool keep_stale_selection(bool locked, bool stale) { return !stale || locked; }
+
+size_t altitude_bin(int altitude_ft) {
+  return static_cast<size_t>(std::clamp(altitude_ft / 5000, 0,
+                                        static_cast<int>(kAltitudeBins - 1)));
+}
 
 void update_geometry(DisplayAircraft& aircraft) {
   if (!aircraft.has_position || !g_settings.location_configured) return;
@@ -417,7 +423,7 @@ void draw_radar() {
   M5.Display.drawFastHLine(30, 137, 178, kBorder);
   text(g_live ? "RECEIVING" : "WAITING", 54, 166,
        g_live ? kGreen : TFT_ORANGE, 1, middle_left);
-  signal_bars(34, 218, g_live ? 4 : 1);
+  signal_bars(34, 218, g_live ? 4 : 0);
   text("SIGNAL", 88, 204, TFT_LIGHTGREY, 1, middle_left);
   text(g_live ? "GOOD" : "--", 198, 204,
        g_live ? kGreen : kMuted, 1, middle_right);
@@ -480,9 +486,24 @@ void draw_radar() {
   snprintf(rate, sizeof(rate), "%.0f", displayed_message_rate());
   text(rate, 487, 551, TFT_WHITE, 3, middle_left);
   text("ALTITUDE DISTRIBUTION", 655, 512, TFT_WHITE, 1, middle_left);
-  for (int i = 0; i < 12; ++i) {
-    const int h = 8 + ((i * 13 + 7) % 38);
-    M5.Display.fillRect(660 + i * 16, 594 - h, 11, h, kBlue);
+  uint8_t altitude_bins[kAltitudeBins]{};
+  uint8_t max_altitude_bin = 0;
+  for (size_t i = 0; i < g_aircraft_count; ++i) {
+    if (!g_live || !g_aircraft[i].has_altitude || g_aircraft[i].stale) continue;
+    auto& count = altitude_bins[altitude_bin(g_aircraft[i].altitude_ft)];
+    max_altitude_bin = std::max(max_altitude_bin, ++count);
+  }
+  if (!max_altitude_bin) {
+    text("--", 755, 561, kMuted, 2);
+  } else {
+    for (size_t i = 0; i < kAltitudeBins; ++i) {
+      const int h = altitude_bins[i]
+                        ? 8 + altitude_bins[i] * 38 / max_altitude_bin
+                        : 0;
+      if (h)
+        M5.Display.fillRect(660 + static_cast<int>(i) * 16, 594 - h, 11, h,
+                            kBlue);
+    }
   }
 
   card(890, 88, 376, 536);
@@ -642,12 +663,13 @@ void draw_target() {
   }
   card(532, 532, 706, 92);
   text("SIGNAL", 552, 558, kBlue, 1, middle_left);
-  const float signal = g_live ? g_live_snapshot.strongest_signal_dbfs : -48.0f;
+  const float signal = g_live ? g_live_snapshot.strongest_signal_dbfs : -100.0f;
   const int bars = std::clamp(static_cast<int>((signal + 100.0f) / 7.0f), 0, 10);
   for (int i = 0; i < 10; ++i)
     M5.Display.fillRect(625 + i * 23, 586 - i * 3, 16, 18 + i * 3,
                         i < bars ? kGreen : TFT_DARKGREY);
-  snprintf(value, sizeof(value), "%.0f dBFS", signal);
+  if (g_live) snprintf(value, sizeof(value), "%.0f dBFS", signal);
+  else strlcpy(value, "--", sizeof(value));
   text(value, 880, 579, kGreen, 2, middle_left);
   button("SHOW ON MAP", 1005, 550, 210, 54, TFT_NAVY);
 }
@@ -657,7 +679,8 @@ void draw_stats() {
   const float signal = g_live ? g_live_snapshot.strongest_signal_dbfs : -100.0f;
   card(14, 88, 400, 226);
   text("SIGNAL STRENGTH", 36, 116, kBlue, 1, middle_left);
-  snprintf(value, sizeof(value), "%.1f dBFS", signal);
+  if (g_live) snprintf(value, sizeof(value), "%.1f dBFS", signal);
+  else strlcpy(value, "--", sizeof(value));
   text(value, 36, 157, TFT_WHITE, 3, middle_left);
   const int active_bars = std::clamp(static_cast<int>((signal + 100.0f) / 5.0f), 0, 14);
   for (int i = 0; i < 14; ++i)
@@ -1110,6 +1133,8 @@ bool self_check() {
   return model_ok && keep_stale_selection(true, true) &&
          !keep_stale_selection(false, true) &&
          keep_stale_selection(false, false) &&
+         altitude_bin(-1000) == 0 && altitude_bin(4999) == 0 &&
+         altitude_bin(5000) == 1 && altitude_bin(60000) == kAltitudeBins - 1 &&
          valid_coordinate(EditField::latitude, -90.0) &&
          valid_coordinate(EditField::latitude, 90.0) &&
          !valid_coordinate(EditField::latitude, 90.01) &&
