@@ -6943,6 +6943,7 @@ static void rtl_driver_app_task(void *) {
     }
     if (g_rtl != nullptr && g_rtl_device_ready.load(std::memory_order_acquire) &&
         rtl_capture_requested.exchange(false, std::memory_order_acq_rel)) {
+      rtl_capture_state.store(RtlCaptureState::queued, std::memory_order_release);
       const RtlBand band = rtl_requested_band.load(std::memory_order_acquire);
       const uint32_t frequency_hz = rtl_clamp_frequency(
           band, rtl_requested_frequency_hz.load(std::memory_order_acquire));
@@ -9690,7 +9691,7 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     radio_io_resume_pending = true;
   } else {
     const RtlCaptureState state = rtl_capture_state.load(std::memory_order_acquire);
-    if (state == RtlCaptureState::running) {
+    if (state == RtlCaptureState::running || state == RtlCaptureState::queued) {
       rtl_restart_requested.store(true, std::memory_order_release);
       rtl_stop_requested.store(true, std::memory_order_release);
     } else {
