@@ -71,6 +71,69 @@ void test_voice_decode_bounds_and_reset() {
   CHECK(decoder.process(frame, pcm.data(), nullptr));
 }
 
+uint16_t encode_hamming_10_6(uint8_t data) {
+  constexpr uint16_t generator[6] = {0x20E, 0x10D, 0x08B, 0x047, 0x023, 0x01C};
+  uint16_t codeword = 0;
+  for (int bit = 0; bit < 6; ++bit)
+    if (data & (0x20u >> bit)) codeword ^= generator[bit];
+  return codeword;
+}
+
+std::array<uint8_t, 784> make_ldu2_payload(const std::array<uint8_t, 24>& symbols) {
+  constexpr size_t offsets[6] = {288, 472, 656, 840, 1024, 1208};
+  std::array<uint8_t, 784> payload{};
+  size_t word = 0;
+  for (const size_t offset : offsets) {
+    for (size_t block_word = 0; block_word < 4; ++block_word) {
+      const uint16_t encoded = encode_hamming_10_6(symbols[word++]);
+      for (size_t bit = 0; bit < 10; ++bit) {
+        const size_t destination = offset + block_word * 10 + bit;
+        payload[destination / 2] |= static_cast<uint8_t>(
+            ((encoded >> (9 - bit)) & 1u) << (1 - destination % 2));
+      }
+    }
+  }
+  return payload;
+}
+
+void test_encryption_sync_decode() {
+  using namespace orcsdr::p25core;
+  // Independent p25craft clear-voice vector: MI=0, ALGID=0x80, KID=0.
+  constexpr std::array<uint8_t, 24> clear_symbols = {
+      0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+      0x20,0x00,0x00,0x00,0x2B,0x0B,0x22,0x24,0x26,0x3D,0x31,0x35};
+  auto payload = make_ldu2_payload(clear_symbols);
+  EncryptionSync result{};
+  CHECK(decode_ldu2_encryption(payload.data(), payload.size(), &result));
+  CHECK(result.valid);
+  CHECK(!result.encrypted);
+  CHECK(result.algorithm_id == kClearAlgorithmId);
+  CHECK(result.key_id == 0);
+
+  constexpr std::array<uint8_t, 24> encrypted_symbols = {
+      0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+      0x21,0x01,0x08,0x34,0x21,0x37,0x13,0x34,0x0D,0x1F,0x24,0x10};
+  payload = make_ldu2_payload(encrypted_symbols);
+  CHECK(decode_ldu2_encryption(payload.data(), payload.size(), &result));
+  CHECK(result.encrypted);
+  CHECK(result.algorithm_id == 0x84);
+  CHECK(result.key_id == 0x1234);
+
+  // One inner bit error and four whole-symbol errors are within the two FEC layers.
+  payload[288 / 2] ^= 0x02;
+  CHECK(decode_ldu2_encryption(payload.data(), payload.size(), &result));
+  CHECK(result.algorithm_id == 0x84 && result.key_id == 0x1234);
+  auto corrected_symbols = encrypted_symbols;
+  for (size_t i = 0; i < 4; ++i) corrected_symbols[i * 3] ^= 0x01;
+  payload = make_ldu2_payload(corrected_symbols);
+  CHECK(decode_ldu2_encryption(payload.data(), payload.size(), &result));
+  CHECK(result.algorithm_id == 0x84 && result.key_id == 0x1234);
+
+  CHECK(!decode_ldu2_encryption(nullptr, payload.size(), &result));
+  CHECK(!decode_ldu2_encryption(payload.data(), payload.size() - 1, &result));
+  CHECK(!decode_ldu2_encryption(payload.data(), payload.size(), nullptr));
+}
+
 orcsdr::p25core::Snapshot decode_control_fixture(const char* path, size_t chunk_size) {
   using namespace orcsdr::p25core;
   FILE* file = std::fopen(path, "rb");
@@ -166,6 +229,7 @@ int main(int argc, char** argv) {
   CHECK(argc == 2);
   test_protocol_self_check_and_bad_input();
   test_voice_decode_bounds_and_reset();
+  test_encryption_sync_decode();
   test_control_fixture(argv[1]);
   test_allocation_free_stress();
   std::puts("p25_core_tests: PASS");

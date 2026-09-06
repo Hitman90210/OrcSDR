@@ -198,13 +198,18 @@ void draw_monitor_dynamic() {
   M5.Display.fillRect(42, 330, 764, 135, kPanel);
   const auto& grant = g_snapshot.decoded.current_grant;
   if (grant.valid) {
-    text(g_snapshot.following_voice ? "FOLLOWING CLEAR PHASE I VOICE" :
+    text(g_snapshot.voice_encrypted ? "ENCRYPTED PHASE I VOICE MUTED" :
+         g_snapshot.following_voice ? "FOLLOWING CLEAR PHASE I VOICE" :
          grant_live(grant) ? "LIVE CONTROL-CHANNEL GRANT" : "LAST GRANT — STALE",
-         424, 362, (g_snapshot.following_voice || grant_live(grant)) ? kGreen : kYellow, 2);
+         424, 362, g_snapshot.voice_encrypted ? kRed :
+             (g_snapshot.following_voice || grant_live(grant)) ? kGreen : kYellow, 2);
     snprintf(value, sizeof(value), "TGID  %u     %s     SOURCE  %lu", grant.talkgroup,
              talkgroup_alias(grant.talkgroup), static_cast<unsigned long>(grant.source_id));
     text(value, 58, 410, TFT_WHITE, 2, middle_left);
-    if (grant.frequency_hz)
+    if (g_snapshot.voice_encrypted)
+      snprintf(value, sizeof(value), "VOICE MUTED     ALGID %02X     KID %04X",
+               g_snapshot.voice_algorithm_id, g_snapshot.voice_key_id);
+    else if (grant.frequency_hz)
       snprintf(value, sizeof(value), "VOICE  %.4f MHz     MODE  %s%s",
                grant.frequency_hz / 1000000.0, grant.tdma ? "PHASE II" : "PHASE I",
                grant.encrypted ? "  ENCRYPTED" : "  CLEAR");
@@ -212,7 +217,8 @@ void draw_monitor_dynamic() {
       snprintf(value, sizeof(value), "VOICE  AWAITING BAND PLAN     MODE  %s%s",
                grant.tdma ? "PHASE II" : "PHASE I",
                grant.encrypted ? "  ENCRYPTED" : "  CLEAR");
-    text(value, 58, 447, grant.encrypted ? kRed : kGreen, 2, middle_left);
+    text(value, 58, 447, (grant.encrypted || g_snapshot.voice_encrypted) ? kRed : kGreen,
+         2, middle_left);
   } else {
     text(g_snapshot.decoded.frame_sync ? "P25 CONTROL CHANNEL LOCKED" :
          "SEARCHING FOR P25 CONTROL CHANNEL", 424, 362,
@@ -520,6 +526,9 @@ void update(const Snapshot& snapshot) {
       snapshot.hold_talkgroup != g_snapshot.hold_talkgroup ||
       snapshot.auto_follow != g_snapshot.auto_follow ||
       snapshot.encryption_skip != g_snapshot.encryption_skip ||
+      snapshot.voice_encrypted != g_snapshot.voice_encrypted ||
+      snapshot.voice_algorithm_id != g_snapshot.voice_algorithm_id ||
+      snapshot.voice_key_id != g_snapshot.voice_key_id ||
       snapshot.following_voice != g_snapshot.following_voice ||
       snapshot.candidate_index != g_snapshot.candidate_index ||
       snapshot.config_revision != g_snapshot.config_revision ||

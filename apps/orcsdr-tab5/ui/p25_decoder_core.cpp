@@ -64,6 +64,8 @@ struct BandPlanSlot {
 
 constexpr std::array<size_t, 9> kVoiceBitOffsets = {
     0, 144, 328, 512, 696, 880, 1064, 1248, 1424};
+constexpr std::array<size_t, 6> kEncryptionBitOffsets = {
+    288, 472, 656, 840, 1024, 1208};
 
 std::array<uint8_t, 126> g_gf_exp{};
 std::array<int8_t, 64> g_gf_log{};
@@ -242,6 +244,165 @@ std::array<uint8_t, 98> trellis_encode(const std::array<uint8_t, 48>& input) {
   return channel;
 }
 
+int bit_count(uint16_t value) {
+  int count = 0;
+  while (value != 0) {
+    value &= static_cast<uint16_t>(value - 1);
+    ++count;
+  }
+  return count;
+}
+
+uint16_t hamming_10_6_encode(uint8_t data) {
+  constexpr uint16_t kGenerator[6] = {
+      0x20E, 0x10D, 0x08B, 0x047, 0x023, 0x01C};
+  uint16_t codeword = 0;
+  for (int bit = 0; bit < 6; ++bit)
+    if (data & (0x20u >> bit)) codeword ^= kGenerator[bit];
+  return codeword;
+}
+
+int hamming_10_6_decode(uint16_t received, uint8_t* data) {
+  int best_distance = 11;
+  uint8_t best_data = 0;
+  for (uint8_t candidate = 0; candidate < 64; ++candidate) {
+    const int distance = bit_count(received ^ hamming_10_6_encode(candidate));
+    if (distance < best_distance) {
+      best_distance = distance;
+      best_data = candidate;
+    }
+  }
+  // A double-bit error is outside the inner code's correction radius. Keep
+  // its systematic data bits and let the outer RS code correct the symbol.
+  *data = best_distance <= 1 ? best_data : static_cast<uint8_t>(received >> 4);
+  return best_distance <= 1 ? best_distance : 0;
+}
+
+void rs_syndromes(const std::array<uint8_t, 24>& codeword,
+                  std::array<uint8_t, 8>* syndromes) {
+  ensure_gf();
+  for (int root = 1; root <= 8; ++root) {
+    const uint8_t alpha = gf_pow(root);
+    uint8_t value = 0;
+    for (const uint8_t symbol : codeword) value = gf_mul(value, alpha) ^ symbol;
+    (*syndromes)[root - 1] = value;
+  }
+}
+
+uint8_t polynomial_value(const std::array<uint8_t, 9>& polynomial,
+                         uint8_t value) {
+  uint8_t result = 0;
+  uint8_t power = 1;
+  for (const uint8_t coefficient : polynomial) {
+    result ^= gf_mul(coefficient, power);
+    power = gf_mul(power, value);
+  }
+  return result;
+}
+
+int rs_24_16_decode(std::array<uint8_t, 24>* codeword) {
+  std::array<uint8_t, 8> syndromes{};
+  rs_syndromes(*codeword, &syndromes);
+  if (std::all_of(syndromes.begin(), syndromes.end(),
+                  [](uint8_t value) { return value == 0; })) return 0;
+
+  std::array<uint8_t, 9> locator{};
+  std::array<uint8_t, 9> previous{};
+  locator[0] = previous[0] = 1;
+  int degree = 0;
+  int shift = 1;
+  uint8_t last_discrepancy = 1;
+  for (int index = 0; index < 8; ++index) {
+    uint8_t discrepancy = syndromes[index];
+    for (int term = 1; term <= degree; ++term)
+      discrepancy ^= gf_mul(locator[term], syndromes[index - term]);
+    if (discrepancy == 0) {
+      ++shift;
+      continue;
+    }
+    const auto saved = locator;
+    const uint8_t scale = gf_mul(discrepancy, gf_inv(last_discrepancy));
+    for (int term = 0; term + shift < static_cast<int>(locator.size()); ++term)
+      locator[term + shift] ^= gf_mul(scale, previous[term]);
+    if (2 * degree <= index) {
+      degree = index + 1 - degree;
+      previous = saved;
+      last_discrepancy = discrepancy;
+      shift = 1;
+    } else {
+      ++shift;
+    }
+  }
+  if (degree < 1 || degree > 4) return -1;
+
+  struct ErrorPosition { int index; uint8_t location; };
+  std::array<ErrorPosition, 4> positions{};
+  int position_count = 0;
+  for (int power = 0; power < 24; ++power) {
+    if (polynomial_value(locator, gf_pow(-power)) == 0) {
+      if (position_count >= degree) return -1;
+      positions[position_count++] = {23 - power, gf_pow(power)};
+    }
+  }
+  if (position_count != degree) return -1;
+
+  std::array<uint8_t, 9> evaluator{};
+  for (int i = 0; i < 8; ++i)
+    for (int j = 0; j <= degree && i + j < 8; ++j)
+      evaluator[i + j] ^= gf_mul(syndromes[i], locator[j]);
+  std::array<uint8_t, 9> derivative{};
+  for (int term = 1; term <= degree; term += 2) derivative[term - 1] = locator[term];
+
+  for (int i = 0; i < position_count; ++i) {
+    const uint8_t inverse = gf_inv(positions[i].location);
+    const uint8_t denominator = polynomial_value(derivative, inverse);
+    if (denominator == 0) return -1;
+    const uint8_t magnitude = gf_mul(polynomial_value(evaluator, inverse),
+                                     gf_inv(denominator));
+    (*codeword)[positions[i].index] ^= magnitude;
+  }
+  rs_syndromes(*codeword, &syndromes);
+  if (!std::all_of(syndromes.begin(), syndromes.end(),
+                   [](uint8_t value) { return value == 0; })) return -1;
+  return position_count;
+}
+
+bool decode_encryption_payload(const uint8_t* payload, size_t dibits,
+                               EncryptionSync* result) {
+  if (payload == nullptr || result == nullptr || dibits != kLduPayloadDibits) return false;
+  *result = {};
+  std::array<uint8_t, 24> codeword{};
+  int inner_corrections = 0;
+  size_t word = 0;
+  for (const size_t block_offset : kEncryptionBitOffsets) {
+    for (size_t block_word = 0; block_word < 4; ++block_word) {
+      uint16_t received = 0;
+      for (size_t bit = 0; bit < 10; ++bit) {
+        const size_t source = block_offset + block_word * 10 + bit;
+        received = static_cast<uint16_t>((received << 1) |
+            ((payload[source / 2] >> (1 - source % 2)) & 1u));
+      }
+      inner_corrections += hamming_10_6_decode(received, &codeword[word++]);
+    }
+  }
+  const int outer_corrections = rs_24_16_decode(&codeword);
+  if (outer_corrections < 0) return false;
+
+  std::array<uint8_t, 12> bytes{};
+  size_t output_bit = 0;
+  for (size_t symbol = 0; symbol < 16; ++symbol)
+    for (int bit = 5; bit >= 0; --bit, ++output_bit)
+      bytes[output_bit / 8] |=
+          static_cast<uint8_t>(((codeword[symbol] >> bit) & 1u) << (7 - output_bit % 8));
+  result->valid = true;
+  result->algorithm_id = bytes[9];
+  result->key_id = static_cast<uint16_t>(bytes[10]) << 8 | bytes[11];
+  result->encrypted = result->algorithm_id != kClearAlgorithmId;
+  result->corrected_errors = static_cast<uint8_t>(
+      std::min(255, inner_corrections + outer_corrections));
+  return true;
+}
+
 }  // namespace
 
 class Decoder {
@@ -375,7 +536,27 @@ class Decoder {
         voice_ok &= frame.bits[bit] == static_cast<uint8_t>(((source * 13) ^ 5) & 1);
       }
     }
-    return control_ok && explicit_grant_ok && voice_ok;
+    constexpr std::array<uint8_t, 24> kEncryptedCodeword = {
+        0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
+        0x21,0x01,0x08,0x34,0x21,0x37,0x13,0x34,0x0D,0x1F,0x24,0x10};
+    std::array<uint8_t, kLduPayloadDibits> encryption_payload{};
+    size_t encryption_word = 0;
+    for (const size_t block_offset : kEncryptionBitOffsets) {
+      for (size_t block_word = 0; block_word < 4; ++block_word) {
+        const uint16_t encoded = hamming_10_6_encode(kEncryptedCodeword[encryption_word++]);
+        for (size_t bit = 0; bit < 10; ++bit) {
+          const size_t destination = block_offset + block_word * 10 + bit;
+          encryption_payload[destination / 2] |= static_cast<uint8_t>(
+              ((encoded >> (9 - bit)) & 1u) << (1 - destination % 2));
+        }
+      }
+    }
+    EncryptionSync encryption{};
+    const bool encryption_ok = decode_encryption_payload(
+        encryption_payload.data(), encryption_payload.size(), &encryption) &&
+        encryption.valid && encryption.encrypted && encryption.algorithm_id == 0x84 &&
+        encryption.key_id == 0x1234;
+    return control_ok && explicit_grant_ok && voice_ok && encryption_ok;
   }
 
  private:
@@ -546,6 +727,15 @@ class Decoder {
     ++state_.voice_ldus;
     state_.last_voice_ms = now_ms_;
     last_valid_ms_ = state_.last_voice_ms;
+    if (frame_duid_ == 0xA) {
+      EncryptionSync encryption{};
+      if (decode_encryption_payload(ldu_payload_.data(), ldu_payload_.size(), &encryption)) {
+        state_.voice_encryption = encryption;
+        ++state_.encryption_sync_good;
+      } else {
+        ++state_.encryption_sync_failed;
+      }
+    }
     for (const size_t offset : kVoiceBitOffsets) {
       for (size_t bit = 0; bit < kVoiceFrameBits; ++bit) {
         const size_t source = offset + bit;
@@ -555,6 +745,7 @@ class Decoder {
       VoiceFrame frame{};
       std::memcpy(frame.bits, voice_bits, sizeof(frame.bits));
       frame.sequence = ++state_.voice_frames;
+      frame.encryption = state_.voice_encryption;
       if (voice_sink_ == nullptr || !voice_sink_(frame, voice_context_))
         ++state_.voice_queue_drops;
     }
@@ -740,6 +931,11 @@ void process_cu8(const uint8_t* iq, size_t bytes, uint32_t now_ms,
 }
 
 Snapshot snapshot() { return g_decoder.state(); }
+
+bool decode_ldu2_encryption(const uint8_t* payload, size_t dibits,
+                            EncryptionSync* result) {
+  return decode_encryption_payload(payload, dibits, result);
+}
 
 bool self_check() { return Decoder::self_check(); }
 

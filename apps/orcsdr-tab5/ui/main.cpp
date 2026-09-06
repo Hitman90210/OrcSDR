@@ -1558,6 +1558,11 @@ std::atomic<uint32_t> p25_voice_stack_hwm{0};
 std::atomic<uint32_t> p25_imbe_max_us{0};
 std::atomic<uint32_t> p25_imbe_synth_max_us{0};
 std::atomic<uint32_t> p25_audio_queue_max_us{0};
+std::atomic<bool> p25_encrypted_voice_pending{false};
+std::atomic<bool> p25_encrypted_voice_seen{false};
+std::atomic<uint32_t> p25_encrypted_voice_muted_frames{0};
+std::atomic<uint32_t> p25_encrypted_voice_returns{0};
+std::atomic<uint32_t> p25_last_encryption{0};
 orcsdr::p25voice::Decoder p25_voice_decoder{};
 uint8_t p25_candidate_index = 0;
 float p25_candidate_levels[orcsdr::p25config::kMaxControlChannels] = {};
@@ -5918,8 +5923,19 @@ void p25_voice_task(void*) {
       p25_voice_decoder.reset();
     }
     if (g_stream_band != RtlBand::p25 ||
-        p25_follow_state.load(std::memory_order_acquire) != P25FollowState::voice ||
-        !rtl_audio_user_enabled.load(std::memory_order_acquire)) continue;
+        p25_follow_state.load(std::memory_order_acquire) != P25FollowState::voice) continue;
+    if (!frame.encryption.valid) continue;
+    if (frame.encryption.encrypted) {
+      p25_last_encryption.store(
+          static_cast<uint32_t>(frame.encryption.algorithm_id) << 16 |
+              frame.encryption.key_id,
+          std::memory_order_release);
+      p25_encrypted_voice_seen.store(true, std::memory_order_release);
+      p25_encrypted_voice_muted_frames.fetch_add(1, std::memory_order_relaxed);
+      p25_encrypted_voice_pending.store(true, std::memory_order_release);
+      continue;
+    }
+    if (!rtl_audio_user_enabled.load(std::memory_order_acquire)) continue;
 
     const int64_t started_us = esp_timer_get_time();
     orcsdr::p25voice::Result result{};
@@ -7038,6 +7054,11 @@ static void rtl_driver_app_task(void *) {
         p25_imbe_errors.store(0, std::memory_order_relaxed);
         p25_pcm_frames.store(0, std::memory_order_relaxed);
         p25_grant_events.store(0, std::memory_order_relaxed);
+        p25_encrypted_voice_pending.store(false, std::memory_order_relaxed);
+        p25_encrypted_voice_seen.store(false, std::memory_order_relaxed);
+        p25_encrypted_voice_muted_frames.store(0, std::memory_order_relaxed);
+        p25_encrypted_voice_returns.store(0, std::memory_order_relaxed);
+        p25_last_encryption.store(0, std::memory_order_relaxed);
         p25_audio_last_ms.store(0, std::memory_order_relaxed);
         p25_voice_stack_hwm.store(0, std::memory_order_relaxed);
         p25_imbe_max_us.store(0, std::memory_order_relaxed);
@@ -8161,6 +8182,10 @@ orcsdr::p25::Snapshot p25_dashboard_snapshot() {
       p25_follow_state.load(std::memory_order_acquire) == P25FollowState::voice;
   snapshot.imbe_frames = p25_imbe_frames.load(std::memory_order_relaxed);
   snapshot.imbe_errors = p25_imbe_errors.load(std::memory_order_relaxed);
+  const uint32_t encryption = p25_last_encryption.load(std::memory_order_acquire);
+  snapshot.voice_encrypted = p25_encrypted_voice_seen.load(std::memory_order_acquire);
+  snapshot.voice_algorithm_id = static_cast<uint8_t>(encryption >> 16);
+  snapshot.voice_key_id = static_cast<uint16_t>(encryption);
   snapshot.candidate_index = p25_candidate_index;
   snapshot.candidate_count = p25_config.control_channel_count;
   std::copy_n(std::begin(p25_candidate_levels), p25_config.control_channel_count,
@@ -8591,6 +8616,30 @@ void service_p25_follow(uint32_t now) {
       g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::p25) return;
   const auto decoded = orcsdr::p25decoder::snapshot();
   if (p25_follow_state.load(std::memory_order_acquire) == P25FollowState::voice) {
+    if (p25_encrypted_voice_pending.exchange(false, std::memory_order_acq_rel)) {
+      const uint32_t encryption = p25_last_encryption.load(std::memory_order_acquire);
+      p25_follow_grant.encrypted = true;
+      Serial.printf(
+          "RTL_P25_ENCRYPTED tg=%u voice_hz=%lu algid=%02X kid=%04X action=%s\n",
+          p25_follow_grant.talkgroup,
+          static_cast<unsigned long>(p25_voice_frequency_hz),
+          static_cast<unsigned>(encryption >> 16),
+          static_cast<unsigned>(encryption & 0xFFFFu),
+          p25_encryption_skip.load(std::memory_order_relaxed) ? "muted_return" : "muted_hold");
+      if (p25_encryption_skip.load(std::memory_order_relaxed)) {
+        p25_skipped_talkgroup = p25_follow_grant.talkgroup;
+        p25_skip_until_ms = now + 2000;
+        p25_follow_state.store(P25FollowState::control, std::memory_order_release);
+        p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
+        p25_voice_frequency_hz = 0;
+        p25_encrypted_voice_returns.fetch_add(1, std::memory_order_relaxed);
+        request_hot_retune(p25_control_frequency_hz);
+        Serial.printf("RTL_P25_FOLLOW_RETURN control_hz=%lu reason=encrypted tg=%u\n",
+                      static_cast<unsigned long>(p25_control_frequency_hz),
+                      p25_follow_grant.talkgroup);
+        return;
+      }
+    }
     const bool never_acquired = decoded.last_voice_ms == 0 &&
                                 now - p25_follow_started_ms >= kP25VoiceAcquireMs;
     const bool ended = decoded.last_voice_ms != 0 &&
@@ -8622,6 +8671,8 @@ void service_p25_follow(uint32_t now) {
   p25_control_frequency_hz = rtl_ui_frequency_hz;
   p25_voice_frequency_hz = grant.frequency_hz;
   p25_follow_grant = grant;
+  p25_encrypted_voice_seen.store(false, std::memory_order_release);
+  p25_last_encryption.store(0, std::memory_order_release);
   p25_follow_started_ms = now;
   p25_follow_state.store(P25FollowState::voice, std::memory_order_release);
   p25_grant_events.fetch_add(1, std::memory_order_relaxed);
@@ -12042,6 +12093,7 @@ void process_command(char* command) {
     Serial.println("RTL_RDS_CAPTURE_START/STOP/STATUS - capture FM MPX to SD for replay");
     Serial.println("RTL_RDS_REPLAY <path.s16>       - replay captured MPX while radio is stopped");
     Serial.println("RTL_P25_STATUS                 - profile, decoder, voice and memory diagnostics");
+    Serial.println("RTL_P25_ENCRYPTION_STATUS      - last LDU2 encryption and mute/return counters");
     Serial.println("RTL_P25_SCAN                   - survey configured control-channel candidates (auth)");
     Serial.println("RTL_P25_IQ_START|STOP|STATUS   - bounded control-channel IQ capture (mutations auth)");
     Serial.println("RTL_P25_REPLAY <path.orciq>    - replay a stopped-radio P25 capture (auth)");
@@ -12114,19 +12166,36 @@ void process_command(char* command) {
     (void)p25_replay(command + 15);
     return;
   }
+  if (strcmp(command, "RTL_P25_ENCRYPTION_STATUS") == 0) {
+    const uint32_t encryption = p25_last_encryption.load(std::memory_order_acquire);
+    Serial.printf(
+        "RTL_P25_ENCRYPTION_STATUS detected=%d algid=%02X kid=%04X muted_frames=%lu "
+        "returns=%lu skip_enabled=%d\n",
+        p25_encrypted_voice_seen.load(std::memory_order_acquire) ? 1 : 0,
+        static_cast<unsigned>(encryption >> 16),
+        static_cast<unsigned>(encryption & 0xFFFFu),
+        static_cast<unsigned long>(
+            p25_encrypted_voice_muted_frames.load(std::memory_order_relaxed)),
+        static_cast<unsigned long>(p25_encrypted_voice_returns.load(std::memory_order_relaxed)),
+        p25_encryption_skip.load(std::memory_order_relaxed) ? 1 : 0);
+    return;
+  }
   if (strcmp(command, "RTL_P25_STATUS") == 0) {
     const auto decoded = orcsdr::p25decoder::snapshot();
     unsigned grant_count = 0;
     for (const auto& grant : decoded.recent_grants) grant_count += grant.valid ? 1u : 0u;
     esp_rtl_sdr_metrics_t metrics{};
     if (g_rtl != nullptr) (void)esp_rtl_sdr_get_metrics(g_rtl, &metrics);
+    const uint32_t encryption = p25_last_encryption.load(std::memory_order_acquire);
     Serial.printf(
         "RTL_P25_STATUS profile=\"%s\" identity_source=air "
         "frequency_hz=%lu survey=%d candidate=%u relative_dbfs=%.1f "
         "frame_sync=%d identity=%d nac=%03X wacn=%05lX sysid=%03X rfss=%u site=%u "
         "sync_words=%lu nid_good=%lu nid_failed=%lu tsbk_good=%lu tsbk_failed=%lu "
         "ber_percent=%.2f grants=%d grant_events=%lu follow=%s control_hz=%lu voice_hz=%lu "
-        "voice_ldus=%lu voice_frames=%lu voice_queue_drops=%lu imbe_frames=%lu "
+        "voice_ldus=%lu voice_frames=%lu voice_queue_drops=%lu enc_sync_good=%lu "
+        "enc_sync_failed=%lu encrypted_detected=%d algid=%02X kid=%04X "
+        "encrypted_muted_frames=%lu encrypted_returns=%lu imbe_frames=%lu "
         "imbe_errors=%lu pcm_frames=%lu voice_stack_hwm=%lu imbe_max_us=%lu "
         "imbe_synth_max_us=%lu audio_queue_max_us=%lu heap_free=%u heap_min=%u "
         "psram_free=%u usb_overruns=%u usb_drops=%u iq_drops=%u audio_drops=%u\n",
@@ -12152,6 +12221,14 @@ void process_command(char* command) {
         static_cast<unsigned long>(decoded.voice_ldus),
         static_cast<unsigned long>(decoded.voice_frames),
         static_cast<unsigned long>(decoded.voice_queue_drops),
+        static_cast<unsigned long>(decoded.encryption_sync_good),
+        static_cast<unsigned long>(decoded.encryption_sync_failed),
+        p25_encrypted_voice_seen.load(std::memory_order_acquire) ? 1 : 0,
+        static_cast<unsigned>(encryption >> 16),
+        static_cast<unsigned>(encryption & 0xFFFFu),
+        static_cast<unsigned long>(
+            p25_encrypted_voice_muted_frames.load(std::memory_order_relaxed)),
+        static_cast<unsigned long>(p25_encrypted_voice_returns.load(std::memory_order_relaxed)),
         static_cast<unsigned long>(p25_imbe_frames.load(std::memory_order_relaxed)),
         static_cast<unsigned long>(p25_imbe_errors.load(std::memory_order_relaxed)),
         static_cast<unsigned long>(p25_pcm_frames.load(std::memory_order_relaxed)),
