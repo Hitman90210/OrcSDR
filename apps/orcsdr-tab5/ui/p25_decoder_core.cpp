@@ -582,7 +582,8 @@ class Decoder {
     }
     voice_decoder.voice_sink_ = nullptr;
     voice_decoder.decode_ldu();
-    voice_ok &= voice_decoder.state_.voice_queue_drops == 0;
+    voice_ok &= voice_decoder.state_.voice_queue_drops == 0 &&
+                voice_decoder.state_.voice_unrouted_frames == 9;
     constexpr std::array<uint8_t, 24> kEncryptedCodeword = {
         0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
         0x21,0x01,0x08,0x34,0x21,0x37,0x13,0x34,0x0D,0x1F,0x24,0x10};
@@ -866,6 +867,7 @@ class Decoder {
     state_.nid_corrected_bits += corrected;
     fec_error_bits_ += corrected;
     fec_total_bits_ += 64;
+    last_valid_ms_ = now_ms_;
     collecting_nid_ = false;
     frame_data_count_ = 0;
     frame_duid_ = duid;
@@ -896,7 +898,9 @@ class Decoder {
       std::memcpy(frame.bits, voice_bits, sizeof(frame.bits));
       frame.sequence = ++state_.voice_frames;
       frame.encryption = state_.voice_encryption;
-      if (voice_sink_ != nullptr && !voice_sink_(frame, voice_context_))
+      if (voice_sink_ == nullptr)
+        ++state_.voice_unrouted_frames;
+      else if (!voice_sink_(frame, voice_context_))
         ++state_.voice_queue_drops;
     }
     frame_active_ = false;

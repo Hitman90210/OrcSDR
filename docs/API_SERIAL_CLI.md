@@ -507,7 +507,7 @@ configured control channel, so it cannot contain a followed voice call.
 
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
-| `RTL_P25_STATUS` | no | `RTL_P25_STATUS profile=... frame_sync=... identity=... grants=... grant_events=... follow=...` | Includes current recent grants, session-level followed grant events, NID/TSBK, voice/IMBE/PCM, LDU2 encryption, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_STATUS` | no | `RTL_P25_STATUS profile=... frame_sync=... identity=... grants=... grant_events=... follow=...` | Includes current recent grants, session-level followed grant events, NID/TSBK, routed, unrouted and rejected voice frames, IMBE/PCM, LDU2 encryption, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
 | `RTL_P25_MODULATION` | no | `RTL_P25_MODULATION configured=auto selected=c4fm timing_gain=... carrier_gain=...` | Reports the configured Phase I demodulator and the path selected by automatic acquisition. |
 | `RTL_P25_MODULATION AUTO\|C4FM\|CQPSK` | yes | `RTL_P25_MODULATION_OK configured=...` | Selects automatic acquisition, the legacy C4FM discriminator, or the linear CQPSK/LSM path. The setting is saved to `P25.cfg` and the active P25 receiver is reacquired. |
 | `RTL_P25_ENCRYPTION_STATUS` | no | `RTL_P25_ENCRYPTION_STATUS detected=... algid=... kid=... muted_frames=... returns=...` | Reports the last valid LDU2 Encryption Sync result and cumulative mute/return counters for automated acceptance. It identifies and suppresses protected audio; it does not decrypt it. |

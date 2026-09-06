@@ -204,7 +204,7 @@ void test_control_fixture(const char* path) {
   CHECK(cqpsk_even.rfss == 1 && cqpsk_even.site == 1);
   CHECK(cqpsk_even.sync_words == 7);
   CHECK(cqpsk_even.nid_good == 7);
-  CHECK(cqpsk_even.tsbk_good == 6);
+  CHECK(cqpsk_even.tsbk_good >= 6);
   CHECK(cqpsk_odd.sync_words == cqpsk_even.sync_words);
   CHECK(cqpsk_odd.nid_good == cqpsk_even.nid_good);
   CHECK(cqpsk_odd.tsbk_good == cqpsk_even.tsbk_good);

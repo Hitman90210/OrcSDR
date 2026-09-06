@@ -61,6 +61,7 @@ struct Snapshot {
   uint32_t voice_ldus = 0;
   uint32_t voice_frames = 0;
   uint32_t voice_queue_drops = 0;
+  uint32_t voice_unrouted_frames = 0;
   uint32_t last_voice_ms = 0;
   uint32_t encryption_sync_good = 0;
   uint32_t encryption_sync_failed = 0;

@@ -12243,7 +12243,8 @@ void process_command(char* command) {
         "frame_sync=%d identity=%d nac=%03X wacn=%05lX sysid=%03X rfss=%u site=%u "
         "sync_words=%lu nid_good=%lu nid_failed=%lu tsbk_good=%lu tsbk_failed=%lu "
         "ber_percent=%.2f grants=%d grant_events=%lu follow=%s control_hz=%lu voice_hz=%lu "
-        "voice_ldus=%lu voice_frames=%lu voice_queue_drops=%lu enc_sync_good=%lu "
+        "voice_ldus=%lu voice_frames=%lu voice_queue_drops=%lu voice_unrouted=%lu "
+        "enc_sync_good=%lu "
         "enc_sync_failed=%lu encrypted_detected=%d algid=%02X kid=%04X "
         "encrypted_muted_frames=%lu encrypted_returns=%lu imbe_frames=%lu "
         "imbe_errors=%lu pcm_frames=%lu voice_stack_hwm=%lu imbe_max_us=%lu "
@@ -12277,6 +12278,7 @@ void process_command(char* command) {
         static_cast<unsigned long>(decoded.voice_ldus),
         static_cast<unsigned long>(decoded.voice_frames),
         static_cast<unsigned long>(decoded.voice_queue_drops),
+        static_cast<unsigned long>(decoded.voice_unrouted_frames),
         static_cast<unsigned long>(decoded.encryption_sync_good),
         static_cast<unsigned long>(decoded.encryption_sync_failed),
         p25_encrypted_voice_seen.load(std::memory_order_acquire) ? 1 : 0,
