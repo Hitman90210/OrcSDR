@@ -257,27 +257,18 @@ class Decoder {
     voice_sink_ = voice_sink;
     voice_context_ = voice_context;
     if (iq == nullptr) return;
-    constexpr float kChannelAlpha = 0.06f;
-    constexpr float kDcAlpha = 1.0f / kInputRate;
-    for (size_t offset = 0; offset + 1 < bytes; offset += 2) {
-      const float raw_i = static_cast<float>(static_cast<int>(iq[offset]) - 128);
-      const float raw_q = static_cast<float>(static_cast<int>(iq[offset + 1]) - 128);
-      dc_i_ += kDcAlpha * (raw_i - dc_i_);
-      dc_q_ += kDcAlpha * (raw_q - dc_q_);
-      const float centered_i = raw_i - dc_i_;
-      const float centered_q = raw_q - dc_q_;
-      lpf_i1_ += kChannelAlpha * (centered_i - lpf_i1_);
-      lpf_q1_ += kChannelAlpha * (centered_q - lpf_q1_);
-      lpf_i2_ += kChannelAlpha * (lpf_i1_ - lpf_i2_);
-      lpf_q2_ += kChannelAlpha * (lpf_q1_ - lpf_q2_);
-      decim_i_ += lpf_i2_;
-      decim_q_ += lpf_q2_;
-      if (++decim_count_ < kInputDecimation) continue;
-      const float i = decim_i_ / kInputDecimation;
-      const float q = decim_q_ / kInputDecimation;
-      decim_i_ = decim_q_ = 0;
-      decim_count_ = 0;
-      process_channel_sample(i, q);
+    size_t offset = 0;
+    if (have_pending_iq_byte_ && bytes != 0) {
+      process_iq_pair(pending_iq_byte_, iq[0]);
+      have_pending_iq_byte_ = false;
+      offset = 1;
+    }
+    for (; offset + 1 < bytes; offset += 2) {
+      process_iq_pair(iq[offset], iq[offset + 1]);
+    }
+    if (offset < bytes) {
+      pending_iq_byte_ = iq[offset];
+      have_pending_iq_byte_ = true;
     }
     refresh_health(now_ms_);
   }
@@ -340,6 +331,21 @@ class Decoder {
                             result.nid_corrected_bits == 5 && result.tsbk_good == 1 &&
                             result.wacn == 0xBEE00 && result.system_id == 0x1F3 &&
                             result.last_trellis_metric > 0;
+    decoder.band_plan_[1] = {true, false, 12500, 450000000};
+    std::array<uint8_t, 12> explicit_grant{};
+    explicit_grant[0] = 0x80 | 0x03;
+    explicit_grant[2] = 0x80;
+    explicit_grant[4] = 0x10;
+    explicit_grant[5] = 0x07;
+    explicit_grant[6] = 0x20;
+    explicit_grant[7] = 0x08;
+    explicit_grant[8] = 0x12;
+    explicit_grant[9] = 0x34;
+    decoder.dispatch_tsbk(explicit_grant);
+    const Grant& grant = decoder.state_.current_grant;
+    const bool explicit_grant_ok = grant.valid && grant.emergency &&
+                                   grant.frequency_hz == 450087500 &&
+                                   grant.talkgroup == 0x1234 && grant.source_id == 0;
     struct VoiceCheck {
       VoiceFrame frames[9]{};
       size_t count = 0;
@@ -369,10 +375,33 @@ class Decoder {
         voice_ok &= frame.bits[bit] == static_cast<uint8_t>(((source * 13) ^ 5) & 1);
       }
     }
-    return control_ok && voice_ok;
+    return control_ok && explicit_grant_ok && voice_ok;
   }
 
  private:
+  void process_iq_pair(uint8_t input_i, uint8_t input_q) {
+    constexpr float kChannelAlpha = 0.06f;
+    constexpr float kDcAlpha = 1.0f / kInputRate;
+    const float raw_i = static_cast<float>(static_cast<int>(input_i) - 128);
+    const float raw_q = static_cast<float>(static_cast<int>(input_q) - 128);
+    dc_i_ += kDcAlpha * (raw_i - dc_i_);
+    dc_q_ += kDcAlpha * (raw_q - dc_q_);
+    const float centered_i = raw_i - dc_i_;
+    const float centered_q = raw_q - dc_q_;
+    lpf_i1_ += kChannelAlpha * (centered_i - lpf_i1_);
+    lpf_q1_ += kChannelAlpha * (centered_q - lpf_q1_);
+    lpf_i2_ += kChannelAlpha * (lpf_i1_ - lpf_i2_);
+    lpf_q2_ += kChannelAlpha * (lpf_q1_ - lpf_q2_);
+    decim_i_ += lpf_i2_;
+    decim_q_ += lpf_q2_;
+    if (++decim_count_ < kInputDecimation) return;
+    const float i = decim_i_ / kInputDecimation;
+    const float q = decim_q_ / kInputDecimation;
+    decim_i_ = decim_q_ = 0;
+    decim_count_ = 0;
+    process_channel_sample(i, q);
+  }
+
   void process_channel_sample(float i, float q) {
     if (!have_previous_iq_) {
       previous_i_ = i;
@@ -594,12 +623,18 @@ class Decoder {
       state_.site = payload[4];
       return;
     }
-    if (opcode == 0x00 || opcode == 0x03) {
+    if (opcode == 0x00) {
       const uint16_t channel = static_cast<uint16_t>(payload[1]) << 8 | payload[2];
       add_grant(payload[0], channel >> 12, channel & 0x0FFF,
                 static_cast<uint16_t>(payload[3]) << 8 | payload[4],
                 static_cast<uint32_t>(payload[5]) << 16 |
                     static_cast<uint32_t>(payload[6]) << 8 | payload[7]);
+      return;
+    }
+    if (opcode == 0x03) {
+      const uint16_t channel = static_cast<uint16_t>(payload[2]) << 8 | payload[3];
+      add_grant(payload[0], channel >> 12, channel & 0x0FFF,
+                static_cast<uint16_t>(payload[6]) << 8 | payload[7], 0);
       return;
     }
     if (opcode == 0x02) {
@@ -659,6 +694,8 @@ class Decoder {
   uint64_t fec_total_bits_ = 0;
 
   float dc_i_ = 0, dc_q_ = 0;
+  uint8_t pending_iq_byte_ = 0;
+  bool have_pending_iq_byte_ = false;
   float lpf_i1_ = 0, lpf_q1_ = 0, lpf_i2_ = 0, lpf_q2_ = 0;
   float decim_i_ = 0, decim_q_ = 0;
   size_t decim_count_ = 0;

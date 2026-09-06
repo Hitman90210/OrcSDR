@@ -44,7 +44,7 @@ bool Decoder::process(const p25core::VoiceFrame& frame,
   if (output == nullptr) return false;
   char matrix[8][23]{};
   char decoded[88]{};
-  char error_text[16]{};
+  char error_text[64]{};
   int16_t pcm8k[160]{};
   int errors = 0, total_errors = 0;
   make_matrix(frame, matrix);

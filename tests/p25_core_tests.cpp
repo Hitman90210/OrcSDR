@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -70,7 +71,7 @@ void test_voice_decode_bounds_and_reset() {
   CHECK(decoder.process(frame, pcm.data(), nullptr));
 }
 
-void test_control_fixture(const char* path) {
+orcsdr::p25core::Snapshot decode_control_fixture(const char* path, size_t chunk_size) {
   using namespace orcsdr::p25core;
   FILE* file = std::fopen(path, "rb");
   CHECK(file != nullptr);
@@ -86,9 +87,10 @@ void test_control_fixture(const char* path) {
 
   reset(1);
   std::array<uint8_t, 32768 + 512> iq{};
+  CHECK(chunk_size <= iq.size());
   uint32_t consumed = 0;
   while (consumed < bytes) {
-    const size_t request = std::min<size_t>(iq.size(), bytes - consumed);
+    const size_t request = std::min<size_t>(chunk_size, bytes - consumed);
     CHECK(std::fread(iq.data(), 1, request, file) == request);
     consumed += static_cast<uint32_t>(request);
     const uint32_t now_ms = 1u + static_cast<uint32_t>(
@@ -97,8 +99,10 @@ void test_control_fixture(const char* path) {
   }
   CHECK(std::fgetc(file) == EOF);
   std::fclose(file);
+  return snapshot();
+}
 
-  const Snapshot state = snapshot();
+void check_control_snapshot(const orcsdr::p25core::Snapshot& state) {
   CHECK(state.frame_sync);
   CHECK(state.identity_valid);
   CHECK(state.nac == 0x1F0);
@@ -112,6 +116,16 @@ void test_control_fixture(const char* path) {
   CHECK(state.tsbk_good == 20);
   CHECK(state.tsbk_failed == 0);
   CHECK(state.voice_frames == 0);
+}
+
+void test_control_fixture(const char* path) {
+  const auto even = decode_control_fixture(path, 32768 + 512);
+  check_control_snapshot(even);
+  const auto odd = decode_control_fixture(path, 32767);
+  check_control_snapshot(odd);
+  CHECK(odd.sync_words == even.sync_words);
+  CHECK(odd.nid_good == even.nid_good);
+  CHECK(odd.tsbk_good == even.tsbk_good);
 }
 
 void test_allocation_free_stress() {

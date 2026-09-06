@@ -221,7 +221,7 @@ try {
   $relockSeen = $false
   $deadline = [DateTime]::UtcNow.AddSeconds($CallWindowSeconds)
   Write-Output "P25_VALIDATION_SOAK started=true seconds=$CallWindowSeconds"
-  while ([DateTime]::UtcNow -lt $deadline -and -not $relockSeen) {
+  while ([DateTime]::UtcNow -lt $deadline) {
     $slice = [DateTime]::UtcNow.AddSeconds(3)
     while ([DateTime]::UtcNow -lt $slice) {
       $line = Read-LineUntil { param($value) $value -match '^RTL_P25_FOLLOW_(VOICE|RETURN) ' } 1
