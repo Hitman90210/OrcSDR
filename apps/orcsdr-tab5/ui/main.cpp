@@ -19,10 +19,6 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 
-extern "C" {
-#include "mbelib.h"
-}
-
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -67,6 +63,7 @@ extern "C" {
 #include "p25_dashboard.hpp"
 #include "p25_config.hpp"
 #include "p25_decoder.hpp"
+#include "p25_voice.hpp"
 #include "radio_session.hpp"
 #include "radio_ui_service.hpp"
 #include "rf_lab.hpp"
@@ -1287,6 +1284,8 @@ static char g_rds_capture_last_path[96] = "";
 /* ---- Raw CU8 IQ capture and adaptive LoRa energy trigger ---- */
 constexpr size_t kIqRecSeconds = 3;
 constexpr size_t kIqRecMaxBytes = kRtlSampleRateSps * 2u * kIqRecSeconds;
+constexpr size_t kOrciqHeaderBytes = 36;
+constexpr size_t kP25IqRecMaxBytes = 1024u * 1024u - kOrciqHeaderBytes;
 constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 constexpr float kLoraTriggerMarginDb = 9.0f;
 constexpr float kLoraTriggerHysteresisDb = 3.0f;
@@ -1299,6 +1298,8 @@ static std::atomic<bool> g_iq_rec_export_pending{false};
 static std::atomic<bool> g_iq_rec_export_busy{false};
 static std::atomic<bool> g_iq_rec_auto_triggered{false};
 static std::atomic<bool> g_iq_retrieve_resume{false};
+enum class IqCaptureKind : uint8_t { none, lora, p25 };
+static std::atomic<IqCaptureKind> g_iq_rec_kind{IqCaptureKind::none};
 static uint32_t g_iq_rec_frequency_hz = 0;
 static uint8_t g_iq_rec_sf = 11;
 static uint32_t g_iq_rec_bandwidth_hz = 250000;
@@ -1550,24 +1551,14 @@ orcsdr::p25decoder::Grant p25_follow_grant{};
 std::atomic<uint32_t> p25_imbe_frames{0};
 std::atomic<uint32_t> p25_imbe_errors{0};
 std::atomic<uint32_t> p25_pcm_frames{0};
+std::atomic<uint32_t> p25_grant_events{0};
 std::atomic<uint32_t> p25_audio_last_ms{0};
 std::atomic<uint32_t> p25_voice_session{0};
 std::atomic<uint32_t> p25_voice_stack_hwm{0};
 std::atomic<uint32_t> p25_imbe_max_us{0};
 std::atomic<uint32_t> p25_imbe_synth_max_us{0};
 std::atomic<uint32_t> p25_audio_queue_max_us{0};
-struct P25VoiceContext {
-  mbe_parms current{};
-  mbe_parms previous{};
-  mbe_parms enhanced{};
-  int16_t pcm8k[160]{};
-  int16_t pcm48k[960]{};
-  char matrix[8][23]{};
-  char decoded[88]{};
-  char error_text[16]{};
-  int16_t previous_sample = 0;
-};
-P25VoiceContext p25_voice_context{};
+orcsdr::p25voice::Decoder p25_voice_decoder{};
 uint8_t p25_candidate_index = 0;
 float p25_candidate_levels[orcsdr::p25config::kMaxControlChannels] = {};
 uint32_t p25_candidate_tsbk_good[orcsdr::p25config::kMaxControlChannels]{};
@@ -1913,7 +1904,6 @@ void service_p25_entry_probe(uint32_t now);
 void cancel_active_scan(bool restore);
 void service_p25_follow(uint32_t now);
 void service_lora_survey(uint32_t now);
-bool p25_voice_self_check();
 void start_wifi_inventory();
 void stop_wifi();
 void begin_power_monitor(const char* tag, uint32_t duration_ms = 1000);
@@ -3192,11 +3182,16 @@ static void write_le32(File& f, uint32_t v) {
   f.write(b, 4);
 }
 
-bool iq_rec_ensure_buffers() {
+bool iq_rec_ensure_buffer() {
   if (g_iq_rec_buf == nullptr) {
     g_iq_rec_buf = static_cast<uint8_t*>(
         heap_caps_malloc(kIqRecMaxBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
+  return g_iq_rec_buf != nullptr;
+}
+
+bool lora_iq_ensure_buffers() {
+  if (!iq_rec_ensure_buffer()) return false;
   if (g_lora_pre_roll_buf == nullptr) {
     g_lora_pre_roll_buf = static_cast<uint8_t*>(
         heap_caps_malloc(kLoraPreRollBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -3212,7 +3207,7 @@ void lora_iq_reset_detector() {
   g_lora_trigger_armed = false;
   lora_noise_dbfs.store(-90.0f, std::memory_order_relaxed);
   lora_trigger_dbfs.store(-75.0f, std::memory_order_relaxed);
-  if (!iq_rec_ensure_buffers()) Serial.println("RTL_IQ_ERROR no_psram_buffer");
+  if (!lora_iq_ensure_buffers()) Serial.println("RTL_IQ_ERROR no_psram_buffer");
 }
 
 void lora_pre_roll_append(const uint8_t* iq, size_t bytes) {
@@ -3245,18 +3240,34 @@ size_t lora_copy_pre_roll() {
   return kLoraPreRollBytes;
 }
 
-void iq_rec_begin(bool automatic, size_t initial_bytes) {
+const char* iq_capture_kind_name(IqCaptureKind kind) {
+  return kind == IqCaptureKind::lora ? "lora" : kind == IqCaptureKind::p25 ? "p25" : "none";
+}
+
+size_t iq_capture_max_bytes(IqCaptureKind kind) {
+  return kind == IqCaptureKind::p25 ? kP25IqRecMaxBytes : kIqRecMaxBytes;
+}
+
+void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
+  g_iq_rec_kind.store(kind, std::memory_order_release);
   g_iq_rec_frequency_hz = rtl_ui_frequency_hz;
-  g_iq_rec_sf = lora_sf.load(std::memory_order_relaxed);
-  g_iq_rec_bandwidth_hz = lora_bandwidth_hz.load(std::memory_order_relaxed);
+  g_iq_rec_sf = kind == IqCaptureKind::lora ? lora_sf.load(std::memory_order_relaxed) : 0;
+  g_iq_rec_bandwidth_hz = kind == IqCaptureKind::lora
+                              ? lora_bandwidth_hz.load(std::memory_order_relaxed)
+                              : rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
   g_iq_rec_last_path[0] = '\0';
   g_iq_rec_ready.store(false, std::memory_order_release);
   g_iq_rec_auto_triggered.store(automatic, std::memory_order_release);
   g_iq_rec_write.store(initial_bytes, std::memory_order_release);
   g_iq_rec_active.store(true, std::memory_order_release);
-  Serial.printf("RTL_IQ_START mode=%s bytes=%u seconds=%u rate=%u frequency_hz=%u sf=%u bw=%u\n",
-                automatic ? "energy" : "manual", static_cast<unsigned>(kIqRecMaxBytes),
-                static_cast<unsigned>(kIqRecSeconds), kRtlSampleRateSps,
+  const size_t max_bytes = iq_capture_max_bytes(kind);
+  Serial.printf("RTL_IQ_START source=%s mode=%s bytes=%u seconds=%u duration_ms=%u "
+                "rate=%u frequency_hz=%u sf=%u bw=%u\n",
+                iq_capture_kind_name(kind), automatic ? "energy" : "manual",
+                static_cast<unsigned>(max_bytes),
+                static_cast<unsigned>(max_bytes / (2u * kRtlSampleRateSps)),
+                static_cast<unsigned>((max_bytes / 2u * 1000u) / kRtlSampleRateSps),
+                kRtlSampleRateSps,
                 g_iq_rec_frequency_hz, static_cast<unsigned>(g_iq_rec_sf),
                 static_cast<unsigned>(g_iq_rec_bandwidth_hz));
 }
@@ -3276,32 +3287,60 @@ bool iq_rec_start() {
     Serial.println("RTL_IQ_ERROR capture_or_decode_busy");
     return false;
   }
-  if (!iq_rec_ensure_buffers()) {
+  if (!lora_iq_ensure_buffers()) {
     Serial.println("RTL_IQ_ERROR no_psram_buffer");
     return false;
   }
-  iq_rec_begin(false, 0);
+  iq_rec_begin(IqCaptureKind::lora, false, 0);
+  return true;
+}
+
+bool p25_iq_rec_start() {
+  if (rtl_ui_band != RtlBand::p25 ||
+      rtl_capture_state.load(std::memory_order_acquire) != RtlCaptureState::running) {
+    Serial.println("RTL_P25_IQ_ERROR p25_control_required");
+    return false;
+  }
+  if (p25_follow_state.load(std::memory_order_acquire) != P25FollowState::control) {
+    Serial.println("RTL_P25_IQ_ERROR control_channel_required");
+    return false;
+  }
+  if (g_iq_rec_active.load(std::memory_order_acquire)) return true;
+  if (g_iq_rec_ready.load(std::memory_order_acquire) ||
+      lora_native_decode_busy.load(std::memory_order_acquire)) {
+    Serial.println("RTL_P25_IQ_ERROR capture_or_decode_busy");
+    return false;
+  }
+  if (!iq_rec_ensure_buffer()) {
+    Serial.println("RTL_P25_IQ_ERROR no_psram_buffer");
+    return false;
+  }
+  iq_rec_begin(IqCaptureKind::p25, false, 0);
   return true;
 }
 
 void iq_rec_append(const uint8_t* iq, size_t bytes) {
   if (!g_iq_rec_active.load(std::memory_order_relaxed) || iq == nullptr || bytes == 0) return;
   size_t written = g_iq_rec_write.load(std::memory_order_relaxed);
-  if (written >= kIqRecMaxBytes) return;
-  const size_t count = min(bytes, kIqRecMaxBytes - written);
+  const size_t max_bytes = iq_capture_max_bytes(
+      g_iq_rec_kind.load(std::memory_order_acquire));
+  if (written >= max_bytes) return;
+  const size_t count = min(bytes, max_bytes - written);
   memcpy(g_iq_rec_buf + written, iq, count);
   written += count;
   g_iq_rec_write.store(written, std::memory_order_release);
-  if (written == kIqRecMaxBytes) {
+  if (written == max_bytes) {
     g_iq_rec_active.store(false, std::memory_order_release);
     g_iq_rec_ready.store(true, std::memory_order_release);
-    Serial.printf("RTL_IQ_DONE storage=psram bytes=%u samples=%u rate=%u frequency_hz=%u sf=%u bw=%u mode=%s\n",
+    Serial.printf("RTL_IQ_DONE storage=psram source=%s bytes=%u samples=%u rate=%u frequency_hz=%u sf=%u bw=%u mode=%s\n",
+                  iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
                   static_cast<unsigned>(written), static_cast<unsigned>(written / 2),
                   kRtlSampleRateSps, g_iq_rec_frequency_hz,
                   static_cast<unsigned>(g_iq_rec_sf),
                   static_cast<unsigned>(g_iq_rec_bandwidth_hz),
                   g_iq_rec_auto_triggered.load(std::memory_order_relaxed) ? "energy"
                                                                          : "manual");
+    if (g_iq_rec_kind.load(std::memory_order_acquire) != IqCaptureKind::lora) return;
     const LoraNativeDecodeWork work{written, g_iq_rec_sf, g_iq_rec_bandwidth_hz,
                                     g_iq_rec_frequency_hz};
     if (lora_native_decoder_ready.load(std::memory_order_acquire) &&
@@ -3403,7 +3442,7 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
       g_iq_rec_ready.load(std::memory_order_relaxed) ||
       g_iq_rec_export_pending.load(std::memory_order_relaxed) ||
       g_iq_rec_export_busy.load(std::memory_order_relaxed) ||
-      !iq_rec_ensure_buffers()) return;
+      !lora_iq_ensure_buffers()) return;
 
   const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
   if (g_lora_noise_samples == 0) g_lora_noise_floor_dbfs = level;
@@ -3427,7 +3466,7 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
   g_lora_trigger_armed = false;
   const size_t pre_roll = lora_copy_pre_roll();
   lora_rf_events.fetch_add(1, std::memory_order_relaxed);
-  iq_rec_begin(true, pre_roll);
+  iq_rec_begin(IqCaptureKind::lora, true, pre_roll);
   if (serial_verbosity_at(SerialVerbosity::trace))
     Serial.printf("RTL_LORA_ENERGY level_dbfs=%.1f noise_dbfs=%.1f trigger_dbfs=%.1f preroll_bytes=%u\n",
                   static_cast<double>(level), static_cast<double>(g_lora_noise_floor_dbfs),
@@ -3450,11 +3489,17 @@ bool iq_rec_stop_and_export() {
   char path[96];
   do {
     ++g_iq_rec_file_seq;
-    snprintf(path, sizeof(path), "/orcsdr/iq_%03u_%lu_sf%u_bw%u.orciq",
-             static_cast<unsigned>(g_iq_rec_file_seq),
-             static_cast<unsigned long>(g_iq_rec_frequency_hz),
-             static_cast<unsigned>(g_iq_rec_sf),
-             static_cast<unsigned>(g_iq_rec_bandwidth_hz));
+    if (g_iq_rec_kind.load(std::memory_order_acquire) == IqCaptureKind::lora) {
+      snprintf(path, sizeof(path), "/orcsdr/iq_%03u_%lu_sf%u_bw%u.orciq",
+               static_cast<unsigned>(g_iq_rec_file_seq),
+               static_cast<unsigned long>(g_iq_rec_frequency_hz),
+               static_cast<unsigned>(g_iq_rec_sf),
+               static_cast<unsigned>(g_iq_rec_bandwidth_hz));
+    } else {
+      snprintf(path, sizeof(path), "/orcsdr/iq_%03u_p25_%lu.orciq",
+               static_cast<unsigned>(g_iq_rec_file_seq),
+               static_cast<unsigned long>(g_iq_rec_frequency_hz));
+    }
   } while (g_sd_fs->exists(path));
   File file = g_sd_fs->open(path, FILE_WRITE, true);
   if (!file) return finish(false);
@@ -3478,13 +3523,91 @@ bool iq_rec_stop_and_export() {
     return finish(false);
   }
   strlcpy(g_iq_rec_last_path, path, sizeof(g_iq_rec_last_path));
-  Serial.printf("RTL_IQ_DONE path=\"%s\" bytes=%u samples=%u rate=%u frequency_hz=%u mode=%s\n",
-                path, static_cast<unsigned>(bytes), static_cast<unsigned>(bytes / 2),
+  Serial.printf("RTL_IQ_DONE path=\"%s\" source=%s bytes=%u samples=%u rate=%u frequency_hz=%u mode=%s\n",
+                path, iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
+                static_cast<unsigned>(bytes), static_cast<unsigned>(bytes / 2),
                 kRtlSampleRateSps, g_iq_rec_frequency_hz,
                 g_iq_rec_auto_triggered.load(std::memory_order_relaxed) ? "energy" : "manual");
   g_iq_rec_write.store(0, std::memory_order_release);
   g_iq_rec_auto_triggered.store(false, std::memory_order_release);
+  if (g_iq_rec_kind.load(std::memory_order_acquire) == IqCaptureKind::p25) {
+    g_iq_rec_ready.store(false, std::memory_order_release);
+  }
   return finish(true);
+}
+
+uint16_t read_le16(const uint8_t* value) {
+  return static_cast<uint16_t>(value[0]) |
+         static_cast<uint16_t>(value[1]) << 8;
+}
+
+uint32_t read_le32(const uint8_t* value) {
+  return static_cast<uint32_t>(value[0]) |
+         static_cast<uint32_t>(value[1]) << 8 |
+         static_cast<uint32_t>(value[2]) << 16 |
+         static_cast<uint32_t>(value[3]) << 24;
+}
+
+bool p25_replay(const char* path) {
+  const RtlCaptureState state = rtl_capture_state.load(std::memory_order_acquire);
+  if (state == RtlCaptureState::queued || state == RtlCaptureState::running) {
+    Serial.println("RTL_P25_REPLAY_ERROR radio_must_be_stopped");
+    return false;
+  }
+  if (path == nullptr || strncmp(path, "/orcsdr/", 8) != 0 || strstr(path, "..") != nullptr) {
+    Serial.println("RTL_P25_REPLAY_ERROR invalid_path");
+    return false;
+  }
+  if (!ensure_tab5_sd() || g_sd_fs == nullptr) {
+    Serial.println("RTL_P25_REPLAY_ERROR sd_unavailable");
+    return false;
+  }
+  File file = g_sd_fs->open(path, FILE_READ);
+  uint8_t header[36]{};
+  if (!file || file.read(header, sizeof(header)) != sizeof(header) ||
+      memcmp(header, "ORCIQ01\0", 8) != 0 || read_le32(header + 8) != kOrciqHeaderBytes ||
+      read_le32(header + 12) != kRtlSampleRateSps || read_le16(header + 24) != 1) {
+    Serial.println("RTL_P25_REPLAY_ERROR invalid_orciq");
+    return false;
+  }
+  const uint32_t bytes = read_le32(header + 20);
+  if (bytes == 0 || (bytes & 1u) != 0 || bytes > file.size() - sizeof(header)) {
+    Serial.println("RTL_P25_REPLAY_ERROR invalid_length");
+    return false;
+  }
+  orcsdr::p25decoder::reset_at(1);
+  uint32_t consumed = 0;
+  while (consumed < bytes) {
+    const size_t request = std::min<size_t>(sizeof(rtl_iq_processing), bytes - consumed);
+    const size_t got = file.read(rtl_iq_processing, request);
+    if (got != request) {
+      Serial.printf("RTL_P25_REPLAY_ERROR short_read got=%u want=%u\n",
+                    static_cast<unsigned>(got), static_cast<unsigned>(request));
+      return false;
+    }
+    consumed += static_cast<uint32_t>(got);
+    const uint32_t now_ms = 1u + static_cast<uint32_t>(
+        (static_cast<uint64_t>(consumed / 2) * 1000u) / kRtlSampleRateSps);
+    orcsdr::p25decoder::process_cu8_at(rtl_iq_processing, got, now_ms);
+    vTaskDelay(1);
+  }
+  file.close();
+  const auto decoded = orcsdr::p25decoder::snapshot();
+  Serial.printf(
+      "RTL_P25_REPLAY_DONE path=\"%s\" bytes=%lu frequency_hz=%lu frame_sync=%d "
+      "identity=%d nac=%03X wacn=%05lX sysid=%03X rfss=%u site=%u sync_words=%lu "
+      "nid_good=%lu nid_failed=%lu tsbk_good=%lu tsbk_failed=%lu voice_frames=%lu\n",
+      path, static_cast<unsigned long>(bytes),
+      static_cast<unsigned long>(read_le32(header + 16)), decoded.frame_sync ? 1 : 0,
+      decoded.identity_valid ? 1 : 0, decoded.nac,
+      static_cast<unsigned long>(decoded.wacn), decoded.system_id, decoded.rfss,
+      decoded.site, static_cast<unsigned long>(decoded.sync_words),
+      static_cast<unsigned long>(decoded.nid_good),
+      static_cast<unsigned long>(decoded.nid_failed),
+      static_cast<unsigned long>(decoded.tsbk_good),
+      static_cast<unsigned long>(decoded.tsbk_failed),
+      static_cast<unsigned long>(decoded.voice_frames));
+  return decoded.nid_good > 0 && decoded.tsbk_good > 0;
 }
 
 bool audio_rec_write_wav(const char* path, const int16_t* pcm, size_t samples) {
@@ -5780,60 +5903,8 @@ void visualizer_audio_sink(const int16_t* audio, size_t audio_count) {
   queue_audio_samples(const_cast<int16_t*>(audio), audio_count);
 }
 
-// TIA-102.BABA IMBE channel deinterleave: vector bit -> transmitted bit.
-// Cross-checked against the Apache-2.0 GopherTrunk implementation and the
-// ISC-licensed DSD/mbelib schedule; mbelib then owns FEC and synthesis.
-constexpr uint8_t kP25ImbeDeinterleave[orcsdr::p25decoder::kVoiceFrameBits] = {
-    132,127,120,115,108,103,96,91,84,79,72,67,60,55,48,43,36,31,24,19,12,7,0,
-    126,121,114,109,102,97,90,85,78,73,66,61,54,49,42,37,30,25,18,13,6,1,139,
-    122,117,110,105,98,93,86,81,74,69,62,57,50,45,38,33,26,21,14,9,2,138,133,
-    116,111,104,99,92,87,80,75,68,63,56,51,44,39,32,27,20,15,8,3,141,134,129,
-    64,59,52,47,40,35,28,23,16,11,4,140,135,128,123,10,5,143,136,131,124,119,
-    112,107,100,95,88,83,76,71,101,94,89,82,77,70,65,58,53,46,41,34,29,22,17,
-    142,137,130,125,118,113,106};
-
-void p25_imbe_matrix(const orcsdr::p25decoder::VoiceFrame& frame, char output[8][23]) {
-  constexpr uint8_t kRows[8] = {23, 23, 23, 23, 15, 15, 15, 7};
-  size_t vector = 0;
-  std::memset(output, 0, 8 * 23);
-  for (size_t row = 0; row < std::size(kRows); ++row)
-    for (size_t column = 0; column < kRows[row]; ++column)
-      output[row][column] = static_cast<char>(frame.bits[kP25ImbeDeinterleave[vector++]]);
-}
-
-bool p25_voice_self_check() {
-  constexpr uint8_t kOnAir[18] = {
-      0x84,0xC6,0xA9,0x94,0x03,0xFF,0x81,0xC8,0x26,
-      0x14,0x2C,0x03,0x90,0xEC,0x85,0x33,0x59,0xBC};
-  constexpr uint8_t kExpected[11] = {
-      0x89,0xEC,0x59,0x0E,0xB5,0x6D,0x85,0xFE,0x76,0xC4,0xC0};
-  orcsdr::p25decoder::VoiceFrame frame;
-  for (size_t bit = 0; bit < orcsdr::p25decoder::kVoiceFrameBits; ++bit)
-    frame.bits[bit] = (kOnAir[bit / 8] >> (7 - bit % 8)) & 1u;
-  char matrix[8][23];
-  char decoded[88]{};
-  p25_imbe_matrix(frame, matrix);
-  (void)mbe_eccImbe7200x4400C0(matrix);
-  mbe_demodulateImbe7200x4400Data(matrix);
-  (void)mbe_eccImbe7200x4400Data(matrix, decoded);
-  for (size_t bit = 0; bit < 88; ++bit)
-    if ((decoded[bit] & 1) != ((kExpected[bit / 8] >> (7 - bit % 8)) & 1u)) return false;
-  return true;
-}
-
-int16_t p25_safe_pcm_sample(int16_t sample) {
-  // IMBE synthesis can emit a full-scale first sample after a voice retune.
-  // Leave conversational headroom before the shared Tab5 speaker ceiling.
-  constexpr int32_t kGainNumerator = 3;
-  constexpr int32_t kGainDenominator = 5;
-  constexpr int32_t kPeak = 10000;
-  const int32_t scaled = static_cast<int32_t>(sample) * kGainNumerator / kGainDenominator;
-  return static_cast<int16_t>(std::clamp(scaled, -kPeak, kPeak));
-}
-
 void p25_voice_task(void*) {
-  auto& context = p25_voice_context;
-  mbe_initMbeParms(&context.current, &context.previous, &context.enhanced);
+  int16_t pcm48k[orcsdr::p25voice::kPcmSamplesPerFrame]{};
   uint32_t session = p25_voice_session.load(std::memory_order_acquire);
   for (;;) {
     orcsdr::p25decoder::VoiceFrame frame;
@@ -5844,39 +5915,23 @@ void p25_voice_task(void*) {
     const uint32_t next_session = p25_voice_session.load(std::memory_order_acquire);
     if (next_session != session) {
       session = next_session;
-      context.previous_sample = 0;
-      mbe_initMbeParms(&context.current, &context.previous, &context.enhanced);
+      p25_voice_decoder.reset();
     }
     if (g_stream_band != RtlBand::p25 ||
         p25_follow_state.load(std::memory_order_acquire) != P25FollowState::voice ||
         !rtl_audio_user_enabled.load(std::memory_order_acquire)) continue;
 
     const int64_t started_us = esp_timer_get_time();
-    std::memset(context.decoded, 0, sizeof(context.decoded));
-    std::memset(context.error_text, 0, sizeof(context.error_text));
-    int errors = 0, total_errors = 0;
-    p25_imbe_matrix(frame, context.matrix);
-    mbe_processImbe7200x4400Frame(
-        context.pcm8k, &errors, &total_errors, context.error_text, context.matrix,
-        context.decoded, &context.current, &context.previous, &context.enhanced, 1);
+    orcsdr::p25voice::Result result{};
+    if (!p25_voice_decoder.process(frame, pcm48k, &result)) continue;
     const uint32_t synth_us = static_cast<uint32_t>(esp_timer_get_time() - started_us);
     uint32_t previous_synth_max = p25_imbe_synth_max_us.load(std::memory_order_relaxed);
     while (synth_us > previous_synth_max &&
            !p25_imbe_synth_max_us.compare_exchange_weak(
                previous_synth_max, synth_us, std::memory_order_relaxed)) {}
-    size_t output = 0;
-    for (const int16_t sample : context.pcm8k) {
-      const int16_t safe_sample = p25_safe_pcm_sample(sample);
-      const int32_t delta = static_cast<int32_t>(safe_sample) - context.previous_sample;
-      for (int phase = 1; phase <= 6; ++phase)
-        context.pcm48k[output++] = static_cast<int16_t>(
-            context.previous_sample + delta * phase / 6);
-      context.previous_sample = safe_sample;
-    }
     p25_imbe_frames.fetch_add(1, std::memory_order_relaxed);
-    p25_imbe_errors.fetch_add(static_cast<uint32_t>(std::max(0, total_errors)),
-                              std::memory_order_relaxed);
-    p25_pcm_frames.fetch_add(output, std::memory_order_relaxed);
+    p25_imbe_errors.fetch_add(result.errors, std::memory_order_relaxed);
+    p25_pcm_frames.fetch_add(result.pcm_samples, std::memory_order_relaxed);
     p25_audio_last_ms.store(millis(), std::memory_order_release);
     const uint32_t stack_hwm = uxTaskGetStackHighWaterMark(nullptr);
     uint32_t previous_hwm = p25_voice_stack_hwm.load(std::memory_order_relaxed);
@@ -5884,7 +5939,7 @@ void p25_voice_task(void*) {
            !p25_voice_stack_hwm.compare_exchange_weak(
                previous_hwm, stack_hwm, std::memory_order_relaxed)) {}
     const int64_t audio_started_us = esp_timer_get_time();
-    queue_audio_samples(context.pcm48k, output);
+    queue_audio_samples(pcm48k, result.pcm_samples);
     const uint32_t audio_us = static_cast<uint32_t>(esp_timer_get_time() - audio_started_us);
     uint32_t previous_audio_max = p25_audio_queue_max_us.load(std::memory_order_relaxed);
     while (audio_us > previous_audio_max &&
@@ -6498,6 +6553,9 @@ void run_rtl_capture() {
       }
     }
     if (band == RtlBand::lora) lora_iq_offer(rtl_iq_processing, completed_bytes);
+    if (band == RtlBand::p25 &&
+        g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::p25)
+      iq_rec_append(rtl_iq_processing, completed_bytes);
     // The channelizer temporarily owns the speaker route without stopping RF capture.
     if (orcsdr::visualizer::channel_audio_active()) {
       rtl_audio_play_count = 0;
@@ -6899,6 +6957,9 @@ static void rtl_dsp_task(void *) {
     update_signal_level_from_iq(block.data, block.bytes);
     if (!block.lab_custom_rate && block.band == RtlBand::p25)
       orcsdr::p25decoder::process_cu8(block.data, block.bytes);
+    if (!block.lab_custom_rate && block.band == RtlBand::p25 &&
+        g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::p25)
+      iq_rec_append(block.data, block.bytes);
     if (block.band != RtlBand::adsb || orcsdr::home::active() ||
         orcsdr::visualizer::active() || lab_active)
       spectrum_offer_iq_snapshot(block.data, block.bytes);
@@ -6976,6 +7037,7 @@ static void rtl_driver_app_task(void *) {
         p25_imbe_frames.store(0, std::memory_order_relaxed);
         p25_imbe_errors.store(0, std::memory_order_relaxed);
         p25_pcm_frames.store(0, std::memory_order_relaxed);
+        p25_grant_events.store(0, std::memory_order_relaxed);
         p25_audio_last_ms.store(0, std::memory_order_relaxed);
         p25_voice_stack_hwm.store(0, std::memory_order_relaxed);
         p25_imbe_max_us.store(0, std::memory_order_relaxed);
@@ -8525,6 +8587,8 @@ void service_p25_entry_probe(uint32_t now) {
 void service_p25_follow(uint32_t now) {
   if (orcsdr::rf_lab::active() || g_stream_band != RtlBand::p25 ||
       p25_survey_active.load(std::memory_order_relaxed)) return;
+  if (g_iq_rec_active.load(std::memory_order_relaxed) &&
+      g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::p25) return;
   const auto decoded = orcsdr::p25decoder::snapshot();
   if (p25_follow_state.load(std::memory_order_acquire) == P25FollowState::voice) {
     const bool never_acquired = decoded.last_voice_ms == 0 &&
@@ -8560,6 +8624,7 @@ void service_p25_follow(uint32_t now) {
   p25_follow_grant = grant;
   p25_follow_started_ms = now;
   p25_follow_state.store(P25FollowState::voice, std::memory_order_release);
+  p25_grant_events.fetch_add(1, std::memory_order_relaxed);
   p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
   (void)ensure_speaker_running(rtl_live_volume.load(std::memory_order_acquire));
   request_hot_retune(grant.frequency_hz);
@@ -9651,7 +9716,7 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     p25_follow_state.store(P25FollowState::control, std::memory_order_release);
     p25_voice_frequency_hz = 0;
   }
-  if (rtl_ui_band == RtlBand::lora && band != RtlBand::lora &&
+  if (band != rtl_ui_band &&
       g_iq_rec_active.exchange(false, std::memory_order_acq_rel)) {
     g_iq_rec_export_pending.store(true, std::memory_order_release);
   }
@@ -11622,13 +11687,16 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_IQ_STATUS") == 0) {
-    Serial.printf("RTL_IQ_STATUS active=%s ready=%s storage=%s mode=%s bytes=%u max_bytes=%u frequency_hz=%u sf=%u bw=%u auto=%s events=%u messages=%u noise_dbfs=%.1f trigger_dbfs=%.1f last_path=\"%s\"\n",
+    Serial.printf("RTL_IQ_STATUS source=%s active=%s ready=%s storage=%s mode=%s bytes=%u max_bytes=%u frequency_hz=%u sf=%u bw=%u auto=%s events=%u messages=%u noise_dbfs=%.1f trigger_dbfs=%.1f last_path=\"%s\"\n",
+                  iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
                   g_iq_rec_active.load(std::memory_order_acquire) ? "true" : "false",
                   g_iq_rec_ready.load(std::memory_order_acquire) ? "true" : "false",
                   "psram",
                   g_iq_rec_auto_triggered.load(std::memory_order_acquire) ? "energy" : "manual",
                   static_cast<unsigned>(g_iq_rec_write.load(std::memory_order_acquire)),
-                  static_cast<unsigned>(kIqRecMaxBytes), g_iq_rec_frequency_hz,
+                  static_cast<unsigned>(iq_capture_max_bytes(
+                      g_iq_rec_kind.load(std::memory_order_acquire))),
+                  g_iq_rec_frequency_hz,
                   static_cast<unsigned>(g_iq_rec_sf),
                   static_cast<unsigned>(g_iq_rec_bandwidth_hz),
                   lora_detector_enabled.load(std::memory_order_relaxed) ? "on" : "off",
@@ -11973,8 +12041,10 @@ void process_command(char* command) {
     Serial.println("RTL_RDS_STATUS                 - on-demand RDS Stage1/2 diagnostic dump");
     Serial.println("RTL_RDS_CAPTURE_START/STOP/STATUS - capture FM MPX to SD for replay");
     Serial.println("RTL_RDS_REPLAY <path.s16>       - replay captured MPX while radio is stopped");
-    Serial.println("RTL_P25_STATUS                 - profile, survey, RF levels; decoded fields are explicit");
-    Serial.println("RTL_P25_SCAN                   - survey known Lane County control candidates (auth)");
+    Serial.println("RTL_P25_STATUS                 - profile, decoder, voice and memory diagnostics");
+    Serial.println("RTL_P25_SCAN                   - survey configured control-channel candidates (auth)");
+    Serial.println("RTL_P25_IQ_START|STOP|STATUS   - bounded control-channel IQ capture (mutations auth)");
+    Serial.println("RTL_P25_REPLAY <path.orciq>    - replay a stopped-radio P25 capture (auth)");
     Serial.println("RTL_REC_START/STOP/STATUS/SAVE - audio capture-to-WAV control");
     Serial.println("RTL_TOOL [RADIO|SCOPE|CAPTURE] - query/switch active tool tab");
     Serial.println("RTL_CAPTURE|RTL_LISTEN [FM|AM|WX|LORA] - one-shot/continuous band capture (auth)");
@@ -12001,17 +12071,66 @@ void process_command(char* command) {
     delay(25);
     esp_restart();
   }
+  if (strcmp(command, "RTL_P25_IQ_START") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_P25_IQ_ERROR auth_required");
+      return;
+    }
+    (void)p25_iq_rec_start();
+    return;
+  }
+  if (strcmp(command, "RTL_P25_IQ_STOP") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_P25_IQ_ERROR auth_required");
+      return;
+    }
+    if (g_iq_rec_kind.load(std::memory_order_acquire) != IqCaptureKind::p25) {
+      Serial.println("RTL_P25_IQ_ERROR no_p25_capture");
+      return;
+    }
+    g_sd_tried = false;
+    g_sd_ready = false;
+    (void)iq_rec_stop_and_export();
+    return;
+  }
+  if (strcmp(command, "RTL_P25_IQ_STATUS") == 0) {
+    Serial.printf(
+        "RTL_P25_IQ_STATUS source=%s active=%d ready=%d bytes=%u max_bytes=%u "
+        "frequency_hz=%lu rate=%u last_path=\"%s\"\n",
+        iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
+        g_iq_rec_active.load(std::memory_order_acquire) ? 1 : 0,
+        g_iq_rec_ready.load(std::memory_order_acquire) ? 1 : 0,
+        static_cast<unsigned>(g_iq_rec_write.load(std::memory_order_acquire)),
+        static_cast<unsigned>(kP25IqRecMaxBytes),
+        static_cast<unsigned long>(g_iq_rec_frequency_hz), kRtlSampleRateSps,
+        g_iq_rec_last_path[0] ? g_iq_rec_last_path : "none");
+    return;
+  }
+  if (strncmp(command, "RTL_P25_REPLAY ", 15) == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_P25_REPLAY_ERROR auth_required");
+      return;
+    }
+    (void)p25_replay(command + 15);
+    return;
+  }
   if (strcmp(command, "RTL_P25_STATUS") == 0) {
     const auto decoded = orcsdr::p25decoder::snapshot();
+    unsigned grant_count = 0;
+    for (const auto& grant : decoded.recent_grants) grant_count += grant.valid ? 1u : 0u;
+    esp_rtl_sdr_metrics_t metrics{};
+    if (g_rtl != nullptr) (void)esp_rtl_sdr_get_metrics(g_rtl, &metrics);
     Serial.printf(
-        "RTL_P25_STATUS profile=SW7_LRIG site=Lane_County_Simulcast "
+        "RTL_P25_STATUS profile=\"%s\" identity_source=air "
         "frequency_hz=%lu survey=%d candidate=%u relative_dbfs=%.1f "
         "frame_sync=%d identity=%d nac=%03X wacn=%05lX sysid=%03X rfss=%u site=%u "
         "sync_words=%lu nid_good=%lu nid_failed=%lu tsbk_good=%lu tsbk_failed=%lu "
-        "ber_percent=%.2f grants=%d follow=%s control_hz=%lu voice_hz=%lu "
+        "ber_percent=%.2f grants=%d grant_events=%lu follow=%s control_hz=%lu voice_hz=%lu "
         "voice_ldus=%lu voice_frames=%lu voice_queue_drops=%lu imbe_frames=%lu "
         "imbe_errors=%lu pcm_frames=%lu voice_stack_hwm=%lu imbe_max_us=%lu "
-        "imbe_synth_max_us=%lu audio_queue_max_us=%lu\n",
+        "imbe_synth_max_us=%lu audio_queue_max_us=%lu heap_free=%u heap_min=%u "
+        "psram_free=%u usb_overruns=%u usb_drops=%u iq_drops=%u audio_drops=%u\n",
+        p25_config.system_name,
         static_cast<unsigned long>(rtl_ui_frequency_hz),
         p25_survey_active.load(std::memory_order_relaxed) ? 1 : 0,
         static_cast<unsigned>(p25_candidate_index),
@@ -12024,7 +12143,8 @@ void process_command(char* command) {
         static_cast<unsigned long>(decoded.tsbk_good),
         static_cast<unsigned long>(decoded.tsbk_failed),
         static_cast<double>(decoded.estimated_ber_percent),
-        decoded.current_grant.valid ? 1 : 0,
+        grant_count,
+        static_cast<unsigned long>(p25_grant_events.load(std::memory_order_relaxed)),
         p25_follow_state.load(std::memory_order_acquire) == P25FollowState::voice
             ? "voice" : "control",
         static_cast<unsigned long>(p25_control_frequency_hz),
@@ -12038,7 +12158,13 @@ void process_command(char* command) {
         static_cast<unsigned long>(p25_voice_stack_hwm.load(std::memory_order_relaxed)),
         static_cast<unsigned long>(p25_imbe_max_us.load(std::memory_order_relaxed)),
         static_cast<unsigned long>(p25_imbe_synth_max_us.load(std::memory_order_relaxed)),
-        static_cast<unsigned long>(p25_audio_queue_max_us.load(std::memory_order_relaxed)));
+        static_cast<unsigned long>(p25_audio_queue_max_us.load(std::memory_order_relaxed)),
+        static_cast<unsigned>(esp_get_free_heap_size()),
+        static_cast<unsigned>(esp_get_minimum_free_heap_size()),
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+        metrics.overruns, metrics.consumer_drops,
+        rtl_iq_pipeline_drops.load(std::memory_order_relaxed),
+        rtl_audio.dropped_chunks);
     for (size_t i = 0; i < p25_config.control_channel_count; ++i)
       Serial.printf("RTL_P25_CANDIDATE index=%u frequency_hz=%lu relative_dbfs=%.1f\n",
                     static_cast<unsigned>(i),
@@ -12693,7 +12819,7 @@ void setup() {
     Serial.println("RTL_P25_DECODER_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_P25_DECODER_SELF_CHECK_OK");
-  if (!p25_voice_self_check()) {
+  if (!orcsdr::p25voice::Decoder::self_check()) {
     Serial.println("RTL_P25_VOICE_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_P25_VOICE_SELF_CHECK_OK");

@@ -218,6 +218,8 @@ FM Settings stay on the station while you use them. Sound on/off, step size, fil
 
 ### P25 Trunking
 
+**P25 WIP — Phase I clear voice verified; wider system compatibility in progress.**
+
 P25 is for following a public-safety trunked system with one tuner. You load a system profile, park on a control channel, and let the radio follow voice grants it can hear. Encrypted voice is not decoded; the firmware can skip those grants and keep looking.
 
 #### Monitor

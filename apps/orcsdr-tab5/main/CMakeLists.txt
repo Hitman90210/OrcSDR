@@ -42,6 +42,8 @@ idf_component_register(
         "../ui/p25_dashboard.cpp"
         "../ui/p25_config.cpp"
         "../ui/p25_decoder.cpp"
+        "../ui/p25_decoder_core.cpp"
+        "../ui/p25_voice.cpp"
         "../ui/radio_session.cpp"
         "../ui/radio_ui_service.cpp"
         "../ui/rf_analysis.cpp"
