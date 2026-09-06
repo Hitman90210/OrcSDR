@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "orcsdr_storage.hpp"
+#include "p25_decoder_core.hpp"
 
 namespace orcsdr::p25config {
 
@@ -25,6 +26,9 @@ struct Config {
   uint32_t last_control_channel_hz = 0;
   bool auto_follow = true;
   bool encryption_skip = true;
+  p25core::Modulation modulation = p25core::Modulation::auto_detect;
+  float cqpsk_timing_gain = 0.005f;
+  float cqpsk_carrier_gain = 0.008f;
   uint16_t hold_talkgroup = 0;
   Talkgroup talkgroups[kMaxTalkgroups]{};
   uint8_t talkgroup_count = 0;

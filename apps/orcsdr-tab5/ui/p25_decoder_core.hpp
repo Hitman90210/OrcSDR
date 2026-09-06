@@ -9,6 +9,14 @@ constexpr size_t kRecentGrantCount = 8;
 constexpr size_t kVoiceFrameBits = 144;
 constexpr uint8_t kClearAlgorithmId = 0x80;
 
+// Phase I symbol-recovery path. Auto runs both paths only until one produces
+// valid P25 protocol frames, then keeps the successful path until lock loss.
+enum class Modulation : uint8_t {
+  auto_detect,
+  c4fm,
+  cqpsk,
+};
+
 struct EncryptionSync {
   bool valid = false;
   bool encrypted = false;
@@ -35,6 +43,8 @@ struct Grant {
 };
 
 struct Snapshot {
+  Modulation configured_modulation = Modulation::auto_detect;
+  Modulation selected_modulation = Modulation::auto_detect;
   bool frame_sync = false;
   bool identity_valid = false;
   uint16_t nac = 0;
@@ -51,6 +61,7 @@ struct Snapshot {
   uint32_t voice_ldus = 0;
   uint32_t voice_frames = 0;
   uint32_t voice_queue_drops = 0;
+  uint32_t voice_unrouted_frames = 0;
   uint32_t last_voice_ms = 0;
   uint32_t encryption_sync_good = 0;
   uint32_t encryption_sync_failed = 0;
@@ -60,16 +71,26 @@ struct Snapshot {
   float frame_error_percent = 0.0f;
   float afc_offset_hz = 0.0f;
   float symbol_level = 0.0f;
+  float lock_quality_percent = 0.0f;
+  float timing_error = 0.0f;
+  float carrier_error_hz = 0.0f;
+  float decode_rate_hz = 0.0f;
   Grant current_grant{};
   Grant recent_grants[kRecentGrantCount]{};
 };
 
 using VoiceSink = bool (*)(const VoiceFrame& frame, void* context);
 
-// Hardware-independent Phase I C4FM receiver. Callers supply the monotonic
-// clock and an optional bounded voice-frame sink. The radio has one receiver,
-// so the core owns one fixed-memory instance and performs no heap allocation.
+// Hardware-independent Phase I C4FM/CQPSK receiver. Callers supply the
+// monotonic clock and an optional bounded voice-frame sink. The radio has one
+// receiver, so the core owns one fixed-memory instance and allocates no heap.
 void reset(uint32_t now_ms = 0);
+// Select the demodulator and CQPSK Gardner/Costas gains. Invalid/non-positive
+// gains use the stable defaults (0.005 and 0.008).
+void configure(Modulation modulation, float timing_gain, float carrier_gain);
+void set_modulation(Modulation modulation);
+Modulation modulation();
+const char* modulation_name(Modulation modulation);
 void process_cu8(const uint8_t* iq, size_t bytes, uint32_t now_ms,
                  VoiceSink voice_sink = nullptr, void* voice_context = nullptr);
 Snapshot snapshot();

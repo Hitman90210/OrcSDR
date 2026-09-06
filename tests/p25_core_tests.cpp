@@ -134,7 +134,8 @@ void test_encryption_sync_decode() {
   CHECK(!decode_ldu2_encryption(payload.data(), payload.size(), nullptr));
 }
 
-orcsdr::p25core::Snapshot decode_control_fixture(const char* path, size_t chunk_size) {
+orcsdr::p25core::Snapshot decode_control_fixture(const char* path, size_t chunk_size,
+                                                 orcsdr::p25core::Modulation modulation) {
   using namespace orcsdr::p25core;
   FILE* file = std::fopen(path, "rb");
   CHECK(file != nullptr);
@@ -148,6 +149,7 @@ orcsdr::p25core::Snapshot decode_control_fixture(const char* path, size_t chunk_
   CHECK(bytes == 1048540);
   CHECK(read_le16(header.data() + 24) == 1);
 
+  set_modulation(modulation);
   reset(1);
   std::array<uint8_t, 32768 + 512> iq{};
   CHECK(chunk_size <= iq.size());
@@ -182,13 +184,35 @@ void check_control_snapshot(const orcsdr::p25core::Snapshot& state) {
 }
 
 void test_control_fixture(const char* path) {
-  const auto even = decode_control_fixture(path, 32768 + 512);
+  const auto even = decode_control_fixture(path, 32768 + 512, orcsdr::p25core::Modulation::c4fm);
   check_control_snapshot(even);
-  const auto odd = decode_control_fixture(path, 32767);
+  const auto odd = decode_control_fixture(path, 32767, orcsdr::p25core::Modulation::c4fm);
   check_control_snapshot(odd);
   CHECK(odd.sync_words == even.sync_words);
   CHECK(odd.nid_good == even.nid_good);
   CHECK(odd.tsbk_good == even.tsbk_good);
+
+  const auto cqpsk_even = decode_control_fixture(
+      path, 32768 + 512, orcsdr::p25core::Modulation::cqpsk);
+  const auto cqpsk_odd = decode_control_fixture(
+      path, 32767, orcsdr::p25core::Modulation::cqpsk);
+  CHECK(cqpsk_even.frame_sync);
+  CHECK(cqpsk_even.identity_valid);
+  CHECK(cqpsk_even.nac == 0x1F0);
+  CHECK(cqpsk_even.wacn == 0xBEE00);
+  CHECK(cqpsk_even.system_id == 0x1F3);
+  CHECK(cqpsk_even.rfss == 1 && cqpsk_even.site == 1);
+  CHECK(cqpsk_even.sync_words == 7);
+  CHECK(cqpsk_even.nid_good == 7);
+  CHECK(cqpsk_even.tsbk_good >= 6);
+  CHECK(cqpsk_odd.sync_words == cqpsk_even.sync_words);
+  CHECK(cqpsk_odd.nid_good == cqpsk_even.nid_good);
+  CHECK(cqpsk_odd.tsbk_good == cqpsk_even.tsbk_good);
+
+  const auto automatic = decode_control_fixture(
+      path, 32767, orcsdr::p25core::Modulation::auto_detect);
+  check_control_snapshot(automatic);
+  CHECK(automatic.selected_modulation == orcsdr::p25core::Modulation::c4fm);
 }
 
 void test_allocation_free_stress() {
