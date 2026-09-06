@@ -25,6 +25,11 @@ PCM production. The thin `p25_decoder` adapter owns the FreeRTOS-safe snapshot
 and voice queue. `ui/main.cpp` still owns P25 tuning/follow policy, task
 scheduling, IQ capture/replay transport, and speaker delivery.
 
+The core also decodes the clear LDU2 Encryption Sync field with its inner
+Hamming and outer Reed-Solomon protection. It tags bounded voice frames with
+the validated algorithm/key state. The Tab5 follow policy mutes protected
+frames and optionally returns to the control channel; no decryption exists.
+
 These modules still compile into the Tab5 application component. `ui/main.cpp`
 also retains FM/AM processing, RDS, driver lifecycle, other DSP policy, and
 speaker integration; `rf_analysis.cpp` still depends on M5Unified timing.

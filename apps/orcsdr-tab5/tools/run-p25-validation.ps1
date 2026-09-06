@@ -15,7 +15,8 @@ param(
   [uint32]$MinimumVoiceStackHeadroom = 1024,
   [string]$PairingKeyPath = (Join-Path $PSScriptRoot '..\..\..\.orclink\ui-doc.key'),
   [string]$BackupPath,
-  [switch]$CaptureFixture
+  [switch]$CaptureFixture,
+  [switch]$RequireEncryptedVoice
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +25,7 @@ $script:serial = $null
 $script:key = $null
 $script:lastPing = [DateTime]::MinValue
 $script:tempNvs = $null
+$script:initialSoundEnabled = $null
 
 function Test-FatalLine([string]$Line) {
   return $Line -match '(?i)Guru Meditation|panic(?:ked|\x27ed)?|assert failed|abort\(|task watchdog|interrupt wdt|brownout detector|ESP-ROM:esp32p4|rst:0x|out of memory|alloc(?:ation)? failed|heap corruption'
@@ -70,6 +72,8 @@ function Get-Status {
     ImbeFrames = [uint32](Get-Field $line 'imbe_frames')
     PcmFrames = [uint32](Get-Field $line 'pcm_frames')
     VoiceQueueDrops = [uint32](Get-Field $line 'voice_queue_drops')
+    EncryptedMutedFrames = [uint32](Get-Field $line 'encrypted_muted_frames')
+    EncryptedReturns = [uint32](Get-Field $line 'encrypted_returns')
     HeapFree = [uint32](Get-Field $line 'heap_free')
     HeapMin = [uint32](Get-Field $line 'heap_min')
     VoiceStack = [uint32](Get-Field $line 'voice_stack_hwm')
@@ -156,10 +160,27 @@ try {
   $script:serial.DiscardInBuffer()
   Connect-Authenticated
 
+  $script:serial.WriteLine('RTL_SOUND')
+  $sound = Read-LineUntil { param($line) $line -match '^RTL_SOUND_STATUS enabled=[01]$' } 5
+  if ($sound -notmatch 'enabled=([01])$') { throw 'Could not read the initial sound state.' }
+  $script:initialSoundEnabled = [int]$Matches[1]
+  if ($script:initialSoundEnabled -eq 0) {
+    $script:serial.WriteLine('RTL_SOUND ON')
+    $enabled = Read-LineUntil { param($line) $line -match '^RTL_SOUND_OK enabled=1$' } 5
+    if ($null -eq $enabled) { throw 'Could not enable audio for P25 validation.' }
+  }
+
+  $script:serial.WriteLine('RTL_STOP')
+  $stopped = Read-LineUntil { param($line) $line -match '^RTL_STOP_RESULT ' } 8
+  if ($stopped -notmatch '^RTL_STOP_RESULT ESP_OK$') {
+    throw "Could not stop the existing radio session: $stopped"
+  }
+
   $script:serial.WriteLine("RTL_TUNE P25 $ControlFrequencyHz")
   $tune = Read-LineUntil { param($line) $line -match '^RTL_TUNE_' } 8
   if ($tune -notmatch '^RTL_TUNE_OK') { throw "P25 tune failed: $tune" }
   Write-Output $tune
+  Start-Sleep -Seconds 2
 
   $baseline = $null
   $lockDeadline = [DateTime]::UtcNow.AddSeconds($ControlLockSeconds)
@@ -214,26 +235,36 @@ try {
   $maxGrants = $baseline.GrantEvents
   $maxImbe = $baseline.ImbeFrames
   $maxPcm = $baseline.PcmFrames
+  $maxEncryptedMuted = $baseline.EncryptedMutedFrames
+  $maxEncryptedReturns = $baseline.EncryptedReturns
   $minHeap = [Math]::Min($baseline.HeapFree, $baseline.HeapMin)
   $minStack = if ($baseline.VoiceStack -gt 0) { $baseline.VoiceStack } else { [uint32]::MaxValue }
   $voiceSeen = $false
   $returnSeen = $false
   $relockSeen = $false
+  $encryptedSeen = $false
   $deadline = [DateTime]::UtcNow.AddSeconds($CallWindowSeconds)
   Write-Output "P25_VALIDATION_SOAK started=true seconds=$CallWindowSeconds"
   while ([DateTime]::UtcNow -lt $deadline) {
     $slice = [DateTime]::UtcNow.AddSeconds(3)
     while ([DateTime]::UtcNow -lt $slice) {
-      $line = Read-LineUntil { param($value) $value -match '^RTL_P25_FOLLOW_(VOICE|RETURN) ' } 1
+      $line = Read-LineUntil {
+        param($value)
+        $value -match '^RTL_P25_FOLLOW_(VOICE|RETURN) ' -or
+          $value -match '^RTL_P25_ENCRYPTED '
+      } 1
       if ($null -eq $line) { continue }
       Write-Output $line
       if ($line -match '^RTL_P25_FOLLOW_VOICE ') { $voiceSeen = $true }
       if ($line -match '^RTL_P25_FOLLOW_RETURN ') { $returnSeen = $true }
+      if ($line -match '^RTL_P25_ENCRYPTED ') { $encryptedSeen = $true }
     }
     $status = Get-Status
     $maxGrants = [Math]::Max($maxGrants, $status.GrantEvents)
     $maxImbe = [Math]::Max($maxImbe, $status.ImbeFrames)
     $maxPcm = [Math]::Max($maxPcm, $status.PcmFrames)
+    $maxEncryptedMuted = [Math]::Max($maxEncryptedMuted, $status.EncryptedMutedFrames)
+    $maxEncryptedReturns = [Math]::Max($maxEncryptedReturns, $status.EncryptedReturns)
     $minHeap = [Math]::Min($minHeap, [Math]::Min($status.HeapFree, $status.HeapMin))
     if ($status.VoiceStack -gt 0) { $minStack = [Math]::Min($minStack, $status.VoiceStack) }
     if ($status.UsbOverruns -gt $baseline.UsbOverruns -or
@@ -243,8 +274,8 @@ try {
         $status.VoiceQueueDrops -gt $baseline.VoiceQueueDrops) {
       throw "P25 drop counters grew during validation: $($status.Raw)"
     }
-    $relockSeen = $returnSeen -and $status.Follow -eq 'control' -and
-                  $status.FrameSync -eq 1 -and $status.TsbkGood -gt $baseline.TsbkGood
+    $relockSeen = $relockSeen -or ($returnSeen -and $status.Follow -eq 'control' -and
+                  $status.FrameSync -eq 1 -and $status.TsbkGood -gt $baseline.TsbkGood)
   }
 
   if ($maxGrants - $baseline.GrantEvents -lt $MinimumGrantCount) {
@@ -257,6 +288,11 @@ try {
   if ($minHeap -lt $MinimumHeapBytes) { throw "Heap floor failed: $minHeap bytes." }
   if ($minStack -eq [uint32]::MaxValue -or $minStack -lt $MinimumVoiceStackHeadroom) {
     throw "P25 voice task stack headroom failed: $minStack."
+  }
+  if ($RequireEncryptedVoice -and (-not $encryptedSeen -or
+      $maxEncryptedMuted -le $baseline.EncryptedMutedFrames -or
+      $maxEncryptedReturns -le $baseline.EncryptedReturns)) {
+    throw 'No encrypted LDU2 mute and control-channel return were observed.'
   }
 
   if ($fixturePath) {
@@ -277,9 +313,21 @@ try {
     "P25_VALIDATION_RESULT result=PASS control_hz=$activeControlHz " +
     "grant_events=$($maxGrants - $baseline.GrantEvents) " +
     "imbe_frames=$maxImbe pcm_frames=$maxPcm min_heap=$minHeap " +
-    "voice_stack_hwm=$minStack voice_return=$([int]$returnSeen) relock=$([int]$relockSeen)")
+    "voice_stack_hwm=$minStack voice_return=$([int]$returnSeen) relock=$([int]$relockSeen) " +
+    "encrypted_seen=$([int]$encryptedSeen) encrypted_muted_frames=$maxEncryptedMuted " +
+    "encrypted_returns=$maxEncryptedReturns")
 } finally {
-  if ($null -ne $script:serial -and $script:serial.IsOpen) { $script:serial.Close() }
+  if ($null -ne $script:serial -and $script:serial.IsOpen) {
+    if ($script:initialSoundEnabled -eq 0) {
+      try {
+        $script:serial.WriteLine('RTL_SOUND OFF')
+        [void](Read-LineUntil { param($line) $line -match '^RTL_SOUND_OK enabled=0$' } 5)
+      } catch {
+        Write-Warning "Could not restore the initial sound state: $($_.Exception.Message)"
+      }
+    }
+    $script:serial.Close()
+  }
   if ($null -ne $script:key) {
     [Security.Cryptography.CryptographicOperations]::ZeroMemory($script:key)
   }

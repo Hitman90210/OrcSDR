@@ -507,7 +507,8 @@ configured control channel, so it cannot contain a followed voice call.
 
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
-| `RTL_P25_STATUS` | no | `RTL_P25_STATUS profile=... frame_sync=... identity=... grants=... grant_events=... follow=...` | Includes current recent grants, session-level followed grant events, NID/TSBK, voice/IMBE/PCM, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_STATUS` | no | `RTL_P25_STATUS profile=... frame_sync=... identity=... grants=... grant_events=... follow=...` | Includes current recent grants, session-level followed grant events, NID/TSBK, voice/IMBE/PCM, LDU2 encryption, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_ENCRYPTION_STATUS` | no | `RTL_P25_ENCRYPTION_STATUS detected=... algid=... kid=... muted_frames=... returns=...` | Reports the last valid LDU2 Encryption Sync result and cumulative mute/return counters for automated acceptance. It identifies and suppresses protected audio; it does not decrypt it. |
 | `RTL_P25_SCAN` | yes | `RTL_P25_SURVEY ...` | Runs the configured control-channel survey. |
 | `RTL_P25_IQ_START` | yes | `RTL_IQ_START source=p25 ...` | Requires a running P25 control channel. Voice following is suppressed while the bounded capture fills. |
 | `RTL_P25_IQ_STATUS` | no | `RTL_P25_IQ_STATUS ...` | Reports capture state, size limit, source frequency, sample rate, and last saved path. |
@@ -524,6 +525,10 @@ apps/orcsdr-tab5/tools/run-p25-validation.ps1 `
   -Port COM17 -ControlFrequencyHz 453812500 `
   -PairingKeyPath .orclink/ui-doc.key -CaptureFixture
 ```
+
+Add `-RequireEncryptedVoice` during a controlled live test to require a valid
+encrypted LDU2 detection, muted voice frames, and an immediate return to the
+control channel.
 
 ## Example workflows
 
