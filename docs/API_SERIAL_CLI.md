@@ -114,7 +114,8 @@ below rather than papered over):
   ones (`RTL_REC_START`, `RTL_TOOL`, `RTL_RDS_STATUS`, `RTL_FREQ` query).
 - **`authenticated`** — gates the rest (`RTL_TUNE`, `RTL_VOLUME <n>`,
   `RTL_CAPTURE`/`RTL_LISTEN`, `RTL_STOP`, `RTL_PRESET_SCAN`,
-  `RTL_PRESET_TUNE`). Requires the `PAIR`/`AUTH` HMAC handshake below.
+  `RTL_PRESET_TUNE`, `RTL_P25_IQ_START`, `RTL_P25_IQ_STOP`, and
+  `RTL_P25_REPLAY`). Requires the `PAIR`/`AUTH` HMAC handshake below.
   This exists for a remote/untrusted-host scenario (e.g. Bluetooth); if
   you're driving the device over a physically-attached USB cable, that
   trust boundary is arguably already crossed, but the gate is enforced as
@@ -138,7 +139,7 @@ proper pairing client, not something to hand-roll casually.
 
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
-| `RTL_TUNE <BAND> <HZ>` | yes | `RTL_TUNE_OK band=... frequency_hz=...` | `BAND` = `FM\|AM\|WX\|CB\|LORA\|BROWSE`. Full retune (stops/restarts the capture path as needed). |
+| `RTL_TUNE <BAND> <HZ>` | yes | `RTL_TUNE_OK band=... frequency_hz=...` | `BAND` = `FM\|AM\|WX\|CB\|P25\|LORA\|BROWSE`. Full retune (stops/restarts the capture path as needed). |
 | `RTL_FREQ` | no | `RTL_FREQ_STATUS band=... frequency_hz=... mode=...` | Query only. |
 | `RTL_FREQ <HZ>` | yes | `RTL_FREQ_OK band=... frequency_hz=...` | Hot retune *within* the current band — cheaper than `RTL_TUNE`, use for stepping/scanning. |
 | `RTL_CAPTURE` / `RTL_LISTEN <BAND>` | yes | `RTL_CAPTURE_QUEUED ...` or `RTL_CAPTURE_BUSY_OR_UNAVAILABLE` | Older, band-limited entry point (`FM`/`KZEL`/`NOAA`/`WX`/`AM`/`LORA` only, no `CB`/`BROWSE`, no arbitrary frequency). `RTL_LISTEN` is continuous, bare `RTL_CAPTURE` is one-shot. Prefer `RTL_TUNE` for new work — this exists for compatibility with older tooling. |
@@ -497,6 +498,32 @@ LoRa/Meshtastic energy-triggered decode pipeline. See
 [docs/lora/README.md](lora/README.md) for the intended workflow (these are
 oriented around the LoRa energy-trigger + host-decode round trip, not
 general-purpose IQ dumping).
+
+## P25 validation and replay
+
+These commands expose the P25 receiver state without depending on the visible
+dashboard. Status is read-only. Capture is limited to 1 MiB and remains on the
+configured control channel, so it cannot contain a followed voice call.
+
+| Command | Auth | Reply | Notes |
+|---|---|---|---|
+| `RTL_P25_STATUS` | no | `RTL_P25_STATUS profile=... frame_sync=... identity=... grants=... grant_events=... follow=...` | Includes current recent grants, session-level followed grant events, NID/TSBK, voice/IMBE/PCM, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_SCAN` | yes | `RTL_P25_SURVEY ...` | Runs the configured control-channel survey. |
+| `RTL_P25_IQ_START` | yes | `RTL_IQ_START source=p25 ...` | Requires a running P25 control channel. Voice following is suppressed while the bounded capture fills. |
+| `RTL_P25_IQ_STATUS` | no | `RTL_P25_IQ_STATUS ...` | Reports capture state, size limit, source frequency, sample rate, and last saved path. |
+| `RTL_P25_IQ_STOP` | yes | `RTL_IQ_DONE path=... source=p25 ...` | Stops and saves the capture in the existing ORCIQ CU8 format. |
+| `RTL_P25_REPLAY /orcsdr/<file>.orciq` | yes | `RTL_P25_REPLAY_DONE ...` | Requires the live radio to be stopped; rejects paths outside `/orcsdr`, malformed headers, non-CU8 data, wrong sample rates, and truncated files. |
+
+The hardware acceptance runner supports either a hexadecimal pairing-key file
+or an NVS-containing backup. It requires control lock, decoded identity,
+multiple grants, voice follow and return, IMBE and PCM growth, control relock,
+stable drop counters, a heap floor, and voice-task stack headroom:
+
+```powershell
+apps/orcsdr-tab5/tools/run-p25-validation.ps1 `
+  -Port COM17 -ControlFrequencyHz 453812500 `
+  -PairingKeyPath .orclink/ui-doc.key -CaptureFixture
+```
 
 ## Example workflows
 

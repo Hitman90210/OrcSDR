@@ -17,11 +17,19 @@ service records the current application owner, band, frequency, sample rate,
 and receiver state. Generation tokens reject retunes from an owner that has
 already been replaced. See the [driver integration contract](docs/API_ESP_RTL_SDR.md).
 
-ADS-B, P25, LoRa, and RF analysis already have separate modules and interfaces.
-They still compile into the Tab5 application component. `ui/main.cpp` retains
-FM/AM processing, RDS, driver lifecycle, DSP policy, and speaker integration;
-`rf_analysis.cpp` still depends on M5Unified timing. File/module separation
-does not yet establish a board-independent OrcSDR engine or display/audio HAL.
+ADS-B, P25, LoRa, and RF analysis have separate modules and interfaces. The
+P25 C4FM protocol/FEC receiver in `p25_decoder_core` accepts caller-provided
+timestamps and IQ and has no FreeRTOS, display, M5, USB, SD, or speaker
+dependency. `p25_voice` similarly owns only IMBE/FEC state and bounded 48 kHz
+PCM production. The thin `p25_decoder` adapter owns the FreeRTOS-safe snapshot
+and voice queue. `ui/main.cpp` still owns P25 tuning/follow policy, task
+scheduling, IQ capture/replay transport, and speaker delivery.
+
+These modules still compile into the Tab5 application component. `ui/main.cpp`
+also retains FM/AM processing, RDS, driver lifecycle, other DSP policy, and
+speaker integration; `rf_analysis.cpp` still depends on M5Unified timing.
+This first P25 boundary is host-testable, but it does not yet establish a
+complete board-independent OrcSDR engine or display/audio HAL.
 
 Tab5 display, touch, speaker, and USB power setup remain application concerns.
 The task/screen boundaries below describe runtime ownership, not independently
@@ -179,6 +187,12 @@ restoration, single-target operation, and retune failure. Documentation capture
 also claims the `documentation` identity while it freezes a rendered surface,
 then restores the original controller identity before normal updates resume.
 Self-check failures emit a named serial marker during boot.
+
+The P25 core and voice modules also run in optimized and sanitizer-enabled host
+tests. Device validation uses authenticated P25 status, bounded control-channel
+IQ capture, and stopped-radio replay commands so control identity, grants,
+voice production, drop counters, heap floor, and voice-task stack headroom can
+be checked without display scraping.
 
 `RTL_SCREEN_STATUS` reports the active and return screens plus transition,
 rejected-draw, and visible-update counters. It is read-only and performs no

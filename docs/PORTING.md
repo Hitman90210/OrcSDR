@@ -27,6 +27,13 @@ logs are not included in this checkout. Whether it shares the Tab5 DSP
 implementation must be established from that source before planning a new
 extraction or duplicate example.
 
+The in-tree P25 Phase I C4FM receiver and IMBE-to-PCM processor are now
+hardware-independent modules. A new board can feed CU8 IQ and a monotonic
+timestamp into `p25_decoder_core`, then consume bounded voice frames and PCM
+without linking M5Unified or the Tab5 display. Tuner ownership, task creation,
+storage, and audio-device delivery remain board-application responsibilities;
+the current reference adapter is `apps/orcsdr-tab5/ui/p25_decoder.cpp`.
+
 ## Target matrix
 
 | Target | USB host | Status |
