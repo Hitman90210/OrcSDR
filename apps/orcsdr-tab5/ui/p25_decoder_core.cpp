@@ -733,6 +733,7 @@ class Decoder {
         state_.voice_encryption = encryption;
         ++state_.encryption_sync_good;
       } else {
+        state_.voice_encryption = {};
         ++state_.encryption_sync_failed;
       }
     }

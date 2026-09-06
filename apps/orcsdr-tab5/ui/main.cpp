@@ -5278,6 +5278,7 @@ void stop_p25_automation() {
   cancel_p25_survey();
   p25_entry_probe_at_ms = 0;
   p25_follow_state.store(P25FollowState::control, std::memory_order_release);
+  orcsdr::p25decoder::suspend_voice();
   p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
   p25_voice_frequency_hz = 0;
 }
@@ -5921,6 +5922,7 @@ void p25_voice_task(void*) {
     if (next_session != session) {
       session = next_session;
       p25_voice_decoder.reset();
+      continue;
     }
     if (g_stream_band != RtlBand::p25 ||
         p25_follow_state.load(std::memory_order_acquire) != P25FollowState::voice) continue;
@@ -7048,8 +7050,9 @@ static void rtl_driver_app_task(void *) {
       rtl_audio_submit_failures.store(0, std::memory_order_relaxed);
       rtl_signal_dbfs.store(-90.0f, std::memory_order_relaxed);
       if (band == RtlBand::p25) {
-        orcsdr::p25decoder::reset();
+        orcsdr::p25decoder::suspend_voice();
         p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
+        orcsdr::p25decoder::reset();
         p25_imbe_frames.store(0, std::memory_order_relaxed);
         p25_imbe_errors.store(0, std::memory_order_relaxed);
         p25_pcm_frames.store(0, std::memory_order_relaxed);
@@ -8228,6 +8231,7 @@ orcsdr::p25::Snapshot p25_dashboard_snapshot() {
 void tune_p25_control(uint32_t frequency_hz) {
   frequency_hz = rtl_clamp_frequency(RtlBand::p25, frequency_hz);
   p25_follow_state.store(P25FollowState::control, std::memory_order_release);
+  orcsdr::p25decoder::suspend_voice();
   p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
   p25_control_frequency_hz = frequency_hz;
   p25_voice_frequency_hz = 0;
@@ -8300,6 +8304,7 @@ void handle_p25_dashboard_action(const orcsdr::p25::Action& action) {
       }
       if (p25_follow_state.load(std::memory_order_acquire) == P25FollowState::voice) {
         p25_follow_state.store(P25FollowState::control, std::memory_order_release);
+        orcsdr::p25decoder::suspend_voice();
         p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
         p25_voice_frequency_hz = 0;
         request_hot_retune(p25_control_frequency_hz);
@@ -8312,6 +8317,7 @@ void handle_p25_dashboard_action(const orcsdr::p25::Action& action) {
       if (!p25_auto_follow.load(std::memory_order_relaxed) &&
           p25_follow_state.load(std::memory_order_acquire) == P25FollowState::voice) {
         p25_follow_state.store(P25FollowState::control, std::memory_order_release);
+        orcsdr::p25decoder::suspend_voice();
         p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
         p25_voice_frequency_hz = 0;
         request_hot_retune(p25_control_frequency_hz);
@@ -8628,8 +8634,9 @@ void service_p25_follow(uint32_t now) {
           p25_encryption_skip.load(std::memory_order_relaxed) ? "muted_return" : "muted_hold");
       if (p25_encryption_skip.load(std::memory_order_relaxed)) {
         p25_skipped_talkgroup = p25_follow_grant.talkgroup;
-        p25_skip_until_ms = now + 2000;
+        p25_skip_until_ms = now + 30000;
         p25_follow_state.store(P25FollowState::control, std::memory_order_release);
+        orcsdr::p25decoder::suspend_voice();
         p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
         p25_voice_frequency_hz = 0;
         p25_encrypted_voice_returns.fetch_add(1, std::memory_order_relaxed);
@@ -8646,6 +8653,7 @@ void service_p25_follow(uint32_t now) {
                        now - decoded.last_voice_ms >= kP25VoiceHangMs;
     if (!never_acquired && !ended) return;
     p25_follow_state.store(P25FollowState::control, std::memory_order_release);
+    orcsdr::p25decoder::suspend_voice();
     p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
     p25_voice_frequency_hz = 0;
     request_hot_retune(p25_control_frequency_hz);
@@ -8671,12 +8679,14 @@ void service_p25_follow(uint32_t now) {
   p25_control_frequency_hz = rtl_ui_frequency_hz;
   p25_voice_frequency_hz = grant.frequency_hz;
   p25_follow_grant = grant;
+  p25_encrypted_voice_pending.store(false, std::memory_order_release);
   p25_encrypted_voice_seen.store(false, std::memory_order_release);
   p25_last_encryption.store(0, std::memory_order_release);
   p25_follow_started_ms = now;
+  orcsdr::p25decoder::suspend_voice();
+  p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
   p25_follow_state.store(P25FollowState::voice, std::memory_order_release);
   p25_grant_events.fetch_add(1, std::memory_order_relaxed);
-  p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
   (void)ensure_speaker_running(rtl_live_volume.load(std::memory_order_acquire));
   request_hot_retune(grant.frequency_hz);
   Serial.printf("RTL_P25_FOLLOW_VOICE control_hz=%lu voice_hz=%lu tg=%u src=%lu emergency=%d\n",
