@@ -1,6 +1,7 @@
 #include "p25_config.hpp"
 
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -43,6 +44,14 @@ bool parse_bool(const char* value, bool* output) {
     return true;
   }
   return false;
+}
+
+bool parse_float(const char* value, float* output) {
+  char* end = nullptr;
+  const float parsed = strtof(value, &end);
+  if (value == end || *end != '\0' || !std::isfinite(parsed)) return false;
+  *output = parsed;
+  return true;
 }
 
 bool has_channel(const Config& config, uint32_t frequency_hz) {
@@ -120,6 +129,24 @@ bool parse_text(const char* text, Config* config, char* error, size_t error_size
         snprintf(error, error_size, "line %lu encryption_skip", static_cast<unsigned long>(line_number));
         return false;
       }
+    } else if (strcmp(key, "modulation") == 0) {
+      if (strcmp(field, "auto") == 0) parsed.modulation = p25core::Modulation::auto_detect;
+      else if (strcmp(field, "c4fm") == 0) parsed.modulation = p25core::Modulation::c4fm;
+      else if (strcmp(field, "cqpsk") == 0) parsed.modulation = p25core::Modulation::cqpsk;
+      else {
+        snprintf(error, error_size, "line %lu modulation", static_cast<unsigned long>(line_number));
+        return false;
+      }
+    } else if (strcmp(key, "cqpsk_timing_gain") == 0) {
+      if (!parse_float(field, &parsed.cqpsk_timing_gain)) {
+        snprintf(error, error_size, "line %lu timing gain", static_cast<unsigned long>(line_number));
+        return false;
+      }
+    } else if (strcmp(key, "cqpsk_carrier_gain") == 0) {
+      if (!parse_float(field, &parsed.cqpsk_carrier_gain)) {
+        snprintf(error, error_size, "line %lu carrier gain", static_cast<unsigned long>(line_number));
+        return false;
+      }
     } else if (strcmp(key, "hold_talkgroup") == 0) {
       if (!parse_uint(field, &number) || number > UINT16_MAX) {
         snprintf(error, error_size, "line %lu hold_talkgroup", static_cast<unsigned long>(line_number));
@@ -164,6 +191,9 @@ void defaults(Config* config) {
   if (config == nullptr) return;
   *config = {};
   config->version = kSchemaVersion;
+  config->modulation = p25core::Modulation::auto_detect;
+  config->cqpsk_timing_gain = 0.005f;
+  config->cqpsk_carrier_gain = 0.008f;
   snprintf(config->system_name, sizeof(config->system_name), "%s", "Lane County P25");
   constexpr uint32_t channels[] = {453812500, 453925000, 460187500, 460312500};
   for (uint32_t frequency_hz : channels)
@@ -185,6 +215,12 @@ bool validate(const Config& config, char* error, size_t error_size) {
       config.control_channel_count == 0 || config.control_channel_count > kMaxControlChannels ||
       config.talkgroup_count > kMaxTalkgroups) {
     set_error(error, error_size, "invalid profile header");
+    return false;
+  }
+  if (!std::isfinite(config.cqpsk_timing_gain) || config.cqpsk_timing_gain < 0.0001f ||
+      config.cqpsk_timing_gain > 0.05f || !std::isfinite(config.cqpsk_carrier_gain) ||
+      config.cqpsk_carrier_gain < 0.0001f || config.cqpsk_carrier_gain > 0.1f) {
+    set_error(error, error_size, "CQPSK loop gain");
     return false;
   }
   for (size_t i = 0; i < config.control_channel_count; ++i) {
@@ -257,6 +293,9 @@ bool save(orcsdr::storage::FileSystem& fs, const Config& config, char* error, si
   file.printf("last_control_channel_hz=%lu\n", static_cast<unsigned long>(config.last_control_channel_hz));
   file.printf("auto_follow=%s\n", config.auto_follow ? "true" : "false");
   file.printf("encryption_skip=%s\n", config.encryption_skip ? "true" : "false");
+  file.printf("modulation=%s\n", p25core::modulation_name(config.modulation));
+  file.printf("cqpsk_timing_gain=%.6f\n", static_cast<double>(config.cqpsk_timing_gain));
+  file.printf("cqpsk_carrier_gain=%.6f\n", static_cast<double>(config.cqpsk_carrier_gain));
   file.printf("hold_talkgroup=%u\n", config.hold_talkgroup);
   for (size_t i = 0; i < config.talkgroup_count; ++i)
     file.printf("talkgroup=%u,%s\n", config.talkgroups[i].id, config.talkgroups[i].alias);
@@ -294,11 +333,17 @@ bool self_check() {
       "last_control_channel_hz=460000000\n"
       "auto_follow=false\n"
       "encryption_skip=true\n"
+      "modulation=cqpsk\n"
+      "cqpsk_timing_gain=0.004\n"
+      "cqpsk_carrier_gain=0.01\n"
       "hold_talkgroup=42\n"
       "talkgroup=42,Dispatch\n";
   if (!parse_text(kEditedProfile, &config, error, sizeof(error)) ||
       config.control_channel_count != 1 || config.talkgroup_count != 1 ||
-      config.auto_follow || config.talkgroups[0].id != 42) return false;
+      config.auto_follow || config.talkgroups[0].id != 42 ||
+      config.modulation != p25core::Modulation::cqpsk ||
+      fabsf(config.cqpsk_timing_gain - 0.004f) > 0.00001f ||
+      fabsf(config.cqpsk_carrier_gain - 0.01f) > 0.00001f) return false;
   constexpr char kBadProfile[] = "version=1\ncontrol_channel_hz=100\n";
   if (parse_text(kBadProfile, &config, error, sizeof(error))) return false;
   defaults(&config);

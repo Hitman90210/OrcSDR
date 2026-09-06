@@ -231,9 +231,12 @@ void draw_monitor_dynamic() {
   draw_meter(872, 350, 345, g_snapshot.relative_dbfs, 16);
   snprintf(value, sizeof(value), "RELATIVE  %.1f dBFS", static_cast<double>(g_snapshot.relative_dbfs));
   text(value, 872, 404, TFT_WHITE, 2, middle_left);
-  text(g_snapshot.following_voice ? "IMBE VOICE DECODING" :
-       g_snapshot.survey_active ? "SURVEYING KNOWN CHANNELS" :
-       g_snapshot.decoded.frame_sync ? "P25 FRAME SYNC" : "NO P25 FRAME SYNC",
+  snprintf(value, sizeof(value), "%s  •  %s",
+           g_snapshot.following_voice ? "IMBE VOICE DECODING" :
+           g_snapshot.survey_active ? "SURVEYING KNOWN CHANNELS" :
+           g_snapshot.decoded.frame_sync ? "P25 FRAME SYNC" : "NO P25 FRAME SYNC",
+           p25core::modulation_name(g_snapshot.decoded.selected_modulation));
+  text(value,
        872, 444, g_snapshot.following_voice ? kGreen : g_snapshot.survey_active ? kYellow :
        g_snapshot.decoded.frame_sync ? kGreen : kMuted, 1, middle_left);
 }
@@ -397,7 +400,7 @@ void draw_health_static() {
   card(318, 536, 280, 74);
   label("WI-FI", 338, 550);
   card(612, 536, 644, 74);
-  label("LAST ERROR", 632, 550);
+  label("DEMODULATOR / LAST ERROR", 632, 550);
 }
 
 void draw_health_dynamic() {
@@ -455,8 +458,18 @@ void draw_health_dynamic() {
   text(g_snapshot.wifi_connected ? "CONNECTED" : "OFFLINE", 492, 580,
        g_snapshot.wifi_connected ? kGreen : kMuted, 2);
   M5.Display.fillRect(744, 566, 486, 30, kPanel);
-  text(g_snapshot.last_error[0] ? g_snapshot.last_error : "—", 754, 580,
-       g_snapshot.last_error[0] ? kYellow : TFT_WHITE, 2, middle_left);
+  if (g_snapshot.last_error[0]) {
+    text(g_snapshot.last_error, 754, 580, kYellow, 2, middle_left);
+  } else {
+    snprintf(value, sizeof(value), "%s  Q%.0f%%  T%+.2f  C%+.0fHz  D%.1f/s  F%.1f%%",
+             p25core::modulation_name(g_snapshot.decoded.selected_modulation),
+             static_cast<double>(g_snapshot.decoded.lock_quality_percent),
+             static_cast<double>(g_snapshot.decoded.timing_error),
+             static_cast<double>(g_snapshot.decoded.carrier_error_hz),
+             static_cast<double>(g_snapshot.decoded.decode_rate_hz),
+             static_cast<double>(g_snapshot.decoded.frame_error_percent));
+    text(value, 754, 580, TFT_WHITE, 1, middle_left);
+  }
 }
 
 void draw_view_static() {

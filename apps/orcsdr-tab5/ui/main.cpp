@@ -2856,6 +2856,8 @@ uint64_t sd_total_bytes() {
 
 void apply_p25_config(const orcsdr::p25config::Config& config, const char* status) {
   p25_config = config;
+  orcsdr::p25decoder::configure(config.modulation, config.cqpsk_timing_gain,
+                               config.cqpsk_carrier_gain);
   p25_auto_follow.store(config.auto_follow, std::memory_order_release);
   p25_encryption_skip.store(config.encryption_skip, std::memory_order_release);
   p25_hold_talkgroup = config.hold_talkgroup;
@@ -2874,10 +2876,11 @@ void apply_p25_config(const orcsdr::p25config::Config& config, const char* statu
   std::fill(std::begin(p25_candidate_tsbk_good), std::end(p25_candidate_tsbk_good), 0);
   strlcpy(p25_config_status, status, sizeof(p25_config_status));
   ++p25_config_revision;
-  Serial.printf("RTL_P25_CONFIG_LOAD status=\"%s\" channels=%u talkgroups=%u control_hz=%lu\n",
+  Serial.printf("RTL_P25_CONFIG_LOAD status=\"%s\" channels=%u talkgroups=%u control_hz=%lu modulation=%s\n",
                 p25_config_status, static_cast<unsigned>(config.control_channel_count),
                 static_cast<unsigned>(config.talkgroup_count),
-                static_cast<unsigned long>(p25_control_frequency_hz));
+                static_cast<unsigned long>(p25_control_frequency_hz),
+                orcsdr::p25core::modulation_name(config.modulation));
 }
 
 void load_p25_config() {
@@ -3600,10 +3603,14 @@ bool p25_replay(const char* path) {
   const auto decoded = orcsdr::p25decoder::snapshot();
   Serial.printf(
       "RTL_P25_REPLAY_DONE path=\"%s\" bytes=%lu frequency_hz=%lu frame_sync=%d "
+      "modulation_configured=%s modulation_selected=%s lock_quality=%.1f "
       "identity=%d nac=%03X wacn=%05lX sysid=%03X rfss=%u site=%u sync_words=%lu "
       "nid_good=%lu nid_failed=%lu tsbk_good=%lu tsbk_failed=%lu voice_frames=%lu\n",
       path, static_cast<unsigned long>(bytes),
       static_cast<unsigned long>(read_le32(header + 16)), decoded.frame_sync ? 1 : 0,
+      orcsdr::p25core::modulation_name(decoded.configured_modulation),
+      orcsdr::p25core::modulation_name(decoded.selected_modulation),
+      static_cast<double>(decoded.lock_quality_percent),
       decoded.identity_valid ? 1 : 0, decoded.nac,
       static_cast<unsigned long>(decoded.wacn), decoded.system_id, decoded.rfss,
       decoded.site, static_cast<unsigned long>(decoded.sync_words),
@@ -12103,6 +12110,7 @@ void process_command(char* command) {
     Serial.println("RTL_RDS_CAPTURE_START/STOP/STATUS - capture FM MPX to SD for replay");
     Serial.println("RTL_RDS_REPLAY <path.s16>       - replay captured MPX while radio is stopped");
     Serial.println("RTL_P25_STATUS                 - profile, decoder, voice and memory diagnostics");
+    Serial.println("RTL_P25_MODULATION [AUTO|C4FM|CQPSK] - query/set Phase I demodulator (set auth)");
     Serial.println("RTL_P25_ENCRYPTION_STATUS      - last LDU2 encryption and mute/return counters");
     Serial.println("RTL_P25_SCAN                   - survey configured control-channel candidates (auth)");
     Serial.println("RTL_P25_IQ_START|STOP|STATUS   - bounded control-channel IQ capture (mutations auth)");
@@ -12190,6 +12198,36 @@ void process_command(char* command) {
         p25_encryption_skip.load(std::memory_order_relaxed) ? 1 : 0);
     return;
   }
+  if (strcmp(command, "RTL_P25_MODULATION") == 0) {
+    const auto decoded = orcsdr::p25decoder::snapshot();
+    Serial.printf("RTL_P25_MODULATION configured=%s selected=%s timing_gain=%.6f carrier_gain=%.6f\n",
+                  orcsdr::p25core::modulation_name(p25_config.modulation),
+                  orcsdr::p25core::modulation_name(decoded.selected_modulation),
+                  static_cast<double>(p25_config.cqpsk_timing_gain),
+                  static_cast<double>(p25_config.cqpsk_carrier_gain));
+    return;
+  }
+  if (strncmp(command, "RTL_P25_MODULATION ", 19) == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_P25_MODULATION_ERROR auth_required");
+      return;
+    }
+    const char* value = command + 19;
+    if (strcmp(value, "AUTO") == 0) p25_config.modulation = orcsdr::p25core::Modulation::auto_detect;
+    else if (strcmp(value, "C4FM") == 0) p25_config.modulation = orcsdr::p25core::Modulation::c4fm;
+    else if (strcmp(value, "CQPSK") == 0) p25_config.modulation = orcsdr::p25core::Modulation::cqpsk;
+    else {
+      Serial.println("RTL_P25_MODULATION_ERROR usage: RTL_P25_MODULATION AUTO|C4FM|CQPSK");
+      return;
+    }
+    orcsdr::p25decoder::configure(p25_config.modulation, p25_config.cqpsk_timing_gain,
+                                 p25_config.cqpsk_carrier_gain);
+    request_p25_config_save();
+    if (rtl_ui_band == RtlBand::p25) tune_p25_control(p25_control_frequency_hz);
+    Serial.printf("RTL_P25_MODULATION_OK configured=%s\n",
+                  orcsdr::p25core::modulation_name(p25_config.modulation));
+    return;
+  }
   if (strcmp(command, "RTL_P25_STATUS") == 0) {
     const auto decoded = orcsdr::p25decoder::snapshot();
     unsigned grant_count = 0;
@@ -12200,6 +12238,8 @@ void process_command(char* command) {
     Serial.printf(
         "RTL_P25_STATUS profile=\"%s\" identity_source=air "
         "frequency_hz=%lu survey=%d candidate=%u relative_dbfs=%.1f "
+        "modulation_configured=%s modulation_selected=%s lock_quality=%.1f "
+        "timing_error=%.4f carrier_error_hz=%.1f decode_rate_hz=%.2f "
         "frame_sync=%d identity=%d nac=%03X wacn=%05lX sysid=%03X rfss=%u site=%u "
         "sync_words=%lu nid_good=%lu nid_failed=%lu tsbk_good=%lu tsbk_failed=%lu "
         "ber_percent=%.2f grants=%d grant_events=%lu follow=%s control_hz=%lu voice_hz=%lu "
@@ -12214,6 +12254,12 @@ void process_command(char* command) {
         p25_survey_active.load(std::memory_order_relaxed) ? 1 : 0,
         static_cast<unsigned>(p25_candidate_index),
         static_cast<double>(rtl_signal_dbfs.load(std::memory_order_relaxed)),
+        orcsdr::p25core::modulation_name(decoded.configured_modulation),
+        orcsdr::p25core::modulation_name(decoded.selected_modulation),
+        static_cast<double>(decoded.lock_quality_percent),
+        static_cast<double>(decoded.timing_error),
+        static_cast<double>(decoded.carrier_error_hz),
+        static_cast<double>(decoded.decode_rate_hz),
         decoded.frame_sync ? 1 : 0, decoded.identity_valid ? 1 : 0,
         decoded.nac, static_cast<unsigned long>(decoded.wacn), decoded.system_id,
         decoded.rfss, decoded.site, static_cast<unsigned long>(decoded.sync_words),

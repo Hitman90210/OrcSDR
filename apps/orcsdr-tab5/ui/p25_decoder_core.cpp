@@ -22,6 +22,11 @@ constexpr float kPi = 3.14159265358979323846f;
 constexpr float kSlicerScale = 2.0f * kPi * kOuterDeviationHz / kChannelRate;
 constexpr float kSlicerThreshold = 2.0f * kSlicerScale / 3.0f;
 constexpr float kAgcTarget = kSlicerThreshold;
+constexpr size_t kCqpskRrcSpan = 8;
+constexpr size_t kCqpskRrcTaps = 2 * kCqpskRrcSpan * kSamplesPerSymbol + 1;
+constexpr float kCqpskRrcAlpha = 0.20f;
+constexpr float kCqpskGardnerGain = 0.005f;
+constexpr float kCqpskCostasAlpha = 0.008f;
 constexpr uint32_t kLockTimeoutMs = 3000;
 constexpr size_t kLduPayloadDibits = 784;
 constexpr uint64_t kBchGenerator = 0xCD930BDD3B2Bull;
@@ -70,6 +75,43 @@ constexpr std::array<size_t, 6> kEncryptionBitOffsets = {
 std::array<uint8_t, 126> g_gf_exp{};
 std::array<int8_t, 64> g_gf_log{};
 bool g_gf_ready = false;
+std::array<float, kCqpskRrcTaps> g_cqpsk_rrc{};
+bool g_cqpsk_rrc_ready = false;
+
+float wrap_pi(float angle) {
+  while (angle > kPi) angle -= 2.0f * kPi;
+  while (angle <= -kPi) angle += 2.0f * kPi;
+  return angle;
+}
+
+void ensure_cqpsk_rrc() {
+  if (g_cqpsk_rrc_ready) return;
+  float energy = 0.0f;
+  constexpr int center = static_cast<int>(kCqpskRrcTaps / 2);
+  for (int index = 0; index < static_cast<int>(kCqpskRrcTaps); ++index) {
+    const float t = static_cast<float>(index - center) / kSamplesPerSymbol;
+    float value;
+    if (fabsf(t) < 1.0e-6f) {
+      value = 1.0f + kCqpskRrcAlpha * (4.0f / kPi - 1.0f);
+    } else if (fabsf(fabsf(4.0f * kCqpskRrcAlpha * t) - 1.0f) < 1.0e-5f) {
+      const float angle = kPi / (4.0f * kCqpskRrcAlpha);
+      value = kCqpskRrcAlpha / sqrtf(2.0f) *
+              ((1.0f + 2.0f / kPi) * sinf(angle) +
+               (1.0f - 2.0f / kPi) * cosf(angle));
+    } else {
+      value = (sinf(kPi * t * (1.0f - kCqpskRrcAlpha)) +
+               4.0f * kCqpskRrcAlpha * t *
+                   cosf(kPi * t * (1.0f + kCqpskRrcAlpha))) /
+              (kPi * t *
+               (1.0f - 16.0f * kCqpskRrcAlpha * kCqpskRrcAlpha * t * t));
+    }
+    g_cqpsk_rrc[index] = value;
+    energy += value * value;
+  }
+  const float scale = energy > 0.0f ? 1.0f / sqrtf(energy) : 1.0f;
+  for (float& tap : g_cqpsk_rrc) tap *= scale;
+  g_cqpsk_rrc_ready = true;
+}
 
 void ensure_gf() {
   if (g_gf_ready) return;
@@ -410,34 +452,33 @@ class Decoder {
   void reset(uint32_t now_ms) {
     *this = Decoder{};
     now_ms_ = now_ms;
+    started_ms_ = now_ms;
   }
 
-  void process_cu8(const uint8_t* iq, size_t bytes, uint32_t now_ms,
-                   VoiceSink voice_sink, void* voice_context) {
+  void prepare(uint32_t now_ms, VoiceSink voice_sink, void* voice_context) {
     now_ms_ = now_ms;
     voice_sink_ = voice_sink;
     voice_context_ = voice_context;
-    if (iq == nullptr) return;
-    size_t offset = 0;
-    if (have_pending_iq_byte_ && bytes != 0) {
-      process_iq_pair(pending_iq_byte_, iq[0]);
-      have_pending_iq_byte_ = false;
-      offset = 1;
-    }
-    for (; offset + 1 < bytes; offset += 2) {
-      process_iq_pair(iq[offset], iq[offset + 1]);
-    }
-    if (offset < bytes) {
-      pending_iq_byte_ = iq[offset];
-      have_pending_iq_byte_ = true;
-    }
+  }
+
+  void finish(uint32_t now_ms) {
+    now_ms_ = now_ms;
     refresh_health(now_ms_);
   }
 
   Snapshot state() const { return state_; }
 
+  void set_sync_tolerance(int tolerance) { sync_tolerance_ = tolerance; }
+
+  void set_cqpsk_gains(float timing_gain, float carrier_gain) {
+    cqpsk_timing_gain_ = timing_gain;
+    cqpsk_carrier_gain_ = carrier_gain;
+  }
+
   static bool self_check() {
-    Decoder decoder;
+    // Self-check runs on the embedded startup task. Keep its large decoder
+    // scratch objects out of that task's stack and reset them before use.
+    static Decoder decoder;
     decoder.now_ms_ = 1000;
     constexpr uint16_t kNac = 0x1F0;
     const uint16_t nid_info = static_cast<uint16_t>((kNac << 4) | 0x7);
@@ -510,14 +551,17 @@ class Decoder {
     struct VoiceCheck {
       VoiceFrame frames[9]{};
       size_t count = 0;
-    } voice_check;
+    };
+    static VoiceCheck voice_check;
+    voice_check = {};
     const auto collect_voice = [](const VoiceFrame& frame, void* context) {
       auto& check = *static_cast<VoiceCheck*>(context);
       if (check.count >= std::size(check.frames)) return false;
       check.frames[check.count++] = frame;
       return true;
     };
-    Decoder voice_decoder;
+    static Decoder voice_decoder;
+    voice_decoder.reset(0);
     voice_decoder.now_ms_ = 2000;
     voice_decoder.voice_sink_ = collect_voice;
     voice_decoder.voice_context_ = &voice_check;
@@ -536,10 +580,14 @@ class Decoder {
         voice_ok &= frame.bits[bit] == static_cast<uint8_t>(((source * 13) ^ 5) & 1);
       }
     }
+    voice_decoder.voice_sink_ = nullptr;
+    voice_decoder.decode_ldu();
+    voice_ok &= voice_decoder.state_.voice_queue_drops == 0;
     constexpr std::array<uint8_t, 24> kEncryptedCodeword = {
         0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,
         0x21,0x01,0x08,0x34,0x21,0x37,0x13,0x34,0x0D,0x1F,0x24,0x10};
-    std::array<uint8_t, kLduPayloadDibits> encryption_payload{};
+    static std::array<uint8_t, kLduPayloadDibits> encryption_payload;
+    encryption_payload.fill(0);
     size_t encryption_word = 0;
     for (const size_t block_offset : kEncryptionBitOffsets) {
       for (size_t block_word = 0; block_word < 4; ++block_word) {
@@ -556,34 +604,50 @@ class Decoder {
         encryption_payload.data(), encryption_payload.size(), &encryption) &&
         encryption.valid && encryption.encrypted && encryption.algorithm_id == 0x84 &&
         encryption.key_id == 0x1234;
-    return control_ok && explicit_grant_ok && voice_ok && encryption_ok;
+
+    const auto check_cqpsk = [&](float echo_gain) {
+      // The embedded startup task has a small stack; keep this large scratch
+      // decoder in static storage and reset it for each deterministic check.
+      static Decoder cqpsk;
+      cqpsk.reset(0);
+      cqpsk.set_sync_tolerance(5);
+      float phase = 0.0f;
+      std::array<float, 4> echo_i{};
+      std::array<float, 4> echo_q{};
+      size_t echo_pos = 0;
+      for (int repeat = 0; repeat < 8; ++repeat) {
+        size_t data_index = 0;
+        while (data_index < data.size()) {
+          const auto emit = [&](uint8_t dibit) {
+            constexpr uint8_t kInverseRemap[4] = {0, 1, 3, 2};
+            const uint8_t quadrant = kInverseRemap[dibit & 3];
+            const float delta = kPi / 4.0f +
+                (quadrant == 3 ? -kPi / 2.0f : quadrant * kPi / 2.0f);
+            phase = wrap_pi(phase + delta);
+            const float clean_i = cosf(phase);
+            const float clean_q = sinf(phase);
+            for (size_t sample = 0; sample < kSamplesPerSymbol; ++sample) {
+              const size_t delayed = (echo_pos + 1) % echo_i.size();
+              cqpsk.process_cqpsk_sample(clean_i + echo_gain * echo_i[delayed],
+                                         clean_q + echo_gain * echo_q[delayed]);
+              echo_i[echo_pos] = clean_i;
+              echo_q[echo_pos] = clean_q;
+              echo_pos = (echo_pos + 1) % echo_i.size();
+            }
+          };
+          emit(data[data_index++]);
+          if (data_index < data.size() && data_index % 35 == 0)
+            emit(static_cast<uint8_t>(repeat & 3));
+        }
+      }
+      cqpsk.finish(1000);
+      return cqpsk.state_.nid_good > 0 && cqpsk.state_.tsbk_good > 0;
+    };
+    return control_ok && explicit_grant_ok && voice_ok && encryption_ok &&
+           check_cqpsk(0.0f) && check_cqpsk(0.20f);
   }
 
- private:
-  void process_iq_pair(uint8_t input_i, uint8_t input_q) {
-    constexpr float kChannelAlpha = 0.06f;
-    constexpr float kDcAlpha = 1.0f / kInputRate;
-    const float raw_i = static_cast<float>(static_cast<int>(input_i) - 128);
-    const float raw_q = static_cast<float>(static_cast<int>(input_q) - 128);
-    dc_i_ += kDcAlpha * (raw_i - dc_i_);
-    dc_q_ += kDcAlpha * (raw_q - dc_q_);
-    const float centered_i = raw_i - dc_i_;
-    const float centered_q = raw_q - dc_q_;
-    lpf_i1_ += kChannelAlpha * (centered_i - lpf_i1_);
-    lpf_q1_ += kChannelAlpha * (centered_q - lpf_q1_);
-    lpf_i2_ += kChannelAlpha * (lpf_i1_ - lpf_i2_);
-    lpf_q2_ += kChannelAlpha * (lpf_q1_ - lpf_q2_);
-    decim_i_ += lpf_i2_;
-    decim_q_ += lpf_q2_;
-    if (++decim_count_ < kInputDecimation) return;
-    const float i = decim_i_ / kInputDecimation;
-    const float q = decim_q_ / kInputDecimation;
-    decim_i_ = decim_q_ = 0;
-    decim_count_ = 0;
-    process_channel_sample(i, q);
-  }
-
-  void process_channel_sample(float i, float q) {
+  void process_c4fm_sample(float i, float q) {
     if (!have_previous_iq_) {
       previous_i_ = i;
       previous_q_ = q;
@@ -614,6 +678,7 @@ class Decoder {
       float symbol = previous_matched_ * (1.0f - fraction) + matched * fraction;
       if (have_previous_symbol_) {
         const float error = sign(previous_symbol_) * symbol - sign(symbol) * previous_symbol_;
+        state_.timing_error = error;
         clock_mu_ += kSamplesPerSymbol + 0.05f * error;
       } else {
         clock_mu_ += kSamplesPerSymbol;
@@ -638,6 +703,89 @@ class Decoder {
     previous_matched_ = matched;
   }
 
+  void process_cqpsk_sample(float i, float q) {
+    ensure_cqpsk_rrc();
+    cqpsk_i_[cqpsk_pos_] = i;
+    cqpsk_q_[cqpsk_pos_] = q;
+    float filtered_i = 0.0f;
+    float filtered_q = 0.0f;
+    size_t source = cqpsk_pos_;
+    for (size_t tap = 0; tap < kCqpskRrcTaps; ++tap) {
+      filtered_i += g_cqpsk_rrc[tap] * cqpsk_i_[source];
+      filtered_q += g_cqpsk_rrc[tap] * cqpsk_q_[source];
+      source = source == 0 ? kCqpskRrcTaps - 1 : source - 1;
+    }
+    cqpsk_pos_ = (cqpsk_pos_ + 1) % kCqpskRrcTaps;
+
+    const float power = filtered_i * filtered_i + filtered_q * filtered_q;
+    cqpsk_power_ += 0.001f * (power - cqpsk_power_);
+    if (cqpsk_power_ > 1.0e-9f) {
+      const float gain = 0.95f / sqrtf(cqpsk_power_);
+      filtered_i *= gain;
+      filtered_q *= gain;
+    }
+    cqpsk_filtered_i_[cqpsk_filtered_pos_] = filtered_i;
+    cqpsk_filtered_q_[cqpsk_filtered_pos_] = filtered_q;
+
+    cqpsk_mu_ -= 1.0f;
+    if (cqpsk_mu_ <= 0.0f) {
+      const float fraction = 1.0f + cqpsk_mu_;
+      const auto history = [&](const std::array<float, 12>& samples, size_t delay) {
+        const size_t newer = (cqpsk_filtered_pos_ + samples.size() - delay) % samples.size();
+        const size_t older = (newer + samples.size() - 1) % samples.size();
+        return samples[older] * (1.0f - fraction) + samples[newer] * fraction;
+      };
+      float symbol_i = history(cqpsk_filtered_i_, 0);
+      float symbol_q = history(cqpsk_filtered_q_, 0);
+      const float midpoint_i = history(cqpsk_filtered_i_, kSamplesPerSymbol / 2);
+      const float midpoint_q = history(cqpsk_filtered_q_, kSamplesPerSymbol / 2);
+      if (cqpsk_have_symbol_) {
+        const float error = (symbol_i - cqpsk_previous_symbol_i_) * midpoint_i +
+                            (symbol_q - cqpsk_previous_symbol_q_) * midpoint_q;
+        state_.timing_error = error;
+        cqpsk_mu_ += kSamplesPerSymbol + cqpsk_timing_gain_ * error;
+      } else {
+        cqpsk_mu_ += kSamplesPerSymbol;
+        cqpsk_have_symbol_ = true;
+      }
+      cqpsk_previous_symbol_i_ = symbol_i;
+      cqpsk_previous_symbol_q_ = symbol_q;
+
+      const float cs = cosf(cqpsk_phase_);
+      const float sn = sinf(cqpsk_phase_);
+      const float rotated_i = symbol_i * cs + symbol_q * sn;
+      const float rotated_q = symbol_q * cs - symbol_i * sn;
+      const float error = sign(rotated_i) * rotated_q - sign(rotated_q) * rotated_i;
+      const float carrier_beta = 0.125f * cqpsk_carrier_gain_ * cqpsk_carrier_gain_;
+      cqpsk_frequency_ = std::clamp(cqpsk_frequency_ + carrier_beta * error,
+                                    -kPi / 8.0f, kPi / 8.0f);
+      cqpsk_phase_ = wrap_pi(cqpsk_phase_ + cqpsk_frequency_ +
+                            cqpsk_carrier_gain_ * error);
+      state_.carrier_error_hz = cqpsk_frequency_ * kSymbolRate / (2.0f * kPi);
+
+      if (cqpsk_have_differential_) {
+        const float cross = cqpsk_previous_rotated_i_ * rotated_q -
+                            cqpsk_previous_rotated_q_ * rotated_i;
+        const float dot = cqpsk_previous_rotated_i_ * rotated_i +
+                          cqpsk_previous_rotated_q_ * rotated_q;
+        const float phase = wrap_pi(atan2f(cross, dot) - kPi / 4.0f);
+        const uint8_t quadrant = phase >= -kPi / 4.0f && phase < kPi / 4.0f ? 0
+                                 : phase >= kPi / 4.0f && phase < 3.0f * kPi / 4.0f ? 1
+                                 : phase >= -3.0f * kPi / 4.0f && phase < -kPi / 4.0f ? 3
+                                                                                       : 2;
+        constexpr uint8_t kLsmDibitRemap[4] = {0, 1, 3, 2};
+        feed_dibit(kLsmDibitRemap[quadrant]);
+      } else {
+        cqpsk_have_differential_ = true;
+      }
+      cqpsk_previous_rotated_i_ = rotated_i;
+      cqpsk_previous_rotated_q_ = rotated_q;
+    }
+    cqpsk_filtered_pos_ = (cqpsk_filtered_pos_ + 1) % cqpsk_filtered_i_.size();
+  }
+
+ private:
+
   static float sign(float value) {
     return value > 0.0f ? 1.0f : value < 0.0f ? -1.0f : 0.0f;
   }
@@ -661,7 +809,8 @@ class Decoder {
           best_rotation = rotation;
         }
       }
-      if (best_mismatch <= 4) {
+      best_sync_mismatch_ = std::min(best_sync_mismatch_, best_mismatch);
+      if (best_mismatch <= sync_tolerance_) {
         ++state_.sync_words;
         frame_active_ = true;
         frame_rotation_ = best_rotation;
@@ -747,7 +896,7 @@ class Decoder {
       std::memcpy(frame.bits, voice_bits, sizeof(frame.bits));
       frame.sequence = ++state_.voice_frames;
       frame.encryption = state_.voice_encryption;
-      if (voice_sink_ == nullptr || !voice_sink_(frame, voice_context_))
+      if (voice_sink_ != nullptr && !voice_sink_(frame, voice_context_))
         ++state_.voice_queue_drops;
     }
     frame_active_ = false;
@@ -874,6 +1023,12 @@ class Decoder {
                                        : 100.0f * fec_error_bits_ / fec_total_bits_;
     state_.afc_offset_hz = afc_dc_ * kSymbolRate / (2.0f * kPi);
     state_.symbol_level = agc_level_;
+    const uint32_t valid = state_.nid_good + state_.tsbk_good;
+    const uint32_t elapsed = now - started_ms_;
+    state_.decode_rate_hz = elapsed == 0 ? 0.0f : 1000.0f * valid / elapsed;
+    state_.lock_quality_percent = valid == 0
+        ? 100.0f * (24 - std::min(24, best_sync_mismatch_)) / 24.0f
+        : 100.0f * valid / (valid + state_.nid_failed + state_.tsbk_failed);
   }
 
   Snapshot state_{};
@@ -885,12 +1040,7 @@ class Decoder {
   uint64_t fec_error_bits_ = 0;
   uint64_t fec_total_bits_ = 0;
 
-  float dc_i_ = 0, dc_q_ = 0;
-  uint8_t pending_iq_byte_ = 0;
-  bool have_pending_iq_byte_ = false;
-  float lpf_i1_ = 0, lpf_q1_ = 0, lpf_i2_ = 0, lpf_q2_ = 0;
-  float decim_i_ = 0, decim_q_ = 0;
-  size_t decim_count_ = 0;
+  uint32_t started_ms_ = now_ms_;
   float previous_i_ = 0, previous_q_ = 0;
   bool have_previous_iq_ = false;
   std::array<float, kSamplesPerSymbol> matched_history_{};
@@ -904,6 +1054,26 @@ class Decoder {
   bool have_previous_symbol_ = false;
   float agc_level_ = 0;
   bool agc_seeded_ = false;
+  std::array<float, kCqpskRrcTaps> cqpsk_i_{};
+  std::array<float, kCqpskRrcTaps> cqpsk_q_{};
+  size_t cqpsk_pos_ = 0;
+  std::array<float, 12> cqpsk_filtered_i_{};
+  std::array<float, 12> cqpsk_filtered_q_{};
+  size_t cqpsk_filtered_pos_ = 0;
+  float cqpsk_power_ = 0.0f;
+  float cqpsk_mu_ = kSamplesPerSymbol / 2.0f;
+  float cqpsk_previous_symbol_i_ = 0.0f;
+  float cqpsk_previous_symbol_q_ = 0.0f;
+  bool cqpsk_have_symbol_ = false;
+  float cqpsk_phase_ = 0.0f;
+  float cqpsk_frequency_ = 0.0f;
+  float cqpsk_previous_rotated_i_ = 1.0f;
+  float cqpsk_previous_rotated_q_ = 0.0f;
+  bool cqpsk_have_differential_ = false;
+  float cqpsk_timing_gain_ = kCqpskGardnerGain;
+  float cqpsk_carrier_gain_ = kCqpskCostasAlpha;
+  int best_sync_mismatch_ = 24;
+  int sync_tolerance_ = 4;
 
   std::array<uint8_t, 24> sync_history_{};
   size_t sync_pos_ = 0;
@@ -921,17 +1091,154 @@ class Decoder {
 };
 
 namespace {
-Decoder g_decoder;
+class Receiver {
+ public:
+  void reset(uint32_t now_ms) {
+    c4fm_.reset(now_ms);
+    cqpsk_.reset(now_ms);
+    cqpsk_.set_sync_tolerance(5);
+    cqpsk_.set_cqpsk_gains(timing_gain_, carrier_gain_);
+    selected_ = configured_ == Modulation::auto_detect ? Modulation::auto_detect : configured_;
+    dc_i_ = dc_q_ = lpf_i1_ = lpf_q1_ = lpf_i2_ = lpf_q2_ = 0.0f;
+    decim_i_ = decim_q_ = 0.0f;
+    decim_count_ = 0;
+    have_pending_iq_byte_ = false;
+  }
+
+  void set_modulation(Modulation modulation) {
+    configured_ = modulation;
+    reset(0);
+  }
+
+  void configure(Modulation modulation, float timing_gain, float carrier_gain) {
+    configured_ = modulation;
+    timing_gain_ = std::isfinite(timing_gain) && timing_gain >= 0.0001f && timing_gain <= 0.05f
+                       ? timing_gain : kCqpskGardnerGain;
+    carrier_gain_ = std::isfinite(carrier_gain) && carrier_gain >= 0.0001f && carrier_gain <= 0.1f
+                        ? carrier_gain : kCqpskCostasAlpha;
+    reset(0);
+  }
+
+  void process(const uint8_t* iq, size_t bytes, uint32_t now_ms,
+               VoiceSink sink, void* context) {
+    c4fm_.prepare(now_ms, selected_ == Modulation::c4fm ? sink : nullptr, context);
+    cqpsk_.prepare(now_ms, selected_ == Modulation::cqpsk ? sink : nullptr, context);
+    if (iq != nullptr) {
+      size_t offset = 0;
+      if (have_pending_iq_byte_ && bytes != 0) {
+        process_pair(pending_iq_byte_, iq[0]);
+        have_pending_iq_byte_ = false;
+        offset = 1;
+      }
+      for (; offset + 1 < bytes; offset += 2) process_pair(iq[offset], iq[offset + 1]);
+      if (offset < bytes) {
+        pending_iq_byte_ = iq[offset];
+        have_pending_iq_byte_ = true;
+      }
+    }
+    c4fm_.finish(now_ms);
+    cqpsk_.finish(now_ms);
+    select_path(now_ms);
+  }
+
+  Snapshot state() const {
+    const Decoder& decoder = selected_ == Modulation::cqpsk ? cqpsk_ : c4fm_;
+    Snapshot result = decoder.state();
+    result.configured_modulation = configured_;
+    result.selected_modulation = selected_;
+    return result;
+  }
+
+  Modulation modulation() const { return configured_; }
+
+ private:
+  void process_pair(uint8_t input_i, uint8_t input_q) {
+    constexpr float kChannelAlpha = 0.06f;
+    constexpr float kDcAlpha = 1.0f / kInputRate;
+    const float raw_i = static_cast<float>(static_cast<int>(input_i) - 128);
+    const float raw_q = static_cast<float>(static_cast<int>(input_q) - 128);
+    dc_i_ += kDcAlpha * (raw_i - dc_i_);
+    dc_q_ += kDcAlpha * (raw_q - dc_q_);
+    lpf_i1_ += kChannelAlpha * (raw_i - dc_i_ - lpf_i1_);
+    lpf_q1_ += kChannelAlpha * (raw_q - dc_q_ - lpf_q1_);
+    lpf_i2_ += kChannelAlpha * (lpf_i1_ - lpf_i2_);
+    lpf_q2_ += kChannelAlpha * (lpf_q1_ - lpf_q2_);
+    decim_i_ += lpf_i2_;
+    decim_q_ += lpf_q2_;
+    if (++decim_count_ < kInputDecimation) return;
+    const float i = decim_i_ / kInputDecimation;
+    const float q = decim_q_ / kInputDecimation;
+    decim_i_ = decim_q_ = 0.0f;
+    decim_count_ = 0;
+    if (selected_ == Modulation::auto_detect || selected_ == Modulation::c4fm)
+      c4fm_.process_c4fm_sample(i, q);
+    if (selected_ == Modulation::auto_detect || selected_ == Modulation::cqpsk)
+      cqpsk_.process_cqpsk_sample(i, q);
+  }
+
+  void select_path(uint32_t now_ms) {
+    if (configured_ != Modulation::auto_detect) {
+      selected_ = configured_;
+      return;
+    }
+    if (selected_ != Modulation::auto_detect) {
+      if ((selected_ == Modulation::c4fm ? c4fm_ : cqpsk_).state().frame_sync) return;
+      selected_ = Modulation::auto_detect;
+      c4fm_.reset(now_ms);
+      cqpsk_.reset(now_ms);
+      cqpsk_.set_sync_tolerance(5);
+      cqpsk_.set_cqpsk_gains(timing_gain_, carrier_gain_);
+      return;
+    }
+    const Snapshot c4 = c4fm_.state();
+    const Snapshot cq = cqpsk_.state();
+    const uint32_t c4_score = 4 * c4.nid_good + 8 * c4.tsbk_good;
+    const uint32_t cq_score = 4 * cq.nid_good + 8 * cq.tsbk_good;
+    if (c4_score >= 8 || cq_score >= 8)
+      selected_ = cq_score > c4_score ? Modulation::cqpsk : Modulation::c4fm;
+  }
+
+  Decoder c4fm_{};
+  Decoder cqpsk_{};
+  Modulation configured_ = Modulation::auto_detect;
+  Modulation selected_ = Modulation::auto_detect;
+  float timing_gain_ = kCqpskGardnerGain;
+  float carrier_gain_ = kCqpskCostasAlpha;
+  float dc_i_ = 0, dc_q_ = 0;
+  float lpf_i1_ = 0, lpf_q1_ = 0, lpf_i2_ = 0, lpf_q2_ = 0;
+  float decim_i_ = 0, decim_q_ = 0;
+  size_t decim_count_ = 0;
+  uint8_t pending_iq_byte_ = 0;
+  bool have_pending_iq_byte_ = false;
+};
+
+Receiver g_receiver;
 }
 
-void reset(uint32_t now_ms) { g_decoder.reset(now_ms); }
+void reset(uint32_t now_ms) { g_receiver.reset(now_ms); }
+
+void configure(Modulation modulation, float timing_gain, float carrier_gain) {
+  g_receiver.configure(modulation, timing_gain, carrier_gain);
+}
+
+void set_modulation(Modulation modulation) { g_receiver.set_modulation(modulation); }
+
+Modulation modulation() { return g_receiver.modulation(); }
+
+const char* modulation_name(Modulation modulation) {
+  switch (modulation) {
+    case Modulation::c4fm: return "c4fm";
+    case Modulation::cqpsk: return "cqpsk";
+    default: return "auto";
+  }
+}
 
 void process_cu8(const uint8_t* iq, size_t bytes, uint32_t now_ms,
                  VoiceSink voice_sink, void* voice_context) {
-  g_decoder.process_cu8(iq, bytes, now_ms, voice_sink, voice_context);
+  g_receiver.process(iq, bytes, now_ms, voice_sink, voice_context);
 }
 
-Snapshot snapshot() { return g_decoder.state(); }
+Snapshot snapshot() { return g_receiver.state(); }
 
 bool decode_ldu2_encryption(const uint8_t* payload, size_t dibits,
                             EncryptionSync* result) {

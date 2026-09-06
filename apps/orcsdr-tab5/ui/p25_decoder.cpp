@@ -14,6 +14,9 @@ std::atomic<uint8_t> g_voice_write{0};
 std::atomic<uint8_t> g_voice_read{0};
 std::atomic<uint32_t> g_voice_generation{0};
 std::atomic<bool> g_voice_accepting{false};
+std::atomic<p25core::Modulation> g_modulation{p25core::Modulation::auto_detect};
+std::atomic<float> g_timing_gain{0.005f};
+std::atomic<float> g_carrier_gain{0.008f};
 Snapshot g_public_snapshot{};
 portMUX_TYPE g_snapshot_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -55,10 +58,19 @@ void reset() {
 void reset_at(uint32_t now_ms) {
   g_voice_accepting.store(false, std::memory_order_release);
   clear_voice_queue();
+  p25core::configure(g_modulation.load(std::memory_order_acquire),
+                     g_timing_gain.load(std::memory_order_acquire),
+                     g_carrier_gain.load(std::memory_order_acquire));
   p25core::reset(now_ms);
   g_voice_generation.fetch_add(1, std::memory_order_acq_rel);
   g_voice_accepting.store(true, std::memory_order_release);
   publish_snapshot();
+}
+
+void configure(Modulation modulation, float timing_gain, float carrier_gain) {
+  g_modulation.store(modulation, std::memory_order_release);
+  g_timing_gain.store(timing_gain, std::memory_order_release);
+  g_carrier_gain.store(carrier_gain, std::memory_order_release);
 }
 
 void suspend_voice() {

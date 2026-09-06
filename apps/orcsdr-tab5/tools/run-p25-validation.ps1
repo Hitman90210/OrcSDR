@@ -16,7 +16,11 @@ param(
   [string]$PairingKeyPath = (Join-Path $PSScriptRoot '..\..\..\.orclink\ui-doc.key'),
   [string]$BackupPath,
   [switch]$CaptureFixture,
-  [switch]$RequireEncryptedVoice
+  [switch]$RequireEncryptedVoice,
+  [ValidateSet('AUTO', 'C4FM', 'CQPSK')]
+  [string]$Modulation = 'AUTO',
+  [string]$ReplayPath,
+  [switch]$ReplayOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -26,6 +30,7 @@ $script:key = $null
 $script:lastPing = [DateTime]::MinValue
 $script:tempNvs = $null
 $script:initialSoundEnabled = $null
+$script:initialModulation = $null
 
 function Test-FatalLine([string]$Line) {
   return $Line -match '(?i)Guru Meditation|panic(?:ked|\x27ed)?|assert failed|abort\(|task watchdog|interrupt wdt|brownout detector|ESP-ROM:esp32p4|rst:0x|out of memory|alloc(?:ation)? failed|heap corruption'
@@ -81,6 +86,8 @@ function Get-Status {
     UsbDrops = [uint32](Get-Field $line 'usb_drops')
     IqDrops = [uint32](Get-Field $line 'iq_drops')
     AudioDrops = [uint32](Get-Field $line 'audio_drops')
+    ModulationConfigured = Get-Field $line 'modulation_configured'
+    ModulationSelected = Get-Field $line 'modulation_selected'
   }
 }
 
@@ -160,6 +167,19 @@ try {
   $script:serial.DiscardInBuffer()
   Connect-Authenticated
 
+  if ($ReplayOnly -and -not $ReplayPath) { throw '-ReplayOnly requires -ReplayPath.' }
+  $script:serial.WriteLine('RTL_P25_MODULATION')
+  $modeStatus = Read-LineUntil { param($line) $line -match '^RTL_P25_MODULATION ' } 5
+  if ($modeStatus -notmatch ' configured=(auto|c4fm|cqpsk) ') {
+    throw "Could not read the initial P25 modulation: $modeStatus"
+  }
+  $script:initialModulation = $Matches[1].ToUpperInvariant()
+  $script:serial.WriteLine("RTL_P25_MODULATION $Modulation")
+  $modeSet = Read-LineUntil { param($line) $line -match '^RTL_P25_MODULATION_(OK|ERROR) ' } 8
+  if ($modeSet -notmatch "^RTL_P25_MODULATION_OK configured=$($Modulation.ToLowerInvariant())$") {
+    throw "Could not select P25 modulation: $modeSet"
+  }
+
   $script:serial.WriteLine('RTL_SOUND')
   $sound = Read-LineUntil { param($line) $line -match '^RTL_SOUND_STATUS enabled=[01]$' } 5
   if ($sound -notmatch 'enabled=([01])$') { throw 'Could not read the initial sound state.' }
@@ -174,6 +194,21 @@ try {
   $stopped = Read-LineUntil { param($line) $line -match '^RTL_STOP_RESULT ' } 8
   if ($stopped -notmatch '^RTL_STOP_RESULT ESP_OK$') {
     throw "Could not stop the existing radio session: $stopped"
+  }
+
+  if ($ReplayOnly) {
+    $script:serial.WriteLine("RTL_P25_REPLAY $ReplayPath")
+    $replay = Read-LineUntil { param($line) $line -match '^RTL_P25_REPLAY_(DONE|ERROR) ' } 30
+    if ($replay -notmatch '^RTL_P25_REPLAY_DONE .* nid_good=([1-9][0-9]*) .* tsbk_good=([1-9][0-9]*) ') {
+      throw "P25 fixture replay failed: $replay"
+    }
+    $expected = $Modulation.ToLowerInvariant()
+    if ($Modulation -ne 'AUTO' -and $replay -notmatch " modulation_selected=$expected(?: |$)") {
+      throw "P25 fixture replay selected the wrong demodulator: $replay"
+    }
+    Write-Output $replay
+    Write-Output "P25_VALIDATION_REPLAY result=PASS modulation=$expected path=`"$ReplayPath`""
+    return
   }
 
   $script:serial.WriteLine("RTL_TUNE P25 $ControlFrequencyHz")
@@ -195,10 +230,14 @@ try {
     }
   }
   if ($null -eq $baseline) { throw 'P25 control lock and identity were not established.' }
+  $expectedModulation = $Modulation.ToLowerInvariant()
+  if ($Modulation -ne 'AUTO' -and $baseline.ModulationSelected -ne $expectedModulation) {
+    throw "P25 selected $($baseline.ModulationSelected), expected $expectedModulation."
+  }
   $activeControlHz = $baseline.ControlHz
   Write-Output "P25_VALIDATION_CONTROL locked=true requested_hz=$ControlFrequencyHz active_hz=$activeControlHz"
 
-  $fixturePath = $null
+  $fixturePath = $ReplayPath
   if ($CaptureFixture) {
     $started = $null
     $captureDeadline = [DateTime]::UtcNow.AddSeconds($ControlLockSeconds)
@@ -318,6 +357,14 @@ try {
     "encrypted_returns=$maxEncryptedReturns")
 } finally {
   if ($null -ne $script:serial -and $script:serial.IsOpen) {
+    if ($script:initialModulation -and $script:initialModulation -ne $Modulation) {
+      try {
+        $script:serial.WriteLine("RTL_P25_MODULATION $($script:initialModulation)")
+        [void](Read-LineUntil { param($line) $line -match '^RTL_P25_MODULATION_OK ' } 8)
+      } catch {
+        Write-Warning "Could not restore the initial P25 modulation: $($_.Exception.Message)"
+      }
+    }
     if ($script:initialSoundEnabled -eq 0) {
       try {
         $script:serial.WriteLine('RTL_SOUND OFF')

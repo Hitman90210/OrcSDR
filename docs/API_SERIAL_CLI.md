@@ -508,12 +508,14 @@ configured control channel, so it cannot contain a followed voice call.
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
 | `RTL_P25_STATUS` | no | `RTL_P25_STATUS profile=... frame_sync=... identity=... grants=... grant_events=... follow=...` | Includes current recent grants, session-level followed grant events, NID/TSBK, voice/IMBE/PCM, LDU2 encryption, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_MODULATION` | no | `RTL_P25_MODULATION configured=auto selected=c4fm timing_gain=... carrier_gain=...` | Reports the configured Phase I demodulator and the path selected by automatic acquisition. |
+| `RTL_P25_MODULATION AUTO\|C4FM\|CQPSK` | yes | `RTL_P25_MODULATION_OK configured=...` | Selects automatic acquisition, the legacy C4FM discriminator, or the linear CQPSK/LSM path. The setting is saved to `P25.cfg` and the active P25 receiver is reacquired. |
 | `RTL_P25_ENCRYPTION_STATUS` | no | `RTL_P25_ENCRYPTION_STATUS detected=... algid=... kid=... muted_frames=... returns=...` | Reports the last valid LDU2 Encryption Sync result and cumulative mute/return counters for automated acceptance. It identifies and suppresses protected audio; it does not decrypt it. |
 | `RTL_P25_SCAN` | yes | `RTL_P25_SURVEY ...` | Runs the configured control-channel survey. |
 | `RTL_P25_IQ_START` | yes | `RTL_IQ_START source=p25 ...` | Requires a running P25 control channel. Voice following is suppressed while the bounded capture fills. |
 | `RTL_P25_IQ_STATUS` | no | `RTL_P25_IQ_STATUS ...` | Reports capture state, size limit, source frequency, sample rate, and last saved path. |
 | `RTL_P25_IQ_STOP` | yes | `RTL_IQ_DONE path=... source=p25 ...` | Stops and saves the capture in the existing ORCIQ CU8 format. |
-| `RTL_P25_REPLAY /orcsdr/<file>.orciq` | yes | `RTL_P25_REPLAY_DONE ...` | Requires the live radio to be stopped; rejects paths outside `/orcsdr`, malformed headers, non-CU8 data, wrong sample rates, and truncated files. |
+| `RTL_P25_REPLAY /orcsdr/<file>.orciq` | yes | `RTL_P25_REPLAY_DONE ... modulation_configured=... modulation_selected=...` | Requires the live radio to be stopped; rejects paths outside `/orcsdr`, malformed headers, non-CU8 data, wrong sample rates, and truncated files. Use `RTL_P25_MODULATION` before replay to compare paths deterministically. |
 
 The hardware acceptance runner supports either a hexadecimal pairing-key file
 or an NVS-containing backup. It requires control lock, decoded identity,
@@ -522,13 +524,22 @@ stable drop counters, a heap floor, and voice-task stack headroom:
 
 ```powershell
 apps/orcsdr-tab5/tools/run-p25-validation.ps1 `
-  -Port COM17 -ControlFrequencyHz 453812500 `
+  -Port COM17 -ControlFrequencyHz 453925000 `
   -PairingKeyPath .orclink/ui-doc.key -CaptureFixture
 ```
 
 Add `-RequireEncryptedVoice` during a controlled live test to require a valid
 encrypted LDU2 detection, muted voice frames, and an immediate return to the
-control channel.
+control channel. `-Modulation AUTO|C4FM|CQPSK` selects the demodulator for the
+run and restores the previous setting afterward. For deterministic on-device
+replay without waiting for live traffic:
+
+```powershell
+apps/orcsdr-tab5/tools/run-p25-validation.ps1 `
+  -Port COM17 -PairingKeyPath .orclink/ui-doc.key `
+  -ReplayOnly -ReplayPath /orcsdr/p25_control_lane_453925.orciq `
+  -Modulation CQPSK
+```
 
 ## Example workflows
 
