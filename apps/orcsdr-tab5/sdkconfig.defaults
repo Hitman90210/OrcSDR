@@ -23,8 +23,16 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 CONFIG_ESP_HOSTED_HOST_SDIO_TX_Q_SIZE=4
 CONFIG_ESP_HOSTED_HOST_SDIO_RX_Q_SIZE=2
 # Espressif requires proving the P4<->C6 transport at a conservative clock
-# before raising it for throughput. Sustained HTTPS receive is not stable at
-# 20 MHz on this P4/C6 pair, so qualify 10 MHz first.
+# before raising it for throughput. Sustained HTTPS receive was not stable
+# at 20 MHz on this P4/C6 pair, so this was dropped to 10 MHz. Live hardware
+# testing this session ruled out the clock as the actual cause: dropping to
+# 5 MHz (2x more margin) produced an identical ~30s ESP_ERR_TIMEOUT flood
+# during a real catalog check, with WiFi power-save and RTL-SDR USB
+# streaming both independently ruled out too. Kept at 10 MHz -- 5 MHz has
+# no reliability benefit and only costs throughput. The actual fault is a
+# gap in Espressif's own esp_hosted SW_AGGR TX credit path (see
+# wifi_service.cpp's transport_healthy comment): it never escalates to the
+# restart-recovery mechanism a sibling code path already has.
 CONFIG_ESP_HOSTED_HOST_SDIO_CLK_KHZ=10000
 CONFIG_ESP_HOSTED_HOST_SDIO_BUS_WIDTH_4=y
 # Use ESP-Hosted 3.x's Tab5 board profile: it locks Slot 1 to the on-board C6.

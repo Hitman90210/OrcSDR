@@ -253,6 +253,20 @@ bool start() {
   if (wifi_mode != ESP_OK) { g_failure_stage = "wifi_mode"; g_failure_code = wifi_mode; return false; }
   const esp_err_t wifi_start = esp_wifi_start();
   if (wifi_start != ESP_OK) { g_failure_stage = "wifi_start"; g_failure_code = wifi_start; return false; }
+  // ESP-IDF's WiFi station defaults to WIFI_PS_MIN_MODEM (radio sleeps
+  // between DTIM beacons) unless told otherwise -- this app never had.
+  // Disabling it was tested on hardware as a candidate fix for the
+  // ESP_ERR_TIMEOUT/0x107 SDIO transport fault (see wifi_service.hpp's
+  // transport_healthy comment) and did NOT eliminate it -- the flood
+  // reproduced identically with this in place, so power-save was not the
+  // cause. Kept anyway: Espressif's own esp_hosted iperf example disables
+  // it for sustained throughput, it's harmless, and non-fatal here (WiFi
+  // still works with default power-save if this call ever fails).
+  const esp_err_t ps_result = esp_wifi_set_ps(WIFI_PS_NONE);
+  if (ps_result != ESP_OK) {
+    ESP_LOGW("orcsdr_wifi", "esp_wifi_set_ps(WIFI_PS_NONE) failed: 0x%x",
+             static_cast<unsigned>(ps_result));
+  }
   g_started = true;
   return true;
 }
