@@ -258,7 +258,14 @@ void draw_location() {
          g_state.ip_location_busy ? TFT_DARKGREY : TFT_NAVY);
   if (g_state.ip_location_ready) button("USE RESULT", 800, 575, 240, 46, TFT_DARKGREEN);
   if (g_state.ip_location_message[0]) text(g_state.ip_location_message, 330, 645, kMuted, 2, middle_left);
-  text("Address search data (c) OpenStreetMap contributors", 330, 682, kMuted, 1);
+  // ip_location_label holds the actual found place (e.g. "IP AREA: Eugene, OR"
+  // from location_estimate.cpp) but was only ever copied into the saved
+  // PROFILE LABEL after USE RESULT was tapped -- never shown here, so
+  // confirming a lookup was a leap of faith with no way to see what area it
+  // actually found first.
+  if (g_state.ip_location_ready && g_state.ip_location_label[0])
+    text(g_state.ip_location_label, 330, 672, TFT_WHITE, 2, middle_left);
+  text("Address search data (c) OpenStreetMap contributors", 330, 700, kMuted, 1);
 }
 
 void draw_data_maps() {

@@ -50,6 +50,13 @@ bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
 
 void text(const char* value, int x, int y, uint16_t color = TFT_WHITE,
           int size = 2) {
+  // This header is shared across every dashboard, and at least one of them
+  // (ADS-B) selects a custom M5GFX font for its own text and leaves it set.
+  // Without resetting to the built-in font here, "VIS" (the only header
+  // icon drawn as text rather than a primitive shape) inherits whatever
+  // font the calling dashboard last left active and renders oversized,
+  // spilling out of its box into the mute/settings icons next to it.
+  M5.Display.setFont(nullptr);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(size);
   M5.Display.setTextColor(color);

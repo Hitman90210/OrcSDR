@@ -676,8 +676,12 @@ bool request(Operation operation, uint8_t pack_index, bool needs_wifi) {
   g_requested_pack = pack_index;
   set_busy(operation, 0);
   set_message(operation == Operation::check ? "Catalog check queued" : "Data operation queued");
-  if (xTaskCreatePinnedToCoreWithCaps(worker, "catalog_sync", 12288, nullptr, 3,
-                                      &g_worker, 1,
+  // Idle priority (matches rf_analysis.cpp's worker precedent): this worker
+  // does blocking HTTP/TLS/JSON on core 1, the same core as the UI/touch
+  // loop -- priority 3 let it preempt and stall the UI for the duration of a
+  // catalog check or download instead of yielding as best-effort work should.
+  if (xTaskCreatePinnedToCoreWithCaps(worker, "catalog_sync", 12288, nullptr,
+                                      tskIDLE_PRIORITY, &g_worker, 1,
                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
     g_requested = Operation::none;
     set_busy(Operation::none, 0);
