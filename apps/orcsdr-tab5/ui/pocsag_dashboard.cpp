@@ -4,10 +4,12 @@
 #include "orc_badge.hpp"
 
 #include <M5Unified.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 namespace orcsdr::pocsag {
 namespace {
@@ -31,8 +33,34 @@ Settings g_settings;
 View g_view = View::live;
 bool g_active = false;
 bool g_live = false;
-Snapshot g_live_snapshot{};
 uint32_t g_drawn_revision = 0;
+
+// Lazily PSRAM-allocated rather than a plain internal-DRAM global: this
+// Snapshot (message/identity arrays plus the decoder Stats) is a few KB,
+// and a prior revision's plain global -- combined with similar globals in
+// main.cpp -- pushed static BSS just far enough to starve ESP-IDF's own
+// early internal/DMA heap-pool reservation, producing a boot-time abort
+// before setup() even runs (confirmed by flashing an unmodified baseline,
+// which boots cleanly on the same hardware).
+//
+// A prior revision of this function "fixed" that by falling back to a
+// `static Snapshot fallback{};` local on allocation failure -- but a
+// function-local static of non-trivial type still reserves its full
+// sizeof(Snapshot) in internal-DRAM BSS at link time, regardless of
+// whether the fallback path is ever taken. That reintroduced the exact
+// problem this function exists to avoid. Falling back to an internal-heap
+// allocation (still dynamic, so it costs nothing unless actually used) is
+// the only fallback that doesn't have this defect; PSRAM is abundant
+// enough (32 MB) that neither allocation should realistically fail.
+Snapshot& live_snapshot() {
+  static Snapshot* storage = nullptr;
+  if (!storage) {
+    void* memory = heap_caps_malloc(sizeof(Snapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!memory) memory = heap_caps_malloc(sizeof(Snapshot), MALLOC_CAP_8BIT);
+    if (memory) storage = new (memory) Snapshot();
+  }
+  return *storage;
+}
 
 void text(const char* value, int x, int y, uint16_t color = TFT_WHITE, int size = 2,
           textdatum_t datum = middle_center) {
@@ -109,6 +137,43 @@ void tab_icon(int index, int x, int y, uint16_t color) {
   }
 }
 
+// Frequency/lock-badge/message-count region, redrawn both on full header
+// entry and on every live update (~1/s) without touching the Home/Settings
+// buttons either side of it.
+void draw_header_live_values() {
+  M5.Display.fillRect(340, 12, 460, 52, kBg);
+  M5.Display.fillRect(750, 12, 200, 52, kBg);
+  char freq[24];
+  snprintf(freq, sizeof(freq), "%.4f MHz", g_settings.frequency_hz / 1000000.0);
+  text(freq, 360, 36, TFT_WHITE, 2, middle_left);
+  const Snapshot& snapshot = live_snapshot();
+  if (snapshot.scanning) {
+    char scan_freq[24];
+    snprintf(scan_freq, sizeof(scan_freq), "%.4f MHz", snapshot.scan_frequency_hz / 1000000.0);
+    text(scan_freq, 360, 36, kYellow, 2, middle_left);
+    M5.Display.fillRoundRect(580, 18, 150, 40, 8, TFT_DARKGREY);
+    char scan_label[16];
+    snprintf(scan_label, sizeof(scan_label), "%u/%u", static_cast<unsigned>(snapshot.scan_index + 1),
+             static_cast<unsigned>(snapshot.scan_count));
+    text("SCANNING", 655, 30, kYellow, 1);
+    text(scan_label, 655, 46, TFT_WHITE, 1);
+    return;
+  }
+  const LockState lock = snapshot.decoder_stats.lock;
+  M5.Display.fillRoundRect(580, 18, 150, 40, 8,
+                            lock == LockState::locked ? TFT_DARKGREEN : TFT_DARKGREY);
+  text(lock_state_label(lock), 655, 38, lock_state_color(lock), 1);
+  char msgs[24];
+  snprintf(msgs, sizeof(msgs), "%u MSGS",
+           static_cast<unsigned>(snapshot.decoder_stats.messages_decoded));
+  text(msgs, 770, 36, TFT_WHITE, 2, middle_left);
+}
+
+// Fits the gap between the shared Home button (ends x=1098) and the shared
+// Settings gear (starts x=1217) -- see dashboard_audio_control.cpp's own
+// kHomeX/kHomeW/kSettingsX. Do not widen this without rechecking that gap.
+constexpr int kScanButtonX = 1108, kScanButtonY = 12, kScanButtonW = 100, kScanButtonH = 52;
+
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(20, kHeaderH - 1, 1240, kBorder);
@@ -119,19 +184,12 @@ void draw_header() {
   text("OrcSDR", 82, 28, kGreen, 2, middle_left);
   text("POCSAG PAGER MONITOR", 82, 56, kCyan, 1, middle_left);
   M5.Display.drawFastVLine(340, 12, 52, kBorder);
-  char freq[24];
-  snprintf(freq, sizeof(freq), "%.4f MHz", g_settings.frequency_hz / 1000000.0);
-  text(freq, 360, 36, TFT_WHITE, 2, middle_left);
   M5.Display.drawFastVLine(560, 12, 52, kBorder);
-  const LockState lock = g_live_snapshot.decoder_stats.lock;
-  M5.Display.fillRoundRect(580, 18, 150, 40, 8,
-                            lock == LockState::locked ? TFT_DARKGREEN : TFT_DARKGREY);
-  text(lock_state_label(lock), 655, 38, lock_state_color(lock), 1);
   M5.Display.drawFastVLine(750, 12, 52, kBorder);
-  char msgs[24];
-  snprintf(msgs, sizeof(msgs), "%u MSGS",
-           static_cast<unsigned>(g_live_snapshot.decoder_stats.messages_decoded));
-  text(msgs, 770, 36, TFT_WHITE, 2, middle_left);
+  draw_header_live_values();
+  M5.Display.fillRoundRect(kScanButtonX, kScanButtonY, kScanButtonW, kScanButtonH, 8,
+                            TFT_DARKCYAN);
+  text("SCAN", kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2, TFT_WHITE, 1);
   audio_header::draw_home_button();
   audio_header::draw_settings_button();
 }
@@ -155,8 +213,8 @@ void draw_tabs() {
 
 void draw_live() {
   card(20, kHeaderH + 12, 1240, kContentH);
-  const Stats& stats = g_live_snapshot.decoder_stats;
-  if (g_live_snapshot.message_count == 0) {
+  const Stats& stats = live_snapshot().decoder_stats;
+  if (live_snapshot().message_count == 0) {
     text(g_live ? "WAITING FOR TRAFFIC..." : "NOT RECEIVING", 640, kHeaderH + 300, kMuted, 2);
     char status[80];
     snprintf(status, sizeof(status), "batches=%u codewords=%u corrected=%u uncorrectable=%u",
@@ -168,9 +226,9 @@ void draw_live() {
     return;
   }
   text("RECENT MESSAGES", 44, kHeaderH + 34, kCyan, 1, middle_left);
-  const size_t visible = std::min<size_t>(g_live_snapshot.message_count, 12);
+  const size_t visible = std::min<size_t>(live_snapshot().message_count, 12);
   for (size_t i = 0; i < visible; ++i) {
-    const DisplayMessage& m = g_live_snapshot.messages[i];
+    const DisplayMessage& m = live_snapshot().messages[i];
     const int y = kHeaderH + 66 + static_cast<int>(i) * 44;
     char capcode[16];
     snprintf(capcode, sizeof(capcode), "%lu", static_cast<unsigned long>(m.capcode));
@@ -186,7 +244,7 @@ void draw_live() {
 }
 
 void draw_signal() {
-  const Stats& stats = g_live_snapshot.decoder_stats;
+  const Stats& stats = live_snapshot().decoder_stats;
 
   // Left: decode status readout.
   card(20, kHeaderH + 12, 500, kContentH);
@@ -289,7 +347,7 @@ void kpi_card(int x, int y, int w, int h, const char* label, const char* value,
 }
 
 void draw_activity() {
-  const Stats& stats = g_live_snapshot.decoder_stats;
+  const Stats& stats = live_snapshot().decoder_stats;
 
   const int kpi_y = kHeaderH + 12, kpi_h = 90, kpi_gap = 16;
   const int kpi_w = (1240 - kpi_gap * 3) / 4;
@@ -298,7 +356,7 @@ void draw_activity() {
   snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(stats.messages_decoded));
   kpi_card(20, kpi_y, kpi_w, kpi_h, "TOTAL MESSAGES", value, TFT_WHITE);
 
-  snprintf(value, sizeof(value), "%u", static_cast<unsigned>(g_live_snapshot.identity_count));
+  snprintf(value, sizeof(value), "%u", static_cast<unsigned>(live_snapshot().identity_count));
   kpi_card(20 + (kpi_w + kpi_gap), kpi_y, kpi_w, kpi_h, "ACTIVE IDS", value, TFT_WHITE);
 
   const uint32_t total_codewords = stats.codewords_total;
@@ -343,23 +401,23 @@ void draw_activity() {
   const int right_x = 20 + panel_w + panel_gap;
   card(right_x, panel_y, panel_w, panel_h);
   text("TOP CAPCODES", right_x + 24, panel_y + 24, kCyan, 1, middle_left);
-  if (g_live_snapshot.identity_count == 0) {
+  if (live_snapshot().identity_count == 0) {
     text("NO CAPCODES OBSERVED YET", right_x + panel_w / 2, panel_y + panel_h / 2, kMuted, 1);
     return;
   }
   size_t order[kIdentityCapacity];
-  const size_t identity_count = std::min(g_live_snapshot.identity_count, kIdentityCapacity);
+  const size_t identity_count = std::min(live_snapshot().identity_count, kIdentityCapacity);
   for (size_t i = 0; i < identity_count; ++i) order[i] = i;
   std::sort(order, order + identity_count, [](size_t a, size_t b) {
-    return g_live_snapshot.identities[a].hit_count > g_live_snapshot.identities[b].hit_count;
+    return live_snapshot().identities[a].hit_count > live_snapshot().identities[b].hit_count;
   });
   const size_t top_count = std::min<size_t>(identity_count, 8);
   uint32_t top_max = 1;
   for (size_t i = 0; i < top_count; ++i)
-    top_max = std::max(top_max, g_live_snapshot.identities[order[i]].hit_count);
+    top_max = std::max(top_max, live_snapshot().identities[order[i]].hit_count);
   const int top_bar_x0 = right_x + 200, top_bar_max_w = panel_w - 240;
   for (size_t i = 0; i < top_count; ++i) {
-    const IdentitySummary& id = g_live_snapshot.identities[order[i]];
+    const IdentitySummary& id = live_snapshot().identities[order[i]];
     const int y = panel_y + 66 + static_cast<int>(i) * 44;
     char capcode[16];
     snprintf(capcode, sizeof(capcode), "%lu", static_cast<unsigned long>(id.capcode));
@@ -380,16 +438,16 @@ void draw_placeholder(const char* label) {
 
 void draw_ids() {
   card(20, kHeaderH + 12, 1240, kContentH);
-  if (g_live_snapshot.identity_count == 0) {
+  if (live_snapshot().identity_count == 0) {
     text("NO CAPCODES OBSERVED YET", 640, kHeaderH + 300, kMuted, 2);
     return;
   }
   text("CAPCODE DIRECTORY", 44, kHeaderH + 34, kCyan, 1, middle_left);
   text("(read-only -- alias/group/watch/mute editing not yet implemented)",
        44, kHeaderH + 12 + kContentH - 24, kMuted, 1, middle_left);
-  const size_t visible = std::min<size_t>(g_live_snapshot.identity_count, 12);
+  const size_t visible = std::min<size_t>(live_snapshot().identity_count, 12);
   for (size_t i = 0; i < visible; ++i) {
-    const IdentitySummary& id = g_live_snapshot.identities[i];
+    const IdentitySummary& id = live_snapshot().identities[i];
     const int y = kHeaderH + 66 + static_cast<int>(i) * 44;
     if (id.watched) M5.Display.fillCircle(44, y, 5, kYellow);
     char capcode[16];
@@ -443,24 +501,12 @@ void draw() {
 }
 
 void update() {
-  if (!g_active || !g_live || g_drawn_revision == g_live_snapshot.revision) return;
+  if (!g_active || !g_live || g_drawn_revision == live_snapshot().revision) return;
   static uint32_t last_draw_ms = 0;
   if (millis() - last_draw_ms < 1000) return;
   last_draw_ms = millis();
-  g_drawn_revision = g_live_snapshot.revision;
-  M5.Display.fillRect(340, 12, 460, 52, kBg);
-  M5.Display.fillRect(750, 12, 200, 52, kBg);
-  char freq[24];
-  snprintf(freq, sizeof(freq), "%.4f MHz", g_settings.frequency_hz / 1000000.0);
-  text(freq, 360, 36, TFT_WHITE, 2, middle_left);
-  const LockState lock = g_live_snapshot.decoder_stats.lock;
-  M5.Display.fillRoundRect(580, 18, 150, 40, 8,
-                            lock == LockState::locked ? TFT_DARKGREEN : TFT_DARKGREY);
-  text(lock_state_label(lock), 655, 38, lock_state_color(lock), 1);
-  char msgs[24];
-  snprintf(msgs, sizeof(msgs), "%u MSGS",
-           static_cast<unsigned>(g_live_snapshot.decoder_stats.messages_decoded));
-  text(msgs, 770, 36, TFT_WHITE, 2, middle_left);
+  g_drawn_revision = live_snapshot().revision;
+  draw_header_live_values();
   if (g_view == View::live) {
     M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
     draw_live();
@@ -477,7 +523,7 @@ void update() {
 }
 
 void set_live_snapshot(const Snapshot& snapshot) {
-  g_live_snapshot = snapshot;
+  live_snapshot() = snapshot;
   g_live = true;
 }
 
@@ -485,6 +531,9 @@ Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return Action::none;
   if (audio_header::home_hit(x, y)) return Action::exit;
   if (audio_header::settings_hit(x, y)) return Action::none;
+  if (!live_snapshot().scanning &&
+      hit(x, y, kScanButtonX, kScanButtonY, kScanButtonW, kScanButtonH))
+    return Action::scan_requested;
   if (y >= kTabsY) {
     g_view = static_cast<View>(constrain(x / kTabW, 0, 4));
     redraw();

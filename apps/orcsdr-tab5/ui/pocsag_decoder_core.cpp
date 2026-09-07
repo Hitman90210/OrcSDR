@@ -6,6 +6,11 @@
 #include <cstring>
 #include <memory>
 
+#if defined(ESP_PLATFORM)
+#include <esp_heap_caps.h>
+#include <new>
+#endif
+
 namespace orcsdr::pocsag {
 namespace {
 
@@ -85,8 +90,27 @@ struct CorrectionTable {
 };
 
 const CorrectionTable& correction_table() {
+#if defined(ESP_PLATFORM)
+  // PSRAM-allocated on target: this 4 KB table is a function-local static
+  // independent of any Decoder instance (shared across all decoders), so
+  // moving Decoder itself to PSRAM does not move this. A plain
+  // `static const CorrectionTable table;` here still reserves its full
+  // size in internal-DRAM BSS at link time -- confirmed on real hardware
+  // to starve ESP-IDF's own early internal/DMA heap-pool reservation
+  // (see the allocate_pocsag_state() comment in main.cpp for the full
+  // story). Kept as a plain static off-target, where host tests build
+  // this file with plain g++ and have no heap_caps/PSRAM to use.
+  static CorrectionTable* table = nullptr;
+  if (!table) {
+    void* memory = heap_caps_malloc(sizeof(CorrectionTable), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!memory) memory = heap_caps_malloc(sizeof(CorrectionTable), MALLOC_CAP_8BIT);
+    if (memory) table = new (memory) CorrectionTable();
+  }
+  return *table;
+#else
   static const CorrectionTable table;
   return table;
+#endif
 }
 
 // status: 0 = no error, 1 = corrected, 2 = uncorrectable (3+ bit errors).

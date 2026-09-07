@@ -1,3 +1,5 @@
+#include <new>
+
 #include <M5Unified.h>
 #include <esp_mac.h>
 #include <esp_intr_alloc.h>
@@ -601,6 +603,24 @@ constexpr uint32_t kAdsbDefaultHz = 1090000000;
 // profile has ever been saved (NVS-unset), not a claim it is right for the
 // user's area.
 constexpr uint32_t kPocsagFallbackHz = 152007500;
+
+// "FIND PAGERS" discovery channel list. OrcSDR is used worldwide, so this is
+// NOT a region-specific list baked into firmware -- it's a generic set of
+// nationwide-allocated US paging-only channels (FCC Part 22), used only as
+// the seed before a user has ever saved their own list. The real list a user
+// actually scans lives in the SD-editable /orcsdr/pocsag_scan.cfg (see
+// load_pocsag_scan_list() and docs/RADIO_CONFIGURATION.md), exactly like
+// P25 system profiles and FM presets are already SD-editable rather than
+// compiled in. A user who researches their own local paging licenses (as
+// was done for one reference deployment in Lane County, Oregon) adds them
+// to that file -- the firmware itself stays geography-neutral.
+constexpr uint32_t kPocsagDiscoveryDefaultChannelsHz[] = {
+    152007500, 152240000, 152480000, 152840000,
+    157450000, 157740000, 158100000, 158460000, 158700000,
+};
+constexpr size_t kPocsagDiscoveryMaxChannels = 32;
+static uint32_t pocsag_discovery_channels_hz[kPocsagDiscoveryMaxChannels]{};
+static size_t pocsag_discovery_channel_count = 0;
 constexpr uint32_t kP25MinHz = ESP_RTL_SDR_FREQ_MIN_HZ;
 constexpr uint32_t kP25MaxHz = ESP_RTL_SDR_FREQ_MAX_HZ;
 constexpr uint32_t kP25DefaultHz = 851012500;
@@ -1090,7 +1110,7 @@ static std::atomic<int> rtl_fm_preset_scan_total_steps{1};
 static std::atomic<int> rtl_fm_preset_scan_found{0};
 static std::atomic<uint32_t> rtl_fm_preset_scan_freq_hz{kRtlFmMinHz};
 
-enum class ActiveScan : uint8_t { none, fm_presets, p25_survey };
+enum class ActiveScan : uint8_t { none, fm_presets, p25_survey, pocsag_discovery };
 orcsdr::radio::Session radio_session;
 orcsdr::scan::Engine scan_engine;
 ActiveScan active_scan = ActiveScan::none;  // Streaming task only.
@@ -1145,6 +1165,57 @@ static uint32_t pocsag_config_frequency_hz = kPocsagFallbackHz;
 static std::atomic<uint16_t> pocsag_baud_bps{0};  // 0 = AUTO
 static std::atomic<uint8_t> pocsag_polarity_mode{0};  // 0=AUTO,1=NORMAL,2=INVERTED
 static bool pocsag_config_loaded = false;
+
+// "FIND PAGERS" discovery scan (Streaming task only, same ownership
+// discipline as the FM preset/P25 survey scan state above).
+static std::atomic<bool> pocsag_scan_requested{false};
+static std::atomic<bool> pocsag_scan_cancel_requested{false};
+static std::atomic<bool> pocsag_scan_active{false};
+static float pocsag_candidate_dbfs[kPocsagDiscoveryMaxChannels]{};
+static uint32_t pocsag_candidate_valid[kPocsagDiscoveryMaxChannels]{};
+static uint32_t pocsag_candidate_corrected[kPocsagDiscoveryMaxChannels]{};
+static uint32_t pocsag_candidate_messages[kPocsagDiscoveryMaxChannels]{};
+
+// Loads /orcsdr/pocsag_scan.cfg (one frequency in Hz per non-comment line,
+// '#' for comments) into pocsag_discovery_channels_hz, bounded at
+// kPocsagDiscoveryMaxChannels. Falls back to
+// kPocsagDiscoveryDefaultChannelsHz when the file is missing, empty, or
+// every line fails to parse -- never leaves the scan list empty.
+void load_pocsag_scan_list() {
+  pocsag_discovery_channel_count = 0;
+  if (orcsdr::storage::mounted()) {
+    File file = orcsdr::storage::filesystem().open("/orcsdr/pocsag_scan.cfg", FILE_READ);
+    if (file) {
+      char line[32];
+      size_t read_len;
+      while (pocsag_discovery_channel_count < kPocsagDiscoveryMaxChannels &&
+             (read_len = file.readBytesUntil('\n', line, sizeof(line) - 1)) > 0) {
+        // readBytesUntil() does not null-terminate; do it at the returned
+        // length, which is the only reliable end-of-content marker (a line
+        // shorter than the previous one would otherwise leave stale bytes
+        // past the real content).
+        line[read_len] = '\0';
+        char* cr = strchr(line, '\r');
+        if (cr) *cr = '\0';
+        char* trimmed = line;
+        while (*trimmed == ' ' || *trimmed == '\t') ++trimmed;
+        if (*trimmed == '\0' || *trimmed == '#') continue;
+        char* end = nullptr;
+        const unsigned long hz = strtoul(trimmed, &end, 10);
+        if (end == trimmed || hz == 0) continue;
+        pocsag_discovery_channels_hz[pocsag_discovery_channel_count++] =
+            static_cast<uint32_t>(hz);
+      }
+      file.close();
+    }
+  }
+  if (pocsag_discovery_channel_count == 0) {
+    for (uint32_t hz : kPocsagDiscoveryDefaultChannelsHz) {
+      if (pocsag_discovery_channel_count >= kPocsagDiscoveryMaxChannels) break;
+      pocsag_discovery_channels_hz[pocsag_discovery_channel_count++] = hz;
+    }
+  }
+}
 
 static std::atomic<CbMode> cb_mode{CbMode::am};
 static std::atomic<int32_t> cb_clarifier_hz{0};
@@ -1743,12 +1814,21 @@ void publish_adsb_snapshot(uint32_t now) {
 // sample (no transcendental math above the decimated 38.4 kS/s rate) to run
 // inline in the same context that already demodulates FM, matching how RDS
 // taps the FM discriminator rather than owning a second pipeline.
-orcsdr::pocsag::Decoder pocsag_decoder_instance;
+//
+// pocsag_decoder_instance, pocsag_identity_table, and pocsag_messages are
+// PSRAM-allocated (see allocate_pocsag_state(), called once from setup())
+// rather than plain internal-DRAM globals. A prior revision declared these
+// as plain globals; that pushed static BSS just far enough to starve
+// ESP-IDF's own early 40 KB internal/DMA heap-pool reservation (which runs
+// before setup() is ever called), producing a boot-time
+// "Could not reserve internal/DMA pool" abort on real hardware -- a defect
+// the native build/link step cannot detect, only a flashed boot proves it.
+orcsdr::pocsag::Decoder* pocsag_decoder_instance = nullptr;
 // CAPCODE identity tracking (Phase 10.3). In-RAM only for now: hits are
 // recorded as messages decode, but there is no SD persistence, alias/group/
 // watch/mute editing UI, or IDS-tab rendering yet -- those are separate,
 // not-yet-implemented follow-ups (see phasing.md Phase 10.3).
-orcsdr::pocsag_store::Table pocsag_identity_table;
+orcsdr::pocsag_store::Table* pocsag_identity_table = nullptr;
 constexpr size_t kPocsagMessageCount = 12;
 struct PocsagStoredMessage {
   bool used = false;
@@ -1763,19 +1843,47 @@ struct PocsagStoredMessage {
   char text[orcsdr::pocsag::kMaxMessageChars]{};
   uint16_t text_length = 0;
 };
-PocsagStoredMessage pocsag_messages[kPocsagMessageCount]{};
+PocsagStoredMessage* pocsag_messages = nullptr;
+
+// Allocates the PSRAM-backed POCSAG state. Idempotent -- safe to call more
+// than once (e.g. if a future boot path calls the surrounding init function
+// twice); only the first call actually allocates.
+void allocate_pocsag_state() {
+  if (!pocsag_decoder_instance) {
+    void* memory = heap_caps_malloc(sizeof(orcsdr::pocsag::Decoder),
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory) pocsag_decoder_instance = new (memory) orcsdr::pocsag::Decoder();
+  }
+  if (!pocsag_identity_table) {
+    void* memory = heap_caps_malloc(sizeof(orcsdr::pocsag_store::Table),
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory) pocsag_identity_table = new (memory) orcsdr::pocsag_store::Table();
+  }
+  if (!pocsag_messages) {
+    void* memory = heap_caps_malloc(sizeof(PocsagStoredMessage) * kPocsagMessageCount,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (memory) {
+      pocsag_messages = static_cast<PocsagStoredMessage*>(memory);
+      for (size_t i = 0; i < kPocsagMessageCount; ++i)
+        new (&pocsag_messages[i]) PocsagStoredMessage();
+    }
+  }
+  if (!pocsag_decoder_instance || !pocsag_identity_table || !pocsag_messages)
+    Serial.println("RTL_POCSAG_PSRAM_ALLOC_FAIL");
+}
 size_t pocsag_message_write = 0;
 size_t pocsag_message_count = 0;
 portMUX_TYPE pocsag_messages_mux = portMUX_INITIALIZER_UNLOCKED;
 std::atomic<uint32_t> pocsag_message_revision{0};
 
 void on_pocsag_message(const orcsdr::pocsag::Message& msg, void*) {
+  if (!pocsag_identity_table || !pocsag_messages) return;  // PSRAM alloc failed
   portENTER_CRITICAL(&pocsag_messages_mux);
   // record_hit() is a short, bounded O(kMaxIdentities) scan -- cheap enough
   // to run inside the same critical section already guarding the message
   // ring, avoiding a second lock for an object nothing outside this task
   // writes to yet.
-  pocsag_identity_table.record_hit(msg.capcode, millis());
+  pocsag_identity_table->record_hit(msg.capcode, millis());
   PocsagStoredMessage& slot = pocsag_messages[pocsag_message_write];
   slot.used = true;
   slot.capcode = msg.capcode;
@@ -1795,6 +1903,7 @@ void on_pocsag_message(const orcsdr::pocsag::Message& msg, void*) {
 }
 
 void publish_pocsag_snapshot(uint32_t now) {
+  if (!pocsag_decoder_instance || !pocsag_identity_table || !pocsag_messages) return;
   static uint32_t last_sample_ms = 0;
   static uint32_t last_revision = UINT32_MAX;
   static uint32_t ui_revision = 0;
@@ -1829,9 +1938,9 @@ void publish_pocsag_snapshot(uint32_t now) {
     out.text_length = stored.text_length;
   }
   const size_t identity_count =
-      std::min(pocsag_identity_table.count(), orcsdr::pocsag::kIdentityCapacity);
+      std::min(pocsag_identity_table->count(), orcsdr::pocsag::kIdentityCapacity);
   for (size_t i = 0; i < identity_count; ++i) {
-    const auto* identity = pocsag_identity_table.at(i);
+    const auto* identity = pocsag_identity_table->at(i);
     if (!identity) continue;
     auto& out = snapshot.identities[snapshot.identity_count++];
     out.capcode = identity->capcode;
@@ -1843,8 +1952,15 @@ void publish_pocsag_snapshot(uint32_t now) {
     out.last_seen_ms = identity->last_seen_ms;
   }
   portEXIT_CRITICAL(&pocsag_messages_mux);
-  snapshot.decoder_stats = pocsag_decoder_instance.stats();
+  snapshot.decoder_stats = pocsag_decoder_instance->stats();
   snapshot.receiving = receiving;
+  if (active_scan == ActiveScan::pocsag_discovery) {
+    const auto scan_progress = scan_engine.progress();
+    snapshot.scanning = scan_progress.active;
+    snapshot.scan_index = scan_progress.index;
+    snapshot.scan_count = scan_progress.count;
+    snapshot.scan_frequency_hz = scan_progress.frequency_hz;
+  }
   snapshot.revision = ++ui_revision;
   orcsdr::pocsag::set_live_snapshot(snapshot);
 }
@@ -7146,8 +7262,8 @@ static void rtl_dsp_task(void *) {
     // high-rate queue like ADS-B) -- cheap enough per raw-IQ sample (no
     // transcendental math above its internal 38.4 kS/s decimated rate) to
     // run inline in this same DSP task.
-    if (!block.lab_custom_rate && block.band == RtlBand::pocsag)
-      pocsag_decoder_instance.process_cu8(block.data, block.bytes, on_pocsag_message, nullptr);
+    if (!block.lab_custom_rate && block.band == RtlBand::pocsag && pocsag_decoder_instance)
+      pocsag_decoder_instance->process_cu8(block.data, block.bytes, on_pocsag_message, nullptr);
     if (!block.lab_custom_rate && block.band == RtlBand::p25)
       orcsdr::p25decoder::process_cu8(block.data, block.bytes);
     if (!block.lab_custom_rate && block.band == RtlBand::p25 &&
@@ -7483,8 +7599,8 @@ static void rtl_driver_app_task(void *) {
           }
           if (g_stream_band == RtlBand::pocsag && now - pocsag_metrics_last_ms >= 5000) {
             pocsag_metrics_last_ms = now;
-            if (serial_verbosity_at(SerialVerbosity::debug)) {
-              const auto& stats = pocsag_decoder_instance.stats();
+            if (serial_verbosity_at(SerialVerbosity::debug) && pocsag_decoder_instance) {
+              const auto& stats = pocsag_decoder_instance->stats();
               Serial.printf(
                   "RTL_POCSAG_STATUS lock=%u baud=%u inverted=%u batches=%lu sync_losses=%lu "
                   "codewords=%lu valid=%lu corrected=%lu corrected_bits=%lu uncorrectable=%lu "
@@ -8757,6 +8873,11 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
 
 bool scan_retune(uint32_t frequency_hz, void*) {
   if (active_scan == ActiveScan::fm_presets) reset_spectrum_renderer();
+  // Each discovery candidate must start with a clean decoder: without this,
+  // stats() would accumulate across channels and scan_measure's per-channel
+  // read would reflect the WHOLE scan so far, not just this one candidate.
+  if (active_scan == ActiveScan::pocsag_discovery && pocsag_decoder_instance)
+    pocsag_decoder_instance->reset();
   return request_hot_retune_for(scan_radio_token, frequency_hz);
 }
 
@@ -8787,6 +8908,24 @@ void scan_measure(size_t index, uint32_t frequency_hz, void*) {
                   static_cast<unsigned>(index), static_cast<unsigned long>(frequency_hz),
                   static_cast<double>(level), decoded.frame_sync ? 1 : 0,
                   static_cast<unsigned long>(decoded.tsbk_good));
+    return;
+  }
+  if (active_scan == ActiveScan::pocsag_discovery && pocsag_decoder_instance &&
+      index < kPocsagDiscoveryMaxChannels) {
+    const auto& stats = pocsag_decoder_instance->stats();
+    pocsag_candidate_dbfs[index] = rtl_signal_dbfs.load(std::memory_order_relaxed);
+    pocsag_candidate_valid[index] = stats.codewords_valid;
+    pocsag_candidate_corrected[index] = stats.codewords_corrected;
+    pocsag_candidate_messages[index] = stats.messages_decoded;
+    Serial.printf(
+        "RTL_POCSAG_DISCOVERY_SAMPLE index=%u frequency_hz=%lu relative_dbfs=%.1f "
+        "valid=%lu corrected=%lu uncorrectable=%lu messages=%lu\n",
+        static_cast<unsigned>(index), static_cast<unsigned long>(frequency_hz),
+        static_cast<double>(pocsag_candidate_dbfs[index]),
+        static_cast<unsigned long>(stats.codewords_valid),
+        static_cast<unsigned long>(stats.codewords_corrected),
+        static_cast<unsigned long>(stats.codewords_uncorrectable),
+        static_cast<unsigned long>(stats.messages_decoded));
   }
 }
 
@@ -8801,6 +8940,53 @@ void scan_finished(orcsdr::scan::Finish reason, void*) {
                               ? "done"
                               : reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed";
     Serial.printf("RTL_PRESET_SCAN %s found=%d\n", outcome, fm_preset_count);
+    return;
+  }
+  if (finished == ActiveScan::pocsag_discovery) {
+    pocsag_scan_active.store(false, std::memory_order_release);
+    rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+    if (reason != orcsdr::scan::Finish::completed) {
+      Serial.printf("RTL_POCSAG_DISCOVERY %s\n",
+                    reason == orcsdr::scan::Finish::cancelled ? "stop" : "failed");
+      return;
+    }
+    // Winner selection deliberately favors codewords_valid (syndrome==0,
+    // first-try correct) over codewords_corrected: a genuinely valid
+    // codeword is a ~1-in-1024 event on random noise, while the corrected/
+    // uncorrectable-heavy pattern is exactly what a false sync-word lock on
+    // noise looks like (see the false-positive investigation this feature
+    // grew out of). Falling back to "most corrected" only when nothing had
+    // a clean codeword is a materially weaker signal, and is reported as
+    // such rather than silently treated the same as a clean hit.
+    const size_t count = pocsag_discovery_channel_count;
+    size_t best = 0;
+    bool any_valid = false;
+    for (size_t i = 0; i < count; ++i) {
+      if (pocsag_candidate_valid[i] > 0 &&
+          (!any_valid || pocsag_candidate_valid[i] > pocsag_candidate_valid[best])) {
+        best = i;
+        any_valid = true;
+      }
+    }
+    if (!any_valid) {
+      for (size_t i = 0; i < count; ++i) {
+        if (pocsag_candidate_corrected[i] > pocsag_candidate_corrected[best]) best = i;
+      }
+    }
+    const bool found = any_valid || pocsag_candidate_corrected[best] > 0;
+    if (found) {
+      pocsag_config_frequency_hz = pocsag_discovery_channels_hz[best];
+      (void)request_hot_retune_for(scan_radio_token, pocsag_config_frequency_hz);
+    }
+    Serial.printf(
+        "RTL_POCSAG_DISCOVERY_DONE found=%d confidence=%s best_index=%u frequency_hz=%lu "
+        "valid=%lu corrected=%lu messages=%lu\n",
+        found ? 1 : 0, any_valid ? "clean" : found ? "weak" : "none",
+        static_cast<unsigned>(best),
+        static_cast<unsigned long>(found ? pocsag_discovery_channels_hz[best] : 0),
+        static_cast<unsigned long>(pocsag_candidate_valid[best]),
+        static_cast<unsigned long>(pocsag_candidate_corrected[best]),
+        static_cast<unsigned long>(pocsag_candidate_messages[best]));
     return;
   }
   if (finished != ActiveScan::p25_survey) return;
@@ -8853,6 +9039,10 @@ void service_shared_scan(uint32_t now) {
     Serial.printf("RTL_P25_SURVEY restored_hz=%lu\n",
                   static_cast<unsigned long>(p25_control_frequency_hz));
   }
+  if (pocsag_scan_cancel_requested.exchange(false, std::memory_order_acq_rel) &&
+      active_scan == ActiveScan::pocsag_discovery) {
+    scan_engine.cancel(true, callbacks);
+  }
 
   if (!scan_engine.active() && g_stream_band == RtlBand::fm &&
       !rtl_auto_fm_active.load(std::memory_order_acquire) &&
@@ -8893,6 +9083,28 @@ void service_shared_scan(uint32_t now) {
       p25_survey_active.store(true, std::memory_order_release);
       Serial.printf("RTL_P25_SURVEY start candidates=%u dwell_ms=1500\n",
                     static_cast<unsigned>(p25_config.control_channel_count));
+    }
+  }
+  if (!scan_engine.active() && g_stream_band == RtlBand::pocsag &&
+      pocsag_scan_requested.exchange(false, std::memory_order_acq_rel)) {
+    const auto session = radio_session.snapshot();
+    scan_radio_token = {session.owner, session.generation};
+    // 4s/channel: long enough for a full batch at the slowest standard rate
+    // (512 baud) to sync and decode even with the preamble/settle overhead,
+    // with the parallel baud/polarity AUTO search this decoder already runs.
+    const orcsdr::scan::Plan plan{orcsdr::scan::Mode::channel_list,
+                                  pocsag_discovery_channels_hz,
+                                  pocsag_discovery_channel_count, 0, 0, 4000, true};
+    if (scan_engine.start(plan, pocsag_config_frequency_hz, now)) {
+      active_scan = ActiveScan::pocsag_discovery;
+      std::fill(std::begin(pocsag_candidate_dbfs), std::end(pocsag_candidate_dbfs), -120.0f);
+      std::fill(std::begin(pocsag_candidate_valid), std::end(pocsag_candidate_valid), 0u);
+      std::fill(std::begin(pocsag_candidate_corrected), std::end(pocsag_candidate_corrected), 0u);
+      std::fill(std::begin(pocsag_candidate_messages), std::end(pocsag_candidate_messages), 0u);
+      pocsag_scan_active.store(true, std::memory_order_release);
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_POCSAG_DISCOVERY start candidates=%u dwell_ms=4000\n",
+                    static_cast<unsigned>(pocsag_discovery_channel_count));
     }
   }
   const auto progress = scan_engine.progress();
@@ -10627,6 +10839,8 @@ void handle_sdr_touch(int32_t x, int32_t y) {
     const orcsdr::pocsag::Action action = orcsdr::pocsag::handle_touch(x, y);
     if (action == orcsdr::pocsag::Action::exit) {
       show_home();
+    } else if (action == orcsdr::pocsag::Action::scan_requested) {
+      pocsag_scan_requested.store(true, std::memory_order_release);
     }
     return;
   }
@@ -13038,6 +13252,20 @@ void process_command(char* command) {
     Serial.println("RTL_PRESET_SCAN_QUEUED");
     return;
   }
+  if (strcmp(command, "RTL_POCSAG_SCAN") == 0 && authenticated) {
+    if (rtl_ui_band != RtlBand::pocsag) {
+      Serial.println("RTL_POCSAG_SCAN_INVALID POCSAG band only");
+      return;
+    }
+    pocsag_scan_requested.store(true, std::memory_order_release);
+    Serial.println("RTL_POCSAG_SCAN_QUEUED");
+    return;
+  }
+  if (strcmp(command, "RTL_POCSAG_SCAN_STOP") == 0 && authenticated) {
+    pocsag_scan_cancel_requested.store(true, std::memory_order_release);
+    Serial.println("RTL_POCSAG_SCAN_STOP_QUEUED");
+    return;
+  }
   if (strcmp(command, "RTL_PRESET_LIST") == 0) {
     Serial.printf("RTL_PRESET_LIST_BEGIN count=%d\n", fm_preset_count);
     for (int i = 0; i < fm_preset_count; ++i) {
@@ -13457,6 +13685,10 @@ void orcsdr_splash_poll_serial(void) {
 
 void setup() {
   Serial.begin(115200);
+  // PSRAM-backed one-time allocation, not plain internal-DRAM globals -- see
+  // allocate_pocsag_state()'s own comment for why (a prior revision's plain
+  // globals caused a boot-time "Could not reserve internal/DMA pool" abort).
+  allocate_pocsag_state();
   const esp_reset_reason_t reset_reason = esp_reset_reason();
   const char* reset_name = "unknown";
   switch (reset_reason) {
@@ -13617,6 +13849,7 @@ void setup() {
   }
   const bool test_sd_ready = ensure_tab5_sd();
   (void)orcsdr::rf_lab::initialize(g_sd_fs);
+  load_pocsag_scan_list();
   if (test_sd_ready) {
     (void)orcsdr::offline_map::load(g_sd_fs);
     refresh_adsb_atc_preset();

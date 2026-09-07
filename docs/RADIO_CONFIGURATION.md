@@ -51,6 +51,40 @@ If profiles do not exist and `/orcsdr/P25.cfg` does, OrcSDR imports it once as
 content is validated and rewritten as version 2 in the new directory. Invalid
 input never replaces a working profile; saves retain a `.bak` rollback copy.
 
+## `/orcsdr/pocsag_scan.cfg`
+
+OrcSDR is used worldwide, so the POCSAG dashboard's "FIND PAGERS" scan list is
+**not** a region baked into firmware. It ships with a small built-in default
+of nationwide-allocated US paging-only channels (FCC Part 22), used only
+until you save your own list. Put your own researched candidates — local
+paging licenses, historical sites, known-active commercial paging channels —
+in this file, one frequency in Hz per line; `#` starts a comment:
+
+```text
+# POCSAG / paging test list -- example only, not shipped as a default.
+# Researched for one reference deployment (Lane County, Oregon); replace
+# with candidates for your own area.
+
+# Local FCC-licensed paging (Springfield, OR area)
+454025000
+454225000
+454350000
+
+# Commercial 900 MHz paging (Eugene, OR coverage; often FLEX, not POCSAG --
+# the SIGNAL tab's sync/FEC stats will show that distinction)
+929612500
+929662500
+929937500
+
+# Historical / low-confidence
+152240000
+```
+
+A missing, empty, or entirely unparseable file falls back to the built-in
+default; a partially-invalid file keeps whatever lines did parse. There is
+no in-app editor for this file yet — edit it on the SD card from a computer,
+the same way P25 system profiles and FM presets are edited today.
+
 ## `/orcsdr/FM.cfg`
 
 ```ini

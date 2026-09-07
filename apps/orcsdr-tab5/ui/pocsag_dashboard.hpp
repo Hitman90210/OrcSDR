@@ -63,6 +63,15 @@ struct Snapshot {
   Stats decoder_stats{};
   uint32_t revision = 0;
   bool receiving = false;
+
+  // Channel-discovery scan progress (Phase 10.2 "FIND PAGERS"). While
+  // scanning is true, the header shows scan progress instead of the normal
+  // lock badge; scan_frequency_hz is whichever candidate is currently being
+  // dwelled on.
+  bool scanning = false;
+  size_t scan_index = 0;
+  size_t scan_count = 0;
+  uint32_t scan_frequency_hz = 0;
 };
 
 enum class View : uint8_t { live, ids, signal, activity, archive, count };
@@ -70,6 +79,7 @@ enum class View : uint8_t { live, ids, signal, activity, archive, count };
 enum class Action : uint8_t {
   none,
   settings_changed,
+  scan_requested,
   exit,
 };
 

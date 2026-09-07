@@ -801,6 +801,22 @@ rather than adding a second high-rate IQ path.
       channels vary too much by country/carrier for one default to be
       correct. The current build seeds a single in-RAM default
       (`kPocsagFallbackHz`) with no save/load or in-app editor yet.
+- [x] "FIND PAGERS" discovery scan: reuses the existing shared `scan_engine`
+      (same one FM presets/P25 survey use), dwelling 4s per channel from a
+      **user-editable** `/orcsdr/pocsag_scan.cfg` (falls back to a small
+      built-in nationwide-US default only if that file doesn't exist —
+      deliberately not a region-specific list, since OrcSDR is used
+      worldwide; a user's own local-paging research belongs in that file,
+      documented in `docs/RADIO_CONFIGURATION.md` with a worked example, not
+      compiled into firmware). Winner selection requires at least one
+      genuinely BCH-valid codeword (not merely corrected) before calling a
+      channel a real hit, directly targeting the false-positive-lock-on-
+      noise pattern found during initial hardware testing (0 valid, 14/16
+      uncorrectable, immediate sync loss on an untested frequency). SCAN
+      button + live "SCANNING n/N" header progress on the dashboard;
+      `RTL_POCSAG_SCAN`/`RTL_POCSAG_SCAN_STOP` for serial-CLI parity. Native
+      build compiles/links/boots clean; the scan itself has not yet been
+      run against a real signal on hardware.
 
 ### 10.3 — CAPCODE identity and message archive
 

@@ -194,6 +194,8 @@ Never includes decoded message text — only lock/baud/FEC counters.
 | Command | Auth | Reply |
 |---|---|---|
 | (periodic, debug verbosity, ~5 s) | no | `RTL_POCSAG_STATUS lock=... baud=... inverted=0\|1 batches=... sync_losses=... codewords=... valid=... corrected=... corrected_bits=... uncorrectable=... parity_failures=... messages=... truncated=...` — emitted only while POCSAG is the active band. |
+| `RTL_POCSAG_SCAN` | yes | `RTL_POCSAG_SCAN_QUEUED` or `RTL_POCSAG_SCAN_INVALID` (not on POCSAG). Dwells 4 s per channel in `/orcsdr/pocsag_scan.cfg` (or the built-in nationwide-US default if that file doesn't exist), looking for a real BCH-valid decode. Serial diagnostics: `RTL_POCSAG_DISCOVERY start candidates=...`, one `RTL_POCSAG_DISCOVERY_SAMPLE index=... frequency_hz=... relative_dbfs=... valid=... corrected=... uncorrectable=... messages=...` per channel, then `RTL_POCSAG_DISCOVERY_DONE found=0\|1 confidence=clean\|weak\|none best_index=... frequency_hz=... valid=... corrected=... messages=...`. `confidence=clean` means at least one genuinely BCH-valid codeword (syndrome 0, not merely corrected) was seen — a much stronger signal than `weak` (corrected-only, the same pattern a false sync lock on noise produces). Retunes to the winner only if `found=1`. |
+| `RTL_POCSAG_SCAN_STOP` | yes | `RTL_POCSAG_SCAN_STOP_QUEUED`. Cancels an in-progress scan and restores the frequency the scan started from. |
 
 `lock` is `orcsdr::pocsag::LockState` (0=no_signal, 1=searching, 2=locked,
 3=lost). There is no dedicated tune/status *command* for POCSAG yet — tuning
