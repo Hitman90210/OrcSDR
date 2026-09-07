@@ -54,6 +54,9 @@ using File = orcsdr::storage::File;
 namespace orcsdr::storage {
 
 bool mount_tab5_sd();
+// Reason the most recent mount_tab5_sd() call failed, e.g. "ldo:ESP_ERR_..."
+// or "mount:ESP_ERR_...". Empty if the last attempt succeeded or none was made.
+const char* last_mount_error();
 bool mounted();
 FileSystem& filesystem();
 uint64_t total_bytes();

@@ -2583,7 +2583,7 @@ bool ensure_tab5_sd() {
     Serial.println("RTL_REC_SD ready bus=sdmmc");
     return true;
   }
-  Serial.println("RTL_REC_SD missing_or_fail");
+  Serial.printf("RTL_REC_SD missing_or_fail reason=%s\n", orcsdr::storage::last_mount_error());
   g_sd_fs = nullptr;
   g_sd_ready = false;
   return false;
@@ -9827,6 +9827,7 @@ constexpr UiDocScreen kUiDocScreens[] = {
     {"home", "live,demo"},
     {"nav", "demo"},
     {"settings.connectivity", "demo"},
+    {"settings.firmware-updates", "demo"},
     {"settings.location-adsb", "demo"},
     {"settings.data-maps", "demo"},
     {"settings.display-audio", "demo"},
@@ -10124,8 +10125,10 @@ bool ui_doc_render(const char* screen_id, bool demo) {
   } else if (strncmp(screen_id, "settings.", 9) == 0 ||
              strncmp(screen_id, "overlay.wifi-", 13) == 0 ||
              strcmp(screen_id, "overlay.masked-keyboard") == 0) {
-    static constexpr const char* names[] = {"connectivity", "location-adsb", "data-maps",
-        "display-audio", "radio-defaults", "storage", "companion", "system"};
+    static constexpr const char* names[] = {"connectivity", "firmware-updates", "location-adsb",
+        "data-maps", "display-audio", "radio-defaults", "storage", "companion", "system"};
+    static_assert(std::size(names) == static_cast<uint8_t>(orcsdr::settings::Section::count),
+                  "names[] must have one entry per orcsdr::settings::Section, in enum order");
     orcsdr::settings::Section section = orcsdr::settings::Section::connectivity;
     const char* suffix = screen_id + 9;
     for (uint8_t i = 0; i < std::size(names); ++i)
@@ -12383,87 +12386,57 @@ void setup() {
   M5.Display.setBrightness(180);
   const bool visualizer_initialized =
       orcsdr::visualizer::initialize(nullptr, visualizer_audio_sink);
-  if (!visualizer_initialized || !orcsdr::visualizer::self_check()) {
-    Serial.println(visualizer_initialized ? "RTL_VIS_SELF_CHECK_FAIL"
-                                          : "RTL_VIS_INIT_FAIL");
+  const bool visualizer_self_check_ok = visualizer_initialized && orcsdr::visualizer::self_check();
+  if (visualizer_self_check_ok) {
+    Serial.println("RTL_VIS_SELF_CHECK_OK");
+  } else {
+    Serial.println(visualizer_initialized ? "RTL_VIS_SELF_CHECK_FAIL" : "RTL_VIS_INIT_FAIL");
   }
-  Serial.println("RTL_VIS_SELF_CHECK_OK");
   const bool rf_lab_initialized = orcsdr::rf_lab::initialize(nullptr);
-  if (!rf_lab_initialized || !orcsdr::rf_lab::self_check()) {
-    Serial.println(rf_lab_initialized ? "RTL_LAB_SELF_CHECK_FAIL"
-                                      : "RTL_LAB_INIT_FAIL");
+  const bool rf_lab_self_check_ok = rf_lab_initialized && orcsdr::rf_lab::self_check();
+  if (rf_lab_self_check_ok) {
+    Serial.println("RTL_LAB_SELF_CHECK_OK");
+  } else {
+    Serial.println(rf_lab_initialized ? "RTL_LAB_SELF_CHECK_FAIL" : "RTL_LAB_INIT_FAIL");
   }
-  Serial.println("RTL_LAB_SELF_CHECK_OK");
   configure_navigation_service();
-  if (!orcsdr::adsb::self_check() || !orcsdr::adsb_rx::Decoder::self_check() ||
-      !orcsdr::offline_map::self_check() || !orcsdr::atc::self_check()) {
-    Serial.println("RTL_ADSB_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_ADSB_SELF_CHECK_OK");
-  if (!orcsdr::fm::self_check()) {
-    Serial.println("RTL_FM_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_FM_DASHBOARD_SELF_CHECK_OK");
-  if (!orcsdr::fmconfig::self_check()) {
-    Serial.println("RTL_FM_CONFIG_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_FM_CONFIG_SELF_CHECK_OK");
-  if (!orcsdr::p25::self_check()) {
-    Serial.println("RTL_P25_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_P25_DASHBOARD_SELF_CHECK_OK");
-  if (!orcsdr::p25decoder::self_check()) {
-    Serial.println("RTL_P25_DECODER_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_P25_DECODER_SELF_CHECK_OK");
-  if (!orcsdr::p25voice::Decoder::self_check()) {
-    Serial.println("RTL_P25_VOICE_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_P25_VOICE_SELF_CHECK_OK");
-  if (!orcsdr::settings::self_check()) {
-    Serial.println("ORC_SETTINGS_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_SETTINGS_SELF_CHECK_OK");
-  if (!orcsdr::location_estimate::self_check()) {
-    Serial.println("ORC_LOCATION_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_LOCATION_SELF_CHECK_OK");
-  if (!orcsdr::screens::self_check()) {
-    Serial.println("ORC_SCREEN_CONTROLLER_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_SCREEN_CONTROLLER_SELF_CHECK_OK");
-  if (!orcsdr::radio_ui::self_check()) {
-    Serial.println("ORC_RADIO_UI_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_RADIO_UI_SELF_CHECK_OK");
+  Serial.println(orcsdr::adsb::self_check() && orcsdr::adsb_rx::Decoder::self_check() &&
+                          orcsdr::offline_map::self_check() && orcsdr::atc::self_check()
+                      ? "RTL_ADSB_SELF_CHECK_OK"
+                      : "RTL_ADSB_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::fm::self_check() ? "RTL_FM_DASHBOARD_SELF_CHECK_OK"
+                                          : "RTL_FM_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::fmconfig::self_check() ? "RTL_FM_CONFIG_SELF_CHECK_OK"
+                                                : "RTL_FM_CONFIG_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::p25::self_check() ? "RTL_P25_DASHBOARD_SELF_CHECK_OK"
+                                           : "RTL_P25_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::p25decoder::self_check() ? "RTL_P25_DECODER_SELF_CHECK_OK"
+                                                  : "RTL_P25_DECODER_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::p25voice::Decoder::self_check() ? "RTL_P25_VOICE_SELF_CHECK_OK"
+                                                         : "RTL_P25_VOICE_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::settings::self_check() ? "ORC_SETTINGS_SELF_CHECK_OK"
+                                                : "ORC_SETTINGS_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::location_estimate::self_check() ? "ORC_LOCATION_SELF_CHECK_OK"
+                                                          : "ORC_LOCATION_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::screens::self_check() ? "ORC_SCREEN_CONTROLLER_SELF_CHECK_OK"
+                                               : "ORC_SCREEN_CONTROLLER_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::radio_ui::self_check() ? "ORC_RADIO_UI_SELF_CHECK_OK"
+                                                : "ORC_RADIO_UI_SELF_CHECK_FAIL");
   const bool radio_session_ok = orcsdr::radio::Session::self_check();
   const bool scan_engine_ok = orcsdr::scan::Engine::self_check();
   Serial.println(radio_session_ok && scan_engine_ok ? "ORC_RADIO_SCAN_SELF_CHECK_OK"
                                                    : "ORC_RADIO_SCAN_SELF_CHECK_FAIL");
-  if (!orcsdr::device_status::self_check()) {
-    Serial.println("ORC_DEVICE_STATUS_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_DEVICE_STATUS_SELF_CHECK_OK");
-  if (!orcsdr::home::self_check()) {
-    Serial.println("ORC_HOME_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_HOME_SELF_CHECK_OK");
-  if (!orcsdr::web_console::self_check()) {
-    Serial.println("RTL_WEB_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_WEB_SELF_CHECK_OK");
-  if (!orcsdr::lora::self_check()) {
-    Serial.println("RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_LORA_DASHBOARD_SELF_CHECK_OK");
-  if (!orcsdr::rf24::self_check()) {
-    Serial.println("RF24_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RF24_DASHBOARD_SELF_CHECK_OK");
-  if (!ui_doc_self_check()) {
-    Serial.println("UI_DOC_SELF_CHECK_FAIL");
-  }
-  Serial.println("UI_DOC_SELF_CHECK_OK");
+  Serial.println(orcsdr::device_status::self_check() ? "ORC_DEVICE_STATUS_SELF_CHECK_OK"
+                                                     : "ORC_DEVICE_STATUS_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::home::self_check() ? "ORC_HOME_SELF_CHECK_OK"
+                                            : "ORC_HOME_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::web_console::self_check() ? "RTL_WEB_SELF_CHECK_OK"
+                                                   : "RTL_WEB_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::lora::self_check() ? "RTL_LORA_DASHBOARD_SELF_CHECK_OK"
+                                            : "RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::rf24::self_check() ? "RF24_DASHBOARD_SELF_CHECK_OK"
+                                            : "RF24_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(ui_doc_self_check() ? "UI_DOC_SELF_CHECK_OK" : "UI_DOC_SELF_CHECK_FAIL");
 
 #if ORC_LORA_TEST_BUILD
   g_suppress_home_paint = true;

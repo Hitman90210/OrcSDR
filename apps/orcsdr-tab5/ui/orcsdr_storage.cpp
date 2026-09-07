@@ -13,14 +13,34 @@
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
+#include <driver/gpio.h>
 #include <driver/sdmmc_default_configs.h>
 #include <driver/sdmmc_host.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace {
+// Tab5 gates microSD power on GPIO45; it must be driven high before the card
+// will respond to any SDMMC command. Idempotent and cheap enough to call from
+// every mount_tab5_sd() attempt, so no caller can race ahead of it.
+constexpr int kTab5SdPowerPin = 45;
+void ensure_sd_power() {
+  static bool powered = false;
+  if (powered) return;
+  gpio_config_t power{};
+  power.pin_bit_mask = 1ULL << kTab5SdPowerPin;
+  power.mode = GPIO_MODE_OUTPUT;
+  gpio_config(&power);
+  gpio_set_level(static_cast<gpio_num_t>(kTab5SdPowerPin), 1);
+  vTaskDelay(pdMS_TO_TICKS(80));
+  powered = true;
+}
+
 bool g_mounted = false;
 sdmmc_card_t* g_card = nullptr;
 sd_pwr_ctrl_handle_t g_sd_power = nullptr;
 orcsdr::storage::FileSystem g_filesystem;
+char g_last_mount_error[48] = "";
 
 std::string mounted_path(const char* path) {
   if (!path || strncmp(path, "/sd/", 4) == 0 || strcmp(path, "/sd") == 0) return path ? path : "";
@@ -101,6 +121,8 @@ namespace orcsdr::storage {
 
 bool mount_tab5_sd() {
   if (g_mounted) return true;
+  ensure_sd_power();
+  g_last_mount_error[0] = '\0';
   esp_vfs_fat_sdmmc_mount_config_t mount = {
       .format_if_mount_failed = false,
       .max_files = 8,
@@ -121,6 +143,8 @@ bool mount_tab5_sd() {
     const sd_pwr_ctrl_ldo_config_t ldo = {.ldo_chan_id = 4};
     const esp_err_t power_result = sd_pwr_ctrl_new_on_chip_ldo(&ldo, &g_sd_power);
     if (power_result != ESP_OK) {
+      snprintf(g_last_mount_error, sizeof(g_last_mount_error), "ldo:%s",
+               esp_err_to_name(power_result));
       ESP_LOGE("orcsdr_storage", "SD LDO4 init failed: %s", esp_err_to_name(power_result));
       return false;
     }
@@ -136,10 +160,15 @@ bool mount_tab5_sd() {
   slot.d3 = GPIO_NUM_42;
   const esp_err_t mount_result = esp_vfs_fat_sdmmc_mount("/sd", &host, &slot, &mount, &g_card);
   g_mounted = mount_result == ESP_OK;
-  if (!g_mounted) ESP_LOGE("orcsdr_storage", "SDMMC Slot0 mount failed: %s", esp_err_to_name(mount_result));
+  if (!g_mounted) {
+    snprintf(g_last_mount_error, sizeof(g_last_mount_error), "mount:%s",
+             esp_err_to_name(mount_result));
+    ESP_LOGE("orcsdr_storage", "SDMMC Slot0 mount failed: %s", esp_err_to_name(mount_result));
+  }
   return g_mounted;
 }
 
+const char* last_mount_error() { return g_last_mount_error; }
 bool mounted() { return g_mounted; }
 FileSystem& filesystem() { return g_filesystem; }
 uint64_t total_bytes() { return g_card ? static_cast<uint64_t>(g_card->csd.capacity) * g_card->csd.sector_size : 0; }
