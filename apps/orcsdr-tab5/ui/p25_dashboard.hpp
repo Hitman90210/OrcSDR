@@ -32,6 +32,7 @@ struct Snapshot {
   bool auto_follow = true;
   bool encryption_skip = true;
   bool following_voice = false;
+  bool probing_phase2 = false;
   bool voice_encrypted = false;
   uint8_t voice_algorithm_id = 0;
   uint16_t voice_key_id = 0;

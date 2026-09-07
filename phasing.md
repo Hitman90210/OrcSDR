@@ -17,6 +17,9 @@ flashable at every step — no phase should require a multi-day broken build.
   change in this repo (`PROJECT_STATUS.md`'s evidence-label discipline
   applies to refactors too — "Build-verified" is not "Hardware-verified").
 
+The current standards-based Phase II receiver work and its evidence ledger are
+tracked in [`docs/P25_PHASE2_WORKPHASE.md`](docs/P25_PHASE2_WORKPHASE.md).
+
 ## Phase 1 — split `main.cpp` into modules
 
 Goal: continue separating DSP/session/host responsibilities from `main.cpp`

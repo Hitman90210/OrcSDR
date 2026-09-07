@@ -5,6 +5,7 @@
 #include "text_editor.hpp"
 
 #include <M5Unified.h>
+#include <esp_attr.h>
 
 #include <algorithm>
 #include <cmath>
@@ -42,7 +43,7 @@ View g_view = View::monitor;
 bool g_active = false;
 audio_header::Control g_audio_control{};
 uint32_t g_last_dynamic_ms = 0;
-uint16_t g_waterfall_row[kSpectrumW]{};
+EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kSpectrumW]{};
 uint8_t g_profile_cursor = 0;
 bool g_delete_armed = false;
 char g_profile_name[48]{};
@@ -191,7 +192,8 @@ void draw_monitor_static() {
 void draw_monitor_dynamic() {
   char value[96];
   M5.Display.fillRect(40, 160, 390, 30, kPanel);
-  label(g_snapshot.following_voice ? "VOICE CHANNEL" : "CONTROL CHANNEL", 44, 166);
+  label(g_snapshot.following_voice ? "VOICE CHANNEL" :
+        g_snapshot.probing_phase2 ? "PHASE II PROBE" : "CONTROL CHANNEL", 44, 166);
   M5.Display.fillRect(42, 198, 384, 55, kPanel);
   format_mhz(value, sizeof(value), g_snapshot.frequency_hz);
   text(value, 52, 227, TFT_WHITE, 4, middle_left);
@@ -204,13 +206,14 @@ void draw_monitor_dynamic() {
              g_snapshot.decoded.system_id, g_snapshot.decoded.nac);
     text(value, 478, 246, kGreen, 1, middle_left);
   } else {
-    text("PROFILE: WACN BEE00  SYSID 1F3  NAC 1F0", 478, 246, kMuted, 1, middle_left);
+    text("AWAITING OVER-THE-AIR SYSTEM IDENTITY", 478, 246, kMuted, 1, middle_left);
   }
 
   M5.Display.fillRect(42, 330, 764, 135, kPanel);
   const auto& grant = g_snapshot.decoded.current_grant;
   if (grant.valid) {
-    text(g_snapshot.voice_encrypted ? "ENCRYPTED PHASE I VOICE MUTED" :
+    text(g_snapshot.probing_phase2 ? "PHASE II CALL DETECTED — CHECKING TRAFFIC" :
+         g_snapshot.voice_encrypted ? "ENCRYPTED PHASE I VOICE MUTED" :
          g_snapshot.following_voice ? "FOLLOWING CLEAR PHASE I VOICE" :
          grant_live(grant) ? "LIVE CONTROL-CHANNEL GRANT" : "LAST GRANT — STALE",
          424, 362, g_snapshot.voice_encrypted ? kRed :
@@ -580,6 +583,7 @@ void update(const Snapshot& snapshot) {
       snapshot.voice_algorithm_id != g_snapshot.voice_algorithm_id ||
       snapshot.voice_key_id != g_snapshot.voice_key_id ||
       snapshot.following_voice != g_snapshot.following_voice ||
+      snapshot.probing_phase2 != g_snapshot.probing_phase2 ||
       snapshot.candidate_index != g_snapshot.candidate_index ||
       snapshot.config_revision != g_snapshot.config_revision ||
       memcmp(snapshot.candidate_levels, g_snapshot.candidate_levels,

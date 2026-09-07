@@ -18,6 +18,7 @@ void configure(Modulation modulation, float timing_gain, float carrier_gain);
 void process_cu8(const uint8_t* iq, size_t bytes);
 void reset_at(uint32_t now_ms);
 void suspend_voice();
+void set_phase2_acquisition(bool enabled);
 void process_cu8_at(const uint8_t* iq, size_t bytes, uint32_t now_ms);
 Snapshot snapshot();
 bool pop_voice_frame(VoiceFrame* frame);
