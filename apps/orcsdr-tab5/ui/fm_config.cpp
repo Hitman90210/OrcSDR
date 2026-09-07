@@ -7,9 +7,6 @@
 
 namespace orcsdr::fmconfig {
 namespace {
-constexpr uint32_t kFmMinHz = 87500000;
-constexpr uint32_t kFmMaxHz = 108000000;
-
 void set_error(char* error, size_t size, const char* value) {
   if (error != nullptr && size) snprintf(error, size, "%s", value);
 }
@@ -70,12 +67,12 @@ bool parse_text(const char* text, Config* config, char* error, size_t error_size
 }  // namespace
 
 bool validate(const Config& config, char* error, size_t error_size) {
-  if (config.version != kSchemaVersion || config.startup_frequency_hz < kFmMinHz ||
-      config.startup_frequency_hz > kFmMaxHz || config.preset_count > kMaxPresets) {
+  if (config.version != kSchemaVersion || config.startup_frequency_hz < kMinFrequencyHz ||
+      config.startup_frequency_hz > kMaxFrequencyHz || config.preset_count > kMaxPresets) {
     set_error(error, error_size, "invalid FM profile"); return false;
   }
   for (size_t i = 0; i < config.preset_count; ++i) {
-    if (config.presets_hz[i] < kFmMinHz || config.presets_hz[i] > kFmMaxHz) {
+    if (config.presets_hz[i] < kMinFrequencyHz || config.presets_hz[i] > kMaxFrequencyHz) {
       set_error(error, error_size, "preset range"); return false;
     }
     for (size_t j = i + 1; j < config.preset_count; ++j)
@@ -119,6 +116,17 @@ bool self_check() {
   constexpr char kGood[] = "version=1\nstartup_frequency_hz=96100000\npreset_hz=96100000\n";
   Config config{}; char error[32]{};
   if (!parse_text(kGood, &config, error, sizeof(error))) return false;
+  config.startup_frequency_hz = kMinFrequencyHz;
+  config.presets_hz[0] = kMinFrequencyHz;
+  if (!validate(config, error, sizeof(error))) return false;
+  config.startup_frequency_hz = kMinFrequencyHz - 1;
+  if (validate(config, error, sizeof(error))) return false;
+  config.startup_frequency_hz = kMaxFrequencyHz;
+  config.presets_hz[0] = kMaxFrequencyHz;
+  if (!validate(config, error, sizeof(error))) return false;
+  config.startup_frequency_hz = kMaxFrequencyHz + 1;
+  if (validate(config, error, sizeof(error))) return false;
+  config.startup_frequency_hz = kMinFrequencyHz;
   config.presets_hz[1] = config.presets_hz[0]; config.preset_count = 2;
   return !validate(config, error, sizeof(error));
 }
