@@ -66,6 +66,7 @@
 #include "p25_voice.hpp"
 #include "pocsag_dashboard.hpp"
 #include "pocsag_decoder_core.hpp"
+#include "pocsag_store.hpp"
 #include "radio_session.hpp"
 #include "radio_ui_service.hpp"
 #include "rf_lab.hpp"
@@ -1743,6 +1744,11 @@ void publish_adsb_snapshot(uint32_t now) {
 // inline in the same context that already demodulates FM, matching how RDS
 // taps the FM discriminator rather than owning a second pipeline.
 orcsdr::pocsag::Decoder pocsag_decoder_instance;
+// CAPCODE identity tracking (Phase 10.3). In-RAM only for now: hits are
+// recorded as messages decode, but there is no SD persistence, alias/group/
+// watch/mute editing UI, or IDS-tab rendering yet -- those are separate,
+// not-yet-implemented follow-ups (see phasing.md Phase 10.3).
+orcsdr::pocsag_store::Table pocsag_identity_table;
 constexpr size_t kPocsagMessageCount = 12;
 struct PocsagStoredMessage {
   bool used = false;
@@ -1765,6 +1771,11 @@ std::atomic<uint32_t> pocsag_message_revision{0};
 
 void on_pocsag_message(const orcsdr::pocsag::Message& msg, void*) {
   portENTER_CRITICAL(&pocsag_messages_mux);
+  // record_hit() is a short, bounded O(kMaxIdentities) scan -- cheap enough
+  // to run inside the same critical section already guarding the message
+  // ring, avoiding a second lock for an object nothing outside this task
+  // writes to yet.
+  pocsag_identity_table.record_hit(msg.capcode, millis());
   PocsagStoredMessage& slot = pocsag_messages[pocsag_message_write];
   slot.used = true;
   slot.capcode = msg.capcode;
@@ -13500,7 +13511,8 @@ void setup() {
     Serial.println("RTL_ADSB_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_ADSB_SELF_CHECK_OK");
-  if (!orcsdr::pocsag::self_check() || !orcsdr::pocsag::Decoder::self_check()) {
+  if (!orcsdr::pocsag::self_check() || !orcsdr::pocsag::Decoder::self_check() ||
+      !orcsdr::pocsag_store::Table::self_check()) {
     Serial.println("RTL_POCSAG_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_POCSAG_SELF_CHECK_OK");

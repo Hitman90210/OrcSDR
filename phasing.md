@@ -804,11 +804,21 @@ rather than adding a second high-rate IQ path.
 
 ### 10.3 — CAPCODE identity and message archive
 
-- [ ] `pocsag_store`: persistent CAPCODE records (alias, group, watch/mute,
-      notes, first/last seen, hit count), duplicate-message collapse, and
-      an async-queued SD append log under `/orcsdr/pocsag/` — never called
-      from the IQ/decode path; a full storage queue increments a
-      dropped-log counter rather than blocking reception.
+- [x] `pocsag_store::Table`: host-testable, no FreeRTOS/SD dependency,
+      bounded 32-entry CAPCODE record set (alias, group, watch/mute, notes,
+      first/last seen, hit count) with LRU eviction that never drops a
+      watched record. `tools/test-pocsag-store.ps1`/`.sh` pass an optimized
+      and an ASan/UBSan build covering hit tracking, field edits against
+      unknown capcodes (must fail cleanly, not create a record), bounded
+      truncation, and full-table eviction. Wired live: every decoded
+      message records a hit via the same critical section already guarding
+      the message ring.
+- [ ] No SD persistence yet (`/orcsdr/pocsag/identities.cfg`, atomic
+      `.part`/`.bak` write matching the P25 profile pattern) — the table is
+      in-RAM only and resets on reboot.
+- [ ] No alias/group/watch/mute/notes editing UI (IDS tab still a
+      placeholder) and no duplicate-message collapse or async-queued SD
+      message log yet.
 - [ ] Bounded recent-message RAM cache plus an async SD archive
       search/export path.
 
