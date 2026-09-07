@@ -4,20 +4,28 @@ on:
   pull_request:
     paths:
       - apps/orcsdr-tab5/ui/p25_decoder_core.*
+      - apps/orcsdr-tab5/ui/p25_config.*
       - apps/orcsdr-tab5/ui/p25_voice.*
       - components/mbelib/**
       - tests/fixtures/p25_control_lane_453925.orciq
       - tests/p25_core_tests.cpp
+      - tests/p25_config_tests.cpp
+      - tests/test_data_catalog.py
+      - tools/data_catalog/build_catalog.py
       - tools/test-p25-core.*
       - .github/workflows/p25-core-tests.yml
   push:
     branches: [main]
     paths:
       - apps/orcsdr-tab5/ui/p25_decoder_core.*
+      - apps/orcsdr-tab5/ui/p25_config.*
       - apps/orcsdr-tab5/ui/p25_voice.*
       - components/mbelib/**
       - tests/fixtures/p25_control_lane_453925.orciq
       - tests/p25_core_tests.cpp
+      - tests/p25_config_tests.cpp
+      - tests/test_data_catalog.py
+      - tools/data_catalog/build_catalog.py
       - tools/test-p25-core.*
       - .github/workflows/p25-core-tests.yml
   workflow_dispatch:

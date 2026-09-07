@@ -8,9 +8,10 @@ labels, or live traffic data to the catalog.
 Each pack has a compact runtime index and the corresponding unmodified source
 archive. Both files are streamed to `*.part`, SHA-256 and format-checked, then
 activated together with on-SD `.bak` rollback copies. A failed update leaves the
-previous complete pack in place. P25 configuration is deliberately outside this mechanism:
-`/orcsdr/P25.cfg` is user-owned and is never created, replaced, or removed by a
-catalog operation.
+previous complete pack in place. The five original pack indexes remain stable.
+The manifest may also contain bounded `p25_...` packages. Their runtime file
+must validate as a P25 profile and install only at the matching
+`/orcsdr/p25/<pack-id>/profile.cfg` path.
 
 ## Publishing a catalog
 
@@ -35,6 +36,12 @@ The asset URL prefix is included before signing, so GitHub Release upload cannot
 alter the signed manifest. Do not publish a pack until its source-rights entry
 is complete.
 
+A P25 package represents one verified system. It needs a title, version,
+source date, source URL, redistribution statement, a version-2 profile, and a
+preserved ZIP source archive. The builder rejects other dynamic IDs or a P25
+profile whose destination does not match its ID. Do not publish inferred or
+third-party talkgroup labels without documented permission.
+
 For NASR, NOAA, and FCC packs, normalize only reviewed columns into the common
 runtime format. For example:
 
@@ -57,5 +64,8 @@ remains the catalog archive; this record file is the device runtime subset.
 | `noaa_weather` | NWR transmitter/SAME index | source capture | source-dependent |
 | `fcc_broadcast` | FM/AM station index | FCC LMS dump | source-dependent |
 
-Maps are imported and validated separately. HF schedules, LoRa regional
-profiles, and any P25 directory require a separate rights and format review.
+Additional signed IDs beginning with `p25_` are permitted after the source and
+redistribution gate above. None are bundled by this change.
+
+Maps are imported and validated separately. HF schedules and LoRa regional
+profiles require a separate rights and format review.

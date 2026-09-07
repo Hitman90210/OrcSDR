@@ -42,6 +42,7 @@ struct Snapshot {
   uint8_t volume = 0;
   float candidate_levels[p25config::kMaxControlChannels]{};
   p25config::Config config{};
+  p25config::StoreState profiles{};
   uint32_t config_revision = 0;
   char config_status[64]{};
   p25decoder::Snapshot decoded{};
@@ -60,6 +61,11 @@ enum class ActionKind : uint8_t {
   auto_follow_toggle,
   encryption_skip_toggle,
   reload_config,
+  select_profile,
+  import_profile,
+  export_profile,
+  rename_profile,
+  delete_profile,
   span_down,
   span_up,
   sound_toggle,
@@ -83,6 +89,7 @@ Action handle_touch(int32_t x, int32_t y);
 bool active();
 bool spectrum_active();
 View view();
+bool take_profile_name(char* value, size_t size);
 void show_documentation_view(View view, const Snapshot& snapshot,
                              bool show_volume_tray = false);
 bool self_check();

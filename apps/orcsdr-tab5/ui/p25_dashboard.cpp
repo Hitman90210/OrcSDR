@@ -2,6 +2,7 @@
 
 #include "dashboard_audio_control.hpp"
 #include "orc_badge.hpp"
+#include "text_editor.hpp"
 
 #include <M5Unified.h>
 
@@ -30,8 +31,9 @@ constexpr int kSpectrumW = 1188;
 constexpr int kSpectrumH = 145;
 constexpr int kWaterfallY = 420;
 constexpr int kWaterfallH = 130;
-constexpr uint32_t kP25MinHz = 450000000;
-constexpr uint32_t kP25MaxHz = 470000000;
+constexpr uint32_t kP25MinHz = 24000000;
+constexpr uint32_t kP25MaxHz = 1766000000;
+constexpr size_t kProfilesPerPage = 8;
 
 static_assert(static_cast<uint8_t>(View::count) == 5);
 
@@ -41,6 +43,10 @@ bool g_active = false;
 audio_header::Control g_audio_control{};
 uint32_t g_last_dynamic_ms = 0;
 uint16_t g_waterfall_row[kSpectrumW]{};
+uint8_t g_profile_cursor = 0;
+bool g_delete_armed = false;
+char g_profile_name[48]{};
+bool g_profile_name_ready = false;
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
   return x >= bx && x < bx + bw && y >= by && y < by + bh;
@@ -123,7 +129,7 @@ void draw_tab_icon(View view, int cx, int cy, uint16_t color) {
 
 void draw_tabs() {
   static constexpr const char* names[] = {
-      "MONITOR", "SPECTRUM", "TALKGROUPS", "PROGRAM", "RF HEALTH"};
+      "MONITOR", "SPECTRUM", "TALKGROUPS", "SYSTEMS", "RF HEALTH"};
   for (uint8_t i = 0; i < static_cast<uint8_t>(View::count); ++i) {
     const int x = i * kTabW;
     const bool selected = i == static_cast<uint8_t>(g_view);
@@ -161,6 +167,11 @@ void draw_meter(int x, int y, int w, float dbfs, int segments = 18) {
 }
 
 void draw_monitor_static() {
+  char hold_label[24] = "HOLD";
+  if (g_snapshot.hold_talkgroup)
+    snprintf(hold_label, sizeof(hold_label), "HOLD %u", g_snapshot.hold_talkgroup);
+  else if (g_snapshot.hold)
+    strlcpy(hold_label, "HOLD NEXT", sizeof(hold_label));
   card(24, 150, 420, 118);
   label("CONTROL CHANNEL", 44, 166);
   card(458, 150, 798, 118);
@@ -171,8 +182,9 @@ void draw_monitor_static() {
   label("CONTROL SIGNAL", 858, 298);
   button(24, 505, 232, 92, "<  CHANNEL");
   button(270, 505, 232, 92, "CHANNEL  >");
-  button(516, 505, 232, 92, "SURVEY", kGreen, g_snapshot.survey_active);
-  button(762, 505, 232, 92, "HOLD", kYellow, g_snapshot.hold);
+  button(516, 505, 232, 92, g_snapshot.survey_active ? "STOP SURVEY" : "SURVEY",
+         kGreen, g_snapshot.survey_active);
+  button(762, 505, 232, 92, hold_label, kYellow, g_snapshot.hold);
   button(1008, 505, 248, 92, "SKIP / NEXT");
 }
 
@@ -220,9 +232,12 @@ void draw_monitor_dynamic() {
     text(value, 58, 447, (grant.encrypted || g_snapshot.voice_encrypted) ? kRed : kGreen,
          2, middle_left);
   } else {
-    text(g_snapshot.decoded.frame_sync ? "P25 CONTROL CHANNEL LOCKED" :
-         "SEARCHING FOR P25 CONTROL CHANNEL", 424, 362,
-         g_snapshot.decoded.frame_sync ? kGreen : kYellow, 2);
+    const char* state = g_snapshot.config.control_channel_count == 0
+                            ? "NO P25 SYSTEM CONFIGURED"
+                        : g_snapshot.survey_active ? "SURVEYING KNOWN CONTROL CHANNELS"
+                        : g_snapshot.decoded.frame_sync ? "P25 CONTROL CHANNEL LOCKED"
+                                                        : "ACQUIRING CONFIGURED CONTROL CHANNEL";
+    text(state, 424, 362, g_snapshot.decoded.frame_sync ? kGreen : kYellow, 2);
     text("TGID  —     ALIAS  —     SOURCE  —", 58, 410, TFT_WHITE, 2, middle_left);
     text("VOICE FREQUENCY  —     MODE  —", 58, 447, kMuted, 2, middle_left);
   }
@@ -331,48 +346,66 @@ void draw_talkgroups_dynamic() {
 }
 
 void draw_program_static() {
-  card(24, 148, 600, 174);
-  label("SYSTEM / SITE", 44, 164);
-  card(638, 148, 618, 174);
-  label("CONTROL CHANNELS", 658, 164);
-  for (size_t i = 0; i < g_snapshot.candidate_count; ++i) {
-    char value[48];
-    snprintf(value, sizeof(value), "%c %.4f MHz   %.1f dBFS",
-             i == g_snapshot.candidate_index ? '>' : ' ',
-             g_snapshot.config.control_channels_hz[i] / 1000000.0,
-             static_cast<double>(g_snapshot.candidate_levels[i]));
-    text(value, 660, 204 + static_cast<int>(i) * 27,
-         i == g_snapshot.candidate_index ? kGreen : TFT_WHITE, 2, middle_left);
-  }
-  card(24, 338, 1232, 198);
-  label("TRUNKING OPTIONS", 44, 354);
-  button(44, 395, 270, 58, "AUTO FOLLOW", kGreen, g_snapshot.auto_follow);
-  button(330, 395, 270, 58, "SKIP ENCRYPTED", kGreen, g_snapshot.encryption_skip);
-  button(616, 395, 270, 58, "SURVEY", kCyan, g_snapshot.survey_active);
-  button(902, 395, 330, 58, "DEVICE SETTINGS");
-  button(44, 468, 556, 50, "RELOAD /ORCSDR/P25.CFG", kCyan);
-  button(616, 468, 270, 50, "HOME / NAV", kYellow);
-  button(902, 468, 330, 50, "PHASE I  •  12.5 kHz", kGreen, true);
-  text("Single tuner: follow voice traffic, then return to the control channel.",
-       640, 574, kMuted, 1);
+  card(24, 148, 600, 368);
+  label("SAVED SYSTEMS", 44, 164);
+  text("PREV", 440, 164, kCyan, 1, middle_left);
+  text("NEXT", 534, 164, kCyan, 1, middle_left);
+  card(638, 148, 618, 368);
+  label("ACTIVE SYSTEM", 658, 164);
+  button(24, 536, 190, 62, "SELECT", kGreen);
+  button(226, 536, 190, 62, "RENAME", kCyan);
+  button(428, 536, 190, 62, "IMPORT", kCyan);
+  button(638, 536, 190, 62, "EXPORT", kCyan);
+  button(840, 536, 190, 62, g_delete_armed ? "CONFIRM" : "DELETE", kRed);
+  button(1042, 536, 214, 62, "RELOAD", kYellow);
 }
 
 void draw_program_dynamic() {
-  char value[96];
-  M5.Display.fillRect(42, 198, 560, 108, kPanel);
-  text(g_snapshot.config.system_name, 44, 207, TFT_WHITE, 3, middle_left);
-  if (g_snapshot.decoded.identity_valid) {
-    snprintf(value, sizeof(value), "WACN %05lX   SYSID %03X   NAC %03X",
-             static_cast<unsigned long>(g_snapshot.decoded.wacn),
-             g_snapshot.decoded.system_id, g_snapshot.decoded.nac);
-    text(value, 44, 250, kGreen, 2, middle_left);
-    snprintf(value, sizeof(value), "RFSS %u   SITE %u   %s",
-             g_snapshot.decoded.rfss, g_snapshot.decoded.site, g_snapshot.config_status);
-    text(value, 44, 287, TFT_WHITE, 2, middle_left);
+  char value[112]{};
+  if (g_snapshot.profiles.count == 0) g_profile_cursor = 0;
+  else if (g_profile_cursor >= g_snapshot.profiles.count)
+    g_profile_cursor = g_snapshot.profiles.count - 1;
+  M5.Display.fillRect(42, 195, 564, 302, kPanel);
+  if (g_snapshot.profiles.count == 0) {
+    text("NO P25 SYSTEMS INSTALLED", 54, 232, kYellow, 2, middle_left);
+    text("Import /orcsdr/p25-import.cfg", 54, 276, kMuted, 2, middle_left);
+    text("or install a signed local pack.", 54, 310, kMuted, 2, middle_left);
   } else {
-    text("AWAITING P25 CONTROL-CHANNEL DECODE", 44, 250, kMuted, 2, middle_left);
-    text(g_snapshot.config_status, 44, 287, TFT_WHITE, 2, middle_left);
+    const size_t first = (g_profile_cursor / kProfilesPerPage) * kProfilesPerPage;
+    snprintf(value, sizeof(value), "%u-%u OF %u",
+             static_cast<unsigned>(first + 1),
+             static_cast<unsigned>(std::min(first + kProfilesPerPage,
+                                            static_cast<size_t>(g_snapshot.profiles.count))),
+             static_cast<unsigned>(g_snapshot.profiles.count));
+    text(value, 404, 184, kMuted, 1, middle_left);
+    for (size_t i = first; i < g_snapshot.profiles.count &&
+                           i < first + kProfilesPerPage; ++i) {
+      const auto& profile = g_snapshot.profiles.profiles[i];
+      const bool selected = i == g_profile_cursor;
+      const bool active = static_cast<int>(i) == g_snapshot.profiles.active_index;
+      snprintf(value, sizeof(value), "%c %s%s", selected ? '>' : ' ', profile.name,
+               active ? "  [ACTIVE]" : "");
+      text(value, 54, 215 + static_cast<int>(i - first) * 34,
+           selected ? kGreen : TFT_WHITE, 2, middle_left);
+    }
   }
+  M5.Display.fillRect(656, 195, 582, 302, kPanel);
+  text(g_snapshot.config.system_name, 668, 220,
+       g_snapshot.profiles.active_index >= 0 ? TFT_WHITE : kYellow, 3, middle_left);
+  text(g_snapshot.config_status, 668, 270, kMuted, 2, middle_left);
+  snprintf(value, sizeof(value), "CONTROL CHANNELS  %u",
+           static_cast<unsigned>(g_snapshot.config.control_channel_count));
+  text(value, 668, 320, kCyan, 2, middle_left);
+  for (size_t i = 0; i < g_snapshot.config.control_channel_count && i < 3; ++i) {
+    snprintf(value, sizeof(value), "%.4f MHz%s",
+             g_snapshot.config.control_channels_hz[i] / 1000000.0,
+             i == g_snapshot.candidate_index ? "  <" : "");
+    text(value, 668, 358 + static_cast<int>(i) * 28,
+         i == g_snapshot.candidate_index ? kGreen : TFT_WHITE, 2, middle_left);
+  }
+  button(668, 438, 260, 50, "AUTO FOLLOW", kGreen, g_snapshot.auto_follow);
+  button(948, 438, 270, 50, "SKIP ENCRYPTED", kGreen,
+         g_snapshot.encryption_skip);
 }
 
 void health_card(int x, int y, int w, int h, const char* title, const char* value,
@@ -410,7 +443,8 @@ void draw_health_dynamic() {
   text(value, 219, 219, TFT_WHITE, 3);
   M5.Display.fillRect(446, 194, 354, 50, kPanel);
   text(g_snapshot.following_voice ? "VOICE" : g_snapshot.survey_active ? "SURVEYING" :
-       g_snapshot.decoded.frame_sync ? "P25 LOCK" : "SEARCHING", 623, 219,
+       g_snapshot.decoded.frame_sync ? "P25 LOCK" :
+       g_snapshot.config.control_channel_count ? "ACQUIRING" : "NO SYSTEM", 623, 219,
        g_snapshot.following_voice ? kGreen : g_snapshot.survey_active ? kYellow :
        g_snapshot.decoded.frame_sync ? kGreen : kYellow, 3);
   M5.Display.fillRect(850, 194, 388, 50, kPanel);
@@ -604,6 +638,16 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
 }
 
 Action handle_touch(int32_t x, int32_t y) {
+  if (text_editor::active()) {
+    const auto result = text_editor::handle_touch(x, y);
+    if (result == text_editor::Result::accepted) {
+      strlcpy(g_profile_name, text_editor::value(), sizeof(g_profile_name));
+      g_profile_name_ready = true;
+      return {ActionKind::rename_profile, g_profile_cursor};
+    }
+    if (result == text_editor::Result::cancelled) draw();
+    return {};
+  }
   if (!g_active) return {};
   const auto audio_action = audio_header::handle_touch(g_audio_control, x, y, millis());
   if (audio_action != audio_header::Action::none) {
@@ -652,12 +696,46 @@ Action handle_touch(int32_t x, int32_t y) {
       return {ActionKind::hold_talkgroup, g_snapshot.config.talkgroups[row].id};
   }
   if (g_view == View::program) {
-    if (hit(x, y, 44, 395, 270, 58)) return {ActionKind::auto_follow_toggle};
-    if (hit(x, y, 330, 395, 270, 58)) return {ActionKind::encryption_skip_toggle};
-    if (hit(x, y, 616, 395, 270, 58)) return {ActionKind::survey_toggle};
-    if (hit(x, y, 902, 395, 330, 58)) return {ActionKind::open_device_settings};
-    if (hit(x, y, 44, 468, 556, 50)) return {ActionKind::reload_config};
-    if (hit(x, y, 616, 468, 270, 50)) return {ActionKind::exit_to_home};
+    if (hit(x, y, 668, 438, 260, 50)) return {ActionKind::auto_follow_toggle};
+    if (hit(x, y, 948, 438, 270, 50)) return {ActionKind::encryption_skip_toggle};
+    if (hit(x, y, 420, 148, 94, 46) && g_profile_cursor >= kProfilesPerPage) {
+      g_profile_cursor = static_cast<uint8_t>(g_profile_cursor - kProfilesPerPage);
+      g_delete_armed = false;
+      draw();
+      return {};
+    }
+    if (hit(x, y, 514, 148, 110, 46) &&
+        g_profile_cursor + kProfilesPerPage < g_snapshot.profiles.count) {
+      g_profile_cursor = static_cast<uint8_t>(g_profile_cursor + kProfilesPerPage);
+      g_delete_armed = false;
+      draw();
+      return {};
+    }
+    if (hit(x, y, 42, 195, 564, 302) && g_snapshot.profiles.count) {
+      const size_t first = (g_profile_cursor / kProfilesPerPage) * kProfilesPerPage;
+      const size_t row = static_cast<size_t>((y - 198) / 34);
+      if (first + row < g_snapshot.profiles.count)
+        g_profile_cursor = static_cast<uint8_t>(first + row);
+      g_delete_armed = false;
+      draw();
+      return {};
+    }
+    if (hit(x, y, 24, 536, 190, 62)) return {ActionKind::select_profile, g_profile_cursor};
+    if (hit(x, y, 226, 536, 190, 62) && g_snapshot.profiles.count) {
+      text_editor::begin("RENAME P25 SYSTEM",
+                         g_snapshot.profiles.profiles[g_profile_cursor].name, 47, false, "SAVE");
+      text_editor::draw();
+      return {};
+    }
+    if (hit(x, y, 428, 536, 190, 62)) return {ActionKind::import_profile};
+    if (hit(x, y, 638, 536, 190, 62)) return {ActionKind::export_profile, g_profile_cursor};
+    if (hit(x, y, 840, 536, 190, 62) && g_snapshot.profiles.count) {
+      if (g_delete_armed) { g_delete_armed = false; return {ActionKind::delete_profile, g_profile_cursor}; }
+      g_delete_armed = true;
+      draw();
+      return {};
+    }
+    if (hit(x, y, 1042, 536, 214, 62)) return {ActionKind::reload_config};
   }
   return {};
 }
@@ -665,6 +743,12 @@ Action handle_touch(int32_t x, int32_t y) {
 bool active() { return g_active; }
 bool spectrum_active() { return g_active && g_view == View::spectrum; }
 View view() { return g_view; }
+bool take_profile_name(char* value, size_t size) {
+  if (!g_profile_name_ready || value == nullptr || size == 0) return false;
+  strlcpy(value, g_profile_name, size);
+  g_profile_name_ready = false;
+  return true;
+}
 
 void show_documentation_view(View requested, const Snapshot& snapshot,
                              bool show_volume_tray) {

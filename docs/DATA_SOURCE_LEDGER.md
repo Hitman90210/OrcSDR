@@ -6,7 +6,7 @@
 | FAA aviation | FAA Aeronautical Information Services | NASR subscription CSV | public-source verification at publish time | 28 days | approved source, pack not published |
 | NOAA weather | NOAA/NWS | National transmitter data | public-information verification at publish time | source-dependent | curated CSV adapter required |
 | FCC FM/AM | FCC | current audio-station data export | public-data verification at publish time | source-dependent | curated CSV adapter required |
-| P25 | user | local `P25.cfg` import/export | no directory redistribution | user-managed | supported separately |
+| P25 profiles | user or named public publisher | local import/export or signed `p25_...` pack | source URL, retrieval date, transformation record, and explicit redistribution permission required; RadioReference data is not bundled | source-dependent | format supported; no system pack published |
 | Maps | user/Companion | SD or authenticated import | attribution/manifest validation | user-managed | separate feature |
 | HF schedules | HFCC | public schedule data | explicit terms review required | seasonal | deferred |
 | LoRa profiles | LoRa Alliance | regional parameters | standards/license review required | revision-based | deferred |
