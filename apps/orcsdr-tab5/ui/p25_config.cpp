@@ -1,16 +1,43 @@
 #include "p25_config.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <iterator>
 
 namespace orcsdr::p25config {
 namespace {
 
-constexpr uint32_t kP25MinHz = 450000000;
-constexpr uint32_t kP25MaxHz = 470000000;
+constexpr uint32_t kP25MinHz = 24000000;
+constexpr uint32_t kP25MaxHz = 1766000000;
+
+bool profile_path(const char* id, char* path, size_t size) {
+  if (!valid_profile_id(id) || path == nullptr || size == 0) return false;
+  return snprintf(path, size, "%s/%s/profile.cfg", kProfilesRoot, id) > 0;
+}
+
+bool write_active(orcsdr::storage::FileSystem& fs, const char* id) {
+  if (!valid_profile_id(id)) return false;
+  char temporary[64]{}, backup[64]{};
+  snprintf(temporary, sizeof(temporary), "%s.part", kActivePath);
+  snprintf(backup, sizeof(backup), "%s.bak", kActivePath);
+  fs.remove(temporary);
+  File file = fs.open(temporary, FILE_WRITE, true);
+  if (!file || file.printf("%s\n", id) == 0) return false;
+  file.close();
+  fs.remove(backup);
+  const bool had_active = fs.exists(kActivePath);
+  if (had_active && !fs.rename(kActivePath, backup)) return false;
+  if (!fs.rename(temporary, kActivePath)) {
+    if (had_active) fs.rename(backup, kActivePath);
+    return false;
+  }
+  fs.remove(backup);
+  return true;
+}
 
 void set_error(char* error, size_t size, const char* value) {
   if (error == nullptr || size == 0) return;
@@ -66,7 +93,7 @@ bool has_talkgroup(const Config& config, uint16_t id) {
   return false;
 }
 
-bool parse_text(const char* text, Config* config, char* error, size_t error_size) {
+bool parse_text_impl(const char* text, Config* config, char* error, size_t error_size) {
   Config parsed{};
   snprintf(parsed.system_name, sizeof(parsed.system_name), "%s", "My P25 System");
   bool has_version = false;
@@ -94,11 +121,11 @@ bool parse_text(const char* text, Config* config, char* error, size_t error_size
     char* field = trim(equals + 1);
     uint32_t number = 0;
     if (strcmp(key, "version") == 0) {
-      if (!parse_uint(field, &number) || number != kSchemaVersion) {
+      if (!parse_uint(field, &number) || (number != 1 && number != kSchemaVersion)) {
         snprintf(error, error_size, "line %lu version", static_cast<unsigned long>(line_number));
         return false;
       }
-      parsed.version = number;
+      parsed.version = kSchemaVersion;
       has_version = true;
     } else if (strcmp(key, "system_name") == 0) {
       if (*field == '\0' || strlen(field) >= sizeof(parsed.system_name)) {
@@ -106,6 +133,31 @@ bool parse_text(const char* text, Config* config, char* error, size_t error_size
         return false;
       }
       snprintf(parsed.system_name, sizeof(parsed.system_name), "%s", field);
+    } else if (strcmp(key, "nac") == 0) {
+      if (!parse_uint(field, &number) || number > 0xFFF) {
+        snprintf(error, error_size, "line %lu nac", static_cast<unsigned long>(line_number)); return false;
+      }
+      parsed.nac = static_cast<uint16_t>(number);
+    } else if (strcmp(key, "wacn") == 0) {
+      if (!parse_uint(field, &number) || number > 0xFFFFF) {
+        snprintf(error, error_size, "line %lu wacn", static_cast<unsigned long>(line_number)); return false;
+      }
+      parsed.wacn = number;
+    } else if (strcmp(key, "system_id") == 0) {
+      if (!parse_uint(field, &number) || number > 0xFFF) {
+        snprintf(error, error_size, "line %lu system_id", static_cast<unsigned long>(line_number)); return false;
+      }
+      parsed.system_id = static_cast<uint16_t>(number);
+    } else if (strcmp(key, "rfss") == 0) {
+      if (!parse_uint(field, &number) || number > UINT8_MAX) {
+        snprintf(error, error_size, "line %lu rfss", static_cast<unsigned long>(line_number)); return false;
+      }
+      parsed.rfss = static_cast<uint8_t>(number);
+    } else if (strcmp(key, "site") == 0) {
+      if (!parse_uint(field, &number) || number > UINT8_MAX) {
+        snprintf(error, error_size, "line %lu site", static_cast<unsigned long>(line_number)); return false;
+      }
+      parsed.site = static_cast<uint8_t>(number);
     } else if (strcmp(key, "control_channel_hz") == 0) {
       if (!parse_uint(field, &number) || number < kP25MinHz || number > kP25MaxHz ||
           has_channel(parsed, number) || parsed.control_channel_count >= kMaxControlChannels) {
@@ -187,6 +239,14 @@ bool parse_text(const char* text, Config* config, char* error, size_t error_size
 
 }  // namespace
 
+bool parse(const char* text, Config* config, char* error, size_t error_size) {
+  if (text == nullptr || config == nullptr) {
+    set_error(error, error_size, "invalid parser input");
+    return false;
+  }
+  return parse_text_impl(text, config, error, error_size);
+}
+
 void defaults(Config* config) {
   if (config == nullptr) return;
   *config = {};
@@ -194,20 +254,7 @@ void defaults(Config* config) {
   config->modulation = p25core::Modulation::auto_detect;
   config->cqpsk_timing_gain = 0.005f;
   config->cqpsk_carrier_gain = 0.008f;
-  snprintf(config->system_name, sizeof(config->system_name), "%s", "Lane County P25");
-  constexpr uint32_t channels[] = {453812500, 453925000, 460187500, 460312500};
-  for (uint32_t frequency_hz : channels)
-    config->control_channels_hz[config->control_channel_count++] = frequency_hz;
-  config->last_control_channel_hz = channels[0];
-  constexpr struct { uint16_t id; const char* alias; } talkgroups[] = {
-      {20001, "LCSO DISP 1"}, {20003, "LCSO SEC 2"}, {20051, "EPD DISP"},
-      {20101, "SPD DISP"}, {20204, "LCF East 8"}, {20391, "LCF Firecom 1"},
-      {20411, "Eugene PW Disp"}, {20440, "SPW Ch 1"}};
-  for (const auto& source : talkgroups) {
-    Talkgroup& target = config->talkgroups[config->talkgroup_count++];
-    target.id = source.id;
-    snprintf(target.alias, sizeof(target.alias), "%s", source.alias);
-  }
+  snprintf(config->system_name, sizeof(config->system_name), "%s", "No P25 system configured");
 }
 
 bool validate(const Config& config, char* error, size_t error_size) {
@@ -263,21 +310,27 @@ LoadResult load(orcsdr::storage::FileSystem& fs, const char* path, Config* confi
   }
   char text[2048]{};
   const size_t bytes = file.readBytes(text, sizeof(text) - 1);
+  text[bytes] = '\0';
   const bool truncated = file.available();
   file.close();
   if (truncated) {
     set_error(error, error_size, "config too large");
     return LoadResult::invalid;
   }
-  return parse_text(text, config, error, error_size) ? LoadResult::ok : LoadResult::invalid;
+  return parse(text, config, error, error_size) ? LoadResult::ok : LoadResult::invalid;
 }
 
-bool save(orcsdr::storage::FileSystem& fs, const Config& config, char* error, size_t error_size) {
+bool save(orcsdr::storage::FileSystem& fs, const char* path, const Config& config,
+          char* error, size_t error_size) {
+  if (path == nullptr || path[0] != '/') {
+    set_error(error, error_size, "invalid destination");
+    return false;
+  }
   if (!validate(config, error, error_size)) return false;
-  char temporary[48]{};
-  char backup[48]{};
-  snprintf(temporary, sizeof(temporary), "%s.part", kPath);
-  snprintf(backup, sizeof(backup), "%s.bak", kPath);
+  char temporary[128]{};
+  char backup[128]{};
+  snprintf(temporary, sizeof(temporary), "%s.part", path);
+  snprintf(backup, sizeof(backup), "%s.bak", path);
   fs.mkdir("/orcsdr");
   fs.remove(temporary);
   File file = fs.open(temporary, FILE_WRITE, true);
@@ -285,9 +338,14 @@ bool save(orcsdr::storage::FileSystem& fs, const Config& config, char* error, si
     set_error(error, error_size, "cannot create config");
     return false;
   }
-  file.printf("# OrcSDR P25 profile — edit on a computer, then reload from Program.\n");
+  file.printf("# OrcSDR P25 profile — edit on a computer, then reload from Systems.\n");
   file.printf("version=%lu\n", static_cast<unsigned long>(config.version));
   file.printf("system_name=%s\n", config.system_name);
+  if (config.nac) file.printf("nac=%u\n", config.nac);
+  if (config.wacn) file.printf("wacn=%lu\n", static_cast<unsigned long>(config.wacn));
+  if (config.system_id) file.printf("system_id=%u\n", config.system_id);
+  if (config.rfss) file.printf("rfss=%u\n", config.rfss);
+  if (config.site) file.printf("site=%u\n", config.site);
   for (size_t i = 0; i < config.control_channel_count; ++i)
     file.printf("control_channel_hz=%lu\n", static_cast<unsigned long>(config.control_channels_hz[i]));
   file.printf("last_control_channel_hz=%lu\n", static_cast<unsigned long>(config.last_control_channel_hz));
@@ -306,14 +364,14 @@ bool save(orcsdr::storage::FileSystem& fs, const Config& config, char* error, si
     return false;
   }
   fs.remove(backup);
-  const bool had_target = fs.exists(kPath);
-  if (had_target && !fs.rename(kPath, backup)) {
+  const bool had_target = fs.exists(path);
+  if (had_target && !fs.rename(path, backup)) {
     fs.remove(temporary);
     set_error(error, error_size, "cannot back up config");
     return false;
   }
-  if (!fs.rename(temporary, kPath)) {
-    if (had_target) fs.rename(backup, kPath);
+  if (!fs.rename(temporary, path)) {
+    if (had_target) fs.rename(backup, path);
     fs.remove(temporary);
     set_error(error, error_size, "cannot replace config");
     return false;
@@ -321,11 +379,203 @@ bool save(orcsdr::storage::FileSystem& fs, const Config& config, char* error, si
   return true;
 }
 
+bool valid_profile_id(const char* id) {
+  if (id == nullptr) return false;
+  const size_t length = strlen(id);
+  if (length == 0 || length >= 32) return false;
+  for (size_t i = 0; i < length; ++i)
+    if (!(isalnum(static_cast<unsigned char>(id[i])) || id[i] == '-' || id[i] == '_'))
+      return false;
+  return strcmp(id, ".") != 0 && strcmp(id, "..") != 0;
+}
+
+bool refresh(orcsdr::storage::FileSystem& fs, StoreState* state, char* error,
+             size_t error_size) {
+  if (state == nullptr) return false;
+  *state = {};
+  File active = fs.open(kActivePath, FILE_READ);
+  if (active) {
+    const size_t bytes = active.readBytes(state->active_id, sizeof(state->active_id) - 1);
+    state->active_id[bytes] = '\0';
+    char* newline = strpbrk(state->active_id, "\r\n");
+    if (newline) *newline = '\0';
+    if (!valid_profile_id(state->active_id)) state->active_id[0] = '\0';
+  }
+  File root = fs.open(kProfilesRoot, FILE_READ);
+  if (!root || !root.isDirectory()) return true;
+  while (state->count < kMaxProfiles) {
+    File entry = root.openNextFile();
+    if (!entry) break;
+    if (!entry.isDirectory()) continue;
+    const char* name = strrchr(entry.name(), '/');
+    const char* id = name ? name + 1 : entry.name();
+    if (!valid_profile_id(id)) continue;
+    char path[96]{};
+    Config config{};
+    if (!profile_path(id, path, sizeof(path))) continue;
+    if (load(fs, path, &config, error, error_size) != LoadResult::ok) {
+      char backup[112]{};
+      snprintf(backup, sizeof(backup), "%s.bak", path);
+      if (load(fs, backup, &config, error, error_size) != LoadResult::ok) continue;
+    }
+    ProfileSummary& summary = state->profiles[state->count++];
+    snprintf(summary.id, sizeof(summary.id), "%s", id);
+    snprintf(summary.name, sizeof(summary.name), "%s", config.system_name);
+  }
+  std::sort(std::begin(state->profiles), std::begin(state->profiles) + state->count,
+            [](const ProfileSummary& a, const ProfileSummary& b) {
+              return strcmp(a.name, b.name) < 0;
+            });
+  for (size_t i = 0; i < state->count; ++i)
+    if (strcmp(state->profiles[i].id, state->active_id) == 0)
+      state->active_index = static_cast<int8_t>(i);
+  return true;
+}
+
+bool select(orcsdr::storage::FileSystem& fs, const char* id, Config* config,
+            StoreState* state, char* error, size_t error_size) {
+  char path[96]{};
+  if (!profile_path(id, path, sizeof(path))) return false;
+  if (load(fs, path, config, error, error_size) != LoadResult::ok) {
+    char backup[112]{};
+    snprintf(backup, sizeof(backup), "%s.bak", path);
+    if (load(fs, backup, config, error, error_size) != LoadResult::ok) return false;
+    fs.remove(path);
+    if (!save(fs, path, *config, error, error_size)) return false;
+  }
+  if (!write_active(fs, id)) {
+    set_error(error, error_size, "cannot save active profile");
+    return false;
+  }
+  return refresh(fs, state, error, error_size);
+}
+
+bool import_profile(orcsdr::storage::FileSystem& fs, const char* source_path,
+                    const char* requested_id, StoreState* state, char* error,
+                    size_t error_size) {
+  if (!valid_profile_id(requested_id)) {
+    set_error(error, error_size, "invalid profile id");
+    return false;
+  }
+  if (strncmp(requested_id, "p25_", 4) == 0) {
+    set_error(error, error_size, "p25_ ids are reserved for catalog packs");
+    return false;
+  }
+  Config config{};
+  if (load(fs, source_path, &config, error, error_size) != LoadResult::ok) return false;
+  StoreState current{};
+  if (!refresh(fs, &current, error, error_size)) return false;
+  if (current.count >= kMaxProfiles) {
+    set_error(error, error_size, "profile limit reached");
+    return false;
+  }
+  if (config.wacn != 0 && config.system_id != 0) {
+    for (size_t i = 0; i < current.count; ++i) {
+      char existing_path[96]{};
+      Config existing{};
+      if (profile_path(current.profiles[i].id, existing_path, sizeof(existing_path)) &&
+          load(fs, existing_path, &existing, error, error_size) == LoadResult::ok &&
+          existing.wacn == config.wacn && existing.system_id == config.system_id &&
+          existing.rfss == config.rfss && existing.site == config.site) {
+        set_error(error, error_size, "system identity already installed");
+        return false;
+      }
+    }
+  }
+  char directory[80]{}, path[96]{};
+  snprintf(directory, sizeof(directory), "%s/%s", kProfilesRoot, requested_id);
+  if (!profile_path(requested_id, path, sizeof(path))) return false;
+  if (fs.exists(path)) {
+    set_error(error, error_size, "profile id already exists");
+    return false;
+  }
+  if (!fs.mkdir("/orcsdr") || !fs.mkdir(kProfilesRoot) || !fs.mkdir(directory) ||
+      !save(fs, path, config, error, error_size)) return false;
+  if (!write_active(fs, requested_id)) {
+    set_error(error, error_size, "cannot save active profile");
+    return false;
+  }
+  return refresh(fs, state, error, error_size);
+}
+
+bool export_profile(orcsdr::storage::FileSystem& fs, const char* id,
+                    const char* destination_path, char* error, size_t error_size) {
+  constexpr size_t prefix_length = sizeof(kExportsRoot) - 1;
+  if (destination_path == nullptr ||
+      strncmp(destination_path, kExportsRoot, prefix_length) != 0 ||
+      destination_path[prefix_length] != '/' ||
+      destination_path[prefix_length + 1] == '\0' ||
+      strchr(destination_path + prefix_length + 1, '/') != nullptr ||
+      strstr(destination_path, "..") != nullptr) {
+    set_error(error, error_size, "export path must be /orcsdr/exports/<file>");
+    return false;
+  }
+  char path[96]{};
+  Config config{};
+  return fs.mkdir(kExportsRoot) && profile_path(id, path, sizeof(path)) &&
+         load(fs, path, &config, error, error_size) == LoadResult::ok &&
+         save(fs, destination_path, config, error, error_size);
+}
+
+bool rename_profile(orcsdr::storage::FileSystem& fs, const char* id,
+                    const char* name, StoreState* state, char* error,
+                    size_t error_size) {
+  if (name == nullptr || name[0] == '\0' || strlen(name) >= 48) {
+    set_error(error, error_size, "invalid system name");
+    return false;
+  }
+  char path[96]{};
+  Config config{};
+  if (!profile_path(id, path, sizeof(path)) ||
+      load(fs, path, &config, error, error_size) != LoadResult::ok) return false;
+  snprintf(config.system_name, sizeof(config.system_name), "%s", name);
+  return save(fs, path, config, error, error_size) &&
+         refresh(fs, state, error, error_size);
+}
+
+bool delete_profile(orcsdr::storage::FileSystem& fs, const char* id,
+                    StoreState* state, char* error, size_t error_size) {
+  char path[96]{}, backup[112]{}, temporary[112]{};
+  if (!profile_path(id, path, sizeof(path))) {
+    set_error(error, error_size, "cannot delete profile");
+    return false;
+  }
+  snprintf(backup, sizeof(backup), "%s.bak", path);
+  snprintf(temporary, sizeof(temporary), "%s.part", path);
+  const bool found = fs.exists(path) || fs.exists(backup) || fs.exists(temporary);
+  const bool removed = (!fs.exists(path) || fs.remove(path)) &&
+                       (!fs.exists(backup) || fs.remove(backup)) &&
+                       (!fs.exists(temporary) || fs.remove(temporary));
+  if (!found || !removed) {
+    set_error(error, error_size, "cannot delete profile");
+    return false;
+  }
+  if (state && strcmp(state->active_id, id) == 0) fs.remove(kActivePath);
+  return refresh(fs, state, error, error_size);
+}
+
+LoadResult load_active(orcsdr::storage::FileSystem& fs, Config* config,
+                       StoreState* state, char* error, size_t error_size) {
+  if (!refresh(fs, state, error, error_size)) return LoadResult::io_error;
+  if (state->active_index >= 0)
+    return select(fs, state->active_id, config, state, error, error_size)
+               ? LoadResult::ok : LoadResult::invalid;
+  if (state->count > 0)
+    return select(fs, state->profiles[0].id, config, state, error, error_size)
+               ? LoadResult::ok : LoadResult::invalid;
+  if (!fs.exists(kLegacyPath)) return LoadResult::missing;
+  if (!import_profile(fs, kLegacyPath, "legacy-import", state, error, error_size))
+    return LoadResult::invalid;
+  return select(fs, "legacy-import", config, state, error, error_size)
+             ? LoadResult::ok : LoadResult::invalid;
+}
+
 bool self_check() {
   Config config{};
   defaults(&config);
   char error[48]{};
-  if (!validate(config, error, sizeof(error))) return false;
+  if (validate(config, error, sizeof(error)) || config.control_channel_count != 0 ||
+      strcmp(config.system_name, "No P25 system configured") != 0) return false;
   constexpr char kEditedProfile[] =
       "version=1\n"
       "system_name=Test System\n"
@@ -338,16 +588,17 @@ bool self_check() {
       "cqpsk_carrier_gain=0.01\n"
       "hold_talkgroup=42\n"
       "talkgroup=42,Dispatch\n";
-  if (!parse_text(kEditedProfile, &config, error, sizeof(error)) ||
+  if (!parse(kEditedProfile, &config, error, sizeof(error)) ||
       config.control_channel_count != 1 || config.talkgroup_count != 1 ||
       config.auto_follow || config.talkgroups[0].id != 42 ||
       config.modulation != p25core::Modulation::cqpsk ||
       fabsf(config.cqpsk_timing_gain - 0.004f) > 0.00001f ||
       fabsf(config.cqpsk_carrier_gain - 0.01f) > 0.00001f) return false;
   constexpr char kBadProfile[] = "version=1\ncontrol_channel_hz=100\n";
-  if (parse_text(kBadProfile, &config, error, sizeof(error))) return false;
-  defaults(&config);
+  if (parse(kBadProfile, &config, error, sizeof(error))) return false;
+  if (!valid_profile_id("wacn-12345_sys-123") || valid_profile_id("../bad")) return false;
   config.control_channels_hz[1] = config.control_channels_hz[0];
+  config.control_channel_count = 2;
   return !validate(config, error, sizeof(error));
 }
 

@@ -1,4 +1,5 @@
 #include "catalog_sync.hpp"
+#include "p25_config.hpp"
 
 #include "wifi_service.hpp"
 #include <esp_crt_bundle.h>
@@ -48,6 +49,7 @@ struct Pack {
   Artifact archive;
   char version[16]{};
   bool available = false;
+  bool p25_profile = false;
 };
 
 EXT_RAM_BSS_ATTR State g_state;
@@ -59,16 +61,29 @@ TaskHandle_t g_worker = nullptr;
 Operation g_requested = Operation::none;
 uint8_t g_requested_pack = 0;
 
-constexpr const char* kIds[kPackCount] = {
+constexpr const char* kIds[kBuiltInPackCount] = {
     "faa_aircraft", "faa_aviation", "noaa_weather", "fcc_broadcast", "lane_county_map"};
-constexpr const char* kTitles[kPackCount] = {
+constexpr const char* kTitles[kBuiltInPackCount] = {
     "FAA AIRCRAFT", "FAA AVIATION", "NOAA WEATHER", "FCC FM / AM", "LANE COUNTY MAP"};
 
 int pack_index(const char* id) {
   if (id == nullptr) return -1;
-  for (uint8_t index = 0; index < kPackCount; ++index)
+  for (uint8_t index = 0; index < kBuiltInPackCount; ++index)
     if (strcmp(id, kIds[index]) == 0) return index;
   return -1;
+}
+
+bool valid_p25_pack_id(const char* id) {
+  if (id == nullptr || strncmp(id, "p25_", 4) != 0 || strlen(id) >= sizeof(PackView::id))
+    return false;
+  return orcsdr::p25config::valid_profile_id(id);
+}
+
+bool valid_p25_destination(const char* id, const char* value) {
+  char expected[96]{};
+  snprintf(expected, sizeof(expected), "%s/%s/profile.cfg",
+           orcsdr::p25config::kProfilesRoot, id);
+  return value != nullptr && strcmp(value, expected) == 0;
 }
 
 bool safe_text(const cJSON* item, char* output, size_t output_size) {
@@ -88,6 +103,7 @@ bool valid_hash(const char* value) {
 
 bool valid_destination(const char* value) {
   return strncmp(value, kDataRoot, strlen(kDataRoot)) == 0 &&
+         value[strlen(kDataRoot)] == '/' &&
          strstr(value, "..") == nullptr && strlen(value) < 95;
 }
 
@@ -153,6 +169,11 @@ void refresh_installed() {
     const auto& pack = packs[i];
     installed[i] = pack.available && pack.runtime.destination[0] &&
                    g_fs->exists(pack.runtime.destination);
+    if (installed[i] && pack.p25_profile) {
+      char version_path[112]{};
+      snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
+      installed[i] = g_fs->exists(version_path);
+    }
     if (installed[i]) {
       char version_path[112]{}, local[sizeof(pack.version)]{};
       snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
@@ -256,7 +277,8 @@ bool verify_signature(const uint8_t* manifest, size_t manifest_size,
   return verify == 0;
 }
 
-bool parse_artifact(const cJSON* object, bool archive, Artifact* output) {
+bool parse_artifact(const cJSON* object, bool archive, bool p25_profile,
+                    const char* pack_id, Artifact* output) {
   if (!cJSON_IsObject(object) || output == nullptr) return false;
   Artifact artifact{};
   if (!safe_text(cJSON_GetObjectItemCaseSensitive(object, "url"), artifact.url, sizeof(artifact.url)) ||
@@ -265,7 +287,8 @@ bool parse_artifact(const cJSON* object, bool archive, Artifact* output) {
   const cJSON* bytes = cJSON_GetObjectItemCaseSensitive(object, "bytes");
   if (!cJSON_IsNumber(bytes) || bytes->valuedouble <= 0 || bytes->valuedouble > UINT32_MAX ||
       strncmp(artifact.url, "https://", 8) != 0 || !valid_hash(artifact.sha256) ||
-      !valid_destination(artifact.destination)) return false;
+      !(p25_profile && !archive ? valid_p25_destination(pack_id, artifact.destination)
+                               : valid_destination(artifact.destination))) return false;
   artifact.bytes = static_cast<uint32_t>(bytes->valuedouble);
   artifact.archive = archive;
   *output = artifact;
@@ -290,7 +313,8 @@ bool parse_manifest(const uint8_t* data, size_t size) {
     Pack parsed[kPackCount]{};
     PackView views[kPackCount]{};
     bool seen[kPackCount]{};
-    for (uint8_t index = 0; index < kPackCount; ++index) {
+    uint8_t next_dynamic = kBuiltInPackCount;
+    for (uint8_t index = 0; index < kBuiltInPackCount; ++index) {
       strlcpy(views[index].id, kIds[index], sizeof(views[index].id));
       strlcpy(views[index].title, kTitles[index], sizeof(views[index].title));
       strlcpy(views[index].status, "NOT PUBLISHED", sizeof(views[index].status));
@@ -300,17 +324,29 @@ bool parse_manifest(const uint8_t* data, size_t size) {
       if (!cJSON_IsObject(node)) break;
       const cJSON* id = cJSON_GetObjectItemCaseSensitive(node, "id");
       const cJSON* artifacts = cJSON_GetObjectItemCaseSensitive(node, "artifacts");
-      const int index = cJSON_IsString(id) ? pack_index(id->valuestring) : -1;
-      if (index < 0 || seen[index] || !cJSON_IsObject(artifacts)) break;
+      int index = cJSON_IsString(id) ? pack_index(id->valuestring) : -1;
+      const bool p25_profile = cJSON_IsString(id) && valid_p25_pack_id(id->valuestring);
+      if (index < 0 && p25_profile) index = next_dynamic++;
+      if (index < 0 || index >= kPackCount || seen[index] || !cJSON_IsObject(artifacts)) break;
+      for (int prior = 0; prior < index; ++prior)
+        if (views[prior].id[0] && strcmp(views[prior].id, id->valuestring) == 0) index = -1;
+      if (index < 0) break;
+      if (p25_profile) {
+        strlcpy(views[index].id, id->valuestring, sizeof(views[index].id));
+        const cJSON* title = cJSON_GetObjectItemCaseSensitive(node, "title");
+        if (!safe_text(title, views[index].title, sizeof(views[index].title)))
+          strlcpy(views[index].title, id->valuestring, sizeof(views[index].title));
+      }
       const cJSON* runtime = cJSON_GetObjectItemCaseSensitive(artifacts, "runtime");
       const cJSON* archive = cJSON_GetObjectItemCaseSensitive(artifacts, "archive");
-      if (!parse_artifact(runtime, false, &parsed[index].runtime) ||
-          !parse_artifact(archive, true, &parsed[index].archive) ||
+      if (!parse_artifact(runtime, false, p25_profile, id->valuestring, &parsed[index].runtime) ||
+          !parse_artifact(archive, true, p25_profile, id->valuestring, &parsed[index].archive) ||
           !safe_text(cJSON_GetObjectItemCaseSensitive(node, "version"), views[index].version,
                      sizeof(views[index].version)) ||
           !safe_text(cJSON_GetObjectItemCaseSensitive(node, "source_date"), views[index].source_date,
                      sizeof(views[index].source_date))) break;
       parsed[index].available = true;
+      parsed[index].p25_profile = p25_profile;
       strlcpy(parsed[index].version, views[index].version, sizeof(parsed[index].version));
       seen[index] = true;
       views[index].runtime_bytes = parsed[index].runtime.bytes;
@@ -411,11 +447,17 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
   file.close();
   if (!ok) { g_fs->remove(temporary); set_message("Download hash or network failure"); return false; }
 
-  const bool schema_ok = artifact.archive
+  bool schema_ok = artifact.archive
       ? (memcmp(header, "PK\003\004", 4) == 0 || memcmp(header, "PK\005\006", 4) == 0)
       : pack_index == 0 ? memcmp(header, "ORCADSB1", 8) == 0
       : pack_index == 4 ? memcmp(header, "ORCMAP1\n", 8) == 0
                         : memcmp(header, "ORCCAT1\n", 8) == 0;
+  if (!artifact.archive && g_packs[pack_index].p25_profile) {
+    orcsdr::p25config::Config config{};
+    char error[64]{};
+    schema_ok = orcsdr::p25config::load(*g_fs, temporary, &config, error,
+                                        sizeof(error)) == orcsdr::p25config::LoadResult::ok;
+  }
   if (!schema_ok) { g_fs->remove(temporary); set_message("Downloaded file schema rejected"); return false; }
   ESP_LOGI(kTag, "download stage=validated");
   return true;
@@ -532,8 +574,37 @@ void worker(void*) {
     if (g_free_bytes < required) {
       set_message("Not enough SD space for pack");
     } else {
-      set_message("Downloading runtime index");
-      ok = download_artifact(pack.runtime, pack_index, 0, 45);
+      bool directories_ready = true;
+      if (pack.p25_profile) {
+        char directory[80]{};
+        char version_path[112]{};
+        snprintf(directory, sizeof(directory), "%s/%s", orcsdr::p25config::kProfilesRoot,
+                 g_state.packs[pack_index].id);
+        snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
+        char backup[112]{}, temporary[112]{};
+        snprintf(backup, sizeof(backup), "%s.bak", pack.runtime.destination);
+        snprintf(temporary, sizeof(temporary), "%s.part", pack.runtime.destination);
+        orcsdr::p25config::StoreState profiles{};
+        char error[64]{};
+        directories_ready = orcsdr::p25config::refresh(*g_fs, &profiles, error, sizeof(error));
+        bool profile_known = false;
+        for (size_t i = 0; i < profiles.count; ++i)
+          profile_known |= strcmp(profiles.profiles[i].id,
+                                  g_state.packs[pack_index].id) == 0;
+        const bool catalog_owned = g_fs->exists(version_path);
+        const bool profile_files = g_fs->exists(pack.runtime.destination) ||
+                                   g_fs->exists(backup) || g_fs->exists(temporary);
+        if ((!catalog_owned && (profile_known || profile_files)) ||
+            (!profile_known && profiles.count >= orcsdr::p25config::kMaxProfiles))
+          directories_ready = false;
+        directories_ready = directories_ready &&
+            (g_fs->exists(orcsdr::p25config::kProfilesRoot) ||
+             g_fs->mkdir(orcsdr::p25config::kProfilesRoot)) &&
+            (g_fs->exists(directory) || g_fs->mkdir(directory));
+      }
+      set_message(directories_ready ? "Downloading runtime index"
+                                    : "P25 profile slot or ID unavailable");
+      ok = directories_ready && download_artifact(pack.runtime, pack_index, 0, 45);
       if (ok) { set_message("Downloading source archive"); ok = download_artifact(pack.archive, pack_index, 45, 55); }
       if (ok) ok = activate_pack(pack);
       if (!ok) {
@@ -553,9 +624,26 @@ void worker(void*) {
   } else if (operation == Operation::remove && pack_index < kPackCount && g_packs[pack_index].available) {
     const auto& pack = g_packs[pack_index];
     ok = true;
-    if (g_fs && g_fs->exists(pack.runtime.destination)) ok &= g_fs->remove(pack.runtime.destination);
+    if (g_fs && pack.p25_profile) {
+      char version_path[112]{}, backup[112]{}, temporary[112]{};
+      snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
+      snprintf(backup, sizeof(backup), "%s.bak", pack.runtime.destination);
+      snprintf(temporary, sizeof(temporary), "%s.part", pack.runtime.destination);
+      const bool catalog_owned = g_fs->exists(version_path);
+      const bool profile_exists = g_fs->exists(pack.runtime.destination) ||
+                                  g_fs->exists(backup) || g_fs->exists(temporary);
+      orcsdr::p25config::StoreState profiles{};
+      char error[64]{};
+      (void)orcsdr::p25config::refresh(*g_fs, &profiles, error, sizeof(error));
+      if (catalog_owned && profile_exists)
+        ok &= orcsdr::p25config::delete_profile(
+            *g_fs, g_state.packs[pack_index].id, &profiles, error, sizeof(error));
+      if (catalog_owned && g_fs->exists(version_path)) ok &= g_fs->remove(version_path);
+    } else if (g_fs && g_fs->exists(pack.runtime.destination)) {
+      ok &= g_fs->remove(pack.runtime.destination);
+    }
     if (g_fs && g_fs->exists(pack.archive.destination)) ok &= g_fs->remove(pack.archive.destination);
-    set_message(ok ? "Pack removed; configuration preserved" : "Could not remove pack");
+    set_message(ok ? "Pack removed" : "Could not remove pack");
     refresh_installed();
   }
   if (manifest) heap_caps_free(manifest);
@@ -606,7 +694,7 @@ void begin(orcsdr::storage::FileSystem* filesystem, uint64_t free_bytes) {
   g_free_bytes = free_bytes;
   portENTER_CRITICAL(&g_lock);
   g_state = {};
-  for (uint8_t i = 0; i < kPackCount; ++i) {
+  for (uint8_t i = 0; i < kBuiltInPackCount; ++i) {
     strlcpy(g_state.packs[i].id, kIds[i], sizeof(g_state.packs[i].id));
     strlcpy(g_state.packs[i].title, kTitles[i], sizeof(g_state.packs[i].title));
     strlcpy(g_state.packs[i].status, "CHECK CATALOG", sizeof(g_state.packs[i].status));

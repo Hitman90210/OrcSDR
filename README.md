@@ -220,7 +220,7 @@ FM Settings stay on the station while you use them. Sound on/off, step size, fil
 
 **P25 WIP — Phase I clear voice verified; wider system compatibility in progress.**
 
-P25 is for following a public-safety trunked system with one tuner. You load a system profile, park on a control channel, and let the radio follow voice grants it can hear. Automatic Phase I acquisition evaluates C4FM and linear CQPSK/LSM and reports the selected path. Encrypted voice is not decoded; the firmware can skip those grants and keep looking.
+P25 is for following a public-safety trunked system with one tuner. A clean installation starts with no local system configured. Import or select an SD-card profile, park on one of its control channels, and let the radio follow voice grants it can hear. Automatic Phase I acquisition evaluates C4FM and linear CQPSK/LSM and reports the selected path. Encrypted voice is not decoded; the firmware can skip those grants and keep looking.
 
 #### Monitor
 
@@ -255,21 +255,21 @@ Same idea as FM spectrum, but with a 12.5 kHz P25 filter and a narrower span. Ta
 
 <p align="center">
   <img src="docs/images/dashboards/p25-talkgroups.png"
-       alt="P25 Talkgroups: Lane County P25 programmed system with TGID, alias, and scan status"
+       alt="P25 Talkgroups: configured system with TGID, alias, and scan status"
        width="100%">
 </p>
 
 Talkgroups is the roster for the programmed system. Each row is a TGID, an alias (for example a dispatch or fire channel), and whether it is in the scan list. Tap a row to hold or release that talkgroup. This is the page you use when you hear a call and want to pin it, or when you only care about one agency on a busy site.
 
-#### Program
+#### Systems
 
 <p align="center">
   <img src="docs/images/dashboards/p25-program.png"
-       alt="P25 Program: system site, control channels with levels, auto follow, skip encrypted, reload p25.cfg"
+       alt="P25 Systems: saved profiles, active system details, import, export, rename, delete, and reload controls"
        width="100%">
 </p>
 
-Program is how the radio knows which system you mean. A `p25.cfg` on the SD card names the site and its control channels. You can reload that file, turn **Auto follow** on so voice grants are chased and then the tuner returns to the control channel, and **Skip encrypted** so encrypted grants do not stall the scan. The footer is the honest constraint of a single dongle: follow voice, then go back to the control channel. There is no second tuner.
+Systems is how the radio knows which local network you mean. OrcSDR keeps up to 16 profiles under `/orcsdr/p25/`; each one names a system and up to eight control channels. Select, rename, import, export, reload, or confirm deletion from this page, and set **Auto Follow** or **Skip Encrypted** for the active system. An older `/orcsdr/P25.cfg` is imported once and preserved. Signed system packs are accepted only after their source and redistribution rights are recorded; OrcSDR does not bundle RadioReference-derived data.
 
 #### RF Health
 

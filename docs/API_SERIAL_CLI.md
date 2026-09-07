@@ -372,6 +372,12 @@ RTL_UI ACTION FM TUNE 101900000
 Each succeeds with `RTL_UI_ACTION_OK`. Inputs are intentionally routed through
 the existing dashboard handlers rather than duplicating touch-only state.
 
+For P25, `SURVEY` starts or stops the bounded scan of the active profile's
+control channels. Stopping restores the selected control channel. `HOLD`
+holds the displayed grant, or arms a hold for the next grant when none is
+displayed; `HOLD_TG <id>` selects a specific talkgroup. Repeat `HOLD` or
+`HOLD_TG <id>` to release that hold.
+
 ## Wi-Fi automation
 
 Wi-Fi automation uses the same bounded scan snapshot and Settings handlers as
@@ -507,11 +513,17 @@ configured control channel, so it cannot contain a followed voice call.
 
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
-| `RTL_P25_STATUS` | no | `RTL_P25_STATUS profile=... frame_sync=... identity=... grants=... grant_events=... follow=...` | Includes current recent grants, session-level followed grant events, NID/TSBK, routed, unrouted and rejected voice frames, IMBE/PCM, LDU2 encryption, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_STATUS` | no | `RTL_P25_STATUS configured=... profile_id=... survey=... hold=... hold_tg=... auto_follow=... encryption_skip=... frame_sync=...` | Includes active-profile and operator-control state, recent grants, session-level followed grant events, NID/TSBK, routed, unrouted and rejected voice frames, IMBE/PCM, LDU2 encryption, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_PROFILE_LIST` | no | `RTL_P25_PROFILE_LIST_BEGIN`, zero or more `RTL_P25_PROFILE`, then `_DONE` | Lists the bounded SD profile store and marks the active system. |
+| `RTL_P25_PROFILE_SELECT <id>` | yes | `RTL_P25_PROFILE_OK operation=select ...` | Validates and selects `/orcsdr/p25/<id>/profile.cfg`. |
+| `RTL_P25_PROFILE_IMPORT <path> <id>` | yes | `RTL_P25_PROFILE_OK operation=import ...` | Imports a valid version-1 or version-2 file under a new safe profile ID and preserves the source. Duplicate IDs are rejected; the `p25_` prefix is reserved for signed catalog packs. |
+| `RTL_P25_PROFILE_EXPORT <id> /orcsdr/exports/<file>` | yes | `RTL_P25_PROFILE_OK operation=export ...` | Writes a validated version-2 copy. Destinations outside the exports directory and nested paths are rejected. |
+| `RTL_P25_PROFILE_RENAME <id> <name>` | yes | `RTL_P25_PROFILE_OK operation=rename ...` | Changes the local display name without changing the stable profile ID. |
+| `RTL_P25_PROFILE_DELETE <id> CONFIRM` | yes | `RTL_P25_PROFILE_OK operation=delete ...` | Deletes the selected profile file. The literal confirmation is required. |
 | `RTL_P25_MODULATION` | no | `RTL_P25_MODULATION configured=auto selected=c4fm timing_gain=... carrier_gain=...` | Reports the configured Phase I demodulator and the path selected by automatic acquisition. |
-| `RTL_P25_MODULATION AUTO\|C4FM\|CQPSK` | yes | `RTL_P25_MODULATION_OK configured=...` | Selects automatic acquisition, the legacy C4FM discriminator, or the linear CQPSK/LSM path. The setting is saved to `P25.cfg` and the active P25 receiver is reacquired. |
+| `RTL_P25_MODULATION AUTO\|C4FM\|CQPSK` | yes | `RTL_P25_MODULATION_OK configured=...` | Selects automatic acquisition, the C4FM discriminator, or the linear CQPSK/LSM path. The setting is saved to the active profile and the configured receiver is reacquired. |
 | `RTL_P25_ENCRYPTION_STATUS` | no | `RTL_P25_ENCRYPTION_STATUS detected=... algid=... kid=... muted_frames=... returns=...` | Reports the last valid LDU2 Encryption Sync result and cumulative mute/return counters for automated acceptance. It identifies and suppresses protected audio; it does not decrypt it. |
-| `RTL_P25_SCAN` | yes | `RTL_P25_SURVEY ...` | Runs the configured control-channel survey. |
+| `RTL_P25_SCAN` | yes | `RTL_P25_SURVEY ...` | Starts the configured control-channel survey. Use `RTL_UI ACTION P25 SURVEY` to toggle it from automation; cancellation restores the selected control channel. |
 | `RTL_P25_IQ_START` | yes | `RTL_IQ_START source=p25 ...` | Requires a running P25 control channel. Voice following is suppressed while the bounded capture fills. |
 | `RTL_P25_IQ_STATUS` | no | `RTL_P25_IQ_STATUS ...` | Reports capture state, size limit, source frequency, sample rate, and last saved path. |
 | `RTL_P25_IQ_STOP` | yes | `RTL_IQ_DONE path=... source=p25 ...` | Stops and saves the capture in the existing ORCIQ CU8 format. |
