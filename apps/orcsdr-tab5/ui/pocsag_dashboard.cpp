@@ -169,11 +169,6 @@ void draw_header_live_values() {
   text(msgs, 770, 36, TFT_WHITE, 2, middle_left);
 }
 
-// Fits the gap between the shared Home button (ends x=1098) and the shared
-// Settings gear (starts x=1217) -- see dashboard_audio_control.cpp's own
-// kHomeX/kHomeW/kSettingsX. Do not widen this without rechecking that gap.
-constexpr int kScanButtonX = 1108, kScanButtonY = 12, kScanButtonW = 100, kScanButtonH = 52;
-
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(20, kHeaderH - 1, 1240, kBorder);
@@ -187,9 +182,6 @@ void draw_header() {
   M5.Display.drawFastVLine(560, 12, 52, kBorder);
   M5.Display.drawFastVLine(750, 12, 52, kBorder);
   draw_header_live_values();
-  M5.Display.fillRoundRect(kScanButtonX, kScanButtonY, kScanButtonW, kScanButtonH, 8,
-                            TFT_DARKCYAN);
-  text("SCAN", kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2, TFT_WHITE, 1);
   audio_header::draw_home_button();
   audio_header::draw_settings_button();
 }
@@ -211,8 +203,21 @@ void draw_tabs() {
   }
 }
 
+// Owned by this dashboard's content area, not the shared header row --
+// architecture.md reserves the header for Home/Settings/Battery/Volume and
+// requires new controls to extend dashboard_audio_control rather than add
+// independent header geometry. This sits inside the LIVE card itself.
+constexpr int kScanButtonX = 1080, kScanButtonY = kHeaderH + 18, kScanButtonW = 160,
+              kScanButtonH = 36;
+
 void draw_live() {
   card(20, kHeaderH + 12, 1240, kContentH);
+  text("RECENT MESSAGES", 44, kHeaderH + 34, kCyan, 1, middle_left);
+  const bool scanning = live_snapshot().scanning;
+  M5.Display.fillRoundRect(kScanButtonX, kScanButtonY, kScanButtonW, kScanButtonH, 8,
+                            scanning ? TFT_DARKGREY : TFT_DARKCYAN);
+  text(scanning ? "SCANNING" : "FIND PAGERS", kScanButtonX + kScanButtonW / 2,
+       kScanButtonY + kScanButtonH / 2, TFT_WHITE, 1);
   const Stats& stats = live_snapshot().decoder_stats;
   if (live_snapshot().message_count == 0) {
     text(g_live ? "WAITING FOR TRAFFIC..." : "NOT RECEIVING", 640, kHeaderH + 300, kMuted, 2);
@@ -225,7 +230,6 @@ void draw_live() {
     text(status, 640, kHeaderH + 340, kMuted, 1);
     return;
   }
-  text("RECENT MESSAGES", 44, kHeaderH + 34, kCyan, 1, middle_left);
   const size_t visible = std::min<size_t>(live_snapshot().message_count, 12);
   for (size_t i = 0; i < visible; ++i) {
     const DisplayMessage& m = live_snapshot().messages[i];
@@ -531,7 +535,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return Action::none;
   if (audio_header::home_hit(x, y)) return Action::exit;
   if (audio_header::settings_hit(x, y)) return Action::none;
-  if (!live_snapshot().scanning &&
+  if (g_view == View::live && !live_snapshot().scanning &&
       hit(x, y, kScanButtonX, kScanButtonY, kScanButtonW, kScanButtonH))
     return Action::scan_requested;
   if (y >= kTabsY) {
