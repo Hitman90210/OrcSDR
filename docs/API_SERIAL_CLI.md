@@ -190,7 +190,7 @@ actually broadcasts RDS.
 
 | Command | Auth | Reply |
 |---|---|---|
-| `RTL_PRESET_SCAN` | yes | `RTL_PRESET_SCAN_QUEUED` or `RTL_PRESET_SCAN_INVALID` (not on FM) | Sweeps 87.5–108 MHz, ~800 kHz steps, collects up to 10 stations by signal strength. Takes tens of seconds; poll `RTL_PRESET_LIST` afterward. |
+| `RTL_PRESET_SCAN` | yes | `RTL_PRESET_SCAN_QUEUED` or `RTL_PRESET_SCAN_INVALID` (not on FM) | Sweeps 76–108 MHz, ~800 kHz steps, collects up to 10 stations by signal strength. Takes tens of seconds; poll `RTL_PRESET_LIST` afterward. |
 | `RTL_PRESET_LIST` | no | `RTL_PRESET_LIST_BEGIN count=N` then N × `RTL_PRESET <n> frequency_hz=... level=...` then `RTL_PRESET_LIST_END` | Persists across reboots (NVS). |
 | `RTL_PRESET_TUNE <n>` | yes | `RTL_PRESET_TUNE_OK index=... frequency_hz=...` or `RTL_PRESET_TUNE_INVALID` | 1-based index, matching the on-screen list numbering. |
 

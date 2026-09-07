@@ -557,8 +557,8 @@ constexpr uint8_t kRtlSpeakerHardwareMax = 200;
 constexpr uint8_t kRtlVolumeDefault = 128;
 constexpr uint8_t kRtlVolumeStep = 16;
 static_assert(kRtlSpeakerHardwareMax <= kRtlVolumeMax);
-constexpr uint32_t kRtlFmMinHz = 87500000;
-constexpr uint32_t kRtlFmMaxHz = 108000000;
+constexpr uint32_t kRtlFmMinHz = orcsdr::fmconfig::kMinFrequencyHz;
+constexpr uint32_t kRtlFmMaxHz = orcsdr::fmconfig::kMaxFrequencyHz;
 /* FREQ +/- coarse step. Header still shows 0.001 MHz; LO apply is 5 kHz. */
 constexpr uint32_t kRtlFmStepHz = 100000;
 constexpr uint32_t kRtlFmAutoStepHz = 800000;
@@ -639,7 +639,7 @@ constexpr RfBandGuide kRfBandGuide[] = {
     {26965000, 27405000, kCbDefaultHz, RtlBand::cb, "CB RADIO", "HF / 40-channel citizens band", true},
     {28000000, 29700000, 28400000, RtlBand::browse, "HAM RADIO", "HF / 10 m amateur", true},
     {50000000, 54000000, 52525000, RtlBand::browse, "HAM RADIO", "VHF / 6 m amateur", true},
-    {88000000, 108000000, kRtlFmDefaultHz, RtlBand::fm, "FM BROADCAST", "VHF / music and talk", true},
+    {kRtlFmMinHz, kRtlFmMaxHz, kRtlFmDefaultHz, RtlBand::fm, "FM BROADCAST", "VHF / music and talk", true},
     {108000000, 118000000, 113000000, RtlBand::browse, "AIR NAV", "VHF / aircraft navigation", false},
     {118000000, 137000000, 121500000, RtlBand::browse, "AIRBAND", "VHF / aircraft voice/emergency", true},
     {137000000, 138000000, 137500000, RtlBand::browse, "NOAA SATELLITE", "VHF / weather downlinks", true},

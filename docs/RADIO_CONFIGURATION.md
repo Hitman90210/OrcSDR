@@ -62,5 +62,5 @@ preset_hz=101700000
 
 FM presets can be entered here or found with **FM → Settings → Scan Presets**.
 The scan result is saved back to `FM.cfg`. Frequencies must be within the
-87.5-108 MHz broadcast band. The previous saved file is retained as
-`FM.cfg.bak`.
+76-108 MHz broadcast band, including Japan's 76-95 MHz allocation. The
+previous saved file is retained as `FM.cfg.bak`.
