@@ -31,8 +31,14 @@ jobs:
       - name: Resolve managed components
         shell: bash
         run: |
+          # The espressif/idf image normally puts idf.py on PATH via its
+          # ENTRYPOINT (/opt/esp/entrypoint.sh sourcing export.sh), but
+          # GitHub Actions' container jobs exec each step directly and never
+          # run that entrypoint, so idf.py is not found without sourcing
+          # export.sh ourselves first (confirmed: "idf.py: command not
+          # found" on every run since this workflow was added).
+          . "$IDF_PATH/export.sh"
           echo "idf.py: $(command -v idf.py || echo 'NOT FOUND')"
-          echo "IDF_PATH=$IDF_PATH"
           idf.py --version
           set +e
           idf.py -B build-ci -D SDKCONFIG=build-ci/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults reconfigure
@@ -43,7 +49,10 @@ jobs:
           idf.py -B build-ci -D SDKCONFIG=build-ci/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults reconfigure
           python tools/prepare-managed-components.py
       - name: Build Tab5 application
-        run: idf.py -B build-ci build
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py -B build-ci build
       - name: Publish firmware artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
