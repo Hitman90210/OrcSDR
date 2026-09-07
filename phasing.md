@@ -65,10 +65,12 @@ tune CB, tune LoRa, confirm dashboards and touch still respond identically).
 
 Goal: catch a header/driver-example break automatically, closing Gap 3.
 
-1. [ ] Add native ESP-IDF 5.5.4 Tab5 consumer-build CI, matching the dependency
+1. [x] Add native ESP-IDF 5.5.4 Tab5 consumer-build CI, matching the dependency
       pins, configuration, and post-reconfigure display patch ordering in
-      `apps/orcsdr-tab5/tools/build-tab5-idf.ps1`. Do not revive the historical
-      PlatformIO environments. The existing guide workflow is documentation CI.
+      `apps/orcsdr-tab5/tools/build-tab5-idf.ps1`. Implemented as
+      `.github/workflows/firmware-build.yml`; the historical PlatformIO
+      environments were not revived. The existing guide workflow remains
+      documentation CI.
 2. [x] Keep the standalone P4 smoke build and driver API contract in the
       `esp-rtl-sdr` repository; OrcSDR CI verifies only the consumer integration.
 3. [ ] No hardware-in-the-loop testing in CI at this stage — that's a much

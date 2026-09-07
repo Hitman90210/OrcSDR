@@ -51,11 +51,15 @@ DSP behavior changes.
 ### Gap 3 — no CI
 
 The driver build, host policy tests, and standalone P4 smoke example now live
-in the `esp-rtl-sdr` repository. OrcSDR still needs consumer-build CI for the
-Tab5 application; it must not duplicate the driver's test harness.
+in the `esp-rtl-sdr` repository. OrcSDR needed consumer-build CI for the
+Tab5 application without duplicating the driver's test harness.
 
-**Status: Partially resolved.** Driver CI is upstream; OrcSDR consumer CI remains
-planned. See `phasing.md` Phase 2.
+**Status: Resolved.** `.github/workflows/firmware-build.yml` builds the Tab5
+application on native ESP-IDF 5.5.4 on every `main` push and pull request,
+matching `build-tab5-idf.ps1`'s managed-component patch ordering. Driver CI
+remains upstream. Native P25-core and radio-scan unit tests already run under
+`p25-core-tests.yml`/`radio-scan-tests.yml`, and `quality.yml` covers the
+Python/PowerShell tooling. See `phasing.md` Phase 2.
 
 ### Gap 4 — open performance gates (already tracked, cross-referenced here)
 
