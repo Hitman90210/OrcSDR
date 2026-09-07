@@ -513,7 +513,10 @@ configured control channel, so it cannot contain a followed voice call.
 
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
-| `RTL_P25_STATUS` | no | `RTL_P25_STATUS configured=... profile_id=... survey=... hold=... hold_tg=... auto_follow=... encryption_skip=... frame_sync=...` | Includes active-profile and operator-control state, recent grants, session-level followed grant events, NID/TSBK, routed, unrouted and rejected voice frames, IMBE/PCM, LDU2 encryption, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_STATUS` | no | `RTL_P25_STATUS configured=... profile_id=... survey=... frame_sync=... p2_grants=... p2_sync_words=...` | Includes active-profile and operator-control state, recent grants, Phase I voice, Phase II mapping/probe, heap, stack-headroom, USB, IQ, and audio-drop counters. Identity fields come from decoded over-the-air data. |
+| `RTL_P25_PHASE2_STATUS` | no | `RTL_P25_PHASE2_STATUS trace=... active=... tg=... carrier_hz=... slot=... sync_words=...` | Reports the last TDMA grant mapping and the fixed-memory 6,000-symbol/s traffic burst detector. It does not claim Phase II MAC or audio decode. |
+| `RTL_P25_PHASE2_TRACE` | no | `RTL_P25_PHASE2_TRACE enabled=0\|1` | Reports whether the diagnostic one-call transport probe is enabled. The default is off. |
+| `RTL_P25_PHASE2_TRACE ON\|OFF` | yes | `RTL_P25_PHASE2_TRACE_OK enabled=0\|1` | When enabled, a clear TDMA grant is briefly tuned for burst-sync evidence and then returned to the control channel. Encrypted grants are reported but never probed for audio or decrypted. |
 | `RTL_P25_PROFILE_LIST` | no | `RTL_P25_PROFILE_LIST_BEGIN`, zero or more `RTL_P25_PROFILE`, then `_DONE` | Lists the bounded SD profile store and marks the active system. |
 | `RTL_P25_PROFILE_SELECT <id>` | yes | `RTL_P25_PROFILE_OK operation=select ...` | Validates and selects `/orcsdr/p25/<id>/profile.cfg`. |
 | `RTL_P25_PROFILE_IMPORT <path> <id>` | yes | `RTL_P25_PROFILE_OK operation=import ...` | Imports a valid version-1 or version-2 file under a new safe profile ID and preserves the source. Duplicate IDs are rejected; the `p25_` prefix is reserved for signed catalog packs. |
@@ -545,6 +548,17 @@ encrypted LDU2 detection, muted voice frames, and an immediate return to the
 control channel. `-Modulation AUTO|C4FM|CQPSK` selects the demodulator for the
 run and restores the previous setting afterward. For deterministic on-device
 replay without waiting for live traffic:
+
+Add `-WatchTalkgroup <TGID>[,<TGID>...]` to enable Phase II trace temporarily
+and print the local watchlist. Any live Phase II talkgroup can satisfy the gate,
+but its grant, traffic-channel retune, burst synchronization, control return,
+and control relock must all match the same TGID. The result records whether the
+observed TGID was on the supplied watchlist. The runner restores the previous
+trace state afterward. This validates transport only; it does not require IMBE
+or PCM. Add `-UseExistingSession` when the requested control channel is already
+locked and restarting it would invoke the normal saved-profile fallback survey;
+the runner still verifies that the live frequency and decoded control state
+match `-ControlFrequencyHz` before collecting evidence.
 
 ```powershell
 apps/orcsdr-tab5/tools/run-p25-validation.ps1 `

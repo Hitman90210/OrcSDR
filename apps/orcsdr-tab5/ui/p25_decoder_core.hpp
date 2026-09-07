@@ -31,14 +31,28 @@ struct VoiceFrame {
   EncryptionSync encryption{};
 };
 
+struct ChannelAssignment {
+  bool valid = false;
+  uint32_t frequency_hz = 0;
+  uint8_t slot = 0;
+};
+
 struct Grant {
   bool valid = false;
   bool encrypted = false;
   bool emergency = false;
   bool tdma = false;
+  uint8_t service_options = 0;
+  uint8_t channel_id = 0;
+  uint16_t channel_number = 0;
+  uint8_t slot = 0;
   uint16_t talkgroup = 0;
   uint32_t source_id = 0;
   uint32_t frequency_hz = 0;
+  uint32_t wacn = 0;
+  uint16_t system_id = 0;
+  uint8_t rfss = 0;
+  uint8_t site = 0;
   uint32_t seen_ms = 0;
 };
 
@@ -58,6 +72,14 @@ struct Snapshot {
   uint32_t nid_corrected_bits = 0;
   uint32_t tsbk_good = 0;
   uint32_t tsbk_failed = 0;
+  uint32_t phase2_band_plans = 0;
+  uint32_t phase2_grants = 0;
+  uint32_t phase2_mapping_errors = 0;
+  bool phase2_acquisition = false;
+  uint32_t phase2_symbols = 0;
+  uint32_t phase2_sync_words = 0;
+  uint32_t phase2_last_sync_ms = 0;
+  uint8_t phase2_best_sync_errors = 40;
   uint32_t voice_ldus = 0;
   uint32_t voice_frames = 0;
   uint32_t voice_queue_drops = 0;
@@ -93,7 +115,16 @@ Modulation modulation();
 const char* modulation_name(Modulation modulation);
 void process_cu8(const uint8_t* iq, size_t bytes, uint32_t now_ms,
                  VoiceSink voice_sink = nullptr, void* voice_context = nullptr);
+void set_phase2_acquisition(bool enabled, uint32_t now_ms);
+// Test/replay seam for the shared 48 kS/s complex channel stream.
+void process_channel_iq(float i, float q, uint32_t now_ms);
 Snapshot snapshot();
+
+// Map a logical channel number to its physical RF carrier and TDMA slot.
+// Phase II uses two logical channels per carrier; FDMA uses one.
+ChannelAssignment map_channel(uint64_t base_hz, uint32_t spacing_hz,
+                              uint8_t slots_per_carrier,
+                              uint16_t channel_number);
 
 // Decode the six 40-bit Encryption Sync fields from an LDU2 payload. The
 // input is the 1,568 payload bits after the NID, stored as 784 dibits.
