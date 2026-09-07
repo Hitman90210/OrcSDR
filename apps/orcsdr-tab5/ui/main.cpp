@@ -10101,6 +10101,135 @@ bool ui_doc_view_for_suffix(const char* suffix, orcsdr::p25::View* view) {
   return false;
 }
 
+// Split out of ui_doc_render (each [[gnu::noinline]]) so only the active
+// screen's locals are ever on the stack at once. ui_doc_render used to
+// declare every branch's locals (settings State, fm/p25 Snapshots, the
+// generic-band table) directly in its own body; as one function, the
+// compiler had to reserve stack for the worst-case union of all of them
+// simultaneously (measured at 6000 bytes via -fstack-usage), which alone
+// overflowed the 12 KiB main task stack entering documentation mode.
+[[gnu::noinline]] void ui_doc_render_settings(const char* screen_id) {
+  static constexpr const char* names[] = {"connectivity", "firmware-updates", "location-adsb",
+      "data-maps", "display-audio", "radio-defaults", "storage", "companion", "system"};
+  static_assert(std::size(names) == static_cast<uint8_t>(orcsdr::settings::Section::count),
+                "names[] must have one entry per orcsdr::settings::Section, in enum order");
+  orcsdr::settings::Section section = orcsdr::settings::Section::connectivity;
+  const char* suffix = screen_id + 9;
+  for (uint8_t i = 0; i < std::size(names); ++i)
+    if (strcmp(suffix, names[i]) == 0) section = static_cast<orcsdr::settings::Section>(i);
+  const bool keyboard = strcmp(screen_id, "overlay.masked-keyboard") == 0;
+  auto state = ui_doc_settings_state();
+  if (strcmp(screen_id, "overlay.wifi-scanning") == 0) {
+    state.wifi_connected = false;
+    state.wifi_scanning = true;
+    state.network_count = 0;
+    state.wifi_ip[0] = '\0';
+    strlcpy(state.wifi_message, "Scanning for nearby networks",
+            sizeof(state.wifi_message));
+  }
+  orcsdr::settings::show_documentation_section(
+      orcsdr::settings::Section::connectivity, state, keyboard);
+  if (strncmp(screen_id, "settings.", 9) == 0)
+    orcsdr::settings::show_documentation_section(section, state);
+}
+
+[[gnu::noinline]] bool ui_doc_render_fm(const char* screen_id, bool demo) {
+  orcsdr::fm::View view = orcsdr::fm::View::listen;
+  if (strncmp(screen_id, "fm.", 3) == 0 &&
+      !ui_doc_view_for_suffix(screen_id + 3, &view)) return false;
+  orcsdr::fm::show_documentation_view(view, ui_doc_fm_snapshot(demo),
+                                      strcmp(screen_id, "overlay.volume") == 0);
+  return true;
+}
+
+[[gnu::noinline]] bool ui_doc_render_p25(const char* screen_id, bool demo) {
+  orcsdr::p25::View view;
+  if (!ui_doc_view_for_suffix(screen_id + 4, &view)) return false;
+  orcsdr::p25::show_documentation_view(view, ui_doc_p25_snapshot(demo));
+  return true;
+}
+
+[[gnu::noinline]] bool ui_doc_render_adsb(const char* screen_id) {
+  static constexpr const char* names[] = {"radar", "list", "target", "stats"};
+  uint8_t view = 0;
+  bool found = false;
+  for (uint8_t i = 0; i < std::size(names); ++i)
+    if (strcmp(screen_id + 5, names[i]) == 0) { view = i; found = true; }
+  if (!found) return false;
+  orcsdr::adsb::show_documentation_view(view, adsb_settings);
+  return true;
+}
+
+[[gnu::noinline]] bool ui_doc_render_lora(const char* screen_id, bool demo) {
+  const char* suffix = screen_id + 5;
+  static constexpr const char* names[] = {"overview", "nodes", "traffic", "map", "rf-health"};
+  uint8_t view = 0;
+  bool found = false;
+  for (uint8_t i = 0; i < std::size(names); ++i)
+    if (strcmp(suffix, names[i]) == 0) { view = i; found = true; }
+  if (!found) return false;
+  rtl_ui_active.store(true, std::memory_order_release);
+  rtl_ui_band = RtlBand::lora;
+  rtl_ui_frequency_hz = kLoraDefaultHz;
+  if (demo) {
+    lora_display_packets[0] = {};
+    strlcpy(lora_display_packets[0].text, "Position and telemetry received",
+            sizeof(lora_display_packets[0].text));
+    lora_display_packets[0].sender = 0xA1B2C3D4;
+    lora_display_packets[0].destination = 0xFFFFFFFF;
+    lora_display_packets[0].packet_id = 7;
+    lora_display_packets[0].received_ms = millis();
+    lora_display_packets[0].latitude_e7 = 455230640;
+    lora_display_packets[0].longitude_e7 = -1226764830;
+    lora_display_packets[0].snr_tenths = 94;
+    lora_display_packets[0].signal_tenths = -720;
+    lora_display_packets[0].port = 1;
+    lora_node_positions[0] = {0xA1B2C3D4, millis(), 455230640, -1226764830};
+    lora_messages.store(1, std::memory_order_relaxed);
+    lora_noise_dbfs.store(-80.0f, std::memory_order_relaxed);
+    lora_trigger_dbfs.store(-71.0f, std::memory_order_relaxed);
+    rtl_signal_dbfs_smooth = -54.0f;
+  }
+  orcsdr::lora::show_documentation_view(static_cast<orcsdr::lora::View>(view),
+                                        lora_dashboard_snapshot());
+  return true;
+}
+
+[[gnu::noinline]] bool ui_doc_render_generic_band(const char* screen_id, bool demo) {
+  struct GenericBand { const char* name; RtlBand band; uint32_t frequency; };
+  static constexpr GenericBand bands[] = {{"am.", RtlBand::am, kRtlAmDefaultHz},
+      {"wx.", RtlBand::wx, kRtlWxHz}, {"cb.", RtlBand::cb, kCbDefaultHz},
+      {"browse.", RtlBand::browse, kRtlBrowseDefaultHz}};
+  for (const auto& entry : bands) {
+    const size_t prefix = strlen(entry.name);
+    if (strncmp(screen_id, entry.name, prefix) != 0) continue;
+    const char* suffix = screen_id + prefix;
+    const OrcTool tool = strcmp(suffix, "scope") == 0 ? OrcTool::Scope
+                         : strcmp(suffix, "capture") == 0 ? OrcTool::Capture
+                                                          : OrcTool::Radio;
+    rtl_ui_active.store(true, std::memory_order_release);
+    rtl_ui_band = entry.band;
+    rtl_ui_frequency_hz = entry.frequency;
+    g_orc_tool.store(static_cast<uint8_t>(tool), std::memory_order_release);
+    if (demo) {
+      rtl_signal_dbfs_smooth = -38.0f;
+      if (entry.band == RtlBand::cb) {
+        cb_mode.store(CbMode::am, std::memory_order_relaxed);
+        cb_clarifier_hz.store(0, std::memory_order_relaxed);
+        cb_squelch_dbfs.store(-55, std::memory_order_relaxed);
+        cb_squelch_open.store(true, std::memory_order_relaxed);
+      }
+    }
+    draw_sdr_screen(entry.band, entry.frequency, rtl_ui_volume);
+    if (demo) {
+      if (tool == OrcTool::Capture) draw_capture_tool_panel();
+      else draw_documentation_spectrum();
+    }
+    return true;
+  }
+  return false;
+}
+
 bool ui_doc_render(const char* screen_id, bool demo) {
   if (!ui_doc_screen_exists(screen_id, demo ? "demo" : "live")) return false;
   ui_doc_leave_surfaces();
@@ -10125,114 +10254,18 @@ bool ui_doc_render(const char* screen_id, bool demo) {
   } else if (strncmp(screen_id, "settings.", 9) == 0 ||
              strncmp(screen_id, "overlay.wifi-", 13) == 0 ||
              strcmp(screen_id, "overlay.masked-keyboard") == 0) {
-    static constexpr const char* names[] = {"connectivity", "firmware-updates", "location-adsb",
-        "data-maps", "display-audio", "radio-defaults", "storage", "companion", "system"};
-    static_assert(std::size(names) == static_cast<uint8_t>(orcsdr::settings::Section::count),
-                  "names[] must have one entry per orcsdr::settings::Section, in enum order");
-    orcsdr::settings::Section section = orcsdr::settings::Section::connectivity;
-    const char* suffix = screen_id + 9;
-    for (uint8_t i = 0; i < std::size(names); ++i)
-      if (strcmp(suffix, names[i]) == 0) section = static_cast<orcsdr::settings::Section>(i);
-    const bool keyboard = strcmp(screen_id, "overlay.masked-keyboard") == 0;
-    auto state = ui_doc_settings_state();
-    if (strcmp(screen_id, "overlay.wifi-scanning") == 0) {
-      state.wifi_connected = false;
-      state.wifi_scanning = true;
-      state.network_count = 0;
-      state.wifi_ip[0] = '\0';
-      strlcpy(state.wifi_message, "Scanning for nearby networks",
-              sizeof(state.wifi_message));
-    }
-    orcsdr::settings::show_documentation_section(
-        orcsdr::settings::Section::connectivity, state, keyboard);
-    if (strncmp(screen_id, "settings.", 9) == 0)
-      orcsdr::settings::show_documentation_section(section, state);
+    ui_doc_render_settings(screen_id);
   } else if (strncmp(screen_id, "fm.", 3) == 0 ||
              strcmp(screen_id, "overlay.volume") == 0) {
-    orcsdr::fm::View view = orcsdr::fm::View::listen;
-    if (strncmp(screen_id, "fm.", 3) == 0 &&
-        !ui_doc_view_for_suffix(screen_id + 3, &view)) return false;
-    orcsdr::fm::show_documentation_view(view, ui_doc_fm_snapshot(demo),
-                                        strcmp(screen_id, "overlay.volume") == 0);
+    if (!ui_doc_render_fm(screen_id, demo)) return false;
   } else if (strncmp(screen_id, "p25.", 4) == 0) {
-    orcsdr::p25::View view;
-    if (!ui_doc_view_for_suffix(screen_id + 4, &view)) return false;
-    orcsdr::p25::show_documentation_view(view, ui_doc_p25_snapshot(demo));
+    if (!ui_doc_render_p25(screen_id, demo)) return false;
   } else if (strncmp(screen_id, "adsb.", 5) == 0) {
-    static constexpr const char* names[] = {"radar", "list", "target", "stats"};
-    uint8_t view = 0;
-    bool found = false;
-    for (uint8_t i = 0; i < std::size(names); ++i)
-      if (strcmp(screen_id + 5, names[i]) == 0) { view = i; found = true; }
-    if (!found) return false;
-    orcsdr::adsb::show_documentation_view(view, adsb_settings);
+    if (!ui_doc_render_adsb(screen_id)) return false;
   } else if (strncmp(screen_id, "lora.", 5) == 0) {
-    const char* suffix = screen_id + 5;
-    static constexpr const char* names[] = {"overview", "nodes", "traffic", "map", "rf-health"};
-    uint8_t view = 0;
-    bool found = false;
-    for (uint8_t i = 0; i < std::size(names); ++i)
-      if (strcmp(suffix, names[i]) == 0) { view = i; found = true; }
-    if (!found) return false;
-    rtl_ui_active.store(true, std::memory_order_release);
-    rtl_ui_band = RtlBand::lora;
-    rtl_ui_frequency_hz = kLoraDefaultHz;
-    if (demo) {
-      lora_display_packets[0] = {};
-      strlcpy(lora_display_packets[0].text, "Position and telemetry received",
-              sizeof(lora_display_packets[0].text));
-      lora_display_packets[0].sender = 0xA1B2C3D4;
-      lora_display_packets[0].destination = 0xFFFFFFFF;
-      lora_display_packets[0].packet_id = 7;
-      lora_display_packets[0].received_ms = millis();
-      lora_display_packets[0].latitude_e7 = 455230640;
-      lora_display_packets[0].longitude_e7 = -1226764830;
-      lora_display_packets[0].snr_tenths = 94;
-      lora_display_packets[0].signal_tenths = -720;
-      lora_display_packets[0].port = 1;
-      lora_node_positions[0] = {0xA1B2C3D4, millis(), 455230640, -1226764830};
-      lora_messages.store(1, std::memory_order_relaxed);
-      lora_noise_dbfs.store(-80.0f, std::memory_order_relaxed);
-      lora_trigger_dbfs.store(-71.0f, std::memory_order_relaxed);
-      rtl_signal_dbfs_smooth = -54.0f;
-    }
-    orcsdr::lora::show_documentation_view(static_cast<orcsdr::lora::View>(view),
-                                          lora_dashboard_snapshot());
+    if (!ui_doc_render_lora(screen_id, demo)) return false;
   } else {
-    struct GenericBand { const char* name; RtlBand band; uint32_t frequency; };
-    static constexpr GenericBand bands[] = {{"am.", RtlBand::am, kRtlAmDefaultHz},
-        {"wx.", RtlBand::wx, kRtlWxHz}, {"cb.", RtlBand::cb, kCbDefaultHz},
-        {"browse.", RtlBand::browse, kRtlBrowseDefaultHz}};
-    bool found = false;
-    for (const auto& entry : bands) {
-      const size_t prefix = strlen(entry.name);
-      if (strncmp(screen_id, entry.name, prefix) != 0) continue;
-      const char* suffix = screen_id + prefix;
-      const OrcTool tool = strcmp(suffix, "scope") == 0 ? OrcTool::Scope
-                           : strcmp(suffix, "capture") == 0 ? OrcTool::Capture
-                                                            : OrcTool::Radio;
-      rtl_ui_active.store(true, std::memory_order_release);
-      rtl_ui_band = entry.band;
-      rtl_ui_frequency_hz = entry.frequency;
-      g_orc_tool.store(static_cast<uint8_t>(tool), std::memory_order_release);
-      if (demo) {
-        rtl_signal_dbfs_smooth = -38.0f;
-        if (entry.band == RtlBand::cb) {
-          cb_mode.store(CbMode::am, std::memory_order_relaxed);
-          cb_clarifier_hz.store(0, std::memory_order_relaxed);
-          cb_squelch_dbfs.store(-55, std::memory_order_relaxed);
-          cb_squelch_open.store(true, std::memory_order_relaxed);
-        }
-      }
-      draw_sdr_screen(entry.band, entry.frequency, rtl_ui_volume);
-      if (demo) {
-        if (tool == OrcTool::Capture) draw_capture_tool_panel();
-        else draw_documentation_spectrum();
-      }
-      found = true;
-      break;
-    }
-    if (!found) return false;
+    if (!ui_doc_render_generic_band(screen_id, demo)) return false;
   }
   if (demo) ui_doc_badge();
   // Freeze the rendered production surface under a distinct controller owner.
