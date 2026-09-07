@@ -1828,6 +1828,20 @@ void publish_pocsag_snapshot(uint32_t now) {
     memcpy(out.text, stored.text, sizeof(out.text));
     out.text_length = stored.text_length;
   }
+  const size_t identity_count =
+      std::min(pocsag_identity_table.count(), orcsdr::pocsag::kIdentityCapacity);
+  for (size_t i = 0; i < identity_count; ++i) {
+    const auto* identity = pocsag_identity_table.at(i);
+    if (!identity) continue;
+    auto& out = snapshot.identities[snapshot.identity_count++];
+    out.capcode = identity->capcode;
+    strlcpy(out.alias, identity->alias, sizeof(out.alias));
+    strlcpy(out.group, identity->group, sizeof(out.group));
+    out.watched = identity->watched;
+    out.muted = identity->muted;
+    out.hit_count = identity->hit_count;
+    out.last_seen_ms = identity->last_seen_ms;
+  }
   portEXIT_CRITICAL(&pocsag_messages_mux);
   snapshot.decoder_stats = pocsag_decoder_instance.stats();
   snapshot.receiving = receiving;

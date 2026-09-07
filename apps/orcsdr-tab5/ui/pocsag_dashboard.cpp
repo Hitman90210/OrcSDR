@@ -188,11 +188,38 @@ void draw_placeholder(const char* label) {
   text("Not yet implemented in this build", 640, kHeaderH + 330, kMuted, 1);
 }
 
+void draw_ids() {
+  card(20, kHeaderH + 12, 1240, 590);
+  if (g_live_snapshot.identity_count == 0) {
+    text("NO CAPCODES OBSERVED YET", 640, kHeaderH + 300, kMuted, 2);
+    return;
+  }
+  text("CAPCODE DIRECTORY", 44, kHeaderH + 34, kCyan, 1, middle_left);
+  text("(read-only -- alias/group/watch/mute editing not yet implemented)",
+       44, kHeaderH + 570, kMuted, 1, middle_left);
+  const size_t visible = std::min<size_t>(g_live_snapshot.identity_count, 12);
+  for (size_t i = 0; i < visible; ++i) {
+    const IdentitySummary& id = g_live_snapshot.identities[i];
+    const int y = kHeaderH + 66 + static_cast<int>(i) * 44;
+    if (id.watched) M5.Display.fillCircle(44, y, 5, kYellow);
+    char capcode[16];
+    snprintf(capcode, sizeof(capcode), "%lu", static_cast<unsigned long>(id.capcode));
+    text(capcode, 64, y, TFT_WHITE, 1, middle_left);
+    text(id.alias[0] ? id.alias : "UNKNOWN", 230, y,
+         id.alias[0] ? TFT_LIGHTGREY : kMuted, 1, middle_left);
+    text(id.group[0] ? id.group : "-", 480, y, kMuted, 1, middle_left);
+    char hits[16];
+    snprintf(hits, sizeof(hits), "%lu HITS", static_cast<unsigned long>(id.hit_count));
+    text(hits, 640, y, kGreen, 1, middle_left);
+    if (id.muted) text("MUTED", 900, y, kRed, 1, middle_left);
+  }
+}
+
 void redraw_content() {
   M5.Display.fillRect(0, kHeaderH, 1280, kTabsY - kHeaderH, kBg);
   switch (g_view) {
     case View::live: draw_live(); break;
-    case View::ids: draw_placeholder("IDS - CAPCODE DIRECTORY"); break;
+    case View::ids: draw_ids(); break;
     case View::signal: draw_placeholder("SIGNAL - RF AND DECODE DIAGNOSTICS"); break;
     case View::activity: draw_placeholder("ACTIVITY - TRAFFIC STATISTICS"); break;
     case View::archive: draw_placeholder("ARCHIVE - SAVED MESSAGE LOG"); break;
@@ -247,6 +274,9 @@ void update() {
   if (g_view == View::live) {
     M5.Display.fillRect(20, kHeaderH + 12, 1240, 590, kBg);
     draw_live();
+  } else if (g_view == View::ids) {
+    M5.Display.fillRect(20, kHeaderH + 12, 1240, 590, kBg);
+    draw_ids();
   }
 }
 

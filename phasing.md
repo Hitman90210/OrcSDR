@@ -828,10 +828,15 @@ rather than adding a second high-rate IQ path.
       natively in M5GFX matching this repo's existing dashboard conventions
       (dark instrument theme, header/settings-gear/battery contract from
       `architecture.md`, static-chrome-once + bounded dynamic repaint, tab
-      touch routing across all five). Only **LIVE** renders real content
-      (recent-message list with per-message FEC-quality indicator, decode
-      lock/baud/message-count header); IDS/SIGNAL/ACTIVITY/ARCHIVE are
-      explicitly labeled "Not yet implemented" placeholders, not faked data.
+      touch routing across all five). **LIVE** (recent-message list with
+      per-message FEC-quality indicator, decode lock/baud/message-count
+      header) and **IDS** (read-only CAPCODE directory: capcode, alias or
+      `UNKNOWN`, group, hit count, watched/muted indicators) render real
+      content; SIGNAL/ACTIVITY/ARCHIVE remain explicitly labeled "Not yet
+      implemented" placeholders, not faked data.
+- [ ] IDS has no alias/group/watch/mute/notes editing (needs a keypad-style
+      touch UI) and shows identities in table-insertion order, not sorted
+      by recency/hit count.
 - [ ] SIGNAL's real content (reusing `rf_analysis` for spectrum/waterfall/
       SNR, plus soft-symbol cluster plot, FSK deviation/offset,
       sync/baud/polarity/FEC-quality readout, and `RECORD IQ` wired to the

@@ -38,9 +38,28 @@ struct DisplayMessage {
   uint16_t text_length = 0;
 };
 
+// Matches the IDS view's visible row count. Read-only for now -- alias/
+// group/watch/mute/notes editing is a separate, not-yet-implemented UI
+// (phasing.md Phase 10.3).
+constexpr size_t kIdentityCapacity = 12;
+constexpr size_t kIdentityAliasLen = 20;
+constexpr size_t kIdentityGroupLen = 12;
+
+struct IdentitySummary {
+  uint32_t capcode = 0;
+  char alias[kIdentityAliasLen] = {};
+  char group[kIdentityGroupLen] = {};
+  bool watched = false;
+  bool muted = false;
+  uint32_t hit_count = 0;
+  uint64_t last_seen_ms = 0;
+};
+
 struct Snapshot {
   DisplayMessage messages[kRecentMessageCapacity]{};
   size_t message_count = 0;  // valid entries, index 0 = newest
+  IdentitySummary identities[kIdentityCapacity]{};
+  size_t identity_count = 0;
   Stats decoder_stats{};
   uint32_t revision = 0;
   bool receiving = false;
