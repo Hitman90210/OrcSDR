@@ -93,9 +93,14 @@ void draw_header(const Snapshot& snapshot) {
   audio_header::draw_settings_button();
   char detail[64]{}; scan_detail(snapshot, detail, sizeof(detail));
   text(detail, 270, 66, kMuted, 1);
+  // Was right-aligned to x=1240 at the same y=66 as the header icon row's
+  // bottom edge (icons run y=12..66), so this ran directly under the
+  // Home/Mute/Vis/Settings icon boxes. Right-aligning to just left of where
+  // the icon row starts (kHomeX=1040 in dashboard_audio_control.cpp) keeps
+  // it clear of them, in the gap before the icons.
   snprintf(detail, sizeof(detail), "FOUND %u / SHOWING %u", snapshot.total_access_point_count,
            snapshot.access_point_count);
-  text(detail, 1240, 66, kCyan, 1, middle_right);
+  text(detail, 1030, 66, kCyan, 1, middle_right);
 }
 
 void draw_tabs() {
