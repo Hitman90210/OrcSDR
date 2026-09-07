@@ -17,8 +17,10 @@ constexpr uint16_t kMuted = 0x8c71;
 constexpr uint16_t kMutedRed = TFT_RED;
 constexpr uint16_t kGrid = 0x2945;
 constexpr int kRegionX = 866;
-constexpr int kRegionY = 25;
+constexpr int kRegionY = 20;
 constexpr int kRegionW = 174;
+// Tall enough to fully clear both the collapsed content (now centered on the
+// icon row's y=39) and the expanded -/MUTE/+ buttons (kButtonY=34, height 64).
 constexpr int kRegionH = 82;
 constexpr int kIndicatorX = 870;
 constexpr int kIndicatorW = 88;
@@ -113,12 +115,16 @@ void draw(const Control& control, uint8_t volume, bool sound_enabled,
     return;
   }
 
-  draw_speaker(884, 57, sound_enabled ? kGreen : kMuted, sound_enabled);
+  // No speaker glyph here: the header's own mute button (drawn right after
+  // this tray, at kMuteX) already shows one, so this tray used to duplicate
+  // it right next to itself. This also used to sit lower (cy=57/67) than the
+  // header icon row beside it (vertical center 39), making the header look
+  // uneven -- everything below is now centered on y=39 to match.
   char level[8];
   snprintf(level, sizeof(level), "%u%%", (volume * 100u + 127u) / 255u);
-  text(level, 926, 67, sound_enabled ? TFT_WHITE : kMutedRed, 2);
-  text("USB", 965, 67, TFT_WHITE, 1);
-  draw_battery(966, 50, battery_percent);
+  text(level, 892, 39, sound_enabled ? TFT_WHITE : kMutedRed, 2);
+  text("USB", 934, 39, TFT_WHITE, 1);
+  draw_battery(952, 23, battery_percent);
 }
 
 void draw_home_button() {
