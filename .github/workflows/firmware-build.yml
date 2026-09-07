@@ -38,6 +38,17 @@ jobs:
           # export.sh ourselves first (confirmed: "idf.py: command not
           # found" on every run since this workflow was added).
           . "$IDF_PATH/export.sh"
+          # dependencies.lock's component_hash for the git-sourced esp_rtl_sdr
+          # dependency was recorded against a CRLF checkout (this project's
+          # tooling -- build-tab5-idf.ps1, install-tab5.ps1 -- is authored and
+          # resolved on Windows, where core.autocrlf defaults to true). This
+          # container's git defaults to LF, so its own fresh clone of that repo
+          # hashes differently and the component manager rejects it as
+          # "corrupted" (confirmed via the actual step log: hash mismatch
+          # against the exact value recorded in dependencies.lock). Scoped to
+          # this ephemeral container only -- does not touch the user's repo,
+          # any tracked config, or local Windows builds.
+          git config --global core.autocrlf true
           echo "idf.py: $(command -v idf.py || echo 'NOT FOUND')"
           idf.py --version
           set +e
