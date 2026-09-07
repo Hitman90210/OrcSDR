@@ -319,9 +319,12 @@ void draw_header_live_values() {
   text(value, 655, 36, kGreen, 2, middle_left);
   button(g_atc_listening ? "ATC" : (g_live ? "LIVE" : "WAIT"), 755, 14, 92, 44,
          g_atc_listening ? TFT_DARKCYAN : (g_live ? TFT_DARKGREEN : TFT_DARKGREY));
-  // The header mute icon otherwise only refreshes on the next full redraw --
-  // this call is cheap and already throttled by update()'s 1s gate below.
+  // Same reasoning as the mute icon above: draw_visualizer_button() was only
+  // ever called from the full/static draw, so once this screen was already
+  // open, effective_sps flipping between zero and nonzero never updated the
+  // header VIS icon until the user left and came back.
   audio_header::draw_mute_button(g_live_snapshot.sound_enabled);
+  audio_header::draw_visualizer_button(g_live_snapshot.effective_sps != 0);
 }
 
 void tab_icon(int index, int x, int y, uint16_t color) {
@@ -711,10 +714,13 @@ void draw_stats() {
   card(838, 88, 428, 226);
   text("MODE-S ACTIVITY", 860, 116, kBlue, 1, middle_left);
   const size_t activity_count = g_history_count;
+  // A 35px pitch put the 12th bar's right edge at x=1271, 5px past this
+  // card's right border (838+428=1266) once the history buffer filled up
+  // (kHistorySamples == 12) -- 33px keeps all 12 bars inside it.
   for (size_t i = 0; i < activity_count; ++i) {
     const int height = std::clamp(
         static_cast<int>((g_signal_history[i] + 100.0f) * 1.2f), 10, 100);
-    M5.Display.drawRect(866 + static_cast<int>(i) * 35, 282 - height,
+    M5.Display.drawRect(866 + static_cast<int>(i) * 33, 282 - height,
                         20, height, kBlue);
   }
   char aircraft[12], messages[20], strongest[20];
@@ -1022,6 +1028,11 @@ Action handle_touch(int32_t x, int32_t y) {
       redraw();
       return Action::settings_changed;
     }
+    // Matches the "SET RECEIVER LOCATION" button drawn at this same rect when
+    // !g_settings.location_configured (see draw_radar()) -- it had no
+    // hit-test at all, so tapping it did nothing.
+    if (!g_settings.location_configured && hit(x, y, 365, 425, 360, 40))
+      return Action::open_location_settings;
   } else if (g_view == View::list) {
     for (size_t i = 0; i < g_aircraft_count; ++i) {
       if (hit(x, y, 26, 143 + static_cast<int>(i) * 76, 818, 68)) {

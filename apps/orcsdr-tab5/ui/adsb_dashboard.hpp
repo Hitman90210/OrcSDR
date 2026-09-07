@@ -58,6 +58,7 @@ enum class Action : uint8_t {
   none,
   settings_changed,
   open_data_settings,
+  open_location_settings,
   atc_listen,
   atc_resume,
   exit

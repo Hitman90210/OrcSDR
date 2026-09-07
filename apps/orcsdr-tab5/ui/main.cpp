@@ -8361,6 +8361,13 @@ orcsdr::dashboards::Id dashboard_for_band(RtlBand band, uint32_t frequency_hz) {
     case RtlBand::lora: return Id::lora;
     case RtlBand::am: return Id::shortwave;
     case RtlBand::browse:
+      // NOAA APT satellite downlinks (137.100/137.620/137.912 MHz); checked
+      // before airband since open_dashboard()'s SATELLITE tile tunes to
+      // 137.5 MHz, just past airband's 137.000 MHz upper edge -- without
+      // this, selecting SATELLITE tuned correctly but Home's title/rail
+      // fell through to the Id::utilities fallback, which has no registry
+      // entry (dashboards::find() returns null), showing "HOME" instead.
+      if (frequency_hz >= 137000000 && frequency_hz <= 138000000) return Id::satellite;
       if (frequency_hz >= 118000000 && frequency_hz <= 137000000) return Id::airband;
       if (frequency_hz >= 156000000 && frequency_hz <= 162025000) return Id::marine;
       if (frequency_hz >= 1000000 && frequency_hz <= 30000000) return Id::shortwave;
@@ -9607,6 +9614,8 @@ void handle_sdr_touch(int32_t x, int32_t y) {
       adsb_settings_persist_pending.store(true, std::memory_order_release);
     } else if (action == orcsdr::adsb::Action::open_data_settings) {
       open_global_settings(orcsdr::settings::Section::data_maps);
+    } else if (action == orcsdr::adsb::Action::open_location_settings) {
+      open_global_settings(orcsdr::settings::Section::location_adsb);
     } else if (action == orcsdr::adsb::Action::exit) {
       show_home();
     } else if (action == orcsdr::adsb::Action::atc_listen) {
