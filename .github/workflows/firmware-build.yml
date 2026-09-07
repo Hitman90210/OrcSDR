@@ -31,9 +31,14 @@ jobs:
       - name: Resolve managed components
         shell: bash
         run: |
+          echo "idf.py: $(command -v idf.py || echo 'NOT FOUND')"
+          echo "IDF_PATH=$IDF_PATH"
+          idf.py --version
           set +e
           idf.py -B build-ci -D SDKCONFIG=build-ci/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults reconfigure
+          echo "first reconfigure exit code: $?"
           set -e
+          ls -la managed_components/ 2>&1 || echo "managed_components/ does not exist after first reconfigure"
           python tools/prepare-managed-components.py
           idf.py -B build-ci -D SDKCONFIG=build-ci/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults reconfigure
           python tools/prepare-managed-components.py
