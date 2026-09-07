@@ -28,10 +28,15 @@ constexpr int kButtonY = 34;
 constexpr int kButtonH = 64;
 constexpr int kButtonW = 54;
 constexpr int kButtonX[] = {868, 926, 984};
+// Home used to be 58x58 at y=8 -- 4px taller than the other three header
+// icons (54x54 at y=12) and left only a 1px gap to the mute button next to
+// it, instead of the 5px gap every other icon pair uses. Matching their
+// size/y keeps the bottom edge at the same y=66 (8+58 == 12+54) so the
+// glyph below didn't need to move, just the box around it.
 constexpr int kHomeX = 1040;
-constexpr int kHomeY = 8;
-constexpr int kHomeW = 58;
-constexpr int kHomeH = 58;
+constexpr int kHomeY = 12;
+constexpr int kHomeW = 54;
+constexpr int kHomeH = 54;
 constexpr int kMuteX = 1099;
 constexpr int kMuteY = 12;
 constexpr int kMuteW = 54;
@@ -132,7 +137,7 @@ void draw_home_button() {
   M5.Display.drawRoundRect(kHomeX, kHomeY, kHomeW, kHomeH, 8, kCyan);
   const int cx = kHomeX + kHomeW / 2;
   M5.Display.fillTriangle(cx, 17, kHomeX + 9, 38, kHomeX + kHomeW - 9, 38, kGreen);
-  M5.Display.fillRect(kHomeX + 17, 35, 24, 21, kGreen);
+  M5.Display.fillRect(cx - 12, 35, 24, 21, kGreen);
   M5.Display.fillRect(cx - 4, 43, 8, 13, kPanel);
 }
 

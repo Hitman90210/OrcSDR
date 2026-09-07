@@ -429,9 +429,15 @@ void draw_radar() {
   M5.Display.drawFastHLine(30, 137, 178, kBorder);
   text(g_live ? "RECEIVING" : "WAITING", 54, 166,
        g_live ? kGreen : TFT_ORANGE, 1, middle_left);
+  // "SIGNAL" and the GOOD/-- value used to share this row (label left-aligned
+  // at x=88, value right-aligned to x=198), but this dashboard's own text()
+  // renders size-1 labels in the proportional DejaVu18 font (see text()
+  // above) -- much wider per character than the small bitmap font other
+  // dashboards use -- so the two collided in the middle. Value now shares
+  // the signal-bars row below instead of the label's row.
+  text("SIGNAL", 88, 198, TFT_LIGHTGREY, 1, middle_left);
   signal_bars(34, 218, g_live ? 4 : 0);
-  text("SIGNAL", 88, 204, TFT_LIGHTGREY, 1, middle_left);
-  text(g_live ? "GOOD" : "--", 198, 204,
+  text(g_live ? "GOOD" : "--", 198, 224,
        g_live ? kGreen : kMuted, 1, middle_right);
   text(offline_map::available() ? "MAP READY" : "MAP UNAVAILABLE", 34, 269,
        offline_map::available() ? kBlue : kMuted, 1, middle_left);
@@ -487,11 +493,17 @@ void draw_radar() {
   for (int i = 0; i < 12; ++i)
     M5.Display.fillRect(250 + i * 18, 582 - i * 3, 12, 18 + i * 3,
                         i < bars ? (i < 7 ? kGreen : kBlue) : TFT_DARKGREY);
-  text("POSITIONS / MIN", 487, 512, TFT_WHITE, 1, middle_left);
+  // "POSITIONS / MIN" and "ALTITUDE DISTRIBUTION" ran directly into each
+  // other with no gap (this dashboard's size-1 text uses the wide
+  // proportional DejaVu18 font -- see text() above -- not the narrow bitmap
+  // font these labels' 168px/205px column widths were sized for), with
+  // "ALTITUDE DISTRIBUTION" clipped by the card's right edge on top of that.
+  // Shortened both to fit their columns instead of widening the card.
+  text("POS / MIN", 487, 512, TFT_WHITE, 1, middle_left);
   char rate[18];
   snprintf(rate, sizeof(rate), "%.0f", displayed_message_rate());
   text(rate, 487, 551, TFT_WHITE, 3, middle_left);
-  text("ALTITUDE DISTRIBUTION", 655, 512, TFT_WHITE, 1, middle_left);
+  text("ALTITUDE DIST", 655, 512, TFT_WHITE, 1, middle_left);
   uint8_t altitude_bins[kAltitudeBins]{};
   uint8_t max_altitude_bin = 0;
   for (size_t i = 0; i < g_aircraft_count; ++i) {
@@ -518,9 +530,15 @@ void draw_radar() {
   snprintf(received, sizeof(received), "%u RECEIVED", static_cast<unsigned>(displayed_aircraft_count()));
   text(received, 1246, 116, kBlue, 1, middle_right);
   M5.Display.drawFastHLine(906, 143, 344, kBorder);
+  // ALT/SPD/DIST used to be left-aligned in a 196px-wide strip (three numeric
+  // columns sharing 1070-1266), so a wide SPD value like "483" (this
+  // dashboard's size-1 text is the proportional DejaVu18 font -- see text()
+  // above, not a fixed-width bitmap font) ran straight into DIST's "34 NM"
+  // starting right after it, e.g. "48334 NM". Right-aligning each column to
+  // its own boundary keeps values contained regardless of digit count.
   text("CALLSIGN", 930, 166, kBlue, 1, middle_left);
-  text("ALT", 1070, 166, kBlue, 1, middle_left);
-  text("SPD", 1148, 166, kBlue, 1, middle_left);
+  text("ALT", 1100, 166, kBlue, 1, middle_right);
+  text("SPD", 1175, 166, kBlue, 1, middle_right);
   text("DIST", 1238, 166, kBlue, 1, middle_right);
   for (size_t i = 0; i < g_aircraft_count; ++i) {
     const int yy = 202 + static_cast<int>(i) * 57;
@@ -529,10 +547,10 @@ void draw_radar() {
     char value[20];
     if (g_aircraft[i].has_altitude) snprintf(value, sizeof(value), "%dk", g_aircraft[i].altitude_ft / 1000);
     else strlcpy(value, "--", sizeof(value));
-    text(value, 1070, yy, TFT_WHITE, 1, middle_left);
+    text(value, 1100, yy, TFT_WHITE, 1, middle_right);
     if (g_aircraft[i].has_speed) snprintf(value, sizeof(value), "%d", g_aircraft[i].speed_kts);
     else strlcpy(value, "--", sizeof(value));
-    text(value, 1148, yy, TFT_WHITE, 1, middle_left);
+    text(value, 1175, yy, TFT_WHITE, 1, middle_right);
     if (g_aircraft[i].has_position && g_settings.location_configured)
       snprintf(value, sizeof(value), "%.0f NM", g_aircraft[i].range_nm);
     else strlcpy(value, "--", sizeof(value));
