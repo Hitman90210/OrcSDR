@@ -186,6 +186,21 @@ value. `rds_carrier`/`rds_signal` are RDS Stage 1 (carrier presence only,
 see below) — always present on FM band regardless of whether the station
 actually broadcasts RDS.
 
+## POCSAG (pager receive)
+
+Debug-verbosity only (see [Serial verbosity](#serial-verbosity-and-crash-evidence)).
+Never includes decoded message text — only lock/baud/FEC counters.
+
+| Command | Auth | Reply |
+|---|---|---|
+| (periodic, debug verbosity, ~5 s) | no | `RTL_POCSAG_STATUS lock=... baud=... inverted=0\|1 batches=... sync_losses=... codewords=... valid=... corrected=... corrected_bits=... uncorrectable=... parity_failures=... messages=... truncated=...` — emitted only while POCSAG is the active band. |
+
+`lock` is `orcsdr::pocsag::LockState` (0=no_signal, 1=searching, 2=locked,
+3=lost). There is no dedicated tune/status *command* for POCSAG yet — tuning
+happens through the Home dashboard catalog or the RF band guide's POCSAG
+quick launch, and frequency/baud/polarity are not yet independently
+settable over serial.
+
 ## FM presets
 
 | Command | Auth | Reply |

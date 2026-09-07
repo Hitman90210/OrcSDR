@@ -64,6 +64,8 @@
 #include "p25_config.hpp"
 #include "p25_decoder.hpp"
 #include "p25_voice.hpp"
+#include "pocsag_dashboard.hpp"
+#include "pocsag_decoder_core.hpp"
 #include "radio_session.hpp"
 #include "radio_ui_service.hpp"
 #include "rf_lab.hpp"
@@ -592,6 +594,12 @@ constexpr uint32_t kLoraMinHz = 902000000;
 constexpr uint32_t kLoraMaxHz = 928000000;
 constexpr uint32_t kLoraDefaultHz = 906875000;  // Meshtastic US LongFast default slot
 constexpr uint32_t kAdsbDefaultHz = 1090000000;
+// Frequency, baud, and polarity are a user-edited profile, not a hardcoded
+// default -- POCSAG channels vary too much by country/carrier for one
+// default to be correct. kPocsagFallbackHz is only the seed used before a
+// profile has ever been saved (NVS-unset), not a claim it is right for the
+// user's area.
+constexpr uint32_t kPocsagFallbackHz = 152007500;
 constexpr uint32_t kP25MinHz = ESP_RTL_SDR_FREQ_MIN_HZ;
 constexpr uint32_t kP25MaxHz = ESP_RTL_SDR_FREQ_MAX_HZ;
 constexpr uint32_t kP25DefaultHz = 851012500;
@@ -654,15 +662,17 @@ constexpr RfBandGuide kRfBandGuide[] = {
     {kLoraMinHz, kLoraMaxHz, kLoraDefaultHz, RtlBand::lora, "LORA / ISM", "UHF / LoRa CSS and mesh data", true},
     {977900000, 978100000, 978000000, RtlBand::browse, "ADS-B UAT", "UHF / aircraft position", false},
     {1089900000, 1090100000, kAdsbDefaultHz, RtlBand::adsb, "ADS-B / MODE S", "L-band / aircraft tracking", true},
+    {152000000, 152030000, kPocsagFallbackHz, RtlBand::pocsag, "POCSAG PAGER", "VHF / receive-only pager monitor", true},
     {1525000000, 1559000000, 1545000000, RtlBand::browse, "SATCOM", "L-band / satellite downlinks", false},
     {1575000000, 1576000000, 1575420000, RtlBand::browse, "GNSS / GPS", "L-band / navigation", false},
     {1610600000, 1626500000, 1620000000, RtlBand::browse, "SATCOM", "L-band / mobile satellite", false},
 };
-static_assert(std::size(kRfBandGuide) == 21);
+static_assert(std::size(kRfBandGuide) == 22);
 constexpr const char* kRfQuickLabels[] = {
     "CB 27", "HAM 10M", "HAM 6M", "FM RADIO", "AIRBAND", "NOAA SAT",
-    "HAM 2M", "NOAA WX", "HAM 70CM", "P25 PHASE I", "LORA 915", "ADS-B 1090"};
-static_assert(std::size(kRfQuickLabels) == 12);
+    "HAM 2M", "NOAA WX", "HAM 70CM", "P25 PHASE I", "LORA 915", "ADS-B 1090",
+    "POCSAG"};
+static_assert(std::size(kRfQuickLabels) == 13);
 
 constexpr bool rf_band_guide_valid() {
   size_t quick_count = 0;
@@ -1130,6 +1140,11 @@ void fm_preset_offer(uint32_t freq_hz, float level_dbfs) {
     fm_presets[j + 1] = key;
   }
 }
+static uint32_t pocsag_config_frequency_hz = kPocsagFallbackHz;
+static std::atomic<uint16_t> pocsag_baud_bps{0};  // 0 = AUTO
+static std::atomic<uint8_t> pocsag_polarity_mode{0};  // 0=AUTO,1=NORMAL,2=INVERTED
+static bool pocsag_config_loaded = false;
+
 static std::atomic<CbMode> cb_mode{CbMode::am};
 static std::atomic<int32_t> cb_clarifier_hz{0};
 static std::atomic<int32_t> cb_squelch_dbfs{-75};
@@ -1357,6 +1372,7 @@ bool ui_documentation_mode = false;
 bool offline_transition_handled = false;
 orcsdr::NvsStore preferences;
 orcsdr::adsb::Settings adsb_settings;
+orcsdr::pocsag::Settings pocsag_dashboard_settings;
 std::atomic<bool> adsb_settings_persist_pending{false};
 JournalState journal{};
 WorkflowState workflow{};
@@ -1720,6 +1736,94 @@ void publish_adsb_snapshot(uint32_t now) {
   orcsdr::adsb::set_live_snapshot(snapshot);
 }
 
+// POCSAG rides the existing 960 kS/s FM-band RTL stream (see
+// process_iq_block()'s RtlBand::pocsag case) rather than a dedicated
+// high-rate queue/task like ADS-B -- the decode core is cheap enough per
+// sample (no transcendental math above the decimated 38.4 kS/s rate) to run
+// inline in the same context that already demodulates FM, matching how RDS
+// taps the FM discriminator rather than owning a second pipeline.
+orcsdr::pocsag::Decoder pocsag_decoder_instance;
+constexpr size_t kPocsagMessageCount = 12;
+struct PocsagStoredMessage {
+  bool used = false;
+  uint32_t capcode = 0;
+  uint8_t function = 0;
+  orcsdr::pocsag::MessageType type = orcsdr::pocsag::MessageType::unknown;
+  uint16_t baud = 0;
+  bool inverted = false;
+  bool truncated = false;
+  uint16_t corrected_bits = 0;
+  uint16_t uncorrectable_words = 0;
+  char text[orcsdr::pocsag::kMaxMessageChars]{};
+  uint16_t text_length = 0;
+};
+PocsagStoredMessage pocsag_messages[kPocsagMessageCount]{};
+size_t pocsag_message_write = 0;
+size_t pocsag_message_count = 0;
+portMUX_TYPE pocsag_messages_mux = portMUX_INITIALIZER_UNLOCKED;
+std::atomic<uint32_t> pocsag_message_revision{0};
+
+void on_pocsag_message(const orcsdr::pocsag::Message& msg, void*) {
+  portENTER_CRITICAL(&pocsag_messages_mux);
+  PocsagStoredMessage& slot = pocsag_messages[pocsag_message_write];
+  slot.used = true;
+  slot.capcode = msg.capcode;
+  slot.function = msg.function;
+  slot.type = msg.type;
+  slot.baud = msg.baud;
+  slot.inverted = msg.inverted;
+  slot.truncated = msg.truncated;
+  slot.corrected_bits = msg.corrected_bits;
+  slot.uncorrectable_words = msg.uncorrectable_words;
+  slot.text_length = msg.text_length;
+  memcpy(slot.text, msg.text, sizeof(slot.text));
+  pocsag_message_write = (pocsag_message_write + 1) % kPocsagMessageCount;
+  if (pocsag_message_count < kPocsagMessageCount) ++pocsag_message_count;
+  portEXIT_CRITICAL(&pocsag_messages_mux);
+  pocsag_message_revision.fetch_add(1, std::memory_order_release);
+}
+
+void publish_pocsag_snapshot(uint32_t now) {
+  static uint32_t last_sample_ms = 0;
+  static uint32_t last_revision = UINT32_MAX;
+  static uint32_t ui_revision = 0;
+  if (now - last_sample_ms < 500u) return;
+  last_sample_ms = now;
+  const uint32_t revision = pocsag_message_revision.load(std::memory_order_acquire);
+  const bool receiving = rtl_ui_band == RtlBand::pocsag &&
+                          rtl_capture_state.load(std::memory_order_acquire) ==
+                              RtlCaptureState::running;
+  if (revision == last_revision && !receiving) return;
+  last_revision = revision;
+
+  orcsdr::pocsag::Snapshot snapshot{};
+  portENTER_CRITICAL(&pocsag_messages_mux);
+  const size_t count = std::min(pocsag_message_count, orcsdr::pocsag::kRecentMessageCapacity);
+  for (size_t i = 0; i < count; ++i) {
+    const size_t slot_index =
+        (pocsag_message_write + kPocsagMessageCount - 1 - i) % kPocsagMessageCount;
+    const PocsagStoredMessage& stored = pocsag_messages[slot_index];
+    if (!stored.used) continue;
+    auto& out = snapshot.messages[snapshot.message_count++];
+    out.timestamp_ms = now;
+    out.capcode = stored.capcode;
+    out.function = stored.function;
+    out.type = stored.type;
+    out.baud = stored.baud;
+    out.inverted = stored.inverted;
+    out.truncated = stored.truncated;
+    out.corrected_bits = stored.corrected_bits;
+    out.uncorrectable_words = stored.uncorrectable_words;
+    memcpy(out.text, stored.text, sizeof(out.text));
+    out.text_length = stored.text_length;
+  }
+  portEXIT_CRITICAL(&pocsag_messages_mux);
+  snapshot.decoder_stats = pocsag_decoder_instance.stats();
+  snapshot.receiving = receiving;
+  snapshot.revision = ++ui_revision;
+  orcsdr::pocsag::set_live_snapshot(snapshot);
+}
+
 void on_adsb_frame(const orcsdr::adsb_rx::Frame& frame, void*) {
   const uint32_t now = millis();
   bool added = false;
@@ -1843,6 +1947,7 @@ void draw_cb_dashboard(bool static_panel);
 bool handle_cb_touch(int32_t x, int32_t y);
 void draw_adsb_dashboard(bool static_panel);
 void draw_lora_dashboard(bool static_panel);
+void draw_pocsag_dashboard(bool static_panel);
 void draw_fm_dashboard(bool static_panel);
 void draw_p25_dashboard(bool static_panel);
 bool handle_lora_touch(int32_t x, int32_t y);
@@ -2176,6 +2281,7 @@ const char* rtl_band_name(RtlBand band) {
     case RtlBand::browse: return "BROWSE";
     case RtlBand::adsb: return "ADSB";
     case RtlBand::p25: return "P25";
+    case RtlBand::pocsag: return "POCSAG";
     default: return "FM";
   }
 }
@@ -2191,6 +2297,7 @@ bool rtl_band_from_name(const char* name, RtlBand* out_band) {
   if (strcmp(name, "BROWSE") == 0) { *out_band = RtlBand::browse; return true; }
   if (strcmp(name, "ADSB") == 0) { *out_band = RtlBand::adsb; return true; }
   if (strcmp(name, "P25") == 0) { *out_band = RtlBand::p25; return true; }
+  if (strcmp(name, "POCSAG") == 0) { *out_band = RtlBand::pocsag; return true; }
   return false;
 }
 
@@ -2206,6 +2313,10 @@ const char* rtl_mode_name(RtlBand band) {
     case RtlBand::browse: return "NFM";
     case RtlBand::adsb: return "1090";
     case RtlBand::p25: return "P25 C4FM";
+    case RtlBand::pocsag:
+      return pocsag_baud_bps.load(std::memory_order_relaxed) == 512   ? "POCSAG512"
+             : pocsag_baud_bps.load(std::memory_order_relaxed) == 2400 ? "POCSAG2400"
+                                                                        : "POCSAG1200";
     default: return "WBFM";
   }
 }
@@ -2219,6 +2330,7 @@ uint32_t rtl_band_default_frequency(RtlBand band) {
     case RtlBand::browse: return kRtlBrowseDefaultHz;
     case RtlBand::adsb: return kAdsbDefaultHz;
     case RtlBand::p25: return p25_control_frequency_hz;
+    case RtlBand::pocsag: return pocsag_config_frequency_hz;
     default: return rtl_saved_fm_hz;
   }
 }
@@ -2227,7 +2339,8 @@ uint32_t rtl_filter_default_hz(RtlBand band) {
   if (band == RtlBand::lora) return lora_bandwidth_hz.load(std::memory_order_relaxed);
   if (band == RtlBand::am || band == RtlBand::cb) return kRtlAmFilterDefaultHz;
   if (band == RtlBand::p25) return kP25StepHz;
-  if (band == RtlBand::wx || band == RtlBand::browse || band == RtlBand::adsb)
+  if (band == RtlBand::wx || band == RtlBand::browse || band == RtlBand::adsb ||
+      band == RtlBand::pocsag)
     return kRtlWxFilterDefaultHz;
   return kRtlFmFilterDefaultHz;
 }
@@ -2280,6 +2393,11 @@ uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
       return kAdsbDefaultHz;
     case RtlBand::p25:
       return constrain(frequency_hz, kP25MinHz, kP25MaxHz);
+    case RtlBand::pocsag:
+      // POCSAG rides the general RTL-SDR receive range, same as BROWSE --
+      // there is no fixed band; the user's saved profile decides the
+      // frequency, this clamp only guards against an out-of-range value.
+      return constrain(frequency_hz, kRtlBrowseMinHz, kRtlBrowseMaxHz);
     case RtlBand::browse:
       return constrain(frequency_hz, kRtlBrowseMinHz, kRtlBrowseMaxHz);
     default:
@@ -5012,6 +5130,18 @@ void draw_adsb_dashboard(bool static_panel) {
   else orcsdr::adsb::update();
 }
 
+void draw_pocsag_dashboard(bool static_panel) {
+  if (!static_panel && !orcsdr::screens::may_draw(orcsdr::screens::Id::pocsag)) return;
+  if (!static_panel) orcsdr::screens::note_visible_update(orcsdr::screens::Id::pocsag);
+  pocsag_dashboard_settings.frequency_hz = pocsag_config_frequency_hz;
+  pocsag_dashboard_settings.baud_bps = pocsag_baud_bps.load(std::memory_order_relaxed);
+  pocsag_dashboard_settings.polarity_mode = pocsag_polarity_mode.load(std::memory_order_relaxed);
+  publish_pocsag_snapshot(millis());
+  if (!orcsdr::pocsag::active()) orcsdr::pocsag::enter(pocsag_dashboard_settings);
+  else if (static_panel) orcsdr::pocsag::draw();
+  else orcsdr::pocsag::update();
+}
+
 void draw_lora_dashboard(bool static_panel) {
   if (rtl_ui_band != RtlBand::lora || rtl_nav_open) return;
   if (!static_panel && !orcsdr::screens::may_draw(orcsdr::screens::Id::lora)) return;
@@ -5086,6 +5216,7 @@ orcsdr::screens::Id screen_for_band(RtlBand band) {
     case RtlBand::fm: return orcsdr::screens::Id::fm;
     case RtlBand::p25: return orcsdr::screens::Id::p25;
     case RtlBand::adsb: return orcsdr::screens::Id::adsb;
+    case RtlBand::pocsag: return orcsdr::screens::Id::pocsag;
     case RtlBand::lora: return orcsdr::screens::Id::lora;
     default: return orcsdr::screens::Id::radio;
   }
@@ -5098,6 +5229,7 @@ void refresh_active_screen() {
     case Id::fm: draw_fm_dashboard(false); break;
     case Id::p25: draw_p25_dashboard(false); break;
     case Id::adsb: draw_adsb_dashboard(false); break;
+    case Id::pocsag: draw_pocsag_dashboard(false); break;
     case Id::lora: draw_lora_dashboard(false); break;
     case Id::wifi_analysis: draw_rf24_dashboard(false); break;
     default: break;  // Settings, documentation, and no screen own their draws.
@@ -5109,6 +5241,7 @@ uint8_t active_dashboard_tab(orcsdr::screens::Id screen) {
     case orcsdr::screens::Id::fm: return static_cast<uint8_t>(orcsdr::fm::view());
     case orcsdr::screens::Id::p25: return static_cast<uint8_t>(orcsdr::p25::view());
     case orcsdr::screens::Id::adsb: return orcsdr::adsb::view();
+    case orcsdr::screens::Id::pocsag: return orcsdr::pocsag::view();
     case orcsdr::screens::Id::lora: return static_cast<uint8_t>(orcsdr::lora::view());
     default: return 0;
   }
@@ -5402,7 +5535,7 @@ void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume) {
   // Home is the common receiver workspace until a band has its own dashboard.
   // Do not resurrect the retired generic Browse surface for AM/WX/CB/Airband.
   if (band != RtlBand::fm && band != RtlBand::p25 && band != RtlBand::adsb &&
-      band != RtlBand::lora) {
+      band != RtlBand::pocsag && band != RtlBand::lora) {
     if (adsb_atc_listening) { draw_adsb_dashboard(true); return; }
     show_home();
     return;
@@ -5415,9 +5548,16 @@ void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume) {
   if (band != RtlBand::fm) orcsdr::fm::leave();
   if (band != RtlBand::p25) orcsdr::p25::leave();
   if (band != RtlBand::adsb) orcsdr::adsb::leave();
+  if (band != RtlBand::pocsag) orcsdr::pocsag::leave();
   if (band != RtlBand::lora) orcsdr::lora::leave();
   if (band == RtlBand::adsb) {
     draw_adsb_dashboard(true);
+    draw_global_settings_gear();
+    orcsdr::screens::finish_transition();
+    return;
+  }
+  if (band == RtlBand::pocsag) {
+    draw_pocsag_dashboard(true);
     draw_global_settings_gear();
     orcsdr::screens::finish_transition();
     return;
@@ -6977,6 +7117,12 @@ static void rtl_dsp_task(void *) {
       }
     }
     update_signal_level_from_iq(block.data, block.bytes);
+    // POCSAG rides the shared 960 kS/s FM-band stream (no dedicated
+    // high-rate queue like ADS-B) -- cheap enough per raw-IQ sample (no
+    // transcendental math above its internal 38.4 kS/s decimated rate) to
+    // run inline in this same DSP task.
+    if (!block.lab_custom_rate && block.band == RtlBand::pocsag)
+      pocsag_decoder_instance.process_cu8(block.data, block.bytes, on_pocsag_message, nullptr);
     if (!block.lab_custom_rate && block.band == RtlBand::p25)
       orcsdr::p25decoder::process_cu8(block.data, block.bytes);
     if (!block.lab_custom_rate && block.band == RtlBand::p25 &&
@@ -6989,6 +7135,7 @@ static void rtl_dsp_task(void *) {
       lora_iq_offer(block.data, block.bytes);
     if (!block.lab_custom_rate && !orcsdr::visualizer::channel_audio_active() &&
         block.band != RtlBand::lora && block.band != RtlBand::p25 &&
+        block.band != RtlBand::pocsag &&
         (rtl_audio_enabled.load(std::memory_order_relaxed) ||
          g_audio_rec_active.load(std::memory_order_relaxed)) &&
         !rtl_audio_test_tone.load(std::memory_order_relaxed)) {
@@ -7144,6 +7291,7 @@ static void rtl_driver_app_task(void *) {
         resume_rtl_speaker();
         uint32_t spectrum_last_ms = 0;
         uint32_t adsb_metrics_last_ms = 0;
+        uint32_t pocsag_metrics_last_ms = 0;
         uint32_t stream_progress_last_ms = millis();
         uint64_t stream_progress_bytes = 0;
         uint8_t stream_stall_checks = 0;
@@ -7306,6 +7454,28 @@ static void rtl_driver_app_task(void *) {
                             decode.frames, decode.df17, decode.crc_ok,
                             adsb_aircraft_count.load(std::memory_order_relaxed),
                             adsb_total_messages.load(std::memory_order_relaxed));
+            }
+          }
+          if (g_stream_band == RtlBand::pocsag && now - pocsag_metrics_last_ms >= 5000) {
+            pocsag_metrics_last_ms = now;
+            if (serial_verbosity_at(SerialVerbosity::debug)) {
+              const auto& stats = pocsag_decoder_instance.stats();
+              Serial.printf(
+                  "RTL_POCSAG_STATUS lock=%u baud=%u inverted=%u batches=%lu sync_losses=%lu "
+                  "codewords=%lu valid=%lu corrected=%lu corrected_bits=%lu uncorrectable=%lu "
+                  "parity_failures=%lu messages=%lu truncated=%lu\n",
+                  static_cast<unsigned>(stats.lock), static_cast<unsigned>(stats.detected_baud),
+                  stats.inverted ? 1u : 0u,
+                  static_cast<unsigned long>(stats.batches_synced),
+                  static_cast<unsigned long>(stats.sync_losses),
+                  static_cast<unsigned long>(stats.codewords_total),
+                  static_cast<unsigned long>(stats.codewords_valid),
+                  static_cast<unsigned long>(stats.codewords_corrected),
+                  static_cast<unsigned long>(stats.corrected_bit_count),
+                  static_cast<unsigned long>(stats.codewords_uncorrectable),
+                  static_cast<unsigned long>(stats.parity_failures),
+                  static_cast<unsigned long>(stats.messages_decoded),
+                  static_cast<unsigned long>(stats.messages_truncated));
             }
           }
           // One active owner receives the bounded periodic status repaint.
@@ -9163,6 +9333,7 @@ orcsdr::dashboards::Id dashboard_for_band(RtlBand band, uint32_t frequency_hz) {
     case RtlBand::fm: return Id::fm;
     case RtlBand::p25: return Id::p25;
     case RtlBand::adsb: return Id::adsb;
+    case RtlBand::pocsag: return Id::pocsag;
     case RtlBand::wx: return Id::weather;
     case RtlBand::cb: return Id::cb;
     case RtlBand::lora: return Id::lora;
@@ -9216,6 +9387,7 @@ void open_dashboard(orcsdr::dashboards::Id id) {
     case Id::fm: band = RtlBand::fm; frequency = rtl_saved_fm_hz; break;
     case Id::p25: band = RtlBand::p25; frequency = p25_control_frequency_hz; break;
     case Id::adsb: band = RtlBand::adsb; frequency = kAdsbDefaultHz; break;
+    case Id::pocsag: band = RtlBand::pocsag; frequency = pocsag_config_frequency_hz; break;
     case Id::shortwave: band = RtlBand::browse; frequency = 7100000; break;
     case Id::weather: band = RtlBand::wx; frequency = kRtlWxHz; break;
     case Id::cb: band = RtlBand::cb; frequency = kCbDefaultHz; break;
@@ -10426,6 +10598,13 @@ void handle_sdr_touch(int32_t x, int32_t y) {
     }
     return;
   }
+  if (rtl_ui_band == RtlBand::pocsag && orcsdr::pocsag::active()) {
+    const orcsdr::pocsag::Action action = orcsdr::pocsag::handle_touch(x, y);
+    if (action == orcsdr::pocsag::Action::exit) {
+      show_home();
+    }
+    return;
+  }
   if (rtl_ui_band == RtlBand::fm && orcsdr::fm::active()) {
     handle_fm_dashboard_action(orcsdr::fm::handle_touch(x, y));
     return;
@@ -10780,6 +10959,7 @@ void ui_doc_leave_surfaces() {
   orcsdr::p25::leave();
   orcsdr::lora::leave();
   orcsdr::adsb::leave();
+  orcsdr::pocsag::leave();
   M5.Display.clearScrollRect();
 }
 
@@ -13320,6 +13500,10 @@ void setup() {
     Serial.println("RTL_ADSB_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_ADSB_SELF_CHECK_OK");
+  if (!orcsdr::pocsag::self_check() || !orcsdr::pocsag::Decoder::self_check()) {
+    Serial.println("RTL_POCSAG_SELF_CHECK_FAIL");
+  }
+  Serial.println("RTL_POCSAG_SELF_CHECK_OK");
   if (!orcsdr::fm::self_check()) {
     Serial.println("RTL_FM_DASHBOARD_SELF_CHECK_FAIL");
   }
@@ -13537,6 +13721,7 @@ void loop() {
                   wifi_status_message);
   }
   const bool adsb_ui = (rtl_ui_band == RtlBand::adsb || adsb_atc_listening) && orcsdr::adsb::active();
+  const bool pocsag_ui = rtl_ui_band == RtlBand::pocsag && orcsdr::pocsag::active();
   const bool radio_ui = rtl_ui_active.load(std::memory_order_acquire);
   const bool settings_ui = orcsdr::settings::active();
   const bool home_ui = orcsdr::home::active();
@@ -13869,6 +14054,15 @@ void loop() {
     if (orcsdr::adsb::active() && orcsdr::screens::owns(orcsdr::screens::Id::adsb)) {
       enrich_one_adsb_track();
       publish_adsb_snapshot(millis());
+      refresh_active_screen();
+    }
+  } else if (pocsag_ui && orcsdr::screens::owns(orcsdr::screens::Id::pocsag)) {
+    const auto touch = M5.Touch.getDetail(0);
+    const bool pressed = touch.isPressed() || touch.wasPressed();
+    if (pressed && !was_pressed) handle_sdr_touch(touch.x, touch.y);
+    was_pressed = pressed;
+    if (orcsdr::pocsag::active() && orcsdr::screens::owns(orcsdr::screens::Id::pocsag)) {
+      publish_pocsag_snapshot(millis());
       refresh_active_screen();
     }
   } else if (fm_ui || p25_ui || radio_ui) {

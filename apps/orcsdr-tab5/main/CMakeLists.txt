@@ -44,6 +44,8 @@ idf_component_register(
         "../ui/p25_decoder.cpp"
         "../ui/p25_decoder_core.cpp"
         "../ui/p25_voice.cpp"
+        "../ui/pocsag_dashboard.cpp"
+        "../ui/pocsag_decoder_core.cpp"
         "../ui/radio_session.cpp"
         "../ui/radio_ui_service.cpp"
         "../ui/rf_analysis.cpp"
