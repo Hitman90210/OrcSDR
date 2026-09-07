@@ -17,6 +17,8 @@ std::atomic<bool> g_voice_accepting{false};
 std::atomic<p25core::Modulation> g_modulation{p25core::Modulation::auto_detect};
 std::atomic<float> g_timing_gain{0.005f};
 std::atomic<float> g_carrier_gain{0.008f};
+std::atomic<bool> g_phase2_acquisition{false};
+bool g_phase2_applied = false;
 Snapshot g_public_snapshot{};
 portMUX_TYPE g_snapshot_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -62,6 +64,8 @@ void reset_at(uint32_t now_ms) {
                      g_timing_gain.load(std::memory_order_acquire),
                      g_carrier_gain.load(std::memory_order_acquire));
   p25core::reset(now_ms);
+  g_phase2_applied = g_phase2_acquisition.load(std::memory_order_acquire);
+  p25core::set_phase2_acquisition(g_phase2_applied, now_ms);
   g_voice_generation.fetch_add(1, std::memory_order_acq_rel);
   g_voice_accepting.store(true, std::memory_order_release);
   publish_snapshot();
@@ -79,11 +83,20 @@ void suspend_voice() {
   clear_voice_queue();
 }
 
+void set_phase2_acquisition(bool enabled) {
+  g_phase2_acquisition.store(enabled, std::memory_order_release);
+}
+
 void process_cu8(const uint8_t* iq, size_t bytes) {
   process_cu8_at(iq, bytes, millis());
 }
 
 void process_cu8_at(const uint8_t* iq, size_t bytes, uint32_t now_ms) {
+  const bool phase2 = g_phase2_acquisition.load(std::memory_order_acquire);
+  if (phase2 != g_phase2_applied) {
+    p25core::set_phase2_acquisition(phase2, now_ms);
+    g_phase2_applied = phase2;
+  }
   VoiceContext voice{
       g_voice_generation.load(std::memory_order_acquire),
       g_voice_accepting.load(std::memory_order_acquire)};

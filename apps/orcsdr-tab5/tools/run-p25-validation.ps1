@@ -19,6 +19,8 @@ param(
   [switch]$RequireEncryptedVoice,
   [ValidateSet('AUTO', 'C4FM', 'CQPSK')]
   [string]$Modulation = 'AUTO',
+  [uint16[]]$WatchTalkgroup = @(),
+  [switch]$UseExistingSession,
   [string]$ReplayPath,
   [switch]$ReplayOnly
 )
@@ -31,6 +33,7 @@ $script:lastPing = [DateTime]::MinValue
 $script:tempNvs = $null
 $script:initialSoundEnabled = $null
 $script:initialModulation = $null
+$script:initialPhase2Trace = $null
 
 function Test-FatalLine([string]$Line) {
   return $Line -match '(?i)Guru Meditation|panic(?:ked|\x27ed)?|assert failed|abort\(|task watchdog|interrupt wdt|brownout detector|ESP-ROM:esp32p4|rst:0x|out of memory|alloc(?:ation)? failed|heap corruption'
@@ -88,6 +91,8 @@ function Get-Status {
     AudioDrops = [uint32](Get-Field $line 'audio_drops')
     ModulationConfigured = Get-Field $line 'modulation_configured'
     ModulationSelected = Get-Field $line 'modulation_selected'
+    Phase2Grants = [uint32](Get-Field $line 'p2_grants')
+    Phase2SyncWords = [uint32](Get-Field $line 'p2_sync_words')
   }
 }
 
@@ -156,6 +161,10 @@ function Connect-Authenticated {
   Write-Output 'P25_VALIDATION_AUTH verified=true'
 }
 
+function Test-FrequencyNear([uint32]$Actual, [uint32]$Expected) {
+  return [Math]::Abs([int64]$Actual - [int64]$Expected) -le 1000
+}
+
 try {
   $script:serial = [System.IO.Ports.SerialPort]::new($Port, 115200, 'None', 8, 'One')
   $script:serial.ReadTimeout = 200
@@ -166,6 +175,22 @@ try {
   Start-Sleep -Milliseconds 500
   $script:serial.DiscardInBuffer()
   Connect-Authenticated
+
+  $phase2Required = $WatchTalkgroup.Count -gt 0
+  if ($phase2Required) {
+    Write-Output "P25_VALIDATION_PHASE2 watchlist=$($WatchTalkgroup -join ',') acceptance=any_live_phase2_tgid"
+    $script:serial.WriteLine('RTL_P25_PHASE2_TRACE')
+    $trace = Read-LineUntil { param($line) $line -match '^RTL_P25_PHASE2_TRACE enabled=[01]$' } 5
+    if ($trace -notmatch 'enabled=([01])$') { throw 'Could not read Phase II trace state.' }
+    $script:initialPhase2Trace = [int]$Matches[1]
+    if ($script:initialPhase2Trace -eq 0) {
+      $script:serial.WriteLine('RTL_P25_PHASE2_TRACE ON')
+      $enabled = Read-LineUntil { param($line) $line -match '^RTL_P25_PHASE2_TRACE_(OK|ERROR) ' } 5
+      if ($enabled -notmatch '^RTL_P25_PHASE2_TRACE_OK enabled=1$') {
+        throw "Could not enable Phase II trace: $enabled"
+      }
+    }
+  }
 
   if ($ReplayOnly -and -not $ReplayPath) { throw '-ReplayOnly requires -ReplayPath.' }
   $script:serial.WriteLine('RTL_P25_MODULATION')
@@ -190,10 +215,15 @@ try {
     if ($null -eq $enabled) { throw 'Could not enable audio for P25 validation.' }
   }
 
-  $script:serial.WriteLine('RTL_STOP')
-  $stopped = Read-LineUntil { param($line) $line -match '^RTL_STOP_RESULT ' } 8
-  if ($stopped -notmatch '^RTL_STOP_RESULT ESP_OK$') {
-    throw "Could not stop the existing radio session: $stopped"
+  if ($ReplayOnly -and $UseExistingSession) {
+    throw '-UseExistingSession cannot be combined with -ReplayOnly.'
+  }
+  if (-not $UseExistingSession) {
+    $script:serial.WriteLine('RTL_STOP')
+    $stopped = Read-LineUntil { param($line) $line -match '^RTL_STOP_RESULT ' } 8
+    if ($stopped -notmatch '^RTL_STOP_RESULT ESP_OK$') {
+      throw "Could not stop the existing radio session: $stopped"
+    }
   }
 
   if ($ReplayOnly) {
@@ -211,11 +241,15 @@ try {
     return
   }
 
-  $script:serial.WriteLine("RTL_TUNE P25 $ControlFrequencyHz")
-  $tune = Read-LineUntil { param($line) $line -match '^RTL_TUNE_' } 8
-  if ($tune -notmatch '^RTL_TUNE_OK') { throw "P25 tune failed: $tune" }
-  Write-Output $tune
-  Start-Sleep -Seconds 2
+  if (-not $UseExistingSession) {
+    $script:serial.WriteLine("RTL_TUNE P25 $ControlFrequencyHz")
+    $tune = Read-LineUntil { param($line) $line -match '^RTL_TUNE_' } 8
+    if ($tune -notmatch '^RTL_TUNE_OK') { throw "P25 tune failed: $tune" }
+    Write-Output $tune
+    Start-Sleep -Seconds 2
+  } else {
+    Write-Output "P25_VALIDATION_SESSION reuse=true requested_hz=$ControlFrequencyHz"
+  }
 
   $baseline = $null
   $lockDeadline = [DateTime]::UtcNow.AddSeconds($ControlLockSeconds)
@@ -223,7 +257,9 @@ try {
     $status = Get-Status
     if ($status.Survey -eq 0 -and $status.Follow -eq 'control' -and
         $status.FrameSync -eq 1 -and $status.Identity -eq 1 -and
-        $status.TsbkGood -gt 0 -and $status.FrequencyHz -eq $status.ControlHz) {
+        $status.TsbkGood -gt 0 -and
+        (Test-FrequencyNear $status.FrequencyHz $ControlFrequencyHz) -and
+        (Test-FrequencyNear $status.ControlHz $ControlFrequencyHz)) {
       $baseline = $status
     } else {
       Start-Sleep -Seconds 2
@@ -282,6 +318,10 @@ try {
   $returnSeen = $false
   $relockSeen = $false
   $encryptedSeen = $false
+  $phase2GrantSeen = $false
+  $phase2AcquireSeen = $false
+  $phase2SyncSeen = $false
+  [uint16]$phase2Tgid = 0
   $deadline = [DateTime]::UtcNow.AddSeconds($CallWindowSeconds)
   Write-Output "P25_VALIDATION_SOAK started=true seconds=$CallWindowSeconds"
   while ([DateTime]::UtcNow -lt $deadline) {
@@ -290,15 +330,36 @@ try {
       $line = Read-LineUntil {
         param($value)
         $value -match '^RTL_P25_FOLLOW_(VOICE|RETURN) ' -or
-          $value -match '^RTL_P25_ENCRYPTED '
+          $value -match '^RTL_P25_ENCRYPTED ' -or
+          $value -match '^P25P2_CALL '
       } 1
       if ($null -eq $line) { continue }
       Write-Output $line
       if ($line -match '^RTL_P25_FOLLOW_VOICE ') { $voiceSeen = $true }
       if ($line -match '^RTL_P25_FOLLOW_RETURN ') { $returnSeen = $true }
       if ($line -match '^RTL_P25_ENCRYPTED ') { $encryptedSeen = $true }
+      if ($phase2Required -and $line -match '^P25P2_CALL .*?(?:^| )tg=([0-9]+)(?: |$)') {
+        $eventTgid = [uint16]$Matches[1]
+        if ($line -match ' event=grant ' -and $phase2Tgid -eq 0) {
+          $phase2Tgid = $eventTgid
+          $phase2GrantSeen = $true
+          Write-Output "P25_VALIDATION_PHASE2_SELECTED tg=$phase2Tgid watchlist_match=$([int]($WatchTalkgroup -contains $phase2Tgid))"
+        }
+        if ($eventTgid -eq $phase2Tgid -and $line -match ' event=acquisition ') {
+          $phase2AcquireSeen = $true
+          $voiceSeen = $true
+        }
+        if ($eventTgid -eq $phase2Tgid -and
+            $line -match ' event=completion .* duid_valid=1 .* result=burst_complete') {
+          $phase2SyncSeen = $true
+          $returnSeen = $true
+        }
+      }
     }
     $status = Get-Status
+    if (-not (Test-FrequencyNear $status.ControlHz $ControlFrequencyHz)) {
+      throw "P25 control channel changed during validation: requested=$ControlFrequencyHz active=$($status.ControlHz)."
+    }
     $maxGrants = [Math]::Max($maxGrants, $status.GrantEvents)
     $maxImbe = [Math]::Max($maxImbe, $status.ImbeFrames)
     $maxPcm = [Math]::Max($maxPcm, $status.PcmFrames)
@@ -317,15 +378,24 @@ try {
                   $status.FrameSync -eq 1 -and $status.TsbkGood -gt $baseline.TsbkGood)
   }
 
-  if ($maxGrants - $baseline.GrantEvents -lt $MinimumGrantCount) {
+  if ($phase2Required) {
+    if (-not $phase2GrantSeen) { throw 'No live Phase II grant was observed.' }
+    if (-not $phase2AcquireSeen) { throw "No Phase II traffic probe started for observed TGID $phase2Tgid." }
+    if (-not $phase2SyncSeen) { throw "No complete Phase II burst was captured for observed TGID $phase2Tgid." }
+  } elseif ($maxGrants - $baseline.GrantEvents -lt $MinimumGrantCount) {
     throw "Only $($maxGrants - $baseline.GrantEvents) voice grant events were observed."
   }
   if (-not $voiceSeen) { throw 'No P25 voice retune was observed.' }
-  if ($maxImbe -le $baseline.ImbeFrames) { throw 'IMBE frame count did not grow.' }
-  if ($maxPcm -le $baseline.PcmFrames) { throw 'PCM sample count did not grow.' }
+  if (-not $phase2Required -and $maxImbe -le $baseline.ImbeFrames) {
+    throw 'IMBE frame count did not grow.'
+  }
+  if (-not $phase2Required -and $maxPcm -le $baseline.PcmFrames) {
+    throw 'PCM sample count did not grow.'
+  }
   if (-not $returnSeen -or -not $relockSeen) { throw 'Control-channel return and relock were not observed.' }
   if ($minHeap -lt $MinimumHeapBytes) { throw "Heap floor failed: $minHeap bytes." }
-  if ($minStack -eq [uint32]::MaxValue -or $minStack -lt $MinimumVoiceStackHeadroom) {
+  if (-not $phase2Required -and
+      ($minStack -eq [uint32]::MaxValue -or $minStack -lt $MinimumVoiceStackHeadroom)) {
     throw "P25 voice task stack headroom failed: $minStack."
   }
   if ($RequireEncryptedVoice -and (-not $encryptedSeen -or
@@ -348,15 +418,25 @@ try {
     Write-Output $replay
   }
 
+  $reportedStack = if ($minStack -eq [uint32]::MaxValue) { 0 } else { $minStack }
   Write-Output (
     "P25_VALIDATION_RESULT result=PASS control_hz=$activeControlHz " +
     "grant_events=$($maxGrants - $baseline.GrantEvents) " +
     "imbe_frames=$maxImbe pcm_frames=$maxPcm min_heap=$minHeap " +
-    "voice_stack_hwm=$minStack voice_return=$([int]$returnSeen) relock=$([int]$relockSeen) " +
+    "voice_stack_hwm=$reportedStack voice_return=$([int]$returnSeen) relock=$([int]$relockSeen) " +
     "encrypted_seen=$([int]$encryptedSeen) encrypted_muted_frames=$maxEncryptedMuted " +
-    "encrypted_returns=$maxEncryptedReturns")
+    "encrypted_returns=$maxEncryptedReturns phase2_tgid=$phase2Tgid " +
+    "phase2_grant=$([int]$phase2GrantSeen) phase2_sync=$([int]$phase2SyncSeen)")
 } finally {
   if ($null -ne $script:serial -and $script:serial.IsOpen) {
+    if ($script:initialPhase2Trace -eq 0) {
+      try {
+        $script:serial.WriteLine('RTL_P25_PHASE2_TRACE OFF')
+        [void](Read-LineUntil { param($line) $line -match '^RTL_P25_PHASE2_TRACE_OK enabled=0$' } 5)
+      } catch {
+        Write-Warning "Could not restore Phase II trace state: $($_.Exception.Message)"
+      }
+    }
     if ($script:initialModulation -and $script:initialModulation -ne $Modulation) {
       try {
         $script:serial.WriteLine("RTL_P25_MODULATION $($script:initialModulation)")

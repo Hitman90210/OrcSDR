@@ -15,11 +15,44 @@ namespace {
 constexpr uint32_t kInputRate = 960000;
 constexpr uint32_t kChannelRate = 48000;
 constexpr uint32_t kSymbolRate = 4800;
+constexpr uint32_t kPhase2SymbolRate = 6000;
 constexpr size_t kInputDecimation = kInputRate / kChannelRate;
 constexpr size_t kSamplesPerSymbol = kChannelRate / kSymbolRate;
+constexpr size_t kPhase2SamplesPerSymbol = kChannelRate / kPhase2SymbolRate;
+constexpr size_t kPhase2BurstDibits = 180;
 constexpr float kOuterDeviationHz = 1800.0f;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kSlicerScale = 2.0f * kPi * kOuterDeviationHz / kChannelRate;
+
+uint8_t hamming_distance_8(uint8_t value) {
+  uint8_t count = 0;
+  while (value != 0) {
+    value &= static_cast<uint8_t>(value - 1u);
+    ++count;
+  }
+  return count;
+}
+
+bool decode_phase2_duid(uint8_t codeword, uint8_t* duid, uint8_t* errors) {
+  uint8_t best_duid = 0;
+  uint8_t best_errors = 9;
+  for (uint8_t candidate = 0; candidate < 16; ++candidate) {
+    uint8_t parity = 0;
+    if ((candidate & 1u) != 0) parity ^= 0x7u;
+    if ((candidate & 2u) != 0) parity ^= 0xEu;
+    if ((candidate & 4u) != 0) parity ^= 0xBu;
+    if ((candidate & 8u) != 0) parity ^= 0xDu;
+    const uint8_t encoded = static_cast<uint8_t>((candidate << 4) | parity);
+    const uint8_t distance = hamming_distance_8(codeword ^ encoded);
+    if (distance < best_errors) {
+      best_errors = distance;
+      best_duid = candidate;
+    }
+  }
+  if (duid != nullptr) *duid = best_duid;
+  if (errors != nullptr) *errors = best_errors;
+  return best_errors <= 1;
+}
 constexpr float kSlicerThreshold = 2.0f * kSlicerScale / 3.0f;
 constexpr float kAgcTarget = kSlicerThreshold;
 constexpr size_t kCqpskRrcSpan = 8;
@@ -62,9 +95,158 @@ constexpr uint8_t kTrellisPairs[16][2] = {
 
 struct BandPlanSlot {
   bool known = false;
-  bool tdma = false;
+  uint8_t slots_per_carrier = 1;
   uint32_t spacing_hz = 0;
   uint64_t base_hz = 0;
+};
+
+uint8_t slots_for_channel_type(uint8_t channel_type) {
+  constexpr std::array<uint8_t, 6> kSlots = {1, 1, 1, 2, 4, 2};
+  return channel_type < kSlots.size() ? kSlots[channel_type] : 0;
+}
+
+float wrap_pi(float angle);
+
+uint8_t bit_errors_40(uint64_t value) {
+  value &= 0xFFFFFFFFFFULL;
+  uint8_t count = 0;
+  while (value != 0) {
+    value &= value - 1;
+    ++count;
+  }
+  return count;
+}
+
+struct Phase2State {
+  uint32_t symbols = 0;
+  uint32_t sync_words = 0;
+  uint32_t last_sync_ms = 0;
+  uint8_t best_sync_errors = 40;
+  uint32_t complete_bursts = 0;
+  uint32_t truncated_bursts = 0;
+  uint32_t last_burst_ms = 0;
+  uint8_t last_duid_codeword = 0;
+  uint8_t last_duid = 0;
+  uint8_t last_duid_errors = 0;
+  bool last_duid_valid = false;
+  uint32_t voice_bursts = 0;
+  uint32_t control_bursts = 0;
+  uint32_t unknown_bursts = 0;
+  bool reverse_polarity = false;
+};
+
+class Phase2Acquirer {
+ public:
+  void reset(uint32_t now_ms) {
+    state_ = {};
+    state_.best_sync_errors = 40;
+    now_ms_ = now_ms;
+    sample_index_ = 0;
+    have_previous_.fill(false);
+    primed_.fill(0);
+    history_.fill(0);
+    collecting_ = false;
+    burst_size_ = 0;
+  }
+
+  void finish() {
+    if (collecting_) ++state_.truncated_bursts;
+    collecting_ = false;
+    burst_size_ = 0;
+  }
+
+  void process(float i, float q, uint32_t now_ms) {
+    now_ms_ = now_ms;
+    const size_t phase_index = sample_index_++ % kPhase2SamplesPerSymbol;
+    if (have_previous_[phase_index]) {
+      const float cross = previous_i_[phase_index] * q - previous_q_[phase_index] * i;
+      const float dot = previous_i_[phase_index] * i + previous_q_[phase_index] * q;
+      const float phase = wrap_pi(atan2f(cross, dot) - kPi / 4.0f);
+      const uint8_t quadrant = phase >= -kPi / 4.0f && phase < kPi / 4.0f ? 0
+          : phase >= kPi / 4.0f && phase < 3.0f * kPi / 4.0f ? 1
+          : phase >= -3.0f * kPi / 4.0f && phase < -kPi / 4.0f ? 3 : 2;
+      constexpr uint8_t kDibit[4] = {0, 1, 3, 2};
+      accept_dibit(phase_index, kDibit[quadrant], now_ms);
+    }
+    previous_i_[phase_index] = i;
+    previous_q_[phase_index] = q;
+    have_previous_[phase_index] = true;
+  }
+
+  void process_dibit(uint8_t dibit, uint32_t now_ms) {
+    accept_dibit(0, dibit & 3u, now_ms);
+  }
+
+  const Phase2State& state() const { return state_; }
+
+ private:
+  void accept_dibit(size_t phase_index, uint8_t dibit, uint32_t now_ms) {
+    if (phase_index == 0) ++state_.symbols;
+    if (collecting_) {
+      if (phase_index != active_phase_) return;
+      burst_[burst_size_++] = state_.reverse_polarity ? dibit ^ 2u : dibit;
+      if (burst_size_ == burst_.size()) {
+        state_.last_duid_codeword = static_cast<uint8_t>(
+            (burst_[20] << 6) | (burst_[57] << 4) |
+            (burst_[142] << 2) | burst_[179]);
+        state_.last_duid_valid = decode_phase2_duid(
+            state_.last_duid_codeword, &state_.last_duid,
+            &state_.last_duid_errors);
+        if (!state_.last_duid_valid) {
+          ++state_.unknown_bursts;
+        } else if (state_.last_duid == 0 || state_.last_duid == 6) {
+          ++state_.voice_bursts;
+        } else if (state_.last_duid == 3 || state_.last_duid == 4 ||
+                   state_.last_duid == 9 || state_.last_duid == 12 ||
+                   state_.last_duid == 13 || state_.last_duid == 15) {
+          ++state_.control_bursts;
+        } else {
+          ++state_.unknown_bursts;
+        }
+        ++state_.complete_bursts;
+        state_.last_burst_ms = now_ms;
+        collecting_ = false;
+        burst_size_ = 0;
+      }
+      return;
+    }
+
+    history_[phase_index] = ((history_[phase_index] << 2) | dibit) & 0xFFFFFFFFFFULL;
+    if (primed_[phase_index] < 20) ++primed_[phase_index];
+    if (primed_[phase_index] < 20) return;
+    constexpr uint64_t kSync = 0x575D57F7FFULL;
+    constexpr uint64_t kReverse = kSync ^ 0xAAAAAAAAAAULL;
+    const uint8_t normal_errors = bit_errors_40(history_[phase_index] ^ kSync);
+    const uint8_t reverse_errors = bit_errors_40(history_[phase_index] ^ kReverse);
+    const uint8_t errors = std::min(normal_errors, reverse_errors);
+    state_.best_sync_errors = std::min(state_.best_sync_errors, errors);
+    if (errors > 4) return;
+
+    ++state_.sync_words;
+    state_.last_sync_ms = now_ms;
+    state_.reverse_polarity = reverse_errors < normal_errors;
+    active_phase_ = phase_index;
+    collecting_ = true;
+    burst_size_ = 20;
+    uint64_t normalized = state_.reverse_polarity ? history_[phase_index] ^
+                                                       0xAAAAAAAAAAULL
+                                                  : history_[phase_index];
+    for (size_t index = 0; index < 20; ++index)
+      burst_[19 - index] = static_cast<uint8_t>((normalized >> (index * 2)) & 3u);
+  }
+
+  Phase2State state_{};
+  uint32_t now_ms_ = 0;
+  uint32_t sample_index_ = 0;
+  std::array<float, kPhase2SamplesPerSymbol> previous_i_{};
+  std::array<float, kPhase2SamplesPerSymbol> previous_q_{};
+  std::array<bool, kPhase2SamplesPerSymbol> have_previous_{};
+  std::array<uint8_t, kPhase2SamplesPerSymbol> primed_{};
+  std::array<uint64_t, kPhase2SamplesPerSymbol> history_{};
+  std::array<uint8_t, kPhase2BurstDibits> burst_{};
+  size_t active_phase_ = 0;
+  size_t burst_size_ = 0;
+  bool collecting_ = false;
 };
 
 constexpr std::array<size_t, 9> kVoiceBitOffsets = {
@@ -533,7 +715,7 @@ class Decoder {
                             result.nid_corrected_bits == 5 && result.tsbk_good == 1 &&
                             result.wacn == 0xBEE00 && result.system_id == 0x1F3 &&
                             result.last_trellis_metric > 0;
-    decoder.band_plan_[1] = {true, false, 12500, 450000000};
+    decoder.band_plan_[1] = {true, 1, 12500, 450000000};
     std::array<uint8_t, 12> explicit_grant{};
     explicit_grant[0] = 0x80 | 0x03;
     explicit_grant[2] = 0x80;
@@ -548,6 +730,34 @@ class Decoder {
     const bool explicit_grant_ok = grant.valid && grant.emergency &&
                                    grant.frequency_hz == 450087500 &&
                                    grant.talkgroup == 0x1234 && grant.source_id == 0;
+    Decoder tdma_decoder;
+    tdma_decoder.reset(100);
+    std::array<uint8_t, 12> tdma_plan{};
+    tdma_plan[0] = 0x33;
+    tdma_plan[2] = 0x23;  // identifier 2, two-slot channel type 3
+    tdma_plan[4] = 0x00;
+    tdma_plan[5] = 100;   // 12.5 kHz spacing in 125 Hz units
+    constexpr uint32_t base5 = 769000000 / 5;
+    tdma_plan[6] = static_cast<uint8_t>(base5 >> 24);
+    tdma_plan[7] = static_cast<uint8_t>(base5 >> 16);
+    tdma_plan[8] = static_cast<uint8_t>(base5 >> 8);
+    tdma_plan[9] = static_cast<uint8_t>(base5);
+    tdma_decoder.dispatch_tsbk(tdma_plan);
+    std::array<uint8_t, 12> tdma_grant{};
+    tdma_grant[0] = 0x03;
+    tdma_grant[2] = 0x04;
+    tdma_grant[4] = 0x20;
+    tdma_grant[5] = 41;
+    tdma_grant[8] = 0x56;
+    tdma_grant[9] = 0x78;
+    tdma_decoder.dispatch_tsbk(tdma_grant);
+    const Grant& tdma = tdma_decoder.state_.current_grant;
+    const bool tdma_grant_ok = tdma.valid && tdma.tdma && tdma.slot == 1 &&
+                               tdma.frequency_hz == 769250000 &&
+                               tdma.channel_id == 2 && tdma.channel_number == 41 &&
+                               tdma.talkgroup == 0x5678 &&
+                               tdma_decoder.state_.phase2_band_plans == 1 &&
+                               tdma_decoder.state_.phase2_grants == 1;
     struct VoiceCheck {
       VoiceFrame frames[9]{};
       size_t count = 0;
@@ -644,7 +854,7 @@ class Decoder {
       cqpsk.finish(1000);
       return cqpsk.state_.nid_good > 0 && cqpsk.state_.tsbk_good > 0;
     };
-    return control_ok && explicit_grant_ok && voice_ok && encryption_ok &&
+    return control_ok && explicit_grant_ok && tdma_grant_ok && voice_ok && encryption_ok &&
            check_cqpsk(0.0f) && check_cqpsk(0.20f);
   }
 
@@ -942,12 +1152,16 @@ class Decoder {
     const uint8_t* payload = bytes.data() + 2;
     if (opcode == 0x3D || opcode == 0x34 || opcode == 0x33) {
       const uint8_t id = payload[0] >> 4;
+      const uint8_t slots = opcode == 0x33
+                                ? slots_for_channel_type(payload[0] & 0x0F)
+                                : 1;
       const uint16_t step = static_cast<uint16_t>(payload[2] & 0x03) << 8 | payload[3];
       const uint32_t base5 = static_cast<uint32_t>(payload[4]) << 24 |
                              static_cast<uint32_t>(payload[5]) << 16 |
                              static_cast<uint32_t>(payload[6]) << 8 | payload[7];
-      band_plan_[id] = {true, opcode == 0x33, static_cast<uint32_t>(step) * 125u,
+      band_plan_[id] = {slots != 0, slots, static_cast<uint32_t>(step) * 125u,
                         static_cast<uint64_t>(base5) * 5u};
+      if (opcode == 0x33 && slots != 0) ++state_.phase2_band_plans;
       return;
     }
     if (opcode == 0x3B) {
@@ -999,15 +1213,27 @@ class Decoder {
     grant.valid = talkgroup != 0;
     grant.encrypted = (service & 0x40) != 0;
     grant.emergency = (service & 0x80) != 0;
+    grant.service_options = service;
+    grant.channel_id = channel_id;
+    grant.channel_number = channel_number;
     grant.talkgroup = talkgroup;
     grant.source_id = source;
+    grant.wacn = state_.wacn;
+    grant.system_id = state_.system_id;
+    grant.rfss = state_.rfss;
+    grant.site = state_.site;
     grant.seen_ms = now_ms_;
     if (channel_id < band_plan_.size() && band_plan_[channel_id].known) {
-      const BandPlanSlot& slot = band_plan_[channel_id];
-      const uint64_t frequency = slot.base_hz +
-                                 static_cast<uint64_t>(channel_number) * slot.spacing_hz;
-      if (frequency <= UINT32_MAX) grant.frequency_hz = static_cast<uint32_t>(frequency);
-      grant.tdma = slot.tdma;
+      const BandPlanSlot& plan = band_plan_[channel_id];
+      const ChannelAssignment assignment = map_channel(
+          plan.base_hz, plan.spacing_hz, plan.slots_per_carrier, channel_number);
+      grant.tdma = plan.slots_per_carrier > 1;
+      grant.slot = assignment.slot;
+      grant.frequency_hz = assignment.frequency_hz;
+      if (grant.tdma) {
+        ++state_.phase2_grants;
+        if (!assignment.valid) ++state_.phase2_mapping_errors;
+      }
     }
     if (!grant.valid) return;
     for (size_t i = kRecentGrantCount - 1; i > 0; --i)
@@ -1107,6 +1333,7 @@ class Receiver {
     decim_i_ = decim_q_ = 0.0f;
     decim_count_ = 0;
     have_pending_iq_byte_ = false;
+    if (phase2_enabled_) phase2_.reset(now_ms);
   }
 
   void set_modulation(Modulation modulation) {
@@ -1125,6 +1352,7 @@ class Receiver {
 
   void process(const uint8_t* iq, size_t bytes, uint32_t now_ms,
                VoiceSink sink, void* context) {
+    now_ms_ = now_ms;
     c4fm_.prepare(now_ms, selected_ == Modulation::c4fm ? sink : nullptr, context);
     cqpsk_.prepare(now_ms, selected_ == Modulation::cqpsk ? sink : nullptr, context);
     if (iq != nullptr) {
@@ -1145,11 +1373,43 @@ class Receiver {
     select_path(now_ms);
   }
 
+  void set_phase2_acquisition(bool enabled, uint32_t now_ms) {
+    if (!enabled && phase2_enabled_) phase2_.finish();
+    phase2_enabled_ = enabled;
+    if (enabled) phase2_.reset(now_ms);
+  }
+
+  void process_channel(float i, float q, uint32_t now_ms) {
+    if (phase2_enabled_) phase2_.process(i, q, now_ms);
+    else process_phase1_channel(i, q);
+  }
+
+  void process_phase2_dibit(uint8_t dibit, uint32_t now_ms) {
+    if (phase2_enabled_) phase2_.process_dibit(dibit, now_ms);
+  }
+
   Snapshot state() const {
     const Decoder& decoder = selected_ == Modulation::cqpsk ? cqpsk_ : c4fm_;
     Snapshot result = decoder.state();
     result.configured_modulation = configured_;
     result.selected_modulation = selected_;
+    const Phase2State& phase2 = phase2_.state();
+    result.phase2_acquisition = phase2_enabled_;
+    result.phase2_symbols = phase2.symbols;
+    result.phase2_sync_words = phase2.sync_words;
+    result.phase2_last_sync_ms = phase2.last_sync_ms;
+    result.phase2_best_sync_errors = phase2.best_sync_errors;
+    result.phase2_complete_bursts = phase2.complete_bursts;
+    result.phase2_truncated_bursts = phase2.truncated_bursts;
+    result.phase2_last_burst_ms = phase2.last_burst_ms;
+    result.phase2_last_duid_codeword = phase2.last_duid_codeword;
+    result.phase2_last_duid = phase2.last_duid;
+    result.phase2_last_duid_errors = phase2.last_duid_errors;
+    result.phase2_last_duid_valid = phase2.last_duid_valid;
+    result.phase2_voice_bursts = phase2.voice_bursts;
+    result.phase2_control_bursts = phase2.control_bursts;
+    result.phase2_unknown_bursts = phase2.unknown_bursts;
+    result.phase2_reverse_polarity = phase2.reverse_polarity;
     return result;
   }
 
@@ -1174,6 +1434,10 @@ class Receiver {
     const float q = decim_q_ / kInputDecimation;
     decim_i_ = decim_q_ = 0.0f;
     decim_count_ = 0;
+    process_channel(i, q, now_ms_);
+  }
+
+  void process_phase1_channel(float i, float q) {
     if (selected_ == Modulation::auto_detect || selected_ == Modulation::c4fm)
       c4fm_.process_c4fm_sample(i, q);
     if (selected_ == Modulation::auto_detect || selected_ == Modulation::cqpsk)
@@ -1214,6 +1478,9 @@ class Receiver {
   size_t decim_count_ = 0;
   uint8_t pending_iq_byte_ = 0;
   bool have_pending_iq_byte_ = false;
+  uint32_t now_ms_ = 0;
+  bool phase2_enabled_ = false;
+  Phase2Acquirer phase2_{};
 };
 
 Receiver g_receiver;
@@ -1243,6 +1510,32 @@ void process_cu8(const uint8_t* iq, size_t bytes, uint32_t now_ms,
 }
 
 Snapshot snapshot() { return g_receiver.state(); }
+
+ChannelAssignment map_channel(uint64_t base_hz, uint32_t spacing_hz,
+                              uint8_t slots_per_carrier,
+                              uint16_t channel_number) {
+  ChannelAssignment result;
+  if (spacing_hz == 0 || slots_per_carrier == 0) return result;
+  const uint64_t carrier = base_hz +
+      static_cast<uint64_t>(channel_number / slots_per_carrier) * spacing_hz;
+  if (carrier > UINT32_MAX) return result;
+  result.valid = true;
+  result.frequency_hz = static_cast<uint32_t>(carrier);
+  result.slot = static_cast<uint8_t>(channel_number % slots_per_carrier);
+  return result;
+}
+
+void set_phase2_acquisition(bool enabled, uint32_t now_ms) {
+  g_receiver.set_phase2_acquisition(enabled, now_ms);
+}
+
+void process_channel_iq(float i, float q, uint32_t now_ms) {
+  g_receiver.process_channel(i, q, now_ms);
+}
+
+void process_phase2_dibit(uint8_t dibit, uint32_t now_ms) {
+  g_receiver.process_phase2_dibit(dibit, now_ms);
+}
 
 bool decode_ldu2_encryption(const uint8_t* payload, size_t dibits,
                             EncryptionSync* result) {

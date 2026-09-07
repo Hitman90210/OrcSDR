@@ -10,6 +10,8 @@ namespace orcsdr::fmconfig {
 constexpr uint32_t kSchemaVersion = 1;
 constexpr size_t kMaxPresets = 10;
 constexpr char kPath[] = "/orcsdr/FM.cfg";
+constexpr uint32_t kMinFrequencyHz = 76000000;
+constexpr uint32_t kMaxFrequencyHz = 108000000;
 
 struct Config {
   uint32_t version = kSchemaVersion;

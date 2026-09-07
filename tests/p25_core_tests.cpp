@@ -2,6 +2,7 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +49,93 @@ void test_protocol_self_check_and_bad_input() {
   CHECK(state.nid_good == 0);
   CHECK(state.tsbk_good == 0);
   CHECK(state.voice_frames == 0);
+}
+
+void test_phase2_channel_mapping() {
+  using orcsdr::p25core::map_channel;
+  const auto slot0 = map_channel(769000000, 12500, 2, 40);
+  const auto slot1 = map_channel(769000000, 12500, 2, 41);
+  CHECK(slot0.valid && slot1.valid);
+  CHECK(slot0.frequency_hz == 769250000);
+  CHECK(slot1.frequency_hz == slot0.frequency_hz);
+  CHECK(slot0.slot == 0 && slot1.slot == 1);
+
+  const auto fdma = map_channel(450000000, 12500, 1, 7);
+  CHECK(fdma.valid && fdma.frequency_hz == 450087500 && fdma.slot == 0);
+  CHECK(!map_channel(450000000, 0, 2, 1).valid);
+  CHECK(!map_channel(UINT32_MAX, 12500, 2, 2).valid);
+}
+
+void test_phase2_burst_sync() {
+  using namespace orcsdr::p25core;
+  constexpr uint64_t sync = 0x575D57F7FFULL;
+  constexpr float pi = 3.14159265358979323846f;
+  set_phase2_acquisition(true, 1);
+  float phase = 0.0f;
+  for (size_t sample = 0; sample < 8; ++sample)
+    process_channel_iq(std::cos(phase), std::sin(phase), 1);
+  for (int shift = 38, symbol = 0; shift >= 0; shift -= 2, ++symbol) {
+    const uint8_t dibit = static_cast<uint8_t>((sync >> shift) & 3u);
+    constexpr float delta[4] = {pi / 4.0f, 3.0f * pi / 4.0f,
+                                -pi / 4.0f, -3.0f * pi / 4.0f};
+    phase += delta[dibit];
+    for (size_t sample = 0; sample < 8; ++sample)
+      process_channel_iq(std::cos(phase), std::sin(phase), 2 + symbol);
+  }
+  const Snapshot state = snapshot();
+  CHECK(state.phase2_acquisition);
+  CHECK(state.phase2_symbols >= 20);
+  CHECK(state.phase2_sync_words >= 1);
+  CHECK(state.phase2_best_sync_errors <= 4);
+  set_phase2_acquisition(false, 30);
+}
+
+void test_phase2_complete_and_truncated_bursts() {
+  using namespace orcsdr::p25core;
+  constexpr uint64_t sync = 0x575D57F7FFULL;
+  std::array<uint8_t, 180> burst{};
+  for (size_t index = 0; index < 20; ++index)
+    burst[index] = static_cast<uint8_t>((sync >> ((19 - index) * 2)) & 3u);
+  // DUID 6 (2V voice), encoded as extended Hamming codeword 0x65.
+  burst[20] = 1;
+  burst[57] = 2;
+  burst[142] = 1;
+  burst[179] = 1;
+
+  set_phase2_acquisition(true, 100);
+  for (const uint8_t dibit : burst) process_phase2_dibit(dibit, 101);
+  auto state = snapshot();
+  CHECK(state.phase2_sync_words == 1);
+  CHECK(state.phase2_complete_bursts == 1);
+  CHECK(state.phase2_truncated_bursts == 0);
+  CHECK(state.phase2_last_duid_codeword == 0x65);
+  CHECK(state.phase2_last_duid_valid);
+  CHECK(state.phase2_last_duid == 6);
+  CHECK(state.phase2_last_duid_errors == 0);
+  CHECK(state.phase2_voice_bursts == 1);
+  CHECK(state.phase2_control_bursts == 0);
+  CHECK(state.phase2_unknown_bursts == 0);
+  CHECK(!state.phase2_reverse_polarity);
+
+  // A one-bit error is corrected by the same table-free decoder.
+  burst[179] ^= 1u;
+  set_phase2_acquisition(true, 150);
+  for (const uint8_t dibit : burst) process_phase2_dibit(dibit, 151);
+  state = snapshot();
+  CHECK(state.phase2_last_duid_valid);
+  CHECK(state.phase2_last_duid == 6);
+  CHECK(state.phase2_last_duid_errors == 1);
+  CHECK(state.phase2_voice_bursts == 1);
+
+  set_phase2_acquisition(true, 200);
+  for (size_t index = 0; index < 40; ++index)
+    process_phase2_dibit(static_cast<uint8_t>(burst[index] ^ 2u), 201);
+  set_phase2_acquisition(false, 202);
+  state = snapshot();
+  CHECK(state.phase2_sync_words == 1);
+  CHECK(state.phase2_complete_bursts == 0);
+  CHECK(state.phase2_truncated_bursts == 1);
+  CHECK(state.phase2_reverse_polarity);
 }
 
 void test_voice_decode_bounds_and_reset() {
@@ -252,6 +340,9 @@ void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); 
 int main(int argc, char** argv) {
   CHECK(argc == 2);
   test_protocol_self_check_and_bad_input();
+  test_phase2_channel_mapping();
+  test_phase2_burst_sync();
+  test_phase2_complete_and_truncated_bursts();
   test_voice_decode_bounds_and_reset();
   test_encryption_sync_decode();
   test_control_fixture(argv[1]);

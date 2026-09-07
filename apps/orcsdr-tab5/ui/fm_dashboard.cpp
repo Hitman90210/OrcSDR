@@ -1,6 +1,7 @@
 #include "fm_dashboard.hpp"
 
 #include "dashboard_audio_control.hpp"
+#include "fm_config.hpp"
 #include "orc_badge.hpp"
 
 #include <M5Unified.h>
@@ -24,8 +25,8 @@ constexpr uint16_t kGrid = 0x2945;
 constexpr int kHeaderH = 132;
 constexpr int kTabsY = 630;
 constexpr int kTabW = 256;
-constexpr uint32_t kFmMinHz = 88000000;
-constexpr uint32_t kFmMaxHz = 108000000;
+constexpr uint32_t kFmMinHz = fmconfig::kMinFrequencyHz;
+constexpr uint32_t kFmMaxHz = fmconfig::kMaxFrequencyHz;
 constexpr int kSpectrumX = 46;
 constexpr int kSpectrumY = 246;
 constexpr int kSpectrumW = 1188;
@@ -426,7 +427,7 @@ void draw_keypad() {
   char field[24];
   snprintf(field, sizeof(field), "%s%s", g_entry, g_entry[0] ? " MHz" : "");
   M5.Display.fillRoundRect(380, 205, 520, 55, 8, TFT_NAVY);
-  text(field[0] ? field : "88.0 – 108.0", 640, 233, TFT_WHITE, 3);
+  text(field[0] ? field : "76.0 – 108.0", 640, 233, TFT_WHITE, 3);
   static constexpr char keys[] = {'1','2','3','4','5','6','7','8','9','.','0','<'};
   for (int i = 0; i < 12; ++i) {
     char key[2] = {keys[i], 0};
@@ -585,7 +586,8 @@ Action handle_touch(int32_t x, int32_t y) {
     if (hit(x, y, 650, 525, 250, 55)) {
       char* end = nullptr;
       const double mhz = strtod(g_entry, &end);
-      if (end != g_entry && *end == '\0' && mhz >= 88.0 && mhz <= 108.0) {
+      if (end != g_entry && *end == '\0' &&
+          mhz >= kFmMinHz / 1000000.0 && mhz <= kFmMaxHz / 1000000.0) {
         g_keypad = false;
         const uint32_t hz = static_cast<uint32_t>(llround(mhz * 1000000.0));
         g_entry[0] = '\0';
