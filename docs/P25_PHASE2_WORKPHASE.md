@@ -33,7 +33,7 @@ paths remain unchanged.
 | Real OSRP TDMA grant and correct carrier/slot | Passed 2026-09-06: TGID `38130`, channel ID `8`, observed carriers including `773.28125 MHz`, slot `0`, zero mapping errors |
 | Traffic-channel burst sync and control return | Passed 2026-09-06: live 38130 burst synchronized after 614 symbols with zero sync-word bit errors; control return and relock passed |
 | Continued Phase I technical path | Passed 2026-09-06 on Lane County: 20 grant events, 528 IMBE frames, 506,880 PCM samples, repeated control returns/relocks, stable heap, adequate stack headroom, encrypted-call mute/return, and zero USB/IQ/audio drops |
-| Exact-image Phase I audio and visual acceptance | Passed 2026-09-06: user confirmed clear audio on TGIDs `20203` and `20391` (`LCF Firecom 1`); supplied photos show the P25 Monitor rendering normally while following both calls |
+| Exact-image Phase I audio and visual acceptance | Passed 2026-09-06: user confirmed clear audio on TGIDs `20203`, `20391` (`LCF Firecom 1`), and `38130`; supplied photos show the P25 Monitor rendering normally while following the calls |
 
 The 90-second OSRP acceptance run used the local watchlist `38130`, `40253`,
 `38131`, `40251`, `40252`, `40254`, `40255`, and `20165`, while allowing any
@@ -42,6 +42,12 @@ acquisition, synchronization, return, and relock were required to use the same
 TGID. The result was `PASS` with a 22,930,276-byte heap floor and no USB, IQ,
 audio, or voice-queue drops. Local frequencies, aliases, and raw traffic IQ
 remain untracked.
+
+The Lane County receiver also presented numeric TGID `38130` as clear Phase I
+voice at `453.2375 MHz`, while OSRP presented numeric TGID `38130` in a live
+Phase II grant. This confirms that a talkgroup number must always be associated
+with its decoded system identity and call mode; the number alone is not a
+globally unique identity.
 
 ## Standards, source, and legal record
 
