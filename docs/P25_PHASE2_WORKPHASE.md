@@ -25,8 +25,8 @@ paths remain unchanged.
 | --- | --- |
 | Pre-change optimized and sanitizer host tests | Passed 2026-09-06 |
 | TDMA carrier/slot and 6,000-symbol/s sync host tests | Passed 2026-09-06 |
-| Native ESP-IDF 5.5.4 build | Passed 2026-09-06; 2,263,696-byte app image, 46% app partition free; no C6 image embedded |
-| Exact image flashed to COM17 | Passed 2026-09-06; SHA-256 `FEB7C8B6626F6A4EFE92716D88EEB626F60782AA45271255D02497F7B275B32B`; flash verification and normal boot passed |
+| Native ESP-IDF 5.5.4 build | Passed 2026-09-06; final reviewed app image is 2,263,840 bytes with 46% app partition free; no C6 image embedded |
+| Exact image flashed to COM17 | Passed 2026-09-06; final reviewed image SHA-256 `B491F9B3E5B7DA482DA25B36066AF0F31E2B5D214AE2E12133DE5F9DE669ECF0`; flash verification, normal boot, dashboard regression, and live control-channel status passed |
 | Boot memory regression | Caught before acceptance: the first candidate exhausted the internal DMA reserve. Moving the existing 2,376-byte P25 waterfall scratch row to configured PSRAM restored the reserve; the final exact image boots normally. |
 | Dashboard and driver regression | Passed 2026-09-06; full UI workflow and driver 0.7.9 checks passed with zero USB, IQ, and audio drops |
 | OSRP control-channel identity | Passed 2026-09-06 at observed Quarry Hill control `770.66875 MHz`: WACN `9254A`, SYSID `00A`, RFSS/site `6/6`; the frequency is observed evidence, not a permanent hard-coded assignment |
@@ -34,6 +34,11 @@ paths remain unchanged.
 | Traffic-channel burst sync and control return | Passed 2026-09-06: live 38130 burst synchronized after 614 symbols with zero sync-word bit errors; control return and relock passed |
 | Continued Phase I technical path | Passed 2026-09-06 on Lane County: 20 grant events, 528 IMBE frames, 506,880 PCM samples, repeated control returns/relocks, stable heap, adequate stack headroom, encrypted-call mute/return, and zero USB/IQ/audio drops |
 | Exact-image Phase I audio and visual acceptance | Passed 2026-09-06: user confirmed clear audio on TGIDs `20203`, `20391` (`LCF Firecom 1`), and `38130`; supplied photos show the P25 Monitor rendering normally while following the calls |
+
+The final review correction makes `RTL_P25_STATUS` report
+`follow=phase2_probe` during a diagnostic traffic-channel probe and retains the
+associated grant in the dashboard snapshot. This prevents automation and UI
+status from mistaking an active probe for a completed control-channel return.
 
 The 90-second OSRP acceptance run used the local watchlist `38130`, `40253`,
 `38131`, `40251`, `40252`, `40254`, `40255`, and `20165`, while allowing any

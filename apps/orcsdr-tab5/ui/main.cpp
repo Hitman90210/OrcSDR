@@ -8204,7 +8204,9 @@ orcsdr::p25::Snapshot p25_dashboard_snapshot() {
   snapshot.config_revision = p25_config_revision;
   strlcpy(snapshot.config_status, p25_config_status, sizeof(snapshot.config_status));
   snapshot.decoded = orcsdr::p25decoder::snapshot();
-  if (p25_follow_state.load(std::memory_order_acquire) == P25FollowState::voice) {
+  const auto follow_state = p25_follow_state.load(std::memory_order_acquire);
+  if (follow_state == P25FollowState::voice ||
+      follow_state == P25FollowState::phase2_probe) {
     snapshot.decoded.current_grant = p25_follow_grant;
     snapshot.decoded.recent_grants[0] = p25_follow_grant;
   }
@@ -12420,6 +12422,12 @@ void process_command(char* command) {
     esp_rtl_sdr_metrics_t metrics{};
     if (g_rtl != nullptr) (void)esp_rtl_sdr_get_metrics(g_rtl, &metrics);
     const uint32_t encryption = p25_last_encryption.load(std::memory_order_acquire);
+    const auto follow_state = p25_follow_state.load(std::memory_order_acquire);
+    const char* follow_name = follow_state == P25FollowState::voice
+                                  ? "voice"
+                                  : follow_state == P25FollowState::phase2_probe
+                                        ? "phase2_probe"
+                                        : "control";
     Serial.printf(
         "RTL_P25_STATUS configured=%d profile_id=\"%s\" profile=\"%s\" identity_source=air "
         "frequency_hz=%lu survey=%d candidate=%u hold=%d hold_tg=%u auto_follow=%d "
@@ -12475,8 +12483,7 @@ void process_command(char* command) {
         static_cast<double>(decoded.estimated_ber_percent),
         grant_count,
         static_cast<unsigned long>(p25_grant_events.load(std::memory_order_relaxed)),
-        p25_follow_state.load(std::memory_order_acquire) == P25FollowState::voice
-            ? "voice" : "control",
+        follow_name,
         static_cast<unsigned long>(p25_control_frequency_hz),
         static_cast<unsigned long>(p25_voice_frequency_hz),
         static_cast<unsigned long>(decoded.voice_ldus),
