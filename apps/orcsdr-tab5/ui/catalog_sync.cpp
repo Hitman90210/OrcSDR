@@ -33,6 +33,16 @@ constexpr size_t kYieldBytes = 64 * 1024;
 constexpr uint8_t kMaxRedirects = 4;
 constexpr char kUserAgent[] = "OrcSDR/0.2 (+https://github.com/hardcoreerik/OrcSDR)";
 
+// Hardware-observed SDIO transport wedges (P4<->C6 co-processor link; see
+// wifi_service.cpp) have run up to ~20+ consecutive seconds of
+// ESP_ERR_TIMEOUT before clearing on their own -- a single 1.5 s retry
+// (the original mitigation here) doesn't reliably outlast that. This is a
+// bounded backoff instead: up to kMaxAttempts total tries, sleeping
+// kRetryDelaysMs[n] between attempt n and n+1. Still bounded (no infinite
+// retry) and still doesn't touch the vendor driver or enable auto-restart.
+constexpr uint8_t kMaxAttempts = 4;
+constexpr uint32_t kRetryDelaysMs[kMaxAttempts - 1] = {1500, 4000, 8000};
+
 extern const uint8_t catalog_public_key_pem_start[] asm("_binary_catalog_public_key_pem_start");
 extern const uint8_t catalog_public_key_pem_end[] asm("_binary_catalog_public_key_pem_end");
 
@@ -263,14 +273,22 @@ bool http_read_all(const char* url, uint8_t* output, size_t capacity, size_t* re
 // (Espressif's own eh_hosted driver -- confirmed via ESP_ERR_TIMEOUT/0x107
 // register-read failures live on hardware, unrelated to this application
 // code) can make a single HTTPS request fail even while Wi-Fi itself stays
-// "connected". It has always self-cleared within a few seconds in testing,
-// so one short-delay retry meaningfully improves real-world success without
+// "connected". It self-clears, but has been observed to take 20+ seconds,
+// so this retries with the bounded backoff in kRetryDelaysMs rather than
 // touching the vendor driver, which needs hardware validation this session
-// can't safely do blind.
+// can't safely do blind. Calls wifi::note_transport_recovered() on success
+// after a prior failure -- see that function's comment for why.
 bool http_read_all_retry(const char* url, uint8_t* output, size_t capacity, size_t* received) {
-  if (http_read_all(url, output, capacity, received)) return true;
-  vTaskDelay(pdMS_TO_TICKS(1500));
-  return http_read_all(url, output, capacity, received);
+  bool any_failed = false;
+  for (uint8_t attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    if (http_read_all(url, output, capacity, received)) {
+      if (any_failed) orcsdr::wifi::note_transport_recovered();
+      return true;
+    }
+    any_failed = true;
+    if (attempt + 1 < kMaxAttempts) vTaskDelay(pdMS_TO_TICKS(kRetryDelaysMs[attempt]));
+  }
+  return false;
 }
 
 bool verify_signature(const uint8_t* manifest, size_t manifest_size,
@@ -497,15 +515,23 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
   return true;
 }
 
-// See http_read_all_retry: the same transient SDIO transport fault is more
-// likely to hit a multi-second artifact download than a quick manifest
-// fetch, and download_artifact() already cleans up its own partial state
-// (.part file removed) on any failure, so retrying from scratch is safe.
+// See http_read_all_retry: the same transient SDIO transport fault (observed
+// lasting 20+ seconds) is more likely to hit a multi-second artifact
+// download than a quick manifest fetch, and download_artifact() already
+// cleans up its own partial state (.part file removed) on any failure, so
+// retrying from scratch with the same bounded backoff is safe.
 bool download_artifact_retry(const Artifact& artifact, uint8_t pack_index,
                              uint8_t progress_base, uint8_t progress_span) {
-  if (download_artifact(artifact, pack_index, progress_base, progress_span)) return true;
-  vTaskDelay(pdMS_TO_TICKS(1500));
-  return download_artifact(artifact, pack_index, progress_base, progress_span);
+  bool any_failed = false;
+  for (uint8_t attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    if (download_artifact(artifact, pack_index, progress_base, progress_span)) {
+      if (any_failed) orcsdr::wifi::note_transport_recovered();
+      return true;
+    }
+    any_failed = true;
+    if (attempt + 1 < kMaxAttempts) vTaskDelay(pdMS_TO_TICKS(kRetryDelaysMs[attempt]));
+  }
+  return false;
 }
 
 bool move_active_to_backup(const Artifact& artifact) {

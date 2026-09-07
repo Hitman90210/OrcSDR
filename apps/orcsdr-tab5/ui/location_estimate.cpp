@@ -1,4 +1,5 @@
 #include "location_estimate.hpp"
+#include "wifi_service.hpp"
 #include <cJSON.h>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
@@ -9,6 +10,11 @@
 #include <cmath>
 #include <cstring>
 namespace orcsdr::location_estimate { namespace {
+// See catalog_sync.cpp's identical constants: hardware-observed SDIO wedges
+// have run 20+ seconds before clearing, so a single short retry isn't
+// enough -- this bounded backoff schedule matches that file's.
+constexpr uint8_t kMaxAttempts = 4;
+constexpr uint32_t kRetryDelaysMs[kMaxAttempts - 1] = {1500, 4000, 8000};
 State g_state{}; portMUX_TYPE g_lock=portMUX_INITIALIZER_UNLOCKED; std::atomic_bool g_busy{false};
 char g_query[64]{};
 char g_last_query[64]{};
@@ -38,13 +44,20 @@ bool fetch_once(const char* url, char* body, size_t body_size) {
 // A live SDIO transport fault between the P4 and the C6 Wi-Fi co-processor
 // (confirmed live on hardware: ESP_ERR_TIMEOUT/0x107 register-read failures
 // in Espressif's own eh_hosted driver, unrelated to this application code)
-// can fail a single request even while Wi-Fi stays "connected". It has
-// always self-cleared within a few seconds in testing, so one short-delay
-// retry meaningfully improves real-world success.
+// can fail a single request even while Wi-Fi stays "connected". It self-
+// clears, but has been observed to take 20+ seconds, so this retries with
+// bounded backoff (kRetryDelaysMs) instead of one fixed short delay.
 bool fetch_with_retry(const char* url, char* body, size_t body_size) {
-  if (fetch_once(url, body, body_size)) return true;
-  vTaskDelay(pdMS_TO_TICKS(1500));
-  return fetch_once(url, body, body_size);
+  bool any_failed = false;
+  for (uint8_t attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    if (fetch_once(url, body, body_size)) {
+      if (any_failed) orcsdr::wifi::note_transport_recovered();
+      return true;
+    }
+    any_failed = true;
+    if (attempt + 1 < kMaxAttempts) vTaskDelay(pdMS_TO_TICKS(kRetryDelaysMs[attempt]));
+  }
+  return false;
 }
 void worker(void*) { const bool address = g_query[0] != '\0'; State next{}; next.busy=true; strlcpy(next.message,address ? "Looking up address" : "Looking up IP area",sizeof(next.message)); set(next);
   char encoded[192]{}, url[320]{};

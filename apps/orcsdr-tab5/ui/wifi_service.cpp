@@ -316,6 +316,17 @@ bool connect_failed() { return g_failed.load(std::memory_order_acquire); }
 // actually able to move data right now.
 bool transport_healthy() { return g_transport_healthy.load(std::memory_order_acquire); }
 uint32_t transport_failure_count() { return g_transport_failure_count.load(std::memory_order_relaxed); }
+// EH_HOST_EVENT_TRANSPORT_UP (the only thing that would normally clear
+// g_transport_healthy) is posted solely from eh_host_connect_to_slave()'s
+// initial bring-up -- confirmed by reading eh_host_core.c -- never after a
+// transient SDIO wedge clears on its own mid-session. Left alone,
+// transport_healthy() would report unhealthy for the rest of the boot after
+// the FIRST fault even once the link recovers (hardware-observed: a wedge
+// that flooded ESP_ERR_TIMEOUT for 20+ seconds went completely silent
+// afterward with no TRANSPORT_UP event). A caller that just completed a
+// full HTTPS round trip after an earlier failure has direct proof the link
+// is working again, so it can call this to correct the flag itself.
+void note_transport_recovered() { g_transport_healthy.store(true, std::memory_order_release); }
 const char* ssid() { return g_ssid; }
 const char* ip() {
   static char snapshot[16];

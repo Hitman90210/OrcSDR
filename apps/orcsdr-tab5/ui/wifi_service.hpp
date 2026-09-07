@@ -39,6 +39,11 @@ bool connect_failed();
 // deliberately disabled, so this only reports the state; it doesn't recover.
 bool transport_healthy();
 uint32_t transport_failure_count();
+// Corrects transport_healthy() after a caller proves the link actually
+// works again (e.g. a retried HTTPS fetch just succeeded) -- the driver
+// itself never re-fires TRANSPORT_UP for a mid-session recovery, only for
+// initial bring-up. See wifi_service.cpp's definition for detail.
+void note_transport_recovered();
 const char* ssid();
 const char* ip();
 int16_t rssi();
