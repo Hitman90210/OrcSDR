@@ -159,11 +159,17 @@ void set_busy(Operation operation, uint8_t progress) {
 
 void refresh_installed() {
   if (g_fs == nullptr) return;
-  Pack packs[kPackCount]{};
+  // g_packs (16 x ~820 bytes) was copied onto this worker task's small stack
+  // just to read it without holding g_lock across per-pack filesystem I/O --
+  // that copy alone used ~13KB of a 12KB stack, guaranteeing overflow. Copy
+  // into PSRAM instead, matching the manifest/signature buffers in worker().
+  auto* packs = static_cast<Pack*>(
+      heap_caps_malloc(sizeof(Pack) * kPackCount, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (packs == nullptr) return;
   bool installed[kPackCount]{};
   bool update_available[kPackCount]{};
   portENTER_CRITICAL(&g_lock);
-  memcpy(packs, g_packs, sizeof(packs));
+  memcpy(packs, g_packs, sizeof(Pack) * kPackCount);
   portEXIT_CRITICAL(&g_lock);
   for (uint8_t i = 0; i < kPackCount; ++i) {
     const auto& pack = packs[i];
@@ -197,6 +203,7 @@ void refresh_installed() {
     if (!view.installed && packs[i].available) strlcpy(view.status, "AVAILABLE", sizeof(view.status));
   }
   portEXIT_CRITICAL(&g_lock);
+  heap_caps_free(packs);
 }
 
 bool open_get(esp_http_client_handle_t client, int64_t* declared, int* status,
@@ -299,6 +306,12 @@ bool parse_manifest(const uint8_t* data, size_t size) {
   cJSON* root = cJSON_ParseWithLength(reinterpret_cast<const char*>(data), size);
   if (!root) return false;
   bool ok = false;
+  // Pack[16] (~13KB) put this function's own frame at 14976 bytes against a
+  // 12288-byte task stack -- masked until the worker()/refresh_installed()
+  // overflows above it in the call chain were fixed, at which point this one
+  // started crashing instead (same root cause, same fix: heap not stack).
+  Pack* parsed = nullptr;
+  PackView* views = nullptr;
   do {
     const cJSON* schema = cJSON_GetObjectItemCaseSensitive(root, "schema");
     const cJSON* date = cJSON_GetObjectItemCaseSensitive(root, "generated_at");
@@ -310,9 +323,12 @@ bool parse_manifest(const uint8_t* data, size_t size) {
         !safe_text(date, catalog_date, sizeof(catalog_date)) || !cJSON_IsString(minimum) ||
         !firmware_supports(minimum->valuestring) || pack_count < 1 ||
         pack_count > kPackCount) break;
-    Pack parsed[kPackCount]{};
-    PackView views[kPackCount]{};
+    parsed = static_cast<Pack*>(
+        heap_caps_calloc(kPackCount, sizeof(Pack), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    views = static_cast<PackView*>(
+        heap_caps_calloc(kPackCount, sizeof(PackView), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     bool seen[kPackCount]{};
+    if (!parsed || !views) break;
     uint8_t next_dynamic = kBuiltInPackCount;
     for (uint8_t index = 0; index < kBuiltInPackCount; ++index) {
       strlcpy(views[index].id, kIds[index], sizeof(views[index].id));
@@ -357,12 +373,16 @@ bool parse_manifest(const uint8_t* data, size_t size) {
     if (ok) {
       portENTER_CRITICAL(&g_lock);
       memcpy(g_packs, parsed, sizeof(g_packs));
-      memcpy(g_state.packs, views, sizeof(views));
+      // views is now heap-allocated (Pack*/PackView*, not a stack array), so
+      // sizeof(views) would give the pointer's size, not the buffer's.
+      memcpy(g_state.packs, views, sizeof(PackView) * kPackCount);
       strlcpy(g_state.catalog_date, catalog_date, sizeof(g_state.catalog_date));
       g_state.ready = true;
       portEXIT_CRITICAL(&g_lock);
     }
   } while (false);
+  if (parsed) heap_caps_free(parsed);
+  if (views) heap_caps_free(views);
   cJSON_Delete(root);
   return ok;
 }
@@ -517,6 +537,142 @@ bool activate_pack(const Pack& pack) {
   return true;
 }
 
+// worker() used to hold all three operations' locals in one flat frame
+// (measured at 15344 bytes via -fstack-usage against a 12288-byte task
+// stack -- a guaranteed overflow on entry regardless of which operation was
+// requested, including "check", whose own locals are tiny). Splitting each
+// mutually-exclusive branch into its own noinline function means a given
+// call only pays for the one branch actually taken, the same fix already
+// applied to ui_doc_render() earlier for the same reason.
+[[gnu::noinline]] bool worker_check(uint8_t* manifest, uint8_t* signature) {
+  set_message("Checking signed data catalog");
+  bool manifest_ok = false;
+  bool signature_ok = false;
+  bool signature_verified = false;
+  size_t manifest_size = 0, signature_size = 0;
+  bool ok = false;
+  if (!http_read_all(kCatalogUrl, manifest, kManifestLimit, &manifest_size)) {
+    set_message("Could not fetch catalog manifest");
+  } else {
+    manifest_ok = true;
+    ESP_LOGI(kTag, "check stage=manifest_ok bytes=%u", static_cast<unsigned>(manifest_size));
+  }
+  if (manifest_ok) {
+    if (!http_read_all(kSignatureUrl, signature, kSignatureLimit, &signature_size)) {
+      set_message("Could not fetch catalog signature");
+    } else {
+      signature_ok = true;
+      ESP_LOGI(kTag, "check stage=signature_ok bytes=%u", static_cast<unsigned>(signature_size));
+    }
+  }
+  if (signature_ok) {
+    signature_verified = verify_signature(manifest, manifest_size, signature, signature_size);
+    if (!signature_verified) set_message("Catalog signature rejected");
+    else ESP_LOGI(kTag, "check stage=signature_verified");
+  }
+  if (signature_verified) {
+    const bool manifest_parsed = parse_manifest(manifest, manifest_size);
+    ESP_LOGI(kTag, "check stage=manifest_parsed ok=%d", manifest_parsed ? 1 : 0);
+    if (!manifest_parsed) {
+      set_message("Catalog manifest rejected");
+    } else {
+      ok = true;
+      set_message("Catalog verified");
+    }
+  }
+  if (ok) {
+    refresh_installed();
+    ESP_LOGI(kTag, "check stage=installed_refreshed");
+  }
+  return ok;
+}
+
+[[gnu::noinline]] bool worker_install(uint8_t pack_index) {
+  if (!(pack_index < kPackCount && g_packs[pack_index].available)) return false;
+  const auto& pack = g_packs[pack_index];
+  const uint64_t required = static_cast<uint64_t>(pack.runtime.bytes) + pack.archive.bytes + 2 * kChunkBytes;
+  bool ok = false;
+  if (g_free_bytes < required) {
+    set_message("Not enough SD space for pack");
+  } else {
+    bool directories_ready = true;
+    if (pack.p25_profile) {
+      char directory[80]{};
+      char version_path[112]{};
+      snprintf(directory, sizeof(directory), "%s/%s", orcsdr::p25config::kProfilesRoot,
+               g_state.packs[pack_index].id);
+      snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
+      char backup[112]{}, temporary[112]{};
+      snprintf(backup, sizeof(backup), "%s.bak", pack.runtime.destination);
+      snprintf(temporary, sizeof(temporary), "%s.part", pack.runtime.destination);
+      orcsdr::p25config::StoreState profiles{};
+      char error[64]{};
+      directories_ready = orcsdr::p25config::refresh(*g_fs, &profiles, error, sizeof(error));
+      bool profile_known = false;
+      for (size_t i = 0; i < profiles.count; ++i)
+        profile_known |= strcmp(profiles.profiles[i].id,
+                                g_state.packs[pack_index].id) == 0;
+      const bool catalog_owned = g_fs->exists(version_path);
+      const bool profile_files = g_fs->exists(pack.runtime.destination) ||
+                                 g_fs->exists(backup) || g_fs->exists(temporary);
+      if ((!catalog_owned && (profile_known || profile_files)) ||
+          (!profile_known && profiles.count >= orcsdr::p25config::kMaxProfiles))
+        directories_ready = false;
+      directories_ready = directories_ready &&
+          (g_fs->exists(orcsdr::p25config::kProfilesRoot) ||
+           g_fs->mkdir(orcsdr::p25config::kProfilesRoot)) &&
+          (g_fs->exists(directory) || g_fs->mkdir(directory));
+    }
+    set_message(directories_ready ? "Downloading runtime index"
+                                  : "P25 profile slot or ID unavailable");
+    ok = directories_ready && download_artifact(pack.runtime, pack_index, 0, 45);
+    if (ok) { set_message("Downloading source archive"); ok = download_artifact(pack.archive, pack_index, 45, 55); }
+    if (ok) ok = activate_pack(pack);
+    if (!ok) {
+      discard_staged(pack.runtime);
+      discard_staged(pack.archive);
+    }
+  }
+  set_message(ok ? "Pack installed and verified" : g_state.message);
+  if (ok) {
+    portENTER_CRITICAL(&g_lock);
+    auto& view = g_state.packs[pack_index];
+    view.installed = true;
+    view.update_available = false;
+    strlcpy(view.status, "INSTALLED", sizeof(view.status));
+    portEXIT_CRITICAL(&g_lock);
+  }
+  return ok;
+}
+
+[[gnu::noinline]] bool worker_remove(uint8_t pack_index) {
+  if (!(pack_index < kPackCount && g_packs[pack_index].available)) return false;
+  const auto& pack = g_packs[pack_index];
+  bool ok = true;
+  if (g_fs && pack.p25_profile) {
+    char version_path[112]{}, backup[112]{}, temporary[112]{};
+    snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
+    snprintf(backup, sizeof(backup), "%s.bak", pack.runtime.destination);
+    snprintf(temporary, sizeof(temporary), "%s.part", pack.runtime.destination);
+    const bool catalog_owned = g_fs->exists(version_path);
+    const bool profile_exists = g_fs->exists(pack.runtime.destination) ||
+                                g_fs->exists(backup) || g_fs->exists(temporary);
+    orcsdr::p25config::StoreState profiles{};
+    char error[64]{};
+    (void)orcsdr::p25config::refresh(*g_fs, &profiles, error, sizeof(error));
+    if (catalog_owned && profile_exists)
+      ok &= orcsdr::p25config::delete_profile(
+          *g_fs, g_state.packs[pack_index].id, &profiles, error, sizeof(error));
+    if (catalog_owned && g_fs->exists(version_path)) ok &= g_fs->remove(version_path);
+  } else if (g_fs && g_fs->exists(pack.runtime.destination)) {
+    ok &= g_fs->remove(pack.runtime.destination);
+  }
+  if (g_fs && g_fs->exists(pack.archive.destination)) ok &= g_fs->remove(pack.archive.destination);
+  set_message(ok ? "Pack removed" : "Could not remove pack");
+  refresh_installed();
+  return ok;
+}
+
 void worker(void*) {
   // Catalogs are manual operations. Keep their bounded transfer buffers out
   // of the small FreeRTOS task stack and release them after each request.
@@ -524,127 +680,17 @@ void worker(void*) {
       heap_caps_malloc(kManifestLimit, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   auto* signature = static_cast<uint8_t*>(
       heap_caps_malloc(kSignatureLimit, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  size_t manifest_size = 0, signature_size = 0;
   const Operation operation = g_requested;
   const uint8_t pack_index = g_requested_pack;
   bool ok = false;
   if (!manifest || !signature) {
     set_message("Catalog buffer allocation failed");
   } else if (operation == Operation::check) {
-    set_message("Checking signed data catalog");
-    bool manifest_ok = false;
-    bool signature_ok = false;
-    bool signature_verified = false;
-    if (!http_read_all(kCatalogUrl, manifest, kManifestLimit, &manifest_size)) {
-      set_message("Could not fetch catalog manifest");
-    } else {
-      manifest_ok = true;
-      ESP_LOGI(kTag, "check stage=manifest_ok bytes=%u", static_cast<unsigned>(manifest_size));
-    }
-    if (manifest_ok) {
-      if (!http_read_all(kSignatureUrl, signature, kSignatureLimit, &signature_size)) {
-        set_message("Could not fetch catalog signature");
-      } else {
-        signature_ok = true;
-        ESP_LOGI(kTag, "check stage=signature_ok bytes=%u", static_cast<unsigned>(signature_size));
-      }
-    }
-    if (signature_ok) {
-      signature_verified = verify_signature(manifest, manifest_size, signature, signature_size);
-      if (!signature_verified) set_message("Catalog signature rejected");
-      else ESP_LOGI(kTag, "check stage=signature_verified");
-    }
-    if (signature_verified) {
-      const bool manifest_parsed = parse_manifest(manifest, manifest_size);
-      ESP_LOGI(kTag, "check stage=manifest_parsed ok=%d", manifest_parsed ? 1 : 0);
-      if (!manifest_parsed) {
-        set_message("Catalog manifest rejected");
-      } else {
-        ok = true;
-        set_message("Catalog verified");
-      }
-    }
-    if (ok) {
-      refresh_installed();
-      ESP_LOGI(kTag, "check stage=installed_refreshed");
-    }
-  } else if (operation == Operation::install && pack_index < kPackCount && g_packs[pack_index].available) {
-    const auto& pack = g_packs[pack_index];
-    const uint64_t required = static_cast<uint64_t>(pack.runtime.bytes) + pack.archive.bytes + 2 * kChunkBytes;
-    if (g_free_bytes < required) {
-      set_message("Not enough SD space for pack");
-    } else {
-      bool directories_ready = true;
-      if (pack.p25_profile) {
-        char directory[80]{};
-        char version_path[112]{};
-        snprintf(directory, sizeof(directory), "%s/%s", orcsdr::p25config::kProfilesRoot,
-                 g_state.packs[pack_index].id);
-        snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
-        char backup[112]{}, temporary[112]{};
-        snprintf(backup, sizeof(backup), "%s.bak", pack.runtime.destination);
-        snprintf(temporary, sizeof(temporary), "%s.part", pack.runtime.destination);
-        orcsdr::p25config::StoreState profiles{};
-        char error[64]{};
-        directories_ready = orcsdr::p25config::refresh(*g_fs, &profiles, error, sizeof(error));
-        bool profile_known = false;
-        for (size_t i = 0; i < profiles.count; ++i)
-          profile_known |= strcmp(profiles.profiles[i].id,
-                                  g_state.packs[pack_index].id) == 0;
-        const bool catalog_owned = g_fs->exists(version_path);
-        const bool profile_files = g_fs->exists(pack.runtime.destination) ||
-                                   g_fs->exists(backup) || g_fs->exists(temporary);
-        if ((!catalog_owned && (profile_known || profile_files)) ||
-            (!profile_known && profiles.count >= orcsdr::p25config::kMaxProfiles))
-          directories_ready = false;
-        directories_ready = directories_ready &&
-            (g_fs->exists(orcsdr::p25config::kProfilesRoot) ||
-             g_fs->mkdir(orcsdr::p25config::kProfilesRoot)) &&
-            (g_fs->exists(directory) || g_fs->mkdir(directory));
-      }
-      set_message(directories_ready ? "Downloading runtime index"
-                                    : "P25 profile slot or ID unavailable");
-      ok = directories_ready && download_artifact(pack.runtime, pack_index, 0, 45);
-      if (ok) { set_message("Downloading source archive"); ok = download_artifact(pack.archive, pack_index, 45, 55); }
-      if (ok) ok = activate_pack(pack);
-      if (!ok) {
-        discard_staged(pack.runtime);
-        discard_staged(pack.archive);
-      }
-    }
-    set_message(ok ? "Pack installed and verified" : g_state.message);
-    if (ok) {
-      portENTER_CRITICAL(&g_lock);
-      auto& view = g_state.packs[pack_index];
-      view.installed = true;
-      view.update_available = false;
-      strlcpy(view.status, "INSTALLED", sizeof(view.status));
-      portEXIT_CRITICAL(&g_lock);
-    }
-  } else if (operation == Operation::remove && pack_index < kPackCount && g_packs[pack_index].available) {
-    const auto& pack = g_packs[pack_index];
-    ok = true;
-    if (g_fs && pack.p25_profile) {
-      char version_path[112]{}, backup[112]{}, temporary[112]{};
-      snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
-      snprintf(backup, sizeof(backup), "%s.bak", pack.runtime.destination);
-      snprintf(temporary, sizeof(temporary), "%s.part", pack.runtime.destination);
-      const bool catalog_owned = g_fs->exists(version_path);
-      const bool profile_exists = g_fs->exists(pack.runtime.destination) ||
-                                  g_fs->exists(backup) || g_fs->exists(temporary);
-      orcsdr::p25config::StoreState profiles{};
-      char error[64]{};
-      (void)orcsdr::p25config::refresh(*g_fs, &profiles, error, sizeof(error));
-      if (catalog_owned && profile_exists)
-        ok &= orcsdr::p25config::delete_profile(
-            *g_fs, g_state.packs[pack_index].id, &profiles, error, sizeof(error));
-      if (catalog_owned && g_fs->exists(version_path)) ok &= g_fs->remove(version_path);
-    } else if (g_fs && g_fs->exists(pack.runtime.destination)) {
-      ok &= g_fs->remove(pack.runtime.destination);
-    }
-    if (g_fs && g_fs->exists(pack.archive.destination)) ok &= g_fs->remove(pack.archive.destination);
-    set_message(ok ? "Pack removed" : "Could not remove pack");
-    refresh_installed();
+    ok = worker_check(manifest, signature);
+  } else if (operation == Operation::install) {
+    ok = worker_install(pack_index);
+  } else if (operation == Operation::remove) {
+    ok = worker_remove(pack_index);
   }
   if (manifest) heap_caps_free(manifest);
   if (signature) heap_caps_free(signature);
