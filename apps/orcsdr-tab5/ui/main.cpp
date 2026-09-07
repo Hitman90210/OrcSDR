@@ -522,7 +522,7 @@ constexpr uint8_t kRtlVolumeMax = 255;
 constexpr uint8_t kRtlSpeakerHardwareMax = 200;
 // ~50% of the M5 speaker scale (0-255). Operator found 220 too loud as a start.
 constexpr uint8_t kRtlVolumeDefault = 128;
-constexpr uint8_t kRtlVolumeStep = 16;
+constexpr uint8_t kRtlVolumeStep = 26;  // ~10% of the 0-255 range shown to the user
 static_assert(kRtlSpeakerHardwareMax <= kRtlVolumeMax);
 constexpr uint32_t kRtlFmMinHz = 87500000;
 constexpr uint32_t kRtlFmMaxHz = 108000000;
@@ -1791,6 +1791,7 @@ void draw_spectrum_axis();
 void draw_band_edges();
 void draw_cb_dashboard(bool static_panel);
 bool handle_cb_touch(int32_t x, int32_t y);
+void tune_cb_channel(size_t channel);
 void draw_adsb_dashboard(bool static_panel);
 void draw_lora_dashboard(bool static_panel);
 void draw_fm_dashboard(bool static_panel);
@@ -2201,7 +2202,12 @@ void log_dram_budget(const char* stage) {
 
 void apply_speaker_volume(uint8_t volume) {
   // Keep master and virtual-channel levels aligned; some M5 paths only honor one.
-  const uint8_t physical_volume = std::min(volume, kRtlSpeakerHardwareMax);
+  // Force physical silence when muted: the play-batch gate only stops *new*
+  // samples from being queued, not anything already buffered or written by a
+  // path that doesn't check rtl_audio_enabled, so mute must also be enforced
+  // here at the one place every volume application funnels through.
+  const bool muted = !rtl_audio_user_enabled.load(std::memory_order_acquire);
+  const uint8_t physical_volume = muted ? 0 : std::min(volume, kRtlSpeakerHardwareMax);
   M5.Speaker.setVolume(physical_volume);
   M5.Speaker.setChannelVolume(0, physical_volume);
 }
@@ -8200,6 +8206,9 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
                                                        : 12500;
   strlcpy(snapshot.mode, demo ? "FM" : rtl_band_name(rtl_ui_band),
           sizeof(snapshot.mode));
+  snapshot.channel = (!demo && rtl_ui_band == RtlBand::cb)
+      ? static_cast<uint8_t>(cb_channel_index(rtl_ui_frequency_hz) + 1)
+      : 0;
   snapshot.battery_percent = demo ? 76 : device.battery_percent;
   snapshot.vbus_mv = demo ? 5000 : device.vbus_mv;
   snapshot.volume = demo ? 128 : rtl_live_volume.load(std::memory_order_acquire);
@@ -8469,6 +8478,13 @@ void handle_home_action(const orcsdr::home::Action& action) {
       break;
     case ActionKind::volume_up:
       adjust_rtl_volume(static_cast<int>(kRtlVolumeStep));
+      break;
+    case ActionKind::channel_down:
+    case ActionKind::channel_up:
+      if (rtl_ui_band == RtlBand::cb) {
+        const size_t current = cb_channel_index(rtl_ui_frequency_hz);
+        tune_cb_channel((current + (action.kind == ActionKind::channel_down ? 39 : 1)) % 40);
+      }
       break;
     default: return;
   }
@@ -10692,6 +10708,43 @@ void process_command(char* command) {
       Serial.println("UI_DOC_EXIT_DONE restored=true");
       return;
     }
+  }
+  if (strncmp(command, "UI_SNAPSHOT ", 12) == 0) {
+    // Unlike UI_CAPTURE, this needs no prior UI_DOC_SHOW staging: it grabs
+    // whatever is actually on screen right now, live reception included.
+    // save_bmp() only reads M5.Display's current framebuffer, so it has no
+    // dependency on documentation-mode state.
+    if (!authenticated) {
+      Serial.println("UI_SNAPSHOT_ERROR auth_required");
+      return;
+    }
+    last_ping_ms = millis();
+    const char* slug = command + 12;
+    if (!orcsdr::ui_capture::valid_slug(slug)) {
+      Serial.println("UI_SNAPSHOT_ERROR invalid_slug");
+      return;
+    }
+    if (!ensure_tab5_sd() || g_sd_fs == nullptr) {
+      Serial.println("UI_SNAPSHOT_ERROR sd_unavailable");
+      return;
+    }
+    const auto result = orcsdr::ui_capture::save_bmp(M5.Display, *g_sd_fs, slug);
+    if (!result.ok) {
+      Serial.printf("UI_SNAPSHOT_ERROR %s\n", result.error ? result.error : "capture_failed");
+      return;
+    }
+    // Pause only now, after the live frame is already on SD: sd_transfer_radio_busy()
+    // refuses the SD_GET retrieval that follows while reception is running, and the
+    // capture itself doesn't need reception paused, so don't pay that cost any earlier.
+    ui_doc_pause_reception();
+    const esp_app_desc_t* app = esp_app_get_description();
+    Serial.printf("UI_SNAPSHOT_DONE slug=%s path=\"/orcsdr/screenshots/%s.bmp\" "
+                  "bytes=%u width=%u height=%u firmware=\"%s\" sha256=",
+                  slug, slug, static_cast<unsigned>(result.bytes), result.width,
+                  result.height, app->version);
+    print_hex(result.sha256, sizeof(result.sha256));
+    Serial.println();
+    return;
   }
   if (strcmp(command, "RTL_UI STATUS") == 0) {
     Serial.printf("RTL_UI_STATUS screen=%s band=%s frequency_hz=%u settings=%d fm=%d p25=%d "

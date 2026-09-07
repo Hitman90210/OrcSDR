@@ -99,7 +99,12 @@ void draw_header() {
                     : g_state.wifi_scanning ? "Wi-Fi scanning" : "Wi-Fi offline",
             sizeof(status));
   text(status, 1020, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
-  button("CLOSE", 1040, 13, 116, 46, TFT_MAROON);
+  // CLOSE used to sit at x=1040..1156, overlapping the shared mute button's
+  // fixed x=1099..1153 -- there's only ~79px of real gap between the status
+  // text and the mute button, not the 116px CLOSE needs. Settings doesn't use
+  // the visualizer/settings-gear slots the header reserves past the mute
+  // button, so put CLOSE there instead of fighting for the same space.
+  button("CLOSE", 1158, 13, 116, 46, TFT_MAROON);
   audio_header::draw_mute_button(g_state.sound_default);
 }
 
@@ -295,7 +300,7 @@ void draw_display_audio() {
            g_state.screen_timeout_sec);
   value_row("SCREEN TIMEOUT", value, 300);
   button("CYCLE", 960, 325, 160, 48, TFT_DARKCYAN);
-  snprintf(value, sizeof(value), "%u / 255", g_state.volume);
+  snprintf(value, sizeof(value), "%u%%", (g_state.volume * 100u + 127u) / 255u);
   value_row("MASTER VOLUME", value, 420);
   button("-", 850, 445, 90, 48, TFT_DARKGREY);
   button("+", 960, 445, 90, 48, TFT_DARKCYAN);
@@ -698,7 +703,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (g_edit != EditField::none) return handle_keypad(x, y);
   if (audio_header::mute_hit(x, y))
     return {ActionKind::sound_changed, g_state.sound_default ? 0 : 1};
-  if (hit(x, y, 1040, 13, 116, 46)) {
+  if (hit(x, y, 1158, 13, 116, 46)) {
     g_active = false;
     return {ActionKind::close, 0};
   }

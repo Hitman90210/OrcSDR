@@ -315,8 +315,13 @@ void draw_tuning_controls() {
   text(value, 470, 606, kGreen, 2, middle_center);
   panel(548, 571, 60, 48, kCyan, 7); text(">", 578, 595, kGreen, 3, middle_center);
   panel(640, 571, 60, 48, kCyan, 7); text("<", 670, 595, kGreen, 3, middle_center);
-  text("STEP", 780, 578, kCyan, 2, middle_center);
-  snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
+  if (current.channel != 0) {
+    text("CHANNEL", 780, 578, kCyan, 2, middle_center);
+    snprintf(value, sizeof(value), "CH %u", current.channel);
+  } else {
+    text("STEP", 780, 578, kCyan, 2, middle_center);
+    snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
+  }
   text(value, 780, 606, kGreen, 2, middle_center);
   panel(864, 571, 60, 48, kCyan, 7); text(">", 894, 595, kGreen, 3, middle_center);
 }
@@ -327,10 +332,10 @@ void draw_audio_controls() {
   text("-", 1033, 504, kGreen, 4, middle_center);
   panel(1076, 468, 80, 72, kCyan, 8);
   text(current.sound_enabled ? "VOL" : "MUTE", 1116, 486,
-       current.sound_enabled ? kCyan : TFT_ORANGE, 2, middle_center);
+       current.sound_enabled ? kCyan : TFT_RED, 2, middle_center);
   char value[8];
-  snprintf(value, sizeof(value), "%u", current.volume);
-  text(value, 1116, 515, current.sound_enabled ? kGreen : TFT_LIGHTGREY, 2,
+  snprintf(value, sizeof(value), "%u%%", (current.volume * 100u + 127u) / 255u);
+  text(value, 1116, 515, current.sound_enabled ? kGreen : TFT_RED, 2,
        middle_center);
   panel(1164, 468, 70, 72, kCyan, 8);
   text("+", 1199, 504, kGreen, 4, middle_center);
@@ -407,8 +412,14 @@ void draw_receiver_chrome() {
   text("MODE", 816, 484, kCyan, 2, middle_center);
   text(current.mode[0] ? current.mode : "--", 816, 516, kGreen, 2, middle_center);
   panel(874, 468, 112, 72, kCyan, 8);
-  text("STEP", 930, 484, kCyan, 2, middle_center);
-  char value[24]; snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
+  char value[24];
+  if (current.channel != 0) {
+    text("CHANNEL", 930, 484, kCyan, 2, middle_center);
+    snprintf(value, sizeof(value), "CH %u", current.channel);
+  } else {
+    text("STEP", 930, 484, kCyan, 2, middle_center);
+    snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
+  }
   text(value, 930, 516, kGreen, 2, middle_center);
   draw_audio_controls();
   draw_tuning_controls();
@@ -492,8 +503,10 @@ Action tap_action(int32_t x, int32_t y) {
   }
   if (inside(x, y, 338, 571, 60, 48)) return {ActionKind::span_down};
   if (inside(x, y, 548, 571, 60, 48)) return {ActionKind::span_up};
-  if (inside(x, y, 640, 571, 60, 48)) return {ActionKind::step_down};
-  if (inside(x, y, 864, 571, 60, 48)) return {ActionKind::step_up};
+  if (inside(x, y, 640, 571, 60, 48))
+    return {current.channel != 0 ? ActionKind::channel_down : ActionKind::step_down};
+  if (inside(x, y, 864, 571, 60, 48))
+    return {current.channel != 0 ? ActionKind::channel_up : ActionKind::step_up};
   if (inside(x, y, 998, 468, 70, 72)) return {ActionKind::volume_down};
   if (inside(x, y, 1076, 468, 80, 72)) return {ActionKind::sound_toggle};
   if (inside(x, y, 1164, 468, 70, 72)) return {ActionKind::volume_up};
@@ -530,7 +543,8 @@ void update(const Snapshot& snapshot) {
   const bool bandwidth_changed =
       snapshot.filter_bandwidth_hz != current.filter_bandwidth_hz;
   const bool tuning_controls_changed = snapshot.span_hz != current.span_hz ||
-                                       snapshot.step_hz != current.step_hz;
+                                       snapshot.step_hz != current.step_hz ||
+                                       snapshot.channel != current.channel;
   const bool level_changed = static_cast<int>(std::lround(snapshot.relative_dbfs)) !=
                              static_cast<int>(std::lround(current.relative_dbfs));
   current = snapshot;
@@ -542,8 +556,14 @@ void update(const Snapshot& snapshot) {
     text("MODE", 816, 484, kCyan, 2, middle_center);
     text(current.mode, 816, 516, kGreen, 2, middle_center);
     panel(874, 468, 112, 72, kCyan, 8);
-    char value[24]; snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
-    text("STEP", 930, 484, kCyan, 2, middle_center);
+    char value[24];
+    if (current.channel != 0) {
+      text("CHANNEL", 930, 484, kCyan, 2, middle_center);
+      snprintf(value, sizeof(value), "CH %u", current.channel);
+    } else {
+      text("STEP", 930, 484, kCyan, 2, middle_center);
+      snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
+    }
     text(value, 930, 516, kGreen, 2, middle_center);
   }
   if (audio_changed) draw_audio_controls();

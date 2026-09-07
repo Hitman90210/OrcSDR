@@ -21,6 +21,7 @@ struct Snapshot {
   int32_t battery_percent = -1;
   int32_t vbus_mv = 0;
   uint8_t volume = 0;
+  uint8_t channel = 0;  // 1-40 on CB (see cb_channel_index); 0 = not channelized
   float relative_dbfs = -90.0f;
   bool wifi_connected = false;
   bool usb_connected = false;
@@ -46,6 +47,8 @@ enum class ActionKind : uint8_t {
   sound_toggle,
   volume_down,
   volume_up,
+  channel_down,
+  channel_up,
   open_device_settings,
   waterfall_contrast_down,
   waterfall_contrast_up,

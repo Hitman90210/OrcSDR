@@ -14,6 +14,7 @@ constexpr uint16_t kPanel = 0x0841;
 constexpr uint16_t kCyan = 0x2e7f;
 constexpr uint16_t kGreen = 0x6fe8;
 constexpr uint16_t kMuted = 0x8c71;
+constexpr uint16_t kMutedRed = TFT_RED;
 constexpr uint16_t kGrid = 0x2945;
 constexpr int kRegionX = 866;
 constexpr int kRegionY = 25;
@@ -56,8 +57,16 @@ void text(const char* value, int x, int y, uint16_t color = TFT_WHITE,
 }
 
 void draw_speaker(int cx, int cy, uint16_t color, bool enabled) {
-  M5.Display.fillTriangle(cx - 13, cy - 7, cx - 5, cy - 7, cx - 5, cy + 7, color);
+  // Always show muted as an unambiguous red, regardless of what color the
+  // caller passed -- a dim gray X was easy to miss/confuse with "on".
+  if (!enabled) color = kMutedRed;
+  // Symmetric box + cone (classic speaker glyph). The box used to be drawn
+  // as a single asymmetric triangle wedge instead of a rectangle, and the
+  // cone as a triangle that only reached the box's top edge, leaving a
+  // lopsided notch where the two should meet flush.
+  M5.Display.fillRect(cx - 13, cy - 7, 8, 15, color);
   M5.Display.fillTriangle(cx - 5, cy - 7, cx + 5, cy - 14, cx + 5, cy + 14, color);
+  M5.Display.fillTriangle(cx - 5, cy - 7, cx - 5, cy + 8, cx + 5, cy + 14, color);
   if (enabled) {
     M5.Display.drawArc(cx + 4, cy, 12, 9, 300, 60, color);
     M5.Display.drawArc(cx + 4, cy, 19, 16, 300, 60, color);
@@ -92,15 +101,15 @@ void draw(const Control& control, uint8_t volume, bool sound_enabled,
   if (control.expanded) {
     draw_button(kButtonX[0], "-", kCyan);
     draw_button(kButtonX[1], sound_enabled ? "MUTE" : "UNMUTE",
-                sound_enabled ? kGreen : kMuted);
+                sound_enabled ? kGreen : kMutedRed);
     draw_button(kButtonX[2], "+", kCyan);
     return;
   }
 
   draw_speaker(884, 57, sound_enabled ? kGreen : kMuted, sound_enabled);
   char level[8];
-  snprintf(level, sizeof(level), "%u", volume);
-  text(level, 926, 67, sound_enabled ? TFT_WHITE : kMuted, 2);
+  snprintf(level, sizeof(level), "%u%%", (volume * 100u + 127u) / 255u);
+  text(level, 926, 67, sound_enabled ? TFT_WHITE : kMutedRed, 2);
   text("USB", 965, 67, TFT_WHITE, 1);
   draw_battery(966, 50, battery_percent);
 }
@@ -121,7 +130,7 @@ bool home_hit(int32_t x, int32_t y) {
 void draw_mute_button(bool sound_enabled) {
   M5.Display.fillRoundRect(kMuteX, kMuteY, kMuteW, kMuteH, 8, kPanel);
   M5.Display.drawRoundRect(kMuteX, kMuteY, kMuteW, kMuteH, 8,
-                           sound_enabled ? kGreen : kMuted);
+                           sound_enabled ? kGreen : kMutedRed);
   draw_speaker(kMuteX + 13, kMuteY + kMuteH / 2,
                sound_enabled ? kGreen : kMuted, sound_enabled);
 }
