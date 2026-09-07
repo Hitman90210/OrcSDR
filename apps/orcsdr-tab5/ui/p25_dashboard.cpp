@@ -545,6 +545,9 @@ void enter(const Snapshot& snapshot) {
   g_snapshot = snapshot;
   g_view = View::monitor;
   g_active = true;
+  g_profile_cursor = 0;
+  g_delete_armed = false;
+  g_profile_name_ready = false;
   audio_header::reset(g_audio_control);
   draw();
 }

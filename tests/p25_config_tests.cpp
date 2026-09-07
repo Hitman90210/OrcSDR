@@ -152,6 +152,9 @@ struct Run {
     CHECK(config.version == kSchemaVersion && config.control_channel_count == 2);
 
     write_text("/orcsdr/duplicate.cfg", migrated);
+    CHECK(!import_profile(fs, "/orcsdr/duplicate.cfg", "p25_reserved", &state,
+                          error, sizeof(error)));
+    CHECK(std::strcmp(error, "p25_ ids are reserved for catalog packs") == 0);
     CHECK(!import_profile(fs, "/orcsdr/duplicate.cfg", "duplicate", &state,
                           error, sizeof(error)));
     CHECK(std::strcmp(error, "system identity already installed") == 0);

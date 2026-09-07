@@ -39,8 +39,16 @@ def validate_artifact(pack_id: str, source: Path, archive: bool) -> None:
         if prefix[:4] not in (b"PK\x03\x04", b"PK\x05\x06"):
             raise ValueError(f"{pack_id} source archive must be a ZIP: {source}")
     elif is_p25_pack(pack_id):
-        text = source.read_text(encoding="utf-8")
-        if "version=2\n" not in text or "control_channel_hz=" not in text:
+        fields: dict[str, list[str]] = {}
+        for raw_line in source.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = (part.strip() for part in line.split("=", 1))
+            fields.setdefault(key, []).append(value)
+        channels = fields.get("control_channel_hz", [])
+        if fields.get("version") != ["2"] or not channels or any(
+                not value.isdecimal() for value in channels):
             raise ValueError(f"{pack_id} runtime must be a version-2 P25 profile: {source}")
     elif pack_id == "faa_aircraft":
         if prefix != b"ORCADSB1":
@@ -79,12 +87,10 @@ def main() -> None:
         raise ValueError("expected catalog-input-v1")
     packs = spec.get("packs", [])
     ids = [pack.get("id") for pack in packs]
-    builtins = [pack_id for pack_id in ids if pack_id in PACK_IDS]
-    expected_builtins = [pack_id for pack_id in PACK_IDS if pack_id in ids]
-    if (not ids or builtins != expected_builtins or len(set(ids)) != len(ids) or
+    if (not ids or len(set(ids)) != len(ids) or
             any(pack_id not in PACK_IDS and not is_p25_pack(pack_id) for pack_id in ids) or
             len(ids) > 16):
-        raise ValueError("packs must be unique supported IDs; built-ins retain canonical order")
+        raise ValueError("packs must use unique supported IDs")
     args.out.mkdir(parents=True, exist_ok=True)
     catalog_packs = []
     for pack in packs:

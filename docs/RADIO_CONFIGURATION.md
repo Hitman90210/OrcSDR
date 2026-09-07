@@ -41,6 +41,8 @@ To import from the screen, place a valid profile at
 `/orcsdr/p25-import.cfg`. Exports go to
 `/orcsdr/exports/p25-profile.cfg`. Serial commands allow explicit safe IDs and
 export filenames; see [the serial API](API_SERIAL_CLI.md#p25-validation-and-replay).
+The `p25_` ID prefix is reserved for signed catalog-owned packs so removing a
+catalog pack cannot delete a locally imported profile.
 
 ### Migration
 

@@ -169,6 +169,11 @@ void refresh_installed() {
     const auto& pack = packs[i];
     installed[i] = pack.available && pack.runtime.destination[0] &&
                    g_fs->exists(pack.runtime.destination);
+    if (installed[i] && pack.p25_profile) {
+      char version_path[112]{};
+      snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
+      installed[i] = g_fs->exists(version_path);
+    }
     if (installed[i]) {
       char version_path[112]{}, local[sizeof(pack.version)]{};
       snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
@@ -572,15 +577,33 @@ void worker(void*) {
       bool directories_ready = true;
       if (pack.p25_profile) {
         char directory[80]{};
+        char version_path[112]{};
         snprintf(directory, sizeof(directory), "%s/%s", orcsdr::p25config::kProfilesRoot,
                  g_state.packs[pack_index].id);
-        directories_ready =
+        snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
+        char backup[112]{}, temporary[112]{};
+        snprintf(backup, sizeof(backup), "%s.bak", pack.runtime.destination);
+        snprintf(temporary, sizeof(temporary), "%s.part", pack.runtime.destination);
+        orcsdr::p25config::StoreState profiles{};
+        char error[64]{};
+        directories_ready = orcsdr::p25config::refresh(*g_fs, &profiles, error, sizeof(error));
+        bool profile_known = false;
+        for (size_t i = 0; i < profiles.count; ++i)
+          profile_known |= strcmp(profiles.profiles[i].id,
+                                  g_state.packs[pack_index].id) == 0;
+        const bool catalog_owned = g_fs->exists(version_path);
+        const bool profile_files = g_fs->exists(pack.runtime.destination) ||
+                                   g_fs->exists(backup) || g_fs->exists(temporary);
+        if ((!catalog_owned && (profile_known || profile_files)) ||
+            (!profile_known && profiles.count >= orcsdr::p25config::kMaxProfiles))
+          directories_ready = false;
+        directories_ready = directories_ready &&
             (g_fs->exists(orcsdr::p25config::kProfilesRoot) ||
              g_fs->mkdir(orcsdr::p25config::kProfilesRoot)) &&
             (g_fs->exists(directory) || g_fs->mkdir(directory));
       }
       set_message(directories_ready ? "Downloading runtime index"
-                                    : "Could not create P25 profile directory");
+                                    : "P25 profile slot or ID unavailable");
       ok = directories_ready && download_artifact(pack.runtime, pack_index, 0, 45);
       if (ok) { set_message("Downloading source archive"); ok = download_artifact(pack.archive, pack_index, 45, 55); }
       if (ok) ok = activate_pack(pack);
@@ -601,17 +624,26 @@ void worker(void*) {
   } else if (operation == Operation::remove && pack_index < kPackCount && g_packs[pack_index].available) {
     const auto& pack = g_packs[pack_index];
     ok = true;
-    if (g_fs && pack.p25_profile && g_fs->exists(pack.runtime.destination)) {
+    if (g_fs && pack.p25_profile) {
+      char version_path[112]{}, backup[112]{}, temporary[112]{};
+      snprintf(version_path, sizeof(version_path), "%s.ver", pack.runtime.destination);
+      snprintf(backup, sizeof(backup), "%s.bak", pack.runtime.destination);
+      snprintf(temporary, sizeof(temporary), "%s.part", pack.runtime.destination);
+      const bool catalog_owned = g_fs->exists(version_path);
+      const bool profile_exists = g_fs->exists(pack.runtime.destination) ||
+                                  g_fs->exists(backup) || g_fs->exists(temporary);
       orcsdr::p25config::StoreState profiles{};
       char error[64]{};
       (void)orcsdr::p25config::refresh(*g_fs, &profiles, error, sizeof(error));
-      ok &= orcsdr::p25config::delete_profile(
-          *g_fs, g_state.packs[pack_index].id, &profiles, error, sizeof(error));
+      if (catalog_owned && profile_exists)
+        ok &= orcsdr::p25config::delete_profile(
+            *g_fs, g_state.packs[pack_index].id, &profiles, error, sizeof(error));
+      if (catalog_owned && g_fs->exists(version_path)) ok &= g_fs->remove(version_path);
     } else if (g_fs && g_fs->exists(pack.runtime.destination)) {
       ok &= g_fs->remove(pack.runtime.destination);
     }
     if (g_fs && g_fs->exists(pack.archive.destination)) ok &= g_fs->remove(pack.archive.destination);
-    set_message(ok ? "Pack removed; configuration preserved" : "Could not remove pack");
+    set_message(ok ? "Pack removed" : "Could not remove pack");
     refresh_installed();
   }
   if (manifest) heap_caps_free(manifest);

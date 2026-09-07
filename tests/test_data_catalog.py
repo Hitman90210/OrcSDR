@@ -64,6 +64,17 @@ class P25CatalogTest(unittest.TestCase):
             catalog = json.loads((work / "out" / "catalog-v1.json").read_text(encoding="utf-8"))
             self.assertEqual(catalog["packs"][0]["title"], "CATALOG TEST")
 
+            profile.write_text(
+                "system_name=version=2\nnote=control_channel_hz=851012500\n",
+                encoding="utf-8",
+            )
+            rejected = subprocess.run(command, capture_output=True, text=True)
+            self.assertNotEqual(rejected.returncode, 0)
+
+            profile.write_text(
+                "version=2\nsystem_name=Catalog Test\ncontrol_channel_hz=851012500\n",
+                encoding="utf-8",
+            )
             spec["packs"][0]["runtime_destination"] = "/orcsdr/p25/wrong/profile.cfg"
             source.write_text(json.dumps(spec), encoding="utf-8")
             rejected = subprocess.run(command, capture_output=True, text=True)

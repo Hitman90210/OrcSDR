@@ -457,6 +457,10 @@ bool import_profile(orcsdr::storage::FileSystem& fs, const char* source_path,
     set_error(error, error_size, "invalid profile id");
     return false;
   }
+  if (strncmp(requested_id, "p25_", 4) == 0) {
+    set_error(error, error_size, "p25_ ids are reserved for catalog packs");
+    return false;
+  }
   Config config{};
   if (load(fs, source_path, &config, error, error_size) != LoadResult::ok) return false;
   StoreState current{};

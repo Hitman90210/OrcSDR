@@ -5,6 +5,7 @@ on:
     paths:
       - apps/orcsdr-tab5/ui/p25_decoder_core.*
       - apps/orcsdr-tab5/ui/p25_config.*
+      - apps/orcsdr-tab5/ui/catalog_sync.*
       - apps/orcsdr-tab5/ui/p25_voice.*
       - components/mbelib/**
       - tests/fixtures/p25_control_lane_453925.orciq
@@ -19,6 +20,7 @@ on:
     paths:
       - apps/orcsdr-tab5/ui/p25_decoder_core.*
       - apps/orcsdr-tab5/ui/p25_config.*
+      - apps/orcsdr-tab5/ui/catalog_sync.*
       - apps/orcsdr-tab5/ui/p25_voice.*
       - components/mbelib/**
       - tests/fixtures/p25_control_lane_453925.orciq
