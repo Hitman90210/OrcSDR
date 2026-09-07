@@ -1,6 +1,6 @@
 site_name: OrcSDR User Guide
 site_description: Beginner-first operating guide and technical reference for OrcSDR
-site_url: https://hardcoreerik.github.io/OrcSDR/
+site_url: https://hitman90210.github.io/OrcSDR/
 docs_dir: docs/user-guide
 site_dir: site
 theme:

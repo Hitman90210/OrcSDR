@@ -16,7 +16,7 @@ separate security branches.
 
 ## Report privately
 
-Use [GitHub Security Advisories](https://github.com/hardcoreerik/OrcSDR/security/advisories/new)
+Use [GitHub Security Advisories](https://github.com/Hitman90210/OrcSDR/security/advisories/new)
 for an unpatched vulnerability. Do not open a public issue until a fix or
 coordinated disclosure has been agreed.
 

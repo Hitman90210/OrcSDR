@@ -17,9 +17,9 @@
 </p>
 
 > [!NOTE]
-> **Public beta — [download the current release](https://github.com/hardcoreerik/OrcSDR/releases)**
+> **Public beta — [download the current release](https://github.com/Hitman90210/OrcSDR/releases)**
 >
-> OrcSDR is available now for the M5Stack Tab5. It is a prerelease: feedback and [bug reports](https://github.com/hardcoreerik/OrcSDR/issues) are welcome.
+> OrcSDR is available now for the M5Stack Tab5. It is a prerelease: feedback and [bug reports](https://github.com/Hitman90210/OrcSDR/issues) are welcome.
 
 <a id="install"></a>
 
@@ -501,7 +501,7 @@ Keep the RTL-SDR disconnected while you flash. Plug it into the Tab5 USB Host po
 ### 1. Clone OrcSDR
 
 ```bash
-git clone https://github.com/hardcoreerik/OrcSDR.git
+git clone https://github.com/Hitman90210/OrcSDR.git
 cd OrcSDR
 ```
 
@@ -512,7 +512,7 @@ cd OrcSDR
 git pull
 ```
 
-For a published build, copy its exact tag from [GitHub Releases](https://github.com/hardcoreerik/OrcSDR/releases) and check it out before building:
+For a published build, copy its exact tag from [GitHub Releases](https://github.com/Hitman90210/OrcSDR/releases) and check it out before building:
 
 ```bash
 git fetch --tags
@@ -750,7 +750,7 @@ Each project is useful on its own. The larger direction is devices that can comm
 
 Contributions are welcome in USB Host, DSP, spectrum/waterfall, radio UI, hardware testing, USB traces, V4 behavior documentation, radio modes, test tooling, and docs.
 
-**Found a bug?** OrcSDR is a public beta. Please [open an issue](https://github.com/hardcoreerik/OrcSDR/issues/new?template=bug_report.md) with the OrcSDR version, P4/C6 ESP-Hosted versions, Tab5 and RTL-SDR hardware, dashboard or mode, frequency when relevant, steps to reproduce, and any non-sensitive screenshots or logs.
+**Found a bug?** OrcSDR is a public beta. Please [open an issue](https://github.com/Hitman90210/OrcSDR/issues/new?template=bug_report.md) with the OrcSDR version, P4/C6 ESP-Hosted versions, Tab5 and RTL-SDR hardware, dashboard or mode, frequency when relevant, steps to reproduce, and any non-sensitive screenshots or logs.
 
 When contributing to the RTL-SDR V4 driver, preserve the clean-room rules and document the source of any device behavior or measurements.
 
@@ -769,10 +769,10 @@ Commercial licensing terms are also available from the maintainer.
 ## Project Links
 
 **Repository**  
-https://github.com/hardcoreerik/OrcSDR
+https://github.com/Hitman90210/OrcSDR
 
 **Documentation**  
-[User Guide](https://hardcoreerik.github.io/OrcSDR/) · [GitHub Wiki](https://github.com/hardcoreerik/OrcSDR/wiki) · [`docs/`](docs/)
+[User Guide](https://hitman90210.github.io/OrcSDR/) · [GitHub Wiki](https://github.com/Hitman90210/OrcSDR/wiki) · [`docs/`](docs/)
 
 **M5Stack Tab5 Application**  
 [`apps/orcsdr-tab5/`](apps/orcsdr-tab5/)
