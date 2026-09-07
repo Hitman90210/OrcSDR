@@ -28,15 +28,32 @@ bool encode_query(const char* input, char* output, size_t capacity) {
   output[used] = '\0';
   return used != 0;
 }
+bool fetch_once(const char* url, char* body, size_t body_size) {
+  esp_http_client_config_t cfg{}; cfg.url=url; cfg.timeout_ms=12000; cfg.crt_bundle_attach=esp_crt_bundle_attach; cfg.user_agent="OrcSDR/0.2 (+https://github.com/hardcoreerik/OrcSDR)";
+  esp_http_client_handle_t http=esp_http_client_init(&cfg); bool ok=http && esp_http_client_open(http,0)==ESP_OK;
+  if (ok) { const int64_t size=esp_http_client_fetch_headers(http); ok=size>=0 && (size==0 || size < (int64_t)body_size); size_t used=0; while(ok && used<body_size-1) { const int got=esp_http_client_read(http,body+used,body_size-1-used); if(got<0){ok=false;break;} if(got==0){ok=esp_http_client_is_complete_data_received(http);break;} used+=static_cast<size_t>(got); if(size>0 && used==static_cast<size_t>(size)) break; } body[used]='\0'; ok=ok && (size==0 ? esp_http_client_is_complete_data_received(http) : used==static_cast<size_t>(size)) && esp_http_client_get_status_code(http)==200; }
+  if(http){esp_http_client_close(http);esp_http_client_cleanup(http);}
+  return ok;
+}
+// A live SDIO transport fault between the P4 and the C6 Wi-Fi co-processor
+// (confirmed live on hardware: ESP_ERR_TIMEOUT/0x107 register-read failures
+// in Espressif's own eh_hosted driver, unrelated to this application code)
+// can fail a single request even while Wi-Fi stays "connected". It has
+// always self-cleared within a few seconds in testing, so one short-delay
+// retry meaningfully improves real-world success.
+bool fetch_with_retry(const char* url, char* body, size_t body_size) {
+  if (fetch_once(url, body, body_size)) return true;
+  vTaskDelay(pdMS_TO_TICKS(1500));
+  return fetch_once(url, body, body_size);
+}
 void worker(void*) { const bool address = g_query[0] != '\0'; State next{}; next.busy=true; strlcpy(next.message,address ? "Looking up address" : "Looking up IP area",sizeof(next.message)); set(next);
   char encoded[192]{}, url[320]{};
   bool ok = !address || encode_query(g_query, encoded, sizeof(encoded));
   if (address) snprintf(url, sizeof(url), "https://nominatim.openstreetmap.org/search?q=%s&format=jsonv2&limit=1", encoded);
   else strlcpy(url, "https://ipwho.is/", sizeof(url));
-  char body[2048]{}; esp_http_client_config_t cfg{}; cfg.url=url; cfg.timeout_ms=12000; cfg.crt_bundle_attach=esp_crt_bundle_attach; cfg.user_agent="OrcSDR/0.2 (+https://github.com/hardcoreerik/OrcSDR)";
-  esp_http_client_handle_t http=ok?esp_http_client_init(&cfg):nullptr; ok=ok && http && esp_http_client_open(http,0)==ESP_OK;
-  if (ok) { const int64_t size=esp_http_client_fetch_headers(http); ok=size>=0 && (size==0 || size < (int64_t)sizeof(body)); size_t used=0; while(ok && used<sizeof(body)-1) { const int got=esp_http_client_read(http,body+used,sizeof(body)-1-used); if(got<0){ok=false;break;} if(got==0){ok=esp_http_client_is_complete_data_received(http);break;} used+=static_cast<size_t>(got); if(size>0 && used==static_cast<size_t>(size)) break; } body[used]='\0'; ok=ok && (size==0 ? esp_http_client_is_complete_data_received(http) : used==static_cast<size_t>(size)) && esp_http_client_get_status_code(http)==200; }
-  if(http){esp_http_client_close(http);esp_http_client_cleanup(http);} next={};
+  char body[2048]{};
+  ok = ok && fetch_with_retry(url, body, sizeof(body));
+  next={};
   cJSON* root=ok?cJSON_Parse(body):nullptr;
   const cJSON* result=address && cJSON_IsArray(root)?cJSON_GetArrayItem(root,0):root;
   const cJSON* lat=result?cJSON_GetObjectItem(result,address?"lat":"latitude"):nullptr;

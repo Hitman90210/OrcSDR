@@ -33,6 +33,12 @@ bool connect(const char* ssid, const char* password);
 void disconnect();
 bool connected();
 bool connect_failed();
+// True unless the SDIO transport to the C6 co-processor has wedged (a real,
+// hardware-confirmed fault distinct from Wi-Fi association -- see
+// wifi_service.cpp's on_transport_event). Auto-restart-on-failure is
+// deliberately disabled, so this only reports the state; it doesn't recover.
+bool transport_healthy();
+uint32_t transport_failure_count();
 const char* ssid();
 const char* ip();
 int16_t rssi();

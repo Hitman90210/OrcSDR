@@ -11074,14 +11074,16 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_WIFI_STATUS") == 0) {
     Serial.printf("RTL_WIFI_STATUS station=%d hosted_match=%d scanning=%d connecting=%d "
                   "connected=%d saved_profiles=%u power=%d auto_connect=%d antenna=%s "
-                  "ap_count=%u\n",
+                  "ap_count=%u transport_healthy=%d transport_failures=%lu\n",
                   wifi_station_ready ? 1 : 0, wifi_hosted_versions_match ? 1 : 0,
                   wifi_scan_running ? 1 : 0, wifi_connecting ? 1 : 0,
                   wifi_connected ? 1 : 0, wifi_profile_count,
                   settings_wifi_power_enabled ? 1 : 0,
                   settings_wifi_start_at_boot ? 1 : 0,
                   settings_wifi_external_antenna ? "external" : "internal",
-                  static_cast<unsigned>(wifi_scan_result_count));
+                  static_cast<unsigned>(wifi_scan_result_count),
+                  orcsdr::wifi::transport_healthy() ? 1 : 0,
+                  static_cast<unsigned long>(orcsdr::wifi::transport_failure_count()));
     return;
   }
   if (strcmp(command, "RTL_WIFI_C6_STATUS") == 0) {

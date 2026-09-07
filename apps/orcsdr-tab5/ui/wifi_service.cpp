@@ -4,6 +4,7 @@
 #include <atomic>
 
 extern "C" {
+#include <eh_host_event.h>
 #include <esp_event.h>
 #include <esp_hosted.h>
 #include <esp_hosted_ota.h>
@@ -32,6 +33,17 @@ const char* g_failure_stage = "none";
 int32_t g_failure_code = ESP_OK;
 char g_ssid[33]{};
 std::atomic<uint32_t> g_ip_addr{0};
+// CONFIG_ESP_HOSTED_HOST_TRANSPORT_RESTART_ON_FAILURE is deliberately off
+// (see sdkconfig.defaults: auto-restart risks a reboot loop if the fault
+// recurs immediately, which it likely would since it's triggered by
+// sustained network traffic that would resume right after any restart).
+// That leaves EH_HOST_EVENT_TRANSPORT_* unobserved anywhere in the app, so
+// a real, hardware-confirmed SDIO transport fault (ESP_ERR_TIMEOUT/0x107
+// between the P4 and the C6) left `connected()` reporting true throughout
+// -- nothing distinguished "still associated" from "transport wedged" for
+// diagnosis. This does not attempt recovery, only makes the state visible.
+std::atomic<bool> g_transport_healthy{true};
+std::atomic<uint32_t> g_transport_failure_count{0};
 
 #if ORCSDR_HAS_EMBEDDED_C6_FIRMWARE
 extern const uint8_t esp_hosted_tab5_c6_bin_start[]
@@ -156,6 +168,21 @@ void on_ip_event(void*, esp_event_base_t, int32_t, void* data) {
   g_failed.store(false, std::memory_order_release);
   g_connected.store(true, std::memory_order_release);
 }
+
+void on_transport_event(void*, esp_event_base_t, int32_t id, void*) {
+  if (id == EH_HOST_EVENT_TRANSPORT_DOWN) {
+    g_transport_healthy.store(false, std::memory_order_release);
+    ESP_LOGW("orcsdr_wifi", "RTL_WIFI_TRANSPORT_DOWN");
+  } else if (id == EH_HOST_EVENT_TRANSPORT_UP) {
+    g_transport_healthy.store(true, std::memory_order_release);
+    ESP_LOGI("orcsdr_wifi", "RTL_WIFI_TRANSPORT_UP");
+  } else if (id == EH_HOST_EVENT_TRANSPORT_FAILURE) {
+    g_transport_healthy.store(false, std::memory_order_release);
+    const uint32_t count = g_transport_failure_count.fetch_add(1, std::memory_order_relaxed) + 1;
+    ESP_LOGE("orcsdr_wifi", "RTL_WIFI_TRANSPORT_FAILURE count=%lu",
+             static_cast<unsigned long>(count));
+  }
+}
 }
 
 bool start() {
@@ -217,6 +244,11 @@ bool start() {
   const esp_err_t ip_event = esp_event_handler_register(
       IP_EVENT, IP_EVENT_STA_GOT_IP, on_ip_event, nullptr);
   if (ip_event != ESP_OK) { g_failure_stage = "ip_event"; g_failure_code = ip_event; return false; }
+  const esp_err_t transport_event = esp_event_handler_register(
+      EH_HOST_EVENT, ESP_EVENT_ANY_ID, on_transport_event, nullptr);
+  if (transport_event != ESP_OK) {
+    g_failure_stage = "transport_event"; g_failure_code = transport_event; return false;
+  }
   const esp_err_t wifi_mode = esp_wifi_set_mode(WIFI_MODE_STA);
   if (wifi_mode != ESP_OK) { g_failure_stage = "wifi_mode"; g_failure_code = wifi_mode; return false; }
   const esp_err_t wifi_start = esp_wifi_start();
@@ -278,6 +310,12 @@ bool connect(const char* network, const char* password) {
 void disconnect() { esp_wifi_disconnect(); g_connected.store(false, std::memory_order_release); }
 bool connected() { return g_connected.load(std::memory_order_acquire); }
 bool connect_failed() { return g_failed.load(std::memory_order_acquire); }
+// Separate from connected(): the SDIO link to the C6 can wedge (see the
+// on_transport_event comment above) while the higher-level station stays
+// "associated", so connected() alone doesn't tell you the transport is
+// actually able to move data right now.
+bool transport_healthy() { return g_transport_healthy.load(std::memory_order_acquire); }
+uint32_t transport_failure_count() { return g_transport_failure_count.load(std::memory_order_relaxed); }
 const char* ssid() { return g_ssid; }
 const char* ip() {
   static char snapshot[16];

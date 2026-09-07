@@ -259,6 +259,20 @@ bool http_read_all(const char* url, uint8_t* output, size_t capacity, size_t* re
          (declared <= 0 || total == static_cast<size_t>(declared));
 }
 
+// A live SDIO transport fault between the P4 and the C6 Wi-Fi co-processor
+// (Espressif's own eh_hosted driver -- confirmed via ESP_ERR_TIMEOUT/0x107
+// register-read failures live on hardware, unrelated to this application
+// code) can make a single HTTPS request fail even while Wi-Fi itself stays
+// "connected". It has always self-cleared within a few seconds in testing,
+// so one short-delay retry meaningfully improves real-world success without
+// touching the vendor driver, which needs hardware validation this session
+// can't safely do blind.
+bool http_read_all_retry(const char* url, uint8_t* output, size_t capacity, size_t* received) {
+  if (http_read_all(url, output, capacity, received)) return true;
+  vTaskDelay(pdMS_TO_TICKS(1500));
+  return http_read_all(url, output, capacity, received);
+}
+
 bool verify_signature(const uint8_t* manifest, size_t manifest_size,
                       const uint8_t* signature_text, size_t signature_size) {
   uint8_t signature[kSignatureLimit]{};
@@ -483,6 +497,17 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
   return true;
 }
 
+// See http_read_all_retry: the same transient SDIO transport fault is more
+// likely to hit a multi-second artifact download than a quick manifest
+// fetch, and download_artifact() already cleans up its own partial state
+// (.part file removed) on any failure, so retrying from scratch is safe.
+bool download_artifact_retry(const Artifact& artifact, uint8_t pack_index,
+                             uint8_t progress_base, uint8_t progress_span) {
+  if (download_artifact(artifact, pack_index, progress_base, progress_span)) return true;
+  vTaskDelay(pdMS_TO_TICKS(1500));
+  return download_artifact(artifact, pack_index, progress_base, progress_span);
+}
+
 bool move_active_to_backup(const Artifact& artifact) {
   char backup[112]{};
   snprintf(backup, sizeof(backup), "%s.bak", artifact.destination);
@@ -551,14 +576,14 @@ bool activate_pack(const Pack& pack) {
   bool signature_verified = false;
   size_t manifest_size = 0, signature_size = 0;
   bool ok = false;
-  if (!http_read_all(kCatalogUrl, manifest, kManifestLimit, &manifest_size)) {
+  if (!http_read_all_retry(kCatalogUrl, manifest, kManifestLimit, &manifest_size)) {
     set_message("Could not fetch catalog manifest");
   } else {
     manifest_ok = true;
     ESP_LOGI(kTag, "check stage=manifest_ok bytes=%u", static_cast<unsigned>(manifest_size));
   }
   if (manifest_ok) {
-    if (!http_read_all(kSignatureUrl, signature, kSignatureLimit, &signature_size)) {
+    if (!http_read_all_retry(kSignatureUrl, signature, kSignatureLimit, &signature_size)) {
       set_message("Could not fetch catalog signature");
     } else {
       signature_ok = true;
@@ -625,8 +650,8 @@ bool activate_pack(const Pack& pack) {
     }
     set_message(directories_ready ? "Downloading runtime index"
                                   : "P25 profile slot or ID unavailable");
-    ok = directories_ready && download_artifact(pack.runtime, pack_index, 0, 45);
-    if (ok) { set_message("Downloading source archive"); ok = download_artifact(pack.archive, pack_index, 45, 55); }
+    ok = directories_ready && download_artifact_retry(pack.runtime, pack_index, 0, 45);
+    if (ok) { set_message("Downloading source archive"); ok = download_artifact_retry(pack.archive, pack_index, 45, 55); }
     if (ok) ok = activate_pack(pack);
     if (!ok) {
       discard_staged(pack.runtime);
