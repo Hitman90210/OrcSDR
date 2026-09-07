@@ -281,6 +281,97 @@ void draw_signal() {
   }
 }
 
+void kpi_card(int x, int y, int w, int h, const char* label, const char* value,
+              uint16_t value_color) {
+  card(x, y, w, h);
+  text(label, x + 16, y + 22, kMuted, 1, middle_left);
+  text(value, x + w / 2, y + h / 2 + 10, value_color, 2);
+}
+
+void draw_activity() {
+  const Stats& stats = g_live_snapshot.decoder_stats;
+
+  const int kpi_y = kHeaderH + 12, kpi_h = 90, kpi_gap = 16;
+  const int kpi_w = (1240 - kpi_gap * 3) / 4;
+  char value[24];
+
+  snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(stats.messages_decoded));
+  kpi_card(20, kpi_y, kpi_w, kpi_h, "TOTAL MESSAGES", value, TFT_WHITE);
+
+  snprintf(value, sizeof(value), "%u", static_cast<unsigned>(g_live_snapshot.identity_count));
+  kpi_card(20 + (kpi_w + kpi_gap), kpi_y, kpi_w, kpi_h, "ACTIVE IDS", value, TFT_WHITE);
+
+  const uint32_t total_codewords = stats.codewords_total;
+  const float valid_pct = total_codewords
+                               ? 100.0f * static_cast<float>(stats.codewords_valid) /
+                                     static_cast<float>(total_codewords)
+                               : 0.0f;
+  snprintf(value, sizeof(value), "%.1f%%", static_cast<double>(valid_pct));
+  kpi_card(20 + 2 * (kpi_w + kpi_gap), kpi_y, kpi_w, kpi_h, "VALID CODEWORDS", value, kGreen);
+
+  snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(stats.codewords_uncorrectable));
+  kpi_card(20 + 3 * (kpi_w + kpi_gap), kpi_y, kpi_w, kpi_h, "UNCORRECTABLE", value, kRed);
+
+  const int panel_y = kpi_y + kpi_h + 16;
+  const int panel_h = kHeaderH + 12 + kContentH - panel_y;
+  const int panel_gap = 16;
+  const int panel_w = (1240 - panel_gap) / 2;
+
+  // Left: message-type distribution.
+  card(20, panel_y, panel_w, panel_h);
+  text("MESSAGE TYPE DISTRIBUTION", 44, panel_y + 24, kCyan, 1, middle_left);
+  const uint32_t type_counts[3] = {stats.messages_alpha, stats.messages_numeric,
+                                    stats.messages_tone_only};
+  const char* type_labels[3] = {"ALPHA", "NUMERIC", "TONE ONLY"};
+  const uint16_t type_colors[3] = {kGreen, kCyan, kMuted};
+  uint32_t type_max = 1;
+  for (uint32_t count : type_counts) type_max = std::max(type_max, count);
+  const int bar_x0 = 160, bar_max_w = panel_w - 200;
+  for (int i = 0; i < 3; ++i) {
+    const int y = panel_y + 66 + i * 56;
+    text(type_labels[i], 44, y, TFT_WHITE, 1, middle_left);
+    const int bar_w = static_cast<int>(static_cast<uint64_t>(type_counts[i]) * bar_max_w / type_max);
+    M5.Display.fillRect(bar_x0, y - 12, std::max(bar_w, 2), 24, type_colors[i]);
+    snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(type_counts[i]));
+    text(value, bar_x0 + bar_max_w + 16, y, TFT_WHITE, 1, middle_left);
+  }
+  if (stats.messages_decoded == 0)
+    text("NO MESSAGES YET", 44 + panel_w / 2 - 44, panel_y + panel_h / 2 + 40, kMuted, 1);
+
+  // Right: top CAPCODEs by hit count (sorted from the bounded identity
+  // snapshot -- a small, cheap sort of at most kIdentityCapacity entries).
+  const int right_x = 20 + panel_w + panel_gap;
+  card(right_x, panel_y, panel_w, panel_h);
+  text("TOP CAPCODES", right_x + 24, panel_y + 24, kCyan, 1, middle_left);
+  if (g_live_snapshot.identity_count == 0) {
+    text("NO CAPCODES OBSERVED YET", right_x + panel_w / 2, panel_y + panel_h / 2, kMuted, 1);
+    return;
+  }
+  size_t order[kIdentityCapacity];
+  const size_t identity_count = std::min(g_live_snapshot.identity_count, kIdentityCapacity);
+  for (size_t i = 0; i < identity_count; ++i) order[i] = i;
+  std::sort(order, order + identity_count, [](size_t a, size_t b) {
+    return g_live_snapshot.identities[a].hit_count > g_live_snapshot.identities[b].hit_count;
+  });
+  const size_t top_count = std::min<size_t>(identity_count, 8);
+  uint32_t top_max = 1;
+  for (size_t i = 0; i < top_count; ++i)
+    top_max = std::max(top_max, g_live_snapshot.identities[order[i]].hit_count);
+  const int top_bar_x0 = right_x + 200, top_bar_max_w = panel_w - 240;
+  for (size_t i = 0; i < top_count; ++i) {
+    const IdentitySummary& id = g_live_snapshot.identities[order[i]];
+    const int y = panel_y + 66 + static_cast<int>(i) * 44;
+    char capcode[16];
+    snprintf(capcode, sizeof(capcode), "%lu", static_cast<unsigned long>(id.capcode));
+    text(id.alias[0] ? id.alias : capcode, right_x + 24, y, TFT_WHITE, 1, middle_left);
+    const int bar_w =
+        static_cast<int>(static_cast<uint64_t>(id.hit_count) * top_bar_max_w / top_max);
+    M5.Display.fillRect(top_bar_x0, y - 10, std::max(bar_w, 2), 20, kGreen);
+    snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(id.hit_count));
+    text(value, top_bar_x0 + top_bar_max_w + 16, y, TFT_WHITE, 1, middle_left);
+  }
+}
+
 void draw_placeholder(const char* label) {
   card(20, kHeaderH + 12, 1240, kContentH);
   text(label, 640, kHeaderH + 290, kMuted, 2);
@@ -295,7 +386,7 @@ void draw_ids() {
   }
   text("CAPCODE DIRECTORY", 44, kHeaderH + 34, kCyan, 1, middle_left);
   text("(read-only -- alias/group/watch/mute editing not yet implemented)",
-       44, kHeaderH + 570, kMuted, 1, middle_left);
+       44, kHeaderH + 12 + kContentH - 24, kMuted, 1, middle_left);
   const size_t visible = std::min<size_t>(g_live_snapshot.identity_count, 12);
   for (size_t i = 0; i < visible; ++i) {
     const IdentitySummary& id = g_live_snapshot.identities[i];
@@ -320,7 +411,7 @@ void redraw_content() {
     case View::live: draw_live(); break;
     case View::ids: draw_ids(); break;
     case View::signal: draw_signal(); break;
-    case View::activity: draw_placeholder("ACTIVITY - TRAFFIC STATISTICS"); break;
+    case View::activity: draw_activity(); break;
     case View::archive: draw_placeholder("ARCHIVE - SAVED MESSAGE LOG"); break;
     default: break;
   }
@@ -379,6 +470,9 @@ void update() {
   } else if (g_view == View::signal) {
     M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
     draw_signal();
+  } else if (g_view == View::activity) {
+    M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
+    draw_activity();
   }
 }
 

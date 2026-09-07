@@ -834,9 +834,13 @@ rather than adding a second high-rate IQ path.
       `UNKNOWN`, group, hit count, watched/muted indicators), and **SIGNAL**
       (decode-status readout, a real 2-FSK soft-decision symbol plot, and a
       per-codeword FEC-quality strip, all sourced directly from the decoder
-      core's own tracked `Stats`) render real content; ACTIVITY/ARCHIVE
-      remain explicitly labeled "Not yet implemented" placeholders, not
-      faked data.
+      core's own tracked `Stats`), and **ACTIVITY** (KPI cards for total
+      messages/active IDs/valid-codeword percentage/uncorrectable count, a
+      message-type distribution bar chart backed by new `Stats::
+      messages_alpha/numeric/tone_only` counters, and a top-CAPCODEs-by-
+      hit-count leaderboard sorted client-side from the bounded identity
+      snapshot) render real content; only ARCHIVE remains an explicitly
+      labeled "Not yet implemented" placeholder, not faked data.
 - [ ] IDS has no alias/group/watch/mute/notes editing (needs a keypad-style
       touch UI) and shows identities in table-insertion order, not sorted
       by recency/hit count.
@@ -845,8 +849,12 @@ rather than adding a second high-rate IQ path.
       placeholders); FSK deviation/frequency-offset readouts are not yet
       cross-checked on real air, and `RECORD IQ` is not yet wired to the
       existing IQ recorder.
-- [ ] ACTIVITY (traffic statistics/graphs) and ARCHIVE (searchable log)
-      depend on 10.3's storage layer and are not yet implemented.
+- [ ] ACTIVITY has no messages-per-hour graph or day/hour activity heatmap
+      (both need wall-clock time; no RTC dependency has been introduced or
+      verified yet) or baud-rate distribution (the decoder locks to one
+      baud at a time and does not yet track a historical per-baud count).
+- [ ] ARCHIVE (searchable log) depends on 10.3's SD-backed message log and
+      is not yet implemented.
 
 ### 10.5 — hardware and RF acceptance
 

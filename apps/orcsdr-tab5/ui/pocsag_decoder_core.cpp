@@ -251,6 +251,12 @@ void Decoder::finalize_message(MessageCallback callback, void* ctx) {
 
   ++stats_.messages_decoded;
   if (msg.truncated) ++stats_.messages_truncated;
+  switch (msg.type) {
+    case MessageType::alpha: ++stats_.messages_alpha; break;
+    case MessageType::numeric: ++stats_.messages_numeric; break;
+    case MessageType::tone_only: ++stats_.messages_tone_only; break;
+    default: break;
+  }
   if (callback) callback(msg, ctx);
 
   message_active_ = false;

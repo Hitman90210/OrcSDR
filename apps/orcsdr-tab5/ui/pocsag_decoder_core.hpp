@@ -67,6 +67,9 @@ struct Stats {
   uint32_t batches_synced = 0;
   uint32_t sync_losses = 0;
   uint32_t messages_decoded = 0;
+  uint32_t messages_alpha = 0;
+  uint32_t messages_numeric = 0;
+  uint32_t messages_tone_only = 0;
   uint32_t messages_truncated = 0;
 
   LockState lock = LockState::no_signal;
