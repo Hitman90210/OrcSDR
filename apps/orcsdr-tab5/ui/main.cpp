@@ -8735,21 +8735,32 @@ void service_p25_follow(uint32_t now) {
       g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::p25) return;
   const auto decoded = orcsdr::p25decoder::snapshot();
   if (p25_follow_state.load(std::memory_order_acquire) == P25FollowState::phase2_probe) {
-    const bool synchronized = decoded.phase2_sync_words != 0;
+    const bool complete = decoded.phase2_complete_bursts != 0;
     const bool timed_out = now - p25_follow_started_ms >= kP25Phase2AcquireMs;
-    if (!synchronized && !timed_out && p25_phase2_trace.load(std::memory_order_relaxed))
+    if (!complete && !timed_out && p25_phase2_trace.load(std::memory_order_relaxed))
       return;
     Serial.printf(
         "P25P2_CALL event=%s tg=%u src=%lu carrier_hz=%lu slot=%u symbols=%lu "
-        "sync_words=%lu best_sync_errors=%u%s\n",
-        synchronized ? "completion" : "rejection", p25_follow_grant.talkgroup,
+        "sync_words=%lu complete_bursts=%lu truncated_bursts=%lu duid_codeword=%02X "
+        "duid_valid=%d duid=%u duid_errors=%u voice_bursts=%lu control_bursts=%lu "
+        "unknown_bursts=%lu reverse=%d best_sync_errors=%u%s\n",
+        complete ? "completion" : "rejection", p25_follow_grant.talkgroup,
         static_cast<unsigned long>(p25_follow_grant.source_id),
         static_cast<unsigned long>(p25_follow_grant.frequency_hz), p25_follow_grant.slot,
         static_cast<unsigned long>(decoded.phase2_symbols),
         static_cast<unsigned long>(decoded.phase2_sync_words),
+        static_cast<unsigned long>(decoded.phase2_complete_bursts),
+        static_cast<unsigned long>(decoded.phase2_truncated_bursts),
+        decoded.phase2_last_duid_codeword,
+        decoded.phase2_last_duid_valid ? 1 : 0, decoded.phase2_last_duid,
+        decoded.phase2_last_duid_errors,
+        static_cast<unsigned long>(decoded.phase2_voice_bursts),
+        static_cast<unsigned long>(decoded.phase2_control_bursts),
+        static_cast<unsigned long>(decoded.phase2_unknown_bursts),
+        decoded.phase2_reverse_polarity ? 1 : 0,
         decoded.phase2_best_sync_errors,
-        synchronized ? " result=burst_sync" : " reason=no_burst_sync");
-    if (synchronized) p25_phase2_sync_events.fetch_add(1, std::memory_order_relaxed);
+        complete ? " result=burst_complete" : " reason=no_complete_burst");
+    if (complete) p25_phase2_sync_events.fetch_add(1, std::memory_order_relaxed);
     else p25_phase2_rejections.fetch_add(1, std::memory_order_relaxed);
     p25_follow_state.store(P25FollowState::control, std::memory_order_release);
     orcsdr::p25decoder::set_phase2_acquisition(false);
@@ -12438,7 +12449,11 @@ void process_command(char* command) {
         "sync_words=%lu nid_good=%lu nid_failed=%lu tsbk_good=%lu tsbk_failed=%lu "
         "p2_band_plans=%lu p2_grants=%lu p2_mapping_errors=%lu p2_syncs=%lu "
         "p2_rejections=%lu p2_trace=%d "
-        "p2_active=%d p2_symbols=%lu p2_sync_words=%lu p2_best_sync_errors=%u "
+        "p2_active=%d p2_symbols=%lu p2_sync_words=%lu p2_complete_bursts=%lu "
+        "p2_truncated_bursts=%lu p2_duid_codeword=%02X p2_duid_valid=%d "
+        "p2_duid=%u p2_duid_errors=%u p2_voice_bursts=%lu p2_control_bursts=%lu "
+        "p2_unknown_bursts=%lu p2_reverse=%d "
+        "p2_best_sync_errors=%u "
         "ber_percent=%.2f grants=%d grant_events=%lu follow=%s control_hz=%lu voice_hz=%lu "
         "voice_ldus=%lu voice_frames=%lu voice_queue_drops=%lu voice_unrouted=%lu "
         "enc_sync_good=%lu "
@@ -12479,6 +12494,15 @@ void process_command(char* command) {
         decoded.phase2_acquisition ? 1 : 0,
         static_cast<unsigned long>(decoded.phase2_symbols),
         static_cast<unsigned long>(decoded.phase2_sync_words),
+        static_cast<unsigned long>(decoded.phase2_complete_bursts),
+        static_cast<unsigned long>(decoded.phase2_truncated_bursts),
+        decoded.phase2_last_duid_codeword,
+        decoded.phase2_last_duid_valid ? 1 : 0, decoded.phase2_last_duid,
+        decoded.phase2_last_duid_errors,
+        static_cast<unsigned long>(decoded.phase2_voice_bursts),
+        static_cast<unsigned long>(decoded.phase2_control_bursts),
+        static_cast<unsigned long>(decoded.phase2_unknown_bursts),
+        decoded.phase2_reverse_polarity ? 1 : 0,
         decoded.phase2_best_sync_errors,
         static_cast<double>(decoded.estimated_ber_percent),
         grant_count,
@@ -12528,7 +12552,10 @@ void process_command(char* command) {
         "syncs=%lu rejections=%lu "
         "tg=%u src=%lu carrier_hz=%lu slot=%u channel_id=%u channel=%u service=%02X "
         "encrypted=%d wacn=%05lX sysid=%03X rfss=%u site=%u symbols=%lu "
-        "sync_words=%lu best_sync_errors=%u last_sync_ms=%lu\n",
+        "sync_words=%lu complete_bursts=%lu truncated_bursts=%lu duid_codeword=%02X "
+        "duid_valid=%d duid=%u duid_errors=%u voice_bursts=%lu control_bursts=%lu "
+        "unknown_bursts=%lu reverse=%d best_sync_errors=%u last_sync_ms=%lu "
+        "last_burst_ms=%lu\n",
         p25_phase2_trace.load(std::memory_order_relaxed) ? 1 : 0,
         decoded.phase2_acquisition ? 1 : 0,
         static_cast<unsigned long>(p25_phase2_grant_events.load(std::memory_order_relaxed)),
@@ -12542,8 +12569,18 @@ void process_command(char* command) {
         static_cast<unsigned long>(grant.wacn), grant.system_id, grant.rfss, grant.site,
         static_cast<unsigned long>(decoded.phase2_symbols),
         static_cast<unsigned long>(decoded.phase2_sync_words),
+        static_cast<unsigned long>(decoded.phase2_complete_bursts),
+        static_cast<unsigned long>(decoded.phase2_truncated_bursts),
+        decoded.phase2_last_duid_codeword,
+        decoded.phase2_last_duid_valid ? 1 : 0, decoded.phase2_last_duid,
+        decoded.phase2_last_duid_errors,
+        static_cast<unsigned long>(decoded.phase2_voice_bursts),
+        static_cast<unsigned long>(decoded.phase2_control_bursts),
+        static_cast<unsigned long>(decoded.phase2_unknown_bursts),
+        decoded.phase2_reverse_polarity ? 1 : 0,
         decoded.phase2_best_sync_errors,
-        static_cast<unsigned long>(decoded.phase2_last_sync_ms));
+        static_cast<unsigned long>(decoded.phase2_last_sync_ms),
+        static_cast<unsigned long>(decoded.phase2_last_burst_ms));
     return;
   }
   if (strcmp(command, "RTL_P25_PHASE2_TRACE") == 0) {

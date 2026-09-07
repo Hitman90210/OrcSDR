@@ -19,9 +19,40 @@ constexpr uint32_t kPhase2SymbolRate = 6000;
 constexpr size_t kInputDecimation = kInputRate / kChannelRate;
 constexpr size_t kSamplesPerSymbol = kChannelRate / kSymbolRate;
 constexpr size_t kPhase2SamplesPerSymbol = kChannelRate / kPhase2SymbolRate;
+constexpr size_t kPhase2BurstDibits = 180;
 constexpr float kOuterDeviationHz = 1800.0f;
 constexpr float kPi = 3.14159265358979323846f;
 constexpr float kSlicerScale = 2.0f * kPi * kOuterDeviationHz / kChannelRate;
+
+uint8_t hamming_distance_8(uint8_t value) {
+  uint8_t count = 0;
+  while (value != 0) {
+    value &= static_cast<uint8_t>(value - 1u);
+    ++count;
+  }
+  return count;
+}
+
+bool decode_phase2_duid(uint8_t codeword, uint8_t* duid, uint8_t* errors) {
+  uint8_t best_duid = 0;
+  uint8_t best_errors = 9;
+  for (uint8_t candidate = 0; candidate < 16; ++candidate) {
+    uint8_t parity = 0;
+    if ((candidate & 1u) != 0) parity ^= 0x7u;
+    if ((candidate & 2u) != 0) parity ^= 0xEu;
+    if ((candidate & 4u) != 0) parity ^= 0xBu;
+    if ((candidate & 8u) != 0) parity ^= 0xDu;
+    const uint8_t encoded = static_cast<uint8_t>((candidate << 4) | parity);
+    const uint8_t distance = hamming_distance_8(codeword ^ encoded);
+    if (distance < best_errors) {
+      best_errors = distance;
+      best_duid = candidate;
+    }
+  }
+  if (duid != nullptr) *duid = best_duid;
+  if (errors != nullptr) *errors = best_errors;
+  return best_errors <= 1;
+}
 constexpr float kSlicerThreshold = 2.0f * kSlicerScale / 3.0f;
 constexpr float kAgcTarget = kSlicerThreshold;
 constexpr size_t kCqpskRrcSpan = 8;
@@ -91,6 +122,17 @@ struct Phase2State {
   uint32_t sync_words = 0;
   uint32_t last_sync_ms = 0;
   uint8_t best_sync_errors = 40;
+  uint32_t complete_bursts = 0;
+  uint32_t truncated_bursts = 0;
+  uint32_t last_burst_ms = 0;
+  uint8_t last_duid_codeword = 0;
+  uint8_t last_duid = 0;
+  uint8_t last_duid_errors = 0;
+  bool last_duid_valid = false;
+  uint32_t voice_bursts = 0;
+  uint32_t control_bursts = 0;
+  uint32_t unknown_bursts = 0;
+  bool reverse_polarity = false;
 };
 
 class Phase2Acquirer {
@@ -103,6 +145,14 @@ class Phase2Acquirer {
     have_previous_.fill(false);
     primed_.fill(0);
     history_.fill(0);
+    collecting_ = false;
+    burst_size_ = 0;
+  }
+
+  void finish() {
+    if (collecting_) ++state_.truncated_bursts;
+    collecting_ = false;
+    burst_size_ = 0;
   }
 
   void process(float i, float q, uint32_t now_ms) {
@@ -116,33 +166,75 @@ class Phase2Acquirer {
           : phase >= kPi / 4.0f && phase < 3.0f * kPi / 4.0f ? 1
           : phase >= -3.0f * kPi / 4.0f && phase < -kPi / 4.0f ? 3 : 2;
       constexpr uint8_t kDibit[4] = {0, 1, 3, 2};
-      history_[phase_index] = ((history_[phase_index] << 2) | kDibit[quadrant]) &
-                              0xFFFFFFFFFFULL;
-      if (phase_index == 0) ++state_.symbols;
-      if (primed_[phase_index] < 20) ++primed_[phase_index];
-      if (primed_[phase_index] < 20) {
-        previous_i_[phase_index] = i;
-        previous_q_[phase_index] = q;
-        return;
-      }
-      constexpr uint64_t kSync = 0x575D57F7FFULL;
-      constexpr uint64_t kReversePolarity = kSync ^ 0xAAAAAAAAAAULL;
-      const uint8_t errors = std::min(bit_errors_40(history_[phase_index] ^ kSync),
-                                      bit_errors_40(history_[phase_index] ^ kReversePolarity));
-      state_.best_sync_errors = std::min(state_.best_sync_errors, errors);
-      if (errors <= 4 && now_ms_ != state_.last_sync_ms) {
-        ++state_.sync_words;
-        state_.last_sync_ms = now_ms_;
-      }
+      accept_dibit(phase_index, kDibit[quadrant], now_ms);
     }
     previous_i_[phase_index] = i;
     previous_q_[phase_index] = q;
     have_previous_[phase_index] = true;
   }
 
+  void process_dibit(uint8_t dibit, uint32_t now_ms) {
+    accept_dibit(0, dibit & 3u, now_ms);
+  }
+
   const Phase2State& state() const { return state_; }
 
  private:
+  void accept_dibit(size_t phase_index, uint8_t dibit, uint32_t now_ms) {
+    if (phase_index == 0) ++state_.symbols;
+    if (collecting_) {
+      if (phase_index != active_phase_) return;
+      burst_[burst_size_++] = state_.reverse_polarity ? dibit ^ 2u : dibit;
+      if (burst_size_ == burst_.size()) {
+        state_.last_duid_codeword = static_cast<uint8_t>(
+            (burst_[20] << 6) | (burst_[57] << 4) |
+            (burst_[142] << 2) | burst_[179]);
+        state_.last_duid_valid = decode_phase2_duid(
+            state_.last_duid_codeword, &state_.last_duid,
+            &state_.last_duid_errors);
+        if (!state_.last_duid_valid) {
+          ++state_.unknown_bursts;
+        } else if (state_.last_duid == 0 || state_.last_duid == 6) {
+          ++state_.voice_bursts;
+        } else if (state_.last_duid == 3 || state_.last_duid == 4 ||
+                   state_.last_duid == 9 || state_.last_duid == 12 ||
+                   state_.last_duid == 13 || state_.last_duid == 15) {
+          ++state_.control_bursts;
+        } else {
+          ++state_.unknown_bursts;
+        }
+        ++state_.complete_bursts;
+        state_.last_burst_ms = now_ms;
+        collecting_ = false;
+        burst_size_ = 0;
+      }
+      return;
+    }
+
+    history_[phase_index] = ((history_[phase_index] << 2) | dibit) & 0xFFFFFFFFFFULL;
+    if (primed_[phase_index] < 20) ++primed_[phase_index];
+    if (primed_[phase_index] < 20) return;
+    constexpr uint64_t kSync = 0x575D57F7FFULL;
+    constexpr uint64_t kReverse = kSync ^ 0xAAAAAAAAAAULL;
+    const uint8_t normal_errors = bit_errors_40(history_[phase_index] ^ kSync);
+    const uint8_t reverse_errors = bit_errors_40(history_[phase_index] ^ kReverse);
+    const uint8_t errors = std::min(normal_errors, reverse_errors);
+    state_.best_sync_errors = std::min(state_.best_sync_errors, errors);
+    if (errors > 4) return;
+
+    ++state_.sync_words;
+    state_.last_sync_ms = now_ms;
+    state_.reverse_polarity = reverse_errors < normal_errors;
+    active_phase_ = phase_index;
+    collecting_ = true;
+    burst_size_ = 20;
+    uint64_t normalized = state_.reverse_polarity ? history_[phase_index] ^
+                                                       0xAAAAAAAAAAULL
+                                                  : history_[phase_index];
+    for (size_t index = 0; index < 20; ++index)
+      burst_[19 - index] = static_cast<uint8_t>((normalized >> (index * 2)) & 3u);
+  }
+
   Phase2State state_{};
   uint32_t now_ms_ = 0;
   uint32_t sample_index_ = 0;
@@ -151,6 +243,10 @@ class Phase2Acquirer {
   std::array<bool, kPhase2SamplesPerSymbol> have_previous_{};
   std::array<uint8_t, kPhase2SamplesPerSymbol> primed_{};
   std::array<uint64_t, kPhase2SamplesPerSymbol> history_{};
+  std::array<uint8_t, kPhase2BurstDibits> burst_{};
+  size_t active_phase_ = 0;
+  size_t burst_size_ = 0;
+  bool collecting_ = false;
 };
 
 constexpr std::array<size_t, 9> kVoiceBitOffsets = {
@@ -1278,6 +1374,7 @@ class Receiver {
   }
 
   void set_phase2_acquisition(bool enabled, uint32_t now_ms) {
+    if (!enabled && phase2_enabled_) phase2_.finish();
     phase2_enabled_ = enabled;
     if (enabled) phase2_.reset(now_ms);
   }
@@ -1285,6 +1382,10 @@ class Receiver {
   void process_channel(float i, float q, uint32_t now_ms) {
     if (phase2_enabled_) phase2_.process(i, q, now_ms);
     else process_phase1_channel(i, q);
+  }
+
+  void process_phase2_dibit(uint8_t dibit, uint32_t now_ms) {
+    if (phase2_enabled_) phase2_.process_dibit(dibit, now_ms);
   }
 
   Snapshot state() const {
@@ -1298,6 +1399,17 @@ class Receiver {
     result.phase2_sync_words = phase2.sync_words;
     result.phase2_last_sync_ms = phase2.last_sync_ms;
     result.phase2_best_sync_errors = phase2.best_sync_errors;
+    result.phase2_complete_bursts = phase2.complete_bursts;
+    result.phase2_truncated_bursts = phase2.truncated_bursts;
+    result.phase2_last_burst_ms = phase2.last_burst_ms;
+    result.phase2_last_duid_codeword = phase2.last_duid_codeword;
+    result.phase2_last_duid = phase2.last_duid;
+    result.phase2_last_duid_errors = phase2.last_duid_errors;
+    result.phase2_last_duid_valid = phase2.last_duid_valid;
+    result.phase2_voice_bursts = phase2.voice_bursts;
+    result.phase2_control_bursts = phase2.control_bursts;
+    result.phase2_unknown_bursts = phase2.unknown_bursts;
+    result.phase2_reverse_polarity = phase2.reverse_polarity;
     return result;
   }
 
@@ -1419,6 +1531,10 @@ void set_phase2_acquisition(bool enabled, uint32_t now_ms) {
 
 void process_channel_iq(float i, float q, uint32_t now_ms) {
   g_receiver.process_channel(i, q, now_ms);
+}
+
+void process_phase2_dibit(uint8_t dibit, uint32_t now_ms) {
+  g_receiver.process_phase2_dibit(dibit, now_ms);
 }
 
 bool decode_ldu2_encryption(const uint8_t* payload, size_t dibits,

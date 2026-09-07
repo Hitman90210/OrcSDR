@@ -80,6 +80,17 @@ struct Snapshot {
   uint32_t phase2_sync_words = 0;
   uint32_t phase2_last_sync_ms = 0;
   uint8_t phase2_best_sync_errors = 40;
+  uint32_t phase2_complete_bursts = 0;
+  uint32_t phase2_truncated_bursts = 0;
+  uint32_t phase2_last_burst_ms = 0;
+  uint8_t phase2_last_duid_codeword = 0;
+  uint8_t phase2_last_duid = 0;
+  uint8_t phase2_last_duid_errors = 0;
+  bool phase2_last_duid_valid = false;
+  uint32_t phase2_voice_bursts = 0;
+  uint32_t phase2_control_bursts = 0;
+  uint32_t phase2_unknown_bursts = 0;
+  bool phase2_reverse_polarity = false;
   uint32_t voice_ldus = 0;
   uint32_t voice_frames = 0;
   uint32_t voice_queue_drops = 0;
@@ -118,6 +129,8 @@ void process_cu8(const uint8_t* iq, size_t bytes, uint32_t now_ms,
 void set_phase2_acquisition(bool enabled, uint32_t now_ms);
 // Test/replay seam for the shared 48 kS/s complex channel stream.
 void process_channel_iq(float i, float q, uint32_t now_ms);
+// Deterministic replay/test seam for already-sliced Phase II dibits.
+void process_phase2_dibit(uint8_t dibit, uint32_t now_ms);
 Snapshot snapshot();
 
 // Map a logical channel number to its physical RF carrier and TDMA slot.

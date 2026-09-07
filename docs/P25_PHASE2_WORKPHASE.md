@@ -4,7 +4,7 @@ This work adds clear-voice P25 Phase II in small, independently testable pull
 requests while preserving the working Phase I receiver. Public status remains
 **P25 WIP** until live Phase II audio passes.
 
-## Current pull request: grant transport
+## Completed pull request: grant transport
 
 Branch: `codex/p25-phase2-transport`
 
@@ -77,10 +77,51 @@ identify the reviewer or reproduce legal advice, so it does not claim an
 independent legal opinion. Encryption remains detection-and-mute only; this
 work adds no keys, key storage, affiliation, transmission, or decryption.
 
-## Later pull requests
+## Current worktree: complete burst and DUID foundation
 
-1. A hardware-independent Phase II protocol core: slot/superframe tracking,
-   ISCH, scrambling, FEC, MAC, ESS, and bounded 72-bit vocoder frames.
+Branch: `codex/p25-phase2-protocol-core`
+
+The next protocol slice extends the existing fixed-memory Phase II receiver. It
+collects a complete 180-dibit traffic burst after synchronization, normalizes
+reverse polarity, extracts the four separated DUID dibits, and decodes the
+extended Hamming codeword without a lookup table. Status distinguishes complete
+and truncated bursts, corrected DUID errors, voice burst types, control burst
+types, and unsupported or invalid types.
+
+This boundary matters because a synchronization hit alone does not prove that
+OrcSDR retained a complete TDMA burst. The live gate now requires a complete
+burst. It still does not claim descrambling, MAC decode, AMBE+2 output, or Phase
+II audio.
+
+Host tests passed in optimized and ASan/LSan/UBSan builds on 2026-09-06. The
+final native ESP-IDF 5.5.4 build passed with an application size of 2,266,112
+bytes and 46% of the application partition free. The exact flashed application
+image has SHA-256
+`52916B9C5C2B21E04C6AA5C2007C785A751438D705975E6219E2EF3835BD4614`.
+Flash verification and normal boot passed on the Tab5, followed by the full
+authenticated dashboard regression and RTL-SDR driver 0.7.9 regression. Both
+reported zero USB, IQ, and audio drops.
+
+The clean five-minute OSRP run passed at the observed control channel
+`770.66875 MHz`. It decoded WACN `9254A`, SYSID `00A`, RFSS/site `6/6`, and NAC
+`006`; observed 35 grant events; returned to and relocked the control channel;
+and retained a 22,923,244-byte heap floor with no USB, IQ, audio, or voice-queue
+drops. Live Phase II TGID `38130` produced complete bursts with valid DUID
+classifications, including DUID `9` FACCH and DUID `3` SACCH control bursts. A
+separate earlier observation produced DUID `0` four-voice classification, but
+that run was excluded from the formal gate because the operator pressed Survey
+during automation. The clean run is the acceptance result.
+
+This evidence proves real traffic-channel burst capture, DUID correction, and
+classification. It does not prove Phase II payload descrambling, MAC messages,
+AMBE+2 frames, or audio.
+
+## Remaining pull requests
+
+1. Continue the hardware-independent Phase II protocol core with
+   slot/superframe tracking, ISCH, scrambling, FEC, MAC, ESS, and bounded 72-bit
+   vocoder frames. Field layouts will be checked against the locally obtained
+   TIA documents before implementation.
 2. Clear AMBE+2 synthesis through the existing bounded PCM callback.
 3. Update every P25 dashboard view for Phase II. The monitor, spectrum/RF
    health, talkgroup, and status views must show Phase I or Phase II, TDMA slot,

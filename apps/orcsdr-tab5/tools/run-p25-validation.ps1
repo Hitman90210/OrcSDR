@@ -349,7 +349,8 @@ try {
           $phase2AcquireSeen = $true
           $voiceSeen = $true
         }
-        if ($eventTgid -eq $phase2Tgid -and $line -match ' event=completion .* result=burst_sync') {
+        if ($eventTgid -eq $phase2Tgid -and
+            $line -match ' event=completion .* duid_valid=1 .* result=burst_complete') {
           $phase2SyncSeen = $true
           $returnSeen = $true
         }
@@ -380,7 +381,7 @@ try {
   if ($phase2Required) {
     if (-not $phase2GrantSeen) { throw 'No live Phase II grant was observed.' }
     if (-not $phase2AcquireSeen) { throw "No Phase II traffic probe started for observed TGID $phase2Tgid." }
-    if (-not $phase2SyncSeen) { throw "No Phase II burst synchronization completed for observed TGID $phase2Tgid." }
+    if (-not $phase2SyncSeen) { throw "No complete Phase II burst was captured for observed TGID $phase2Tgid." }
   } elseif ($maxGrants - $baseline.GrantEvents -lt $MinimumGrantCount) {
     throw "Only $($maxGrants - $baseline.GrantEvents) voice grant events were observed."
   }

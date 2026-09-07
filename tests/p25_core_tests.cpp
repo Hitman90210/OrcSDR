@@ -90,6 +90,54 @@ void test_phase2_burst_sync() {
   set_phase2_acquisition(false, 30);
 }
 
+void test_phase2_complete_and_truncated_bursts() {
+  using namespace orcsdr::p25core;
+  constexpr uint64_t sync = 0x575D57F7FFULL;
+  std::array<uint8_t, 180> burst{};
+  for (size_t index = 0; index < 20; ++index)
+    burst[index] = static_cast<uint8_t>((sync >> ((19 - index) * 2)) & 3u);
+  // DUID 6 (2V voice), encoded as extended Hamming codeword 0x65.
+  burst[20] = 1;
+  burst[57] = 2;
+  burst[142] = 1;
+  burst[179] = 1;
+
+  set_phase2_acquisition(true, 100);
+  for (const uint8_t dibit : burst) process_phase2_dibit(dibit, 101);
+  auto state = snapshot();
+  CHECK(state.phase2_sync_words == 1);
+  CHECK(state.phase2_complete_bursts == 1);
+  CHECK(state.phase2_truncated_bursts == 0);
+  CHECK(state.phase2_last_duid_codeword == 0x65);
+  CHECK(state.phase2_last_duid_valid);
+  CHECK(state.phase2_last_duid == 6);
+  CHECK(state.phase2_last_duid_errors == 0);
+  CHECK(state.phase2_voice_bursts == 1);
+  CHECK(state.phase2_control_bursts == 0);
+  CHECK(state.phase2_unknown_bursts == 0);
+  CHECK(!state.phase2_reverse_polarity);
+
+  // A one-bit error is corrected by the same table-free decoder.
+  burst[179] ^= 1u;
+  set_phase2_acquisition(true, 150);
+  for (const uint8_t dibit : burst) process_phase2_dibit(dibit, 151);
+  state = snapshot();
+  CHECK(state.phase2_last_duid_valid);
+  CHECK(state.phase2_last_duid == 6);
+  CHECK(state.phase2_last_duid_errors == 1);
+  CHECK(state.phase2_voice_bursts == 1);
+
+  set_phase2_acquisition(true, 200);
+  for (size_t index = 0; index < 40; ++index)
+    process_phase2_dibit(static_cast<uint8_t>(burst[index] ^ 2u), 201);
+  set_phase2_acquisition(false, 202);
+  state = snapshot();
+  CHECK(state.phase2_sync_words == 1);
+  CHECK(state.phase2_complete_bursts == 0);
+  CHECK(state.phase2_truncated_bursts == 1);
+  CHECK(state.phase2_reverse_polarity);
+}
+
 void test_voice_decode_bounds_and_reset() {
   using namespace orcsdr;
   constexpr uint8_t on_air[18] = {
@@ -294,6 +342,7 @@ int main(int argc, char** argv) {
   test_protocol_self_check_and_bad_input();
   test_phase2_channel_mapping();
   test_phase2_burst_sync();
+  test_phase2_complete_and_truncated_bursts();
   test_voice_decode_bounds_and_reset();
   test_encryption_sync_decode();
   test_control_fixture(argv[1]);
