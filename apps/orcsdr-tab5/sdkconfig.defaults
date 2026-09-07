@@ -17,9 +17,9 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_MAX_LFN=255
 CONFIG_FREERTOS_HZ=1000
-# M5GFX map/dashboard transitions run on app_main; 8 KiB overflowed while
-# returning from ADS-B and opening the LoRa map during the serial soak.
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=12288
+# Dashboard transitions run on app_main; 12 KiB left less than 1 KiB of
+# headroom and overflowed while opening LoRa during the serial smoke test.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 CONFIG_ESP_HOSTED_HOST_SDIO_TX_Q_SIZE=4
 CONFIG_ESP_HOSTED_HOST_SDIO_RX_Q_SIZE=2
 # Espressif requires proving the P4<->C6 transport at a conservative clock
