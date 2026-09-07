@@ -830,20 +830,23 @@ rather than adding a second high-rate IQ path.
       `architecture.md`, static-chrome-once + bounded dynamic repaint, tab
       touch routing across all five). **LIVE** (recent-message list with
       per-message FEC-quality indicator, decode lock/baud/message-count
-      header) and **IDS** (read-only CAPCODE directory: capcode, alias or
-      `UNKNOWN`, group, hit count, watched/muted indicators) render real
-      content; SIGNAL/ACTIVITY/ARCHIVE remain explicitly labeled "Not yet
-      implemented" placeholders, not faked data.
+      header), **IDS** (read-only CAPCODE directory: capcode, alias or
+      `UNKNOWN`, group, hit count, watched/muted indicators), and **SIGNAL**
+      (decode-status readout, a real 2-FSK soft-decision symbol plot, and a
+      per-codeword FEC-quality strip, all sourced directly from the decoder
+      core's own tracked `Stats`) render real content; ACTIVITY/ARCHIVE
+      remain explicitly labeled "Not yet implemented" placeholders, not
+      faked data.
 - [ ] IDS has no alias/group/watch/mute/notes editing (needs a keypad-style
       touch UI) and shows identities in table-insertion order, not sorted
       by recency/hit count.
-- [ ] SIGNAL's real content (reusing `rf_analysis` for spectrum/waterfall/
-      SNR, plus soft-symbol cluster plot, FSK deviation/offset,
-      sync/baud/polarity/FEC-quality readout, and `RECORD IQ` wired to the
-      existing IQ recorder) is not yet implemented.
-- [ ] IDS (CAPCODE directory), ACTIVITY (traffic statistics/graphs), and
-      ARCHIVE (searchable log) depend on 10.3's storage layer and are not
-      yet implemented.
+- [ ] SIGNAL does not yet reuse `rf_analysis` for spectrum/waterfall/SNR
+      (the DSP-instrument diagnostics it does show are real, not
+      placeholders); FSK deviation/frequency-offset readouts are not yet
+      cross-checked on real air, and `RECORD IQ` is not yet wired to the
+      existing IQ recorder.
+- [ ] ACTIVITY (traffic statistics/graphs) and ARCHIVE (searchable log)
+      depend on 10.3's storage layer and are not yet implemented.
 
 ### 10.5 — hardware and RF acceptance
 

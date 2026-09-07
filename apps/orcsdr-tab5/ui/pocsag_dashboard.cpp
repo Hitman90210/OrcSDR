@@ -23,6 +23,9 @@ constexpr uint16_t kMuted = 0x9cf3;
 constexpr int kHeaderH = 76;
 constexpr int kTabsY = 646;
 constexpr int kTabW = 256;
+// Content area between the header and tab bar, with a 12px top margin and a
+// 12px bottom margin so cards never overlap the tab strip.
+constexpr int kContentH = kTabsY - (kHeaderH + 12) - 12;
 
 Settings g_settings;
 View g_view = View::live;
@@ -151,7 +154,7 @@ void draw_tabs() {
 }
 
 void draw_live() {
-  card(20, kHeaderH + 12, 1240, 590);
+  card(20, kHeaderH + 12, 1240, kContentH);
   const Stats& stats = g_live_snapshot.decoder_stats;
   if (g_live_snapshot.message_count == 0) {
     text(g_live ? "WAITING FOR TRAFFIC..." : "NOT RECEIVING", 640, kHeaderH + 300, kMuted, 2);
@@ -182,14 +185,110 @@ void draw_live() {
   }
 }
 
+void draw_signal() {
+  const Stats& stats = g_live_snapshot.decoder_stats;
+
+  // Left: decode status readout.
+  card(20, kHeaderH + 12, 500, kContentH);
+  text("DECODE STATUS", 44, kHeaderH + 34, kCyan, 1, middle_left);
+  int y = kHeaderH + 74;
+  char line[64];
+  text("SYNC STATE", 44, y, kMuted, 1, middle_left);
+  text(lock_state_label(stats.lock), 400, y, lock_state_color(stats.lock), 1, middle_right);
+  y += 36;
+  text("BAUD", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%u bps", stats.detected_baud);
+  text(line, 400, y, TFT_WHITE, 1, middle_right);
+  y += 36;
+  text("POLARITY", 44, y, kMuted, 1, middle_left);
+  text(stats.inverted ? "INVERTED" : "NORMAL", 400, y, TFT_WHITE, 1, middle_right);
+  y += 36;
+  text("FSK DEVIATION", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%+.1f Hz", static_cast<double>(stats.fsk_deviation_hz));
+  text(line, 400, y, TFT_WHITE, 1, middle_right);
+  y += 48;
+  text("BATCHES SYNCED", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu", static_cast<unsigned long>(stats.batches_synced));
+  text(line, 400, y, TFT_WHITE, 1, middle_right);
+  y += 36;
+  text("SYNC LOSSES", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu", static_cast<unsigned long>(stats.sync_losses));
+  text(line, 400, y, TFT_WHITE, 1, middle_right);
+  y += 48;
+  text("CODEWORDS", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu", static_cast<unsigned long>(stats.codewords_total));
+  text(line, 400, y, TFT_WHITE, 1, middle_right);
+  y += 36;
+  text("VALID", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu", static_cast<unsigned long>(stats.codewords_valid));
+  text(line, 400, y, kGreen, 1, middle_right);
+  y += 36;
+  text("CORRECTED", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu bits=%lu", static_cast<unsigned long>(stats.codewords_corrected),
+           static_cast<unsigned long>(stats.corrected_bit_count));
+  text(line, 400, y, kYellow, 1, middle_right);
+  y += 36;
+  text("UNCORRECTABLE", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu", static_cast<unsigned long>(stats.codewords_uncorrectable));
+  text(line, 400, y, kRed, 1, middle_right);
+  y += 36;
+  text("PARITY FAILURES", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu", static_cast<unsigned long>(stats.parity_failures));
+  text(line, 400, y, kRed, 1, middle_right);
+
+  // Right, top: 2-FSK soft-decision symbol plot -- an actual measured
+  // instrument (recent discriminator samples), not a decorative waveform.
+  constexpr int kPlotX = 540, kPlotY = kHeaderH + 12, kPlotW = 720, kPlotH = 280;
+  card(kPlotX, kPlotY, kPlotW, kPlotH);
+  text("2-FSK SYMBOL PLOT (SOFT DECISIONS)", kPlotX + 20, kPlotY + 24, kCyan, 1, middle_left);
+  const int plot_x0 = kPlotX + 20, plot_y0 = kPlotY + 50;
+  const int plot_w = kPlotW - 40, plot_h = kPlotH - 70;
+  const int mid_y = plot_y0 + plot_h / 2;
+  M5.Display.drawFastHLine(plot_x0, mid_y, plot_w, kBorder);
+  if (stats.soft_symbol_count > 0) {
+    const size_t count = std::min(stats.soft_symbol_count, Stats::kSoftSymbolCapacity);
+    for (size_t i = 0; i < count; ++i) {
+      const size_t index = (stats.soft_symbol_write + Stats::kSoftSymbolCapacity - count + i) %
+                            Stats::kSoftSymbolCapacity;
+      const float sample = std::clamp(stats.soft_symbols[index], -1.0f, 1.0f);
+      const int px = plot_x0 + static_cast<int>(i * plot_w / Stats::kSoftSymbolCapacity);
+      const int py = mid_y - static_cast<int>(sample * (plot_h / 2 - 4));
+      M5.Display.fillCircle(px, py, 2, sample >= 0.0f ? kGreen : kCyan);
+    }
+  } else {
+    text("NO SAMPLES YET", plot_x0 + plot_w / 2, mid_y, kMuted, 1);
+  }
+
+  // Right, bottom: FEC-quality strip over the most recent codewords.
+  const int strip_x = kPlotX, strip_y = kPlotY + kPlotH + 20;
+  const int strip_w = kPlotW, strip_h = kContentH - kPlotH - 20;
+  card(strip_x, strip_y, strip_w, strip_h);
+  text("FEC QUALITY (RECENT CODEWORDS)", strip_x + 20, strip_y + 24, kCyan, 1, middle_left);
+  const int bars_x0 = strip_x + 20, bars_y0 = strip_y + 50;
+  const int bars_w = strip_w - 40, bars_h = strip_h - 70;
+  if (stats.fec_history_count > 0) {
+    const size_t count = std::min(stats.fec_history_count, Stats::kFecHistoryCapacity);
+    const int bar_w = std::max(1, bars_w / static_cast<int>(Stats::kFecHistoryCapacity));
+    for (size_t i = 0; i < count; ++i) {
+      const size_t index = (stats.fec_history_write + Stats::kFecHistoryCapacity - count + i) %
+                            Stats::kFecHistoryCapacity;
+      const uint8_t outcome = stats.fec_history[index];
+      const uint16_t color = outcome == 0 ? kGreen : outcome == 1 ? kYellow : kRed;
+      M5.Display.fillRect(bars_x0 + static_cast<int>(i) * bar_w, bars_y0, bar_w - 1, bars_h, color);
+    }
+  } else {
+    text("NO CODEWORDS YET", bars_x0 + bars_w / 2, bars_y0 + bars_h / 2, kMuted, 1);
+  }
+}
+
 void draw_placeholder(const char* label) {
-  card(20, kHeaderH + 12, 1240, 590);
+  card(20, kHeaderH + 12, 1240, kContentH);
   text(label, 640, kHeaderH + 290, kMuted, 2);
   text("Not yet implemented in this build", 640, kHeaderH + 330, kMuted, 1);
 }
 
 void draw_ids() {
-  card(20, kHeaderH + 12, 1240, 590);
+  card(20, kHeaderH + 12, 1240, kContentH);
   if (g_live_snapshot.identity_count == 0) {
     text("NO CAPCODES OBSERVED YET", 640, kHeaderH + 300, kMuted, 2);
     return;
@@ -220,7 +319,7 @@ void redraw_content() {
   switch (g_view) {
     case View::live: draw_live(); break;
     case View::ids: draw_ids(); break;
-    case View::signal: draw_placeholder("SIGNAL - RF AND DECODE DIAGNOSTICS"); break;
+    case View::signal: draw_signal(); break;
     case View::activity: draw_placeholder("ACTIVITY - TRAFFIC STATISTICS"); break;
     case View::archive: draw_placeholder("ARCHIVE - SAVED MESSAGE LOG"); break;
     default: break;
@@ -272,11 +371,14 @@ void update() {
            static_cast<unsigned>(g_live_snapshot.decoder_stats.messages_decoded));
   text(msgs, 770, 36, TFT_WHITE, 2, middle_left);
   if (g_view == View::live) {
-    M5.Display.fillRect(20, kHeaderH + 12, 1240, 590, kBg);
+    M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
     draw_live();
   } else if (g_view == View::ids) {
-    M5.Display.fillRect(20, kHeaderH + 12, 1240, 590, kBg);
+    M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
     draw_ids();
+  } else if (g_view == View::signal) {
+    M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
+    draw_signal();
   }
 }
 
