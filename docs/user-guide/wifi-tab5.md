@@ -112,9 +112,8 @@ idf.py -B build-native-hosted3 -p COM17 monitor --no-reset
 ## Build, flash, and acceptance
 
 ```powershell
-Set-Location F:\Ai\OrcSDR\apps\orcsdr-tab5
-.\tools\build-tab5-idf.ps1
-. C:\Espressif\frameworks\esp-idf-v5.5.4\export.ps1
+Set-Location .\apps\orcsdr-tab5
+.\tools\build-tab5-idf.ps1 -IdfPath 'C:\Espressif\v5.5.4\esp-idf'
 idf.py -B build-native-hosted3 -p COM17 app-flash
 ```
 
