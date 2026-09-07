@@ -32,6 +32,10 @@ struct Snapshot {
   char mode[12]{};
   char clock[12]{};
   char date[20]{};
+  // Which dashboard tile this snapshot represents (Home renders every band
+  // that lacks its own dedicated dashboard -- CB, weather, shortwave, etc --
+  // so the header/rail need this to show something other than "HOME").
+  dashboards::Id active_dashboard = dashboards::Id::home;
 };
 
 enum class ActionKind : uint8_t {

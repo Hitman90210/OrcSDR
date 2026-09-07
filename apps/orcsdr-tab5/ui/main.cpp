@@ -1845,6 +1845,7 @@ void draw_capture_tool_panel();
 bool handle_tool_tab_touch(int32_t x, int32_t y);
 const orcsdr::settings::State& global_settings_state();
 orcsdr::home::Snapshot home_dashboard_snapshot(bool demo = false);
+orcsdr::dashboards::Id dashboard_for_band(RtlBand band, uint32_t frequency_hz);
 void show_home(bool demo = false);
 void draw_home_dashboard();
 void handle_home_action(const orcsdr::home::Action& action);
@@ -8209,6 +8210,8 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
   snapshot.channel = (!demo && rtl_ui_band == RtlBand::cb)
       ? static_cast<uint8_t>(cb_channel_index(rtl_ui_frequency_hz) + 1)
       : 0;
+  snapshot.active_dashboard = demo ? orcsdr::dashboards::Id::home
+                                    : dashboard_for_band(rtl_ui_band, rtl_ui_frequency_hz);
   snapshot.battery_percent = demo ? 76 : device.battery_percent;
   snapshot.vbus_mv = demo ? 5000 : device.vbus_mv;
   snapshot.volume = demo ? 128 : rtl_live_volume.load(std::memory_order_acquire);

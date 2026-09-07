@@ -472,7 +472,11 @@ void draw() {
 void update(const Snapshot& snapshot) {
   if (!g_active) return;
   const bool content_changed = snapshot.revision != g_snapshot.revision;
+  const bool sound_changed = snapshot.sound_enabled != g_snapshot.sound_enabled;
   g_snapshot = snapshot;
+  // The header mute icon otherwise only refreshes on the next full redraw --
+  // handle it immediately regardless of the dynamic-refresh throttle below.
+  if (sound_changed) audio_header::draw_mute_button(g_snapshot.sound_enabled);
   const uint32_t now = millis();
   if (!content_changed && now - g_last_dynamic_ms < kDynamicRefreshIntervalMs) return;
   g_last_dynamic_ms = now;

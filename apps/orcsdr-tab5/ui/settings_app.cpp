@@ -179,13 +179,16 @@ void draw_connectivity() {
     button("FORGET", 1006, y, 170, 44, TFT_MAROON);
   }
   if (g_state.saved_network_count == 0)
-    text("NO SAVED NETWORKS", 340, 342, kMuted, 2);
+    // Below the "SAVED NETWORKS (PRIORITY ORDER)" header (y=350), at the same
+    // baseline the first row would use -- it used to sit at y=342, 8px above
+    // that header, so the two lines of text overlapped.
+    text("NO SAVED NETWORKS", 340, 401, kMuted, 2);
 
-  text("AVAILABLE NETWORKS", 330, 572, kBlue, 2);
+  text("AVAILABLE NETWORKS", 330, 582, kBlue, 2);
   const uint8_t shown = std::min<uint8_t>(g_state.network_count, 6);
   for (uint8_t i = 0; i < shown; ++i) {
     const int x = 330 + (i % 2) * 428;
-    const int y = 596 + (i / 2) * 36;
+    const int y = 606 + (i / 2) * 36;
     snprintf(value, sizeof(value), "%.18s  %d%s%s", g_state.networks[i].ssid,
              g_state.networks[i].rssi, g_state.networks[i].secure ? "  LOCK" : "  OPEN",
              g_state.networks[i].saved ? "  SAVED" : "");
@@ -289,26 +292,50 @@ void draw_data_maps() {
   text("Manual only. Downloads keep reception active.", 330, 688, TFT_LIGHTGREY, 1);
 }
 
+// Each row pairs a label/value line with a control button underneath it.
+// value_row()'s own divider (drawn at label_y+31) used to run straight
+// through that button -- these rows draw their own divider below the button
+// instead, and use one consistent 115px pitch (the source layout mixed a
+// 135px gap and an 80px gap between rows, which read as uneven spacing).
+constexpr int kDisplayAudioRowY[] = {175, 290, 405, 520, 635};
+constexpr int kDisplayAudioButtonY[] = {200, 315, 430, 545, 660};
+constexpr int kDisplayAudioDividerY[] = {260, 375, 490, 605};
+
 void draw_display_audio() {
   text("DISPLAY & AUDIO", 330, 115, kBlue, 3);
   char value[32];
+
   snprintf(value, sizeof(value), "%u / 255", g_state.brightness);
-  value_row("BRIGHTNESS", value, 180);
-  button("-", 850, 205, 90, 48, TFT_DARKGREY);
-  button("+", 960, 205, 90, 48, TFT_DARKCYAN);
+  text("BRIGHTNESS", 330, kDisplayAudioRowY[0], kMuted, 2);
+  text(value, 1218, kDisplayAudioRowY[0], TFT_WHITE, 2, middle_right);
+  button("-", 850, kDisplayAudioButtonY[0], 90, 48, TFT_DARKGREY);
+  button("+", 960, kDisplayAudioButtonY[0], 90, 48, TFT_DARKCYAN);
+  M5.Display.drawFastHLine(330, kDisplayAudioDividerY[0], 888, 0x2945);
+
   snprintf(value, sizeof(value), g_state.screen_timeout_sec ? "%u SEC" : "NEVER",
            g_state.screen_timeout_sec);
-  value_row("SCREEN TIMEOUT", value, 300);
-  button("CYCLE", 960, 325, 160, 48, TFT_DARKCYAN);
+  text("SCREEN TIMEOUT", 330, kDisplayAudioRowY[1], kMuted, 2);
+  text(value, 1218, kDisplayAudioRowY[1], TFT_WHITE, 2, middle_right);
+  button("CYCLE", 960, kDisplayAudioButtonY[1], 160, 48, TFT_DARKCYAN);
+  M5.Display.drawFastHLine(330, kDisplayAudioDividerY[1], 888, 0x2945);
+
   snprintf(value, sizeof(value), "%u%%", (g_state.volume * 100u + 127u) / 255u);
-  value_row("MASTER VOLUME", value, 420);
-  button("-", 850, 445, 90, 48, TFT_DARKGREY);
-  button("+", 960, 445, 90, 48, TFT_DARKCYAN);
-  value_row("DEFAULT SOUND", g_state.sound_default ? "ON" : "OFF", 555,
-            g_state.sound_default ? kGreen : kMuted);
-  button("TOGGLE", 960, 580, 160, 48, TFT_DARKCYAN);
-  value_row("SCREEN ORIENTATION", g_state.rotation == 3 ? "LANDSCAPE 180" : "LANDSCAPE", 635);
-  button("ROTATE", 960, 660, 160, 48, TFT_DARKCYAN);
+  text("MASTER VOLUME", 330, kDisplayAudioRowY[2], kMuted, 2);
+  text(value, 1218, kDisplayAudioRowY[2], TFT_WHITE, 2, middle_right);
+  button("-", 850, kDisplayAudioButtonY[2], 90, 48, TFT_DARKGREY);
+  button("+", 960, kDisplayAudioButtonY[2], 90, 48, TFT_DARKCYAN);
+  M5.Display.drawFastHLine(330, kDisplayAudioDividerY[2], 888, 0x2945);
+
+  text("DEFAULT SOUND", 330, kDisplayAudioRowY[3], kMuted, 2);
+  text(g_state.sound_default ? "ON" : "OFF", 1218, kDisplayAudioRowY[3],
+       g_state.sound_default ? kGreen : kMuted, 2, middle_right);
+  button("TOGGLE", 960, kDisplayAudioButtonY[3], 160, 48, TFT_DARKCYAN);
+  M5.Display.drawFastHLine(330, kDisplayAudioDividerY[3], 888, 0x2945);
+
+  text("SCREEN ORIENTATION", 330, kDisplayAudioRowY[4], kMuted, 2);
+  text(g_state.rotation == 3 ? "LANDSCAPE 180" : "LANDSCAPE", 1218, kDisplayAudioRowY[4],
+       TFT_WHITE, 2, middle_right);
+  button("ROTATE", 960, kDisplayAudioButtonY[4], 160, 48, TFT_DARKCYAN);
 }
 
 void draw_radio_defaults() {
@@ -745,7 +772,7 @@ Action handle_touch(int32_t x, int32_t y) {
     }
     for (uint8_t i = 0; i < std::min<uint8_t>(g_state.network_count, 6); ++i) {
       const int row_x = 330 + (i % 2) * 428;
-      const int row_y = 596 + (i / 2) * 36;
+      const int row_y = 606 + (i / 2) * 36;
       if (!hit(x, y, row_x, row_y, 418, 36)) continue;
       if (g_state.networks[i].saved) {
         for (uint8_t saved = 0; saved < g_state.saved_network_count; ++saved)
@@ -801,29 +828,31 @@ Action handle_touch(int32_t x, int32_t y) {
       }
     }
   } else if (g_section == Section::display_audio) {
-    if (hit(x, y, 850, 205, 90, 48) || hit(x, y, 960, 205, 90, 48)) {
+    if (hit(x, y, 850, kDisplayAudioButtonY[0], 90, 48) ||
+        hit(x, y, 960, kDisplayAudioButtonY[0], 90, 48)) {
       const int delta = x < 950 ? -16 : 16;
       g_state.brightness = static_cast<uint8_t>(std::clamp<int>(g_state.brightness + delta, 16, 255));
       draw_content();
       return {ActionKind::brightness_changed, g_state.brightness};
     }
-    if (hit(x, y, 960, 325, 160, 48)) {
+    if (hit(x, y, 960, kDisplayAudioButtonY[1], 160, 48)) {
       g_state.screen_timeout_sec = next_value(g_state.screen_timeout_sec, kTimeouts);
       draw_content();
       return {ActionKind::timeout_changed, g_state.screen_timeout_sec};
     }
-    if (hit(x, y, 850, 445, 90, 48) || hit(x, y, 960, 445, 90, 48)) {
+    if (hit(x, y, 850, kDisplayAudioButtonY[2], 90, 48) ||
+        hit(x, y, 960, kDisplayAudioButtonY[2], 90, 48)) {
       const int delta = x < 950 ? -16 : 16;
       g_state.volume = static_cast<uint8_t>(std::clamp<int>(g_state.volume + delta, 0, 255));
       draw_content();
       return {ActionKind::volume_changed, g_state.volume};
     }
-    if (hit(x, y, 960, 580, 160, 48)) {
+    if (hit(x, y, 960, kDisplayAudioButtonY[3], 160, 48)) {
       g_state.sound_default = !g_state.sound_default;
       draw_content();
       return {ActionKind::sound_changed, g_state.sound_default};
     }
-    if (hit(x, y, 960, 660, 160, 48)) {
+    if (hit(x, y, 960, kDisplayAudioButtonY[4], 160, 48)) {
       g_state.rotation = g_state.rotation == 3 ? 1 : 3;
       return {ActionKind::rotation_changed, g_state.rotation};
     }

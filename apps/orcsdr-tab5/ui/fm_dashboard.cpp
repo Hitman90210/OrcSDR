@@ -509,6 +509,10 @@ void update(const Snapshot& snapshot) {
   if (header_changed || audio_header::service_timeout(g_audio_control, now))
     audio_header::draw(g_audio_control, g_snapshot.volume, g_snapshot.sound_enabled,
                        g_snapshot.battery_percent);
+  // The header mute icon (top-right) is separate from the tray drawn above --
+  // without this it only ever redraws on the next full-screen entry, so a
+  // mute toggle looked stuck red/unmuted until the user left and came back.
+  if (header_changed) audio_header::draw_mute_button(g_snapshot.sound_enabled);
   if (now - g_last_dynamic_ms < 150) return;
   g_last_dynamic_ms = now;
   draw_dynamic();

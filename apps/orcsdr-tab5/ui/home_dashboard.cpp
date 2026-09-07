@@ -165,13 +165,25 @@ void draw_header_status() {
        middle_right);
 }
 
+void draw_header_title() {
+  // Text is drawn with an opaque (TFT_BLACK) background, which only clears
+  // the new string's own glyph cells -- switching from a longer title (e.g.
+  // "SHORTWAVE") to a shorter one (e.g. "LORA") would leave stale letters
+  // behind without an explicit clear of the whole title band first.
+  M5.Display.fillRect(316, 22, kHeaderStatusX - 316, 76, TFT_BLACK);
+  const auto* active_entry = dashboards::find(current.active_dashboard);
+  // Size 4 (not the old fixed size 5) so the longest real title ("SHORTWAVE")
+  // still fits before the Wi-Fi/RTL-SDR status panel at kHeaderStatusX.
+  text(active_entry ? active_entry->title : "HOME", 338, 59, TFT_WHITE, 4);
+}
+
 void draw_header() {
   if (!badge::draw(24, 12, 96))
     M5.Display.drawRoundRect(24, 12, 96, 96, 12, kGreen);
   text("OrcSDR", 132, 46, kGreen, 4);
   text("M5STACK TAB5", 134, 82, kCyan, 2);
   M5.Display.drawFastVLine(306, 22, 76, kCyan);
-  text("HOME", 338, 59, TFT_WHITE, 5);
+  draw_header_title();
   draw_header_status();
   audio_header::draw_visualizer_button(current.receiving);
   audio_header::draw_settings_button();
@@ -195,7 +207,7 @@ void draw_recent_list() {
     const char* label = id == dashboards::Id::home ? "HOME"
                                                    : (entry ? entry->title : "UNKNOWN");
     const int y = kListY + offset + slot * kRowPitch;
-    const bool selected = id == dashboards::Id::home;
+    const bool selected = id == current.active_dashboard;
     M5.Display.fillRoundRect(kListX + 2, y, kListW - 20, kRowH, 7,
                              selected ? 0x00A0 : TFT_BLACK);
     M5.Display.drawRoundRect(kListX + 2, y, kListW - 20, kRowH, 7,
@@ -433,21 +445,36 @@ void draw_receiver_chrome() {
   text(value, 1162, 608, kGreen, 2, middle_center);
 }
 
+// 4 columns keep every row (including the trailing partial row) inside the
+// 700px-tall bordered frame; at 3 columns the 13th entry (SETTINGS) landed on
+// its own row 5, which overflowed the frame and was cut off at the bottom.
+constexpr int kBrowserCols = 4;
+constexpr int kBrowserCardX = 30, kBrowserCardY = 104;
+constexpr int kBrowserCardPitchX = 305, kBrowserCardPitchY = 140;
+constexpr int kBrowserCardW = 285, kBrowserCardH = 118;
+// HOME-close used to sit at x=1072..1192, overlapping the shared mute button
+// at x=1099..1153 (drawn after it, so it visually cut into the HOME panel).
+// Move it into the standard header-icon row, left of the mute button.
+constexpr int kBrowserCloseX = 1032, kBrowserCloseY = 12;
+constexpr int kBrowserCloseW = 60, kBrowserCloseH = 54;
+
 void draw_browser() {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.drawRoundRect(10, 10, 1260, 700, 14, kCyan);
   text("ALL DASHBOARDS", 38, 48, TFT_WHITE, 4);
-  panel(1072, 20, 120, 54, kCyan, 8);
-  text("HOME", 1132, 47, kCyan, 2, middle_center);
+  panel(kBrowserCloseX, kBrowserCloseY, kBrowserCloseW, kBrowserCloseH, kCyan, 8);
+  text("HOME", kBrowserCloseX + kBrowserCloseW / 2, kBrowserCloseY + kBrowserCloseH / 2,
+       kCyan, 2, middle_center);
   audio_header::draw_settings_button();
   audio_header::draw_mute_button(current.sound_enabled);
   audio_header::draw_visualizer_button(current.receiving);
   for (size_t i = 0; i < dashboards::count(); ++i) {
     const auto* entry = dashboards::descriptor(i);
     if (!entry) continue;
-    const int col = static_cast<int>(i % 3), row = static_cast<int>(i / 3);
-    const int x = 30 + col * 410, y = 104 + row * 140;
-    panel(x, y, 390, 118, entry->available ? kCyan : kDim, 10);
+    const int col = static_cast<int>(i % kBrowserCols), row = static_cast<int>(i / kBrowserCols);
+    const int x = kBrowserCardX + col * kBrowserCardPitchX;
+    const int y = kBrowserCardY + row * kBrowserCardPitchY;
+    panel(x, y, kBrowserCardW, kBrowserCardH, entry->available ? kCyan : kDim, 10);
     draw_menu_icon(entry->id, x + 42, y + 46, entry->available ? kCyan : kDim);
     text(entry->title, x + 78, y + 38, entry->available ? TFT_WHITE : kDim, 2);
     text(entry->subtitle, x + 78, y + 70, entry->available ? TFT_LIGHTGREY : kDim, 1);
@@ -470,10 +497,12 @@ Action tap_action(int32_t x, int32_t y) {
     return {ActionKind::open_device_settings};
   if (audio_header::mute_hit(x, y)) return {ActionKind::sound_toggle};
   if (browser) {
-    if (inside(x, y, 1072, 20, 120, 54)) return {ActionKind::close_browser};
+    if (inside(x, y, kBrowserCloseX, kBrowserCloseY, kBrowserCloseW, kBrowserCloseH))
+      return {ActionKind::close_browser};
     for (size_t i = 0; i < dashboards::count(); ++i) {
-      const int col = static_cast<int>(i % 3), row = static_cast<int>(i / 3);
-      if (inside(x, y, 30 + col * 410, 104 + row * 140, 390, 118)) {
+      const int col = static_cast<int>(i % kBrowserCols), row = static_cast<int>(i / kBrowserCols);
+      if (inside(x, y, kBrowserCardX + col * kBrowserCardPitchX,
+                 kBrowserCardY + row * kBrowserCardPitchY, kBrowserCardW, kBrowserCardH)) {
         const auto* entry = dashboards::descriptor(i);
         if (entry && entry->available)
           return {ActionKind::open_dashboard, entry->id};
@@ -547,8 +576,16 @@ void update(const Snapshot& snapshot) {
                                        snapshot.channel != current.channel;
   const bool level_changed = static_cast<int>(std::lround(snapshot.relative_dbfs)) !=
                              static_cast<int>(std::lround(current.relative_dbfs));
+  // A band switch that doesn't go through a full show_home() re-entry (e.g. a
+  // retune that keeps the Home screen up) left the header title and the rail's
+  // green "selected" row pointing at the previous dashboard.
+  const bool dashboard_changed = snapshot.active_dashboard != current.active_dashboard;
   current = snapshot;
   M5.Display.startWrite();
+  if (dashboard_changed) {
+    draw_header_title();
+    draw_rail();
+  }
   if (tuner_changed) {
     draw_frequency();
     M5.Display.fillRect(770, 468, 216, 72, TFT_BLACK);
@@ -566,7 +603,14 @@ void update(const Snapshot& snapshot) {
     }
     text(value, 930, 516, kGreen, 2, middle_center);
   }
-  if (audio_changed) draw_audio_controls();
+  // draw_mute_button() is the header icon (top-right); draw_audio_controls()
+  // is Home's own on-page VOL/MUTE panel. Both reflect sound_enabled but only
+  // the latter was redrawn here, so the header icon looked stuck until the
+  // next full-screen entry (navigating away and back).
+  if (audio_changed) {
+    draw_audio_controls();
+    audio_header::draw_mute_button(current.sound_enabled);
+  }
   if (tuning_controls_changed) draw_tuning_controls();
   if (status_changed) draw_header_status();
   if (receiver_changed) draw_footer_receiver();

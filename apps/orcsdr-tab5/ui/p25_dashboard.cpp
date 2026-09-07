@@ -596,6 +596,9 @@ void update(const Snapshot& snapshot) {
   if (header_changed || audio_header::service_timeout(g_audio_control, now))
     audio_header::draw(g_audio_control, g_snapshot.volume, g_snapshot.sound_enabled,
                        g_snapshot.battery_percent);
+  // See fm_dashboard.cpp update(): the header mute icon is separate from the
+  // tray drawn above and otherwise only refreshes on the next full redraw.
+  if (header_changed) audio_header::draw_mute_button(g_snapshot.sound_enabled);
   if (now - g_last_dynamic_ms < 200) return;
   g_last_dynamic_ms = now;
   if (controls_changed && (g_view == View::monitor || g_view == View::program)) {

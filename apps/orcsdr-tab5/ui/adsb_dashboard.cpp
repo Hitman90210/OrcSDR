@@ -319,6 +319,9 @@ void draw_header_live_values() {
   text(value, 655, 36, kGreen, 2, middle_left);
   button(g_atc_listening ? "ATC" : (g_live ? "LIVE" : "WAIT"), 755, 14, 92, 44,
          g_atc_listening ? TFT_DARKCYAN : (g_live ? TFT_DARKGREEN : TFT_DARKGREY));
+  // The header mute icon otherwise only refreshes on the next full redraw --
+  // this call is cheap and already throttled by update()'s 1s gate below.
+  audio_header::draw_mute_button(g_live_snapshot.sound_enabled);
 }
 
 void tab_icon(int index, int x, int y, uint16_t color) {
