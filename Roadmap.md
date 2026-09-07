@@ -41,12 +41,12 @@ recreating those existing modules.
 ### Gap 2 — dual USB code paths (`RTL_USE_LEGACY_USB`)
 
 `esp_rtl_sdr` is the only live USB implementation. `main.cpp` forces
-`RTL_USE_LEGACY_USB=0` and rejects attempts to enable it, but disabled legacy
-implementation blocks remain in the source.
+`RTL_USE_LEGACY_USB=0` and rejects attempts to enable it; the disabled legacy
+implementation blocks that used to remain in the source have been deleted.
 
-**Status: Runtime duplication resolved; source cleanup remains.** Track the
-remaining deletion under `PROJECT_STATUS.md` P1, separately from driver or
-DSP behavior changes.
+**Status: Resolved.** The dead legacy USB path (705 lines: capture/host-task/
+control-transfer helpers and PLL math) was removed in a dedicated commit and
+hardware-verified on a Tab5 afterward. See `PROJECT_STATUS.md` P1.
 
 ### Gap 3 — no CI
 

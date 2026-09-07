@@ -98,14 +98,21 @@ paired IQ/WAV dataset that can drive FM filter decisions without tuning by ear.
 - [ ] Unplug/replug during streaming and recover to Ready without reboot.
 - [ ] Record retune settle time and recovery behavior after a failed retune.
 - [x] Retire the legacy in-app USB path: enabling it is a compile-time error; `esp_rtl_sdr` is the only live implementation.
-- [ ] Delete the remaining disabled legacy source blocks in a separate code change.
+- [x] Delete the remaining disabled legacy source blocks in a separate code change:
+      removed the dead `run_rtl_capture`/`usb_host_task`/`inspect_usb_device` USB
+      bit-banging path, `encode_r820_pll`/`run_rtl_tune` PLL math, and the
+      control-transfer helpers (705 lines total) in one commit. Rebuilt (byte-identical
+      binary size, confirming pure dead-code removal) and hardware-verified on a Tab5:
+      clean boot to `BOOT_STAGE ready` with `RTL_INSTALL ok v0.7.9` and the expected
+      `RTL_CORE_SPLIT` line.
 - [x] Move standalone smoke ownership to the `esp-rtl-sdr` repository.
 - [x] Record existing Waveshare second-board operation with upstream provenance.
 - [ ] Attach exact-version sustained-rate and unplug/replug evidence for the boards covered by a release; prior operation alone does not close these gates.
 
 Exit: release-specific driver acceptance is recorded for both P4 boards and
 the Tab5 app has no remaining duplicate USB implementation. Prior Waveshare
-operation is already recorded; disabled legacy code still needs deletion.
+operation is already recorded, and the disabled legacy source is deleted;
+exact-version sustained-rate and unplug/replug evidence remain open.
 
 ### P2 — network transport
 
