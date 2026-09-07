@@ -194,7 +194,8 @@ void draw_firmware_updates() {
   char versions[96];
   snprintf(versions, sizeof(versions), "P4 HOST: %s", g_state.wifi_hosted_host_version);
   value_row("HOSTED HOST", versions, 165);
-  snprintf(versions, sizeof(versions), "C6: %s   TARGET: 3.0.6", g_state.wifi_hosted_c6_version);
+  snprintf(versions, sizeof(versions), "C6: %s   TARGET: %s",
+           g_state.wifi_hosted_c6_version, ORCSDR_HOSTED_C6_VERSION);
   value_row("WIRELESS COPROCESSOR", versions, 220,
             strcmp(g_state.wifi_c6_update_state, "current") == 0 ? kGreen : TFT_ORANGE);
   value_row("UPDATE IMAGE", g_state.wifi_c6_image_embedded ? "EMBEDDED IN THIS ORCSDR BUILD" : "NOT INCLUDED", 275,
@@ -210,7 +211,7 @@ void draw_firmware_updates() {
     text("Keep OrcSDR powered on. SDR and audio remain active.", 330, 455, kMuted, 2);
   } else if (strcmp(g_state.wifi_c6_update_state, "ready") == 0) {
     text("The C6 is reachable but does not match this OrcSDR build.", 330, 405, TFT_WHITE, 2);
-    button("UPDATE C6 TO 3.0.6", 330, 445, 360, 58, TFT_DARKGREEN);
+    button("UPDATE C6 TO " ORCSDR_HOSTED_C6_VERSION, 330, 445, 360, 58, TFT_DARKGREEN);
     text("This sends the embedded image over the internal SDIO link and restarts OrcSDR.",
          330, 545, kMuted, 1);
   } else if (strcmp(g_state.wifi_c6_update_state, "current") == 0) {

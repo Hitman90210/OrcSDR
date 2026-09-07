@@ -22,12 +22,12 @@ Cold-boot with stable power and the dongle disconnected, then attach it after th
 Confirm Wi-Fi power is enabled and choose the correct internal or external antenna. Scanning should coexist with reception. A crash or restart is a regression; preserve the serial log and reset reason.
 
 The current migration pins ESP-Hosted **3.0.6** on both P4 and C6. The normal
-P4 application image does not update the C6. Current known hardware evidence
-has the radio path working but the C6 SDIO handshake failing before version
-negotiation (`sdmmc_init_ocr` / `send_op_cond 0x107`). Follow
+P4 application image does not silently update the C6. The matching 3.0.6 pair
+has completed the Tab5 SDIO handshake and station startup on hardware. Follow
 [`Tab5 ESP-Hosted 3.0.6 migration`](tab5-esp-hosted-3-migration.md) for
-the exact Tab5 pins and acceptance state; do not apply the old 2.12.6 M5Burner
-instructions.
+the exact Tab5 pins and verified boot lines. A new `sdmmc_init_ocr` or
+`send_op_cond 0x107` failure is a regression or recovery condition; preserve
+the serial log and do not repeatedly retry the C6 updater.
 
 ```powershell
 rg "CONFIG_ESP_HOSTED_AUTO_CALL_INIT_BEFORE_APP_MAIN" apps\orcsdr-tab5\sdkconfig

@@ -1,6 +1,6 @@
 set(_bridge_args SRCS "main.c"
                        INCLUDE_DIRS "."
-                       REQUIRES esp_hosted esp_event nvs_flash)
+                       REQUIRES esp_hosted esp_event esp_driver_i2c nvs_flash)
 if(CMAKE_BUILD_EARLY_EXPANSION)
   idf_component_register(${_bridge_args})
 else()
@@ -13,4 +13,7 @@ else()
   endif()
   idf_component_register(${_bridge_args} EMBED_FILES "${C6_FIRMWARE_BIN}")
 endif()
-target_compile_definitions(${COMPONENT_LIB} PRIVATE C6_HOSTED_VERSION="3.0.6")
+if(NOT C6_HOSTED_VERSION)
+  message(FATAL_ERROR "C6_HOSTED_VERSION must come from tools/release/hosted-c6-release.json")
+endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE C6_HOSTED_VERSION="${C6_HOSTED_VERSION}")

@@ -101,7 +101,13 @@ namespace orcsdr::storage {
 
 bool mount_tab5_sd() {
   if (g_mounted) return true;
-  esp_vfs_fat_sdmmc_mount_config_t mount = {.format_if_mount_failed = false, .max_files = 8, .allocation_unit_size = 16 * 1024};
+  esp_vfs_fat_sdmmc_mount_config_t mount = {
+      .format_if_mount_failed = false,
+      .max_files = 8,
+      .allocation_unit_size = 16 * 1024,
+      .disk_status_check_enable = false,
+      .use_one_fat = false,
+  };
   // M5Stack's Tab5 reference uses native SDMMC Slot 0 for the card. ESP-Hosted
   // owns Slot 1 for the C6, so both devices use their intended slots.
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();

@@ -2,7 +2,7 @@
 <# Installs final P4 without erasing NVS. -UpdateC6 is a recovery-only bridge route. #>
 param(
   [string]$Port,
-  [string]$IdfPath = 'C:\Espressif\frameworks\esp-idf-v5.5.4',
+  [string]$IdfPath = 'C:\Espressif\v5.5.4\esp-idf',
   [switch]$CheckHostedOnly,
   [switch]$UpdateC6,
   [switch]$DryRun,
@@ -11,7 +11,11 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $Root = $PSScriptRoot
-$RequiredHosted = '3.0.6'
+$HostedRelease = Get-Content (Join-Path $Root 'tools\release\hosted-c6-release.json') -Raw | ConvertFrom-Json
+$RequiredHosted = [string]$HostedRelease.hosted_version
+if ($RequiredHosted -notmatch '^\d+\.\d+\.\d+$') {
+  throw 'Pinned Hosted version is missing or invalid.'
+}
 if ($MockHostedLine -and -not $DryRun) {
   throw 'MockHostedLine is allowed only with -DryRun.'
 }
@@ -40,8 +44,33 @@ function Test-HostedPair([string]$ComPort) {
 }
 function Use-Idf {
   if (-not (Test-Path (Join-Path $IdfPath 'export.ps1'))) { throw "ESP-IDF 5.5.4 is required at $IdfPath." }
-  $env:IDF_PYTHON_ENV_PATH = 'C:\Espressif\python_env\idf5.5_py3.14_env'; $env:PATH = "C:\Espressif\tools\ccache\4.12.1\ccache-4.12.1-windows-x86_64;$env:IDF_PYTHON_ENV_PATH\Scripts;$env:PATH"
-  . (Join-Path $IdfPath 'export.ps1')
+  $idfInstallRoot = Split-Path -Parent (Split-Path -Parent $IdfPath)
+  $env:IDF_TOOLS_PATH = Join-Path $idfInstallRoot 'tools'
+  $pythonEnvCandidates = @(
+    (Join-Path $idfInstallRoot 'tools\python\v5.5.4\venv'),
+    'C:\Espressif\python_env\idf5.5_py3.14_env'
+  )
+  $resolvedPythonEnv = $pythonEnvCandidates |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_ 'Scripts\python.exe') -PathType Leaf } |
+    Select-Object -First 1
+  if (-not $resolvedPythonEnv) {
+    throw "Unable to locate the ESP-IDF 5.5.4 Python environment. Checked: $($pythonEnvCandidates -join ', ')"
+  }
+  $env:IDF_PYTHON_ENV_PATH = $resolvedPythonEnv
+  $ccache = Get-ChildItem -LiteralPath (Join-Path $env:IDF_TOOLS_PATH 'ccache') `
+    -Filter ccache.exe -File -Recurse -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+  $toolPaths = @($env:IDF_PYTHON_ENV_PATH + '\Scripts')
+  if ($ccache) { $toolPaths += $ccache.DirectoryName }
+  $env:PATH = ($toolPaths -join ';') + ";$env:PATH"
+  $eimProfile = Join-Path $env:IDF_TOOLS_PATH 'Microsoft.v5.5.4.PowerShell_profile.ps1'
+  if (Test-Path -LiteralPath $eimProfile -PathType Leaf) {
+    . $eimProfile
+  } else {
+    . (Join-Path $IdfPath 'export.ps1')
+  }
+  if ($ccache) { $env:PATH = "$($ccache.DirectoryName);$env:PATH" }
+  $global:LASTEXITCODE = 0
 }
 function Flash-App([string]$App, [string]$Build, [string]$ComPort) {
   if ($DryRun) {
@@ -66,7 +95,7 @@ Set-Location $Root
 $script:Port = if ($DryRun -and -not $Port) { 'COM17' } else { Resolve-Port $Port }
 Write-Host "OrcSDR installer (Hosted $RequiredHosted, C6 update=$([int][bool]$UpdateC6), dry_run=$([int][bool]$DryRun))"
 if ($CheckHostedOnly) { if (Test-HostedPair $script:Port) { exit 0 }; exit 2 }
-Use-Idf
+if (-not $DryRun) { Use-Idf }
 if ($UpdateC6) {
   $stage = Join-Path $env:TEMP 'OrcSDR-c6-update'
   if (-not $DryRun) {

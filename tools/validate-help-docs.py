@@ -12,6 +12,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs" / "user-guide"
 MANIFEST = ROOT / "docs" / "help_media" / "manifest.json"
+IGNORED_PARTS = {".git", "build", "managed_components", "site"}
+
+
+def first_party_markdown() -> list[Path]:
+    return [
+        path
+        for path in ROOT.rglob("*.md")
+        if not any(part in IGNORED_PARTS or part.startswith("build-") for part in path.parts)
+    ]
 
 
 def png_size(path: Path) -> tuple[int, int]:
@@ -26,7 +35,7 @@ def main() -> None:
     manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
     ids = [screen["id"] for screen in manifest["screens"]]
     assert len(ids) == len(set(ids)), "Duplicate documentation screen ID"
-    for markdown in DOCS.rglob("*.md"):
+    for markdown in first_party_markdown():
         text = markdown.read_text(encoding="utf-8")
         for alt, target in re.findall(r"!\[([^]]*)\]\(([^)]+)\)", text):
             assert alt.strip(), f"Missing image alt text: {markdown}"

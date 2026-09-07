@@ -1,0 +1,52 @@
+name: Repository quality
+
+on:
+  pull_request:
+    paths:
+      - '**/*.py'
+      - '**/*.ps1'
+      - tools/release/hosted-c6-release.json
+      - .github/workflows/quality.yml
+  push:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - '**/*.ps1'
+      - tools/release/hosted-c6-release.json
+      - .github/workflows/quality.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - run: pip install 'cryptography>=45,<47'
+      - run: python tools/test_lora_serial_transfer.py
+      - run: python tools/test_release_metadata.py
+      - run: python tools/validate-help-docs.py
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $failures = @()
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors) { $failures += "$($_.FullName): $($errors.Message -join '; ')" }
+          }
+          if ($failures) { throw ($failures -join "`n") }
+      - name: Test guarded installer plans
+        shell: pwsh
+        run: ./tools/release/test-installer-dry-run.ps1

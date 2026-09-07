@@ -3,7 +3,7 @@ name: User guide
 on:
   pull_request:
     paths:
-      - docs/user-guide/**
+      - '**/*.md'
       - docs/help_media/**
       - mkdocs.yml
       - tools/requirements-docs.txt
@@ -12,7 +12,7 @@ on:
   push:
     branches: [main]
     paths:
-      - docs/user-guide/**
+      - '**/*.md'
       - docs/help_media/**
       - mkdocs.yml
       - tools/requirements-docs.txt

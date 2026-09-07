@@ -51,6 +51,7 @@
 #include "device_status_service.hpp"
 #include "screen_controller.hpp"
 #include "scan_engine.hpp"
+#include "serial_verbosity.hpp"
 #include "fm_dashboard.hpp"
 #include "fm_config.hpp"
 #include "home_dashboard.hpp"
@@ -79,42 +80,9 @@
 #error "OrcSDR requires esp_rtl_sdr v0.7.9 or newer"
 #endif
 
-enum class SerialVerbosity : uint8_t { quiet = 0, normal = 1, debug = 2, trace = 3 };
-
-std::atomic<uint8_t> serial_verbosity{static_cast<uint8_t>(SerialVerbosity::normal)};
-
-bool serial_verbosity_at(SerialVerbosity level) {
-  return serial_verbosity.load(std::memory_order_relaxed) >= static_cast<uint8_t>(level);
-}
-
-const char* serial_verbosity_name(SerialVerbosity level) {
-  switch (level) {
-    case SerialVerbosity::quiet: return "QUIET";
-    case SerialVerbosity::normal: return "NORMAL";
-    case SerialVerbosity::debug: return "DEBUG";
-    case SerialVerbosity::trace: return "TRACE";
-  }
-  return "NORMAL";
-}
-
-bool parse_serial_verbosity(const char* text, SerialVerbosity* out) {
-  if (text == nullptr || out == nullptr) return false;
-  if (strcasecmp(text, "QUIET") == 0) *out = SerialVerbosity::quiet;
-  else if (strcasecmp(text, "NORMAL") == 0) *out = SerialVerbosity::normal;
-  else if (strcasecmp(text, "DEBUG") == 0) *out = SerialVerbosity::debug;
-  else if (strcasecmp(text, "TRACE") == 0) *out = SerialVerbosity::trace;
-  else return false;
-  return true;
-}
-
-void apply_serial_verbosity(SerialVerbosity level) {
-  serial_verbosity.store(static_cast<uint8_t>(level), std::memory_order_relaxed);
-  const esp_log_level_t esp_level =
-      level == SerialVerbosity::quiet ? ESP_LOG_ERROR
-      : level == SerialVerbosity::normal ? ESP_LOG_INFO
-      : level == SerialVerbosity::debug ? ESP_LOG_DEBUG : ESP_LOG_VERBOSE;
-  esp_log_level_set("*", esp_level);
-}
+#ifndef ORCSDR_HOSTED_C6_VERSION
+#error "ORCSDR_HOSTED_C6_VERSION must come from tools/release/hosted-c6-release.json"
+#endif
 
 class OrcConsole {
  public:
@@ -1222,9 +1190,6 @@ static std::atomic<uint32_t> rtl_dsp_window_us{0};
 static std::atomic<uint32_t> rtl_dsp_window_blocks{0};
 static std::atomic<uint32_t> rtl_dsp_block_us_max{0};
 static std::atomic<bool> rtl_session_active{false};
-static RtlBand rtl_session_band = RtlBand::fm;
-static float rtl_session_audio_scale = 5500.0f;
-static bool rtl_session_continuous = true;
 static uint32_t rtl_session_started_ms = 0;
 static std::atomic<uint32_t> rtl_session_frequency_hz{kRtlFmDefaultHz};
 static std::atomic<uint32_t> rtl_lab_rate_override_sps{0};
@@ -1419,7 +1384,7 @@ int wifi_network_count = -1;
 char wifi_ssid[33]{};
 char wifi_password[64]{};
 char wifi_status_message[48]{};
-char wifi_hosted_host_version[16]{"3.0.6"};
+char wifi_hosted_host_version[16]{ORCSDR_HOSTED_C6_VERSION};
 char wifi_hosted_c6_version[16]{"unknown"};
 char wifi_hosted_failure_stage[24]{"not_started"};
 int32_t wifi_hosted_failure_code = ESP_OK;
@@ -1462,8 +1427,8 @@ char rtl_sdr_serial[48]{};
 char rtl_sdr_speed[8] = "none";
 uint16_t rtl_sdr_vid = 0;
 uint16_t rtl_sdr_pid = 0;
-uint8_t pending_usb_address = 0;
 #if RTL_USE_LEGACY_USB
+uint8_t pending_usb_address = 0;
 usb_host_client_handle_t usb_client = nullptr;
 usb_device_handle_t rtl_sdr_device = nullptr;
 bool rtl_sdr_gone = false;
@@ -2001,6 +1966,7 @@ void set_rtl_sdr_status(const char* status) {
   strlcpy(rtl_sdr_status, status, sizeof(rtl_sdr_status));
 }
 
+#if RTL_USE_LEGACY_USB
 void usb_string_to_ascii(const usb_str_desc_t* descriptor, char* output,
                          size_t output_size) {
   if (descriptor == nullptr || output_size == 0) {
@@ -2016,7 +1982,6 @@ void usb_string_to_ascii(const usb_str_desc_t* descriptor, char* output,
   output[count] = '\0';
 }
 
-#if RTL_USE_LEGACY_USB
 void usb_client_event(const usb_host_client_event_msg_t* event, void*) {
   if (event->event == USB_HOST_CLIENT_EVENT_NEW_DEV) {
     pending_usb_address = event->new_dev.address;
@@ -7582,14 +7547,15 @@ void initialize_wifi() {
         strcmp(orcsdr::wifi::hosted_failure_stage(), "version") == 0;
     strlcpy(wifi_hosted_c6_version, orcsdr::wifi::hosted_c6_version(),
             sizeof(wifi_hosted_c6_version));
-    strlcpy(wifi_status_message, "ESP-Hosted 3.0.6 unavailable", sizeof(wifi_status_message));
+    strlcpy(wifi_status_message, "ESP-Hosted " ORCSDR_HOSTED_C6_VERSION " unavailable",
+            sizeof(wifi_status_message));
     Serial.println("RTL_WIFI_BLOCKED hosted_init_or_version");
   } else {
     wifi_hosted_update_required = false;
     strlcpy(wifi_hosted_c6_version, orcsdr::wifi::hosted_c6_version(),
             sizeof(wifi_hosted_c6_version));
     Serial.println("I OrcSDR: ESP32-C6 detected");
-    Serial.println("I OrcSDR: ESP-Hosted C6 FW: 3.0.6");
+    Serial.println("I OrcSDR: ESP-Hosted C6 FW: " ORCSDR_HOSTED_C6_VERSION);
     Serial.println("I OrcSDR: ESP-Hosted transport: SDIO");
   }
   Serial.printf("RTL_WIFI_INIT station=%d core=%d\n", wifi_station_ready ? 1 : 0,
@@ -11410,8 +11376,7 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_SERIAL VERBOSITY") == 0) {
-    const auto level = static_cast<SerialVerbosity>(
-        serial_verbosity.load(std::memory_order_relaxed));
+    const auto level = current_serial_verbosity();
     Serial.printf("RTL_SERIAL_VERBOSITY mode=%s\n", serial_verbosity_name(level));
     return;
   }
@@ -11638,8 +11603,9 @@ void process_command(char* command) {
   }
   if (strcmp(command, "RTL_WIFI_C6_STATUS") == 0) {
     const auto c6 = orcsdr::wifi::c6_update_status();
-    Serial.printf("RTL_WIFI_C6_STATUS host=3.0.6 coprocessor=%s transport=%d embedded=%d "
+    Serial.printf("RTL_WIFI_C6_STATUS host=%s coprocessor=%s transport=%d embedded=%d "
                   "state=%s percent=%u stage=%s match=%d\n",
+                  ORCSDR_HOSTED_C6_VERSION,
                   orcsdr::wifi::hosted_c6_version(), orcsdr::wifi::hosted_transport_ready() ? 1 : 0,
                   c6.image_embedded ? 1 : 0, orcsdr::wifi::c6_update_state_name(c6.state),
                   static_cast<unsigned>(c6.progress_percent), c6.stage[0] ? c6.stage : "none",

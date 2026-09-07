@@ -9,7 +9,7 @@ package with the pinned C6 image embedded for an explicit in-app update.
 #>
 param(
   [string]$Version,
-  [string]$IdfPath = 'C:\Espressif\frameworks\esp-idf-v5.5.4',
+  [string]$IdfPath = 'C:\Espressif\v5.5.4\esp-idf',
   [switch]$SkipBuild
 )
 
@@ -48,6 +48,8 @@ $c6Dir = Join-Path $dist 'c6'
 if ($LASTEXITCODE) { throw "ESP-Hosted C6 build failed ($LASTEXITCODE)." }
 $c6Image = Join-Path $c6Dir 'esp_hosted_tab5_c6.bin'
 $c6Provenance = Get-Content (Join-Path $c6Dir 'c6-provenance.json') -Raw | ConvertFrom-Json
+$hostedVersion = [string]$c6Provenance.hosted_version
+if ($hostedVersion -notmatch '^\d+\.\d+\.\d+$') { throw 'C6 provenance has an invalid Hosted version.' }
 & (Join-Path $app 'tools\build-tab5-idf.ps1') -IdfPath $IdfPath -C6Firmware $c6Image
 if ($LASTEXITCODE -ne 0) { throw "Native build failed ($LASTEXITCODE)." }
 $appImage = Join-Path $appBuild 'orcsdr_tab5.bin'
@@ -83,7 +85,7 @@ $manifest = [ordered]@{
   firmware = (Split-Path $image -Leaf)
   sha256 = $hash
   required_accessory = 'RTL-SDR Blog V4'
-  c6_requirement = 'Embedded C6 3.0.6 image; update only from Firmware & Updates after confirmation.'
+  c6_requirement = "Embedded C6 $hostedVersion image; update only from Firmware & Updates after confirmation."
   c6_firmware = "c6/$($c6Provenance.firmware)"
   c6_sha256 = $c6Provenance.sha256
   c6_source_revision = $c6Provenance.source_revision
@@ -93,7 +95,7 @@ $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dist 'm5burner
 @(
   "OrcSDR for M5Stack Tab5 $Version",
   '',
-  'This package contains the P4 application and a pinned C6 Hosted 3.0.6 update image.',
+  "This package contains the P4 application and a pinned C6 Hosted $hostedVersion update image.",
   'If the reachable C6 version differs, open Settings > Firmware & Updates and confirm the in-app update.',
   'Normal upgrades: do not erase; this preserves OrcSDR settings and saved Wi-Fi profiles.',
   "SHA-256: $hash"

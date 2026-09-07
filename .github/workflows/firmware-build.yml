@@ -1,0 +1,51 @@
+name: Firmware build
+
+on:
+  pull_request:
+    paths:
+      - 'apps/orcsdr-tab5/**'
+      - 'components/**'
+      - '.github/workflows/firmware-build.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'apps/orcsdr-tab5/**'
+      - 'components/**'
+      - '.github/workflows/firmware-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tab5:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.4
+    defaults:
+      run:
+        working-directory: apps/orcsdr-tab5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          submodules: recursive
+      - name: Resolve managed components
+        shell: bash
+        run: |
+          set +e
+          idf.py -B build-ci -D SDKCONFIG=build-ci/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults reconfigure
+          set -e
+          python tools/prepare-managed-components.py
+          idf.py -B build-ci -D SDKCONFIG=build-ci/sdkconfig -D SDKCONFIG_DEFAULTS=sdkconfig.defaults reconfigure
+          python tools/prepare-managed-components.py
+      - name: Build Tab5 application
+        run: idf.py -B build-ci build
+      - name: Publish firmware artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: orcsdr-tab5-${{ github.sha }}
+          path: |
+            apps/orcsdr-tab5/build-ci/orcsdr_tab5.bin
+            apps/orcsdr-tab5/build-ci/bootloader/bootloader.bin
+            apps/orcsdr-tab5/build-ci/partition_table/partition-table.bin
+            apps/orcsdr-tab5/build-ci/flasher_args.json
+          if-no-files-found: error

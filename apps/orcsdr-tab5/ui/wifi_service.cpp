@@ -89,8 +89,8 @@ void c6_update_task(void*) {
     update_fail("ota_activate", result); vTaskDelete(nullptr); return;
   }
   set_update_status(C6UpdateState::rebooting, 100, "restarting");
-  ESP_LOGI("orcsdr_wifi", "RTL_WIFI_C6_UPDATE state=rebooting target=3.0.6 bytes=%u",
-           static_cast<unsigned>(size));
+  ESP_LOGI("orcsdr_wifi", "RTL_WIFI_C6_UPDATE state=rebooting target=%s bytes=%u",
+           ORCSDR_HOSTED_C6_VERSION, static_cast<unsigned>(size));
   vTaskDelay(pdMS_TO_TICKS(300));
   esp_restart();
 #else
@@ -319,7 +319,8 @@ bool begin_c6_update() {
     update_fail("task_create", ESP_ERR_NO_MEM);
     return false;
   }
-  ESP_LOGI("orcsdr_wifi", "RTL_WIFI_C6_UPDATE state=starting target=3.0.6");
+  ESP_LOGI("orcsdr_wifi", "RTL_WIFI_C6_UPDATE state=starting target=%s",
+           ORCSDR_HOSTED_C6_VERSION);
   return true;
 }
 }  // namespace orcsdr::wifi

@@ -30,6 +30,7 @@ idf_component_register(
         "../ui/device_status_service.cpp"
         "../ui/screen_controller.cpp"
         "../ui/scan_engine.cpp"
+        "../ui/serial_verbosity.cpp"
         "../ui/fm_dashboard.cpp"
         "../ui/fm_config.cpp"
         "../ui/home_dashboard.cpp"
@@ -95,5 +96,26 @@ idf_component_register(
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE
     ORCSDR_HAS_EMBEDDED_C6_FIRMWARE=$<BOOL:${C6_FIRMWARE_BIN}>)
+
+# The application prints the pinned ESP-Hosted version on serial and shows it in
+# Settings. Read it from the release lock so a version bump changes one file
+# instead of every string that states the contract.
+set(ORCSDR_HOSTED_RELEASE_JSON
+    "${CMAKE_CURRENT_LIST_DIR}/../../../tools/release/hosted-c6-release.json")
+if(NOT EXISTS "${ORCSDR_HOSTED_RELEASE_JSON}")
+    message(FATAL_ERROR
+        "Missing pinned Hosted release metadata: ${ORCSDR_HOSTED_RELEASE_JSON}")
+endif()
+set_property(DIRECTORY APPEND PROPERTY
+    CMAKE_CONFIGURE_DEPENDS "${ORCSDR_HOSTED_RELEASE_JSON}")
+file(READ "${ORCSDR_HOSTED_RELEASE_JSON}" ORCSDR_HOSTED_RELEASE_TEXT)
+string(REGEX MATCH "\"hosted_version\"[ \t]*:[ \t]*\"([0-9]+\\.[0-9]+\\.[0-9]+)\""
+    ORCSDR_HOSTED_VERSION_MATCH "${ORCSDR_HOSTED_RELEASE_TEXT}")
+if(NOT ORCSDR_HOSTED_VERSION_MATCH)
+    message(FATAL_ERROR
+        "hosted_version is missing or invalid in ${ORCSDR_HOSTED_RELEASE_JSON}")
+endif()
+target_compile_definitions(${COMPONENT_LIB} PRIVATE
+    ORCSDR_HOSTED_C6_VERSION="${CMAKE_MATCH_1}")
 target_compile_options(${COMPONENT_LIB} PRIVATE
     "$<$<COMPILE_LANGUAGE:CXX>:-include;orcsdr_m5_time.hpp>")

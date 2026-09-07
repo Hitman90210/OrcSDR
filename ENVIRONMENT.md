@@ -11,8 +11,8 @@ Native ESP-IDF build; PlatformIO is not a supported build or flash path.
 
 | Requirement | Version / path | Notes |
 |---|---|---|
-| ESP-IDF | 5.5.4 | Installed via Espressif's standard installer to `C:\Espressif\frameworks\esp-idf-v5.5.4` (Windows path shown; adjust for other OSes). Do not substitute a different ESP-IDF version — component pins in `apps/orcsdr-tab5/dependencies.lock` target 5.5.4. |
-| IDF Python env | `C:\Espressif\python_env\idf5.5_py3.14_env` | Created by the ESP-IDF installer alongside the framework; not a project-level virtualenv. |
+| ESP-IDF | 5.5.4 | Installed via Espressif Installation Manager to `C:\Espressif\v5.5.4\esp-idf` (Windows path shown; adjust for other OSes). Do not substitute a different ESP-IDF version — component pins in `apps/orcsdr-tab5/dependencies.lock` target 5.5.4. |
+| IDF Python env | `C:\Espressif\tools\python\v5.5.4\venv` | Created by the Installation Manager alongside the framework; not a project-level virtualenv. The build wrapper also recognizes the legacy `python_env` layout. |
 | Target toolchain | ESP32-P4 (riscv32-esp-elf), installed by the ESP-IDF installer | Do not override the platform toolchain. |
 | M5Unified / M5GFX | 0.2.20 / 0.2.27 | Pulled as ESP-IDF managed components (`managed_components/`), pinned by `apps/orcsdr-tab5/main/idf_component.yml` and `dependencies.lock`. |
 

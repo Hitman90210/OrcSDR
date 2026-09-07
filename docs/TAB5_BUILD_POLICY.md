@@ -94,15 +94,19 @@ Healthy boot (2026-08-17, Hosted 2.12.6, mempool off):
 ## Installer and release package
 
 Use the current [M5Burner release and recovery instructions](M5BURNER_RELEASE.md)
-and [hardware acceptance gate](M5BURNER_HARDWARE_GATE.md). The current beta package
-and installer target Hosted 3.0.6; the historical 2.12.6 measurements above do not
-establish acceptance for that pair.
+and [hardware acceptance gate](M5BURNER_HARDWARE_GATE.md). The historical 2.12.6
+measurements above do not establish acceptance for the currently pinned pair.
+
+The guarded root installer reads the required Hosted version from
+`tools/release/hosted-c6-release.json`, preserves NVS, and installs the P4
+application at explicit offsets. Its `-UpdateC6` route is recovery-only and
+must establish a matching Hosted link before it restores the final app.
 
 ## Native build and release gate
 
 ```powershell
-Set-Location F:\Ai\OrcSDR\apps\orcsdr-tab5
-.\tools\build-tab5-idf.ps1
+Set-Location .\apps\orcsdr-tab5
+.\tools\build-tab5-idf.ps1 -IdfPath 'C:\Espressif\v5.5.4\esp-idf'
 ```
 
 After an explicitly authorized P4 flash, use the serial release test to prove

@@ -11,6 +11,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$requiredHosted = (Get-Content (Join-Path $PSScriptRoot 'hosted-c6-release.json') -Raw | ConvertFrom-Json).hosted_version
 
 function Get-Sha256([string]$Path) {
   $sha = [Security.Cryptography.SHA256]::Create()
@@ -47,12 +48,12 @@ if (-not $Version) { $Version = "v$($manifest.version)" }
 if ($Version -notmatch '^v\d+\.\d+\.\d+(-(alpha|beta)\.\d+)?(-candidate\.\d+)?$') { throw "Invalid version: $Version" }
 if ($manifest.version -ne $Version.TrimStart('v')) { throw 'Manifest version does not match the expected release.' }
 if ($Bridge) {
-  if ($manifest.name -ne 'OrcSDR Hosted 3.0.6 Bridge' -or -not $manifest.temporary) { throw 'Manifest is not the temporary Hosted bridge.' }
+  if ($manifest.name -ne "OrcSDR Hosted $requiredHosted Bridge" -or -not $manifest.temporary) { throw 'Manifest is not the temporary Hosted bridge.' }
   $provenancePath = Join-Path $bundle 'c6-provenance.json'
   if (-not (Test-Path $provenancePath)) { throw 'Bridge is missing C6 provenance.' }
   $provenance = Get-Content $provenancePath -Raw | ConvertFrom-Json
   $c6Image = Join-Path $bundle $provenance.firmware
-  if ($provenance.hosted_version -ne '3.0.6' -or -not (Test-Path $c6Image)) { throw 'Bridge C6 image/version is invalid.' }
+  if ($provenance.hosted_version -ne $requiredHosted -or -not (Test-Path $c6Image)) { throw 'Bridge C6 image/version is invalid.' }
   if ((Get-Sha256 $c6Image) -ne $provenance.sha256) { throw 'Bridge C6 hash does not match provenance.' }
 } elseif ($manifest.name -ne 'OrcSDR') {
   throw 'Manifest is not the final OrcSDR package.'
@@ -63,7 +64,7 @@ if ($Bridge) {
     throw 'Final package is missing its embedded C6 update provenance.'
   }
   $provenance = Get-Content $provenancePath -Raw | ConvertFrom-Json
-  if ($provenance.hosted_version -ne '3.0.6' -or $manifest.c6_sha256 -ne $provenance.sha256 -or
+  if ($provenance.hosted_version -ne $requiredHosted -or $manifest.c6_sha256 -ne $provenance.sha256 -or
       $manifest.c6_source_revision -ne $provenance.source_revision -or
       (Get-Sha256 $c6Image) -ne $provenance.sha256) {
     throw 'Final package C6 image does not match its provenance.'
@@ -125,7 +126,7 @@ try {
     $reader = [IO.StreamReader]::new(($archive.Entries | Where-Object FullName -eq 'm5burner.json').Open())
     try { $zipManifest = $reader.ReadToEnd() | ConvertFrom-Json }
     finally { $reader.Dispose() }
-    if ($zipManifest.embedded_c6.hosted_version -ne '3.0.6' -or
+    if ($zipManifest.embedded_c6.hosted_version -ne $requiredHosted -or
         $zipManifest.embedded_c6.sha256 -ne $provenance.sha256 -or
         $zipManifest.embedded_c6.source_revision -ne $provenance.source_revision) {
       throw 'M5Burner ZIP embedded-C6 metadata does not match provenance.'
