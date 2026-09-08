@@ -3,6 +3,7 @@
 #include "dashboard_audio_control.hpp"
 #include "offline_map.hpp"
 #include "orc_badge.hpp"
+#include "waterfall_view.hpp"
 
 #include <M5Unified.h>
 
@@ -43,7 +44,7 @@ int32_t g_map_center_lon_e7 = INT32_MAX;
 uint8_t g_filter = 0;
 uint32_t g_last_dynamic_ms = 0;
 uint32_t g_last_spectrum_ms = 0;
-uint16_t g_waterfall_row[kPlotW]{};
+WaterfallView g_waterfall(kPlotX + 1, kWaterfallY + 1, kPlotW - 2, kWaterfallH - 2);
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
   return x >= bx && x < bx + bw && y >= by && y < by + bh;
@@ -216,8 +217,7 @@ void draw_plot_static() {
     M5.Display.drawFastVLine(kPlotX + i * kPlotW / 5, kPlotY, kPlotH, kGrid);
   }
   M5.Display.drawRect(kPlotX, kWaterfallY, kPlotW, kWaterfallH, kCyan);
-  M5.Display.setScrollRect(kPlotX + 1, kWaterfallY + 1, kPlotW - 2, kWaterfallH - 2,
-                           kBg);
+  g_waterfall.clear(kBg);
   card(846, 270, 280, 258);
   text("RECENT", 868, 294, kCyan, 2, middle_left);
   button(34, 578, 250, 48, "SCAN BAND", kCyan, g_snapshot.survey_active);
@@ -534,17 +534,19 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
     px = x + i; py = next_y;
   }
   if (g_view == View::overview) {
-    for (int i = 0; i < kPlotW; ++i) {
-      const size_t source = first_bin + std::min<size_t>(visible_bins - 1,
-          static_cast<size_t>(i) * visible_bins / kPlotW);
-      const float level = std::clamp((levels[source] - floor) / 70.0f, 0.0f, 1.0f);
-      const uint8_t r = static_cast<uint8_t>(std::clamp(level * 300.0f, 0.0f, 255.0f));
-      const uint8_t g = static_cast<uint8_t>(std::clamp(level * 255.0f, 0.0f, 255.0f));
-      const uint8_t b = static_cast<uint8_t>(std::clamp(180.0f - level * 180.0f, 0.0f, 255.0f));
-      g_waterfall_row[i] = M5.Display.color565(r, g, b);
+    const int wf_w = g_waterfall.width();
+    if (uint16_t* wf_row = g_waterfall.next_row()) {
+      for (int i = 0; i < wf_w; ++i) {
+        const size_t source = first_bin + std::min<size_t>(visible_bins - 1,
+            static_cast<size_t>(i) * visible_bins / static_cast<size_t>(wf_w));
+        const float level = std::clamp((levels[source] - floor) / 70.0f, 0.0f, 1.0f);
+        const uint8_t r = static_cast<uint8_t>(std::clamp(level * 300.0f, 0.0f, 255.0f));
+        const uint8_t g = static_cast<uint8_t>(std::clamp(level * 255.0f, 0.0f, 255.0f));
+        const uint8_t b = static_cast<uint8_t>(std::clamp(180.0f - level * 180.0f, 0.0f, 255.0f));
+        wf_row[i] = M5.Display.color565(r, g, b);
+      }
+      g_waterfall.push();
     }
-    M5.Display.scroll(0, -1);
-    M5.Display.pushImage(kPlotX, kWaterfallY + kWaterfallH - 2, kPlotW, 1, g_waterfall_row);
   }
   M5.Display.endWrite();
 }

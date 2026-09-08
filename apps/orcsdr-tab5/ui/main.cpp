@@ -70,6 +70,7 @@
 #include "rf_lab.hpp"
 #include "rf_visualizer.hpp"
 #include "settings_app.hpp"
+#include "waterfall_view.hpp"
 #include "ui_capture.hpp"
 #include "web_console.hpp"
 #include "rf24_dashboard.hpp"
@@ -1047,13 +1048,23 @@ static std::atomic<int> rtl_fm_preset_scan_total_steps{1};
 static std::atomic<int> rtl_fm_preset_scan_found{0};
 static std::atomic<uint32_t> rtl_fm_preset_scan_freq_hz{kRtlFmMinHz};
 
-enum class ActiveScan : uint8_t { none, fm_presets, p25_survey };
+enum class ActiveScan : uint8_t { none, fm_presets, p25_survey, fm_seek };
 orcsdr::radio::Session radio_session;
 orcsdr::scan::Engine scan_engine;
 ActiveScan active_scan = ActiveScan::none;  // Streaming task only.
 orcsdr::radio::Token scan_radio_token{};    // Streaming task only.
 std::atomic<bool> cancel_scan_for_takeover{false};
 std::atomic<bool> p25_survey_requested{false};
+// SEEK used to hop between saved presets, so it only ever visited the handful
+// of frequencies a previous band scan had stored. It is a real seek now: sweep
+// the band in 800 kHz scope windows from the current dial and stop on the
+// first station past it, the same measurement the preset scan already uses.
+std::atomic<int8_t> fm_seek_requested{0};   // -1 down, +1 up, 0 idle
+std::atomic<bool> fm_seek_cancel{false};
+int8_t fm_seek_direction = 0;               // Streaming task only.
+uint32_t fm_seek_origin_hz = 0;             // Streaming task only.
+uint32_t fm_seek_hit_hz = 0;                // Streaming task only.
+bool fm_seek_stop_pending = false;          // Streaming task only.
 std::atomic<bool> p25_survey_cancel_requested{false};
 
 // Runs on the streaming task only (single-threaded access to fm_presets).
@@ -1207,6 +1218,13 @@ float rtl_spectrum_window[kRtlSpectrumBins];
 int16_t rtl_spectrum_y[kRtlSpectrumBins];
 int16_t rtl_spectrum_peak_y[kRtlSpectrumBins];
 uint16_t rtl_waterfall_row[kSpectrumWidth];
+// The live waterfall keeps its own history instead of calling
+// M5.Display.scroll(): the scroll rect is global display state and this screen
+// only ever set it when the nav panel opened, so the radio waterfall was
+// scrolling against whichever dashboard touched the rect last.
+orcsdr::WaterfallView rtl_waterfall(kSpectrumX + 1, kWaterfallY + 1,
+                                    kSpectrumWidth - 2, kWaterfallHeight - 2);
+int rtl_waterfall_width = 0;
 bool rtl_spectrum_window_ready = false;
 bool rtl_spectrum_trace_valid = false;
 uint32_t rtl_spectrum_last_ms = 0;
@@ -3816,9 +3834,6 @@ bool handle_tool_tab_touch(int32_t x, int32_t y) {
     rtl_nav_dropdown = SdrNavDropdown::None;
     rtl_frequency_keypad_open = false;
     if (rtl_nav_open) {
-      M5.Display.setScrollRect(kSpectrumX + 1, kWaterfallY + 1,
-                               spectrum_draw_width() - 2, kWaterfallHeight - 2,
-                               TFT_BLACK);
       draw_spectrum_axis();
       draw_tool_tabs();
     }
@@ -5484,8 +5499,15 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     draw_spectrum_grid();
   }
 
-  M5.Display.scroll(0, -1);
-  const int waterfall_width = draw_width - 2;
+  const int waterfall_width = std::min(draw_width - 2, rtl_waterfall.width());
+  if (waterfall_width != rtl_waterfall_width) {
+    // Opening the nav panel narrows the plot; stale history would be at the
+    // wrong scale, so start the ring over at the new width.
+    rtl_waterfall_width = waterfall_width;
+    rtl_waterfall.clear();
+  }
+  uint16_t* waterfall_row =
+      tool == OrcTool::Capture ? nullptr : rtl_waterfall.next_row();
   int previous_x = kSpectrumX;
   int previous_y = kSpectrumY + kSpectrumHeight - 2;
   int prev_peak_x = kSpectrumX;
@@ -5515,19 +5537,19 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
       prev_peak_x = x;
       prev_peak_y = py;
     }
+    if (waterfall_row == nullptr) continue;
     const int cell_x = static_cast<int>((bin - first_bin) * waterfall_width / visible_bins);
-    const int next_x = static_cast<int>((bin - first_bin + 1) * waterfall_width /
-                                        visible_bins);
+    const int next_x = std::min(
+        waterfall_width,
+        std::max(cell_x + 1, static_cast<int>((bin - first_bin + 1) *
+                                              waterfall_width / visible_bins)));
     const uint16_t color = orcsdr::radio_ui::waterfall_color(normalized);
     for (int pixel = cell_x; pixel < next_x; ++pixel) {
-      rtl_waterfall_row[pixel] = color;
+      waterfall_row[pixel] = color;
     }
   }
   /* Capture tool owns waterfall panel — skip scrolling paint there. */
-  if (tool != OrcTool::Capture) {
-    M5.Display.pushImage(kSpectrumX + 1, kWaterfallY + kWaterfallHeight - 2,
-                         waterfall_width, 1, rtl_waterfall_row);
-  }
+  if (waterfall_row != nullptr) rtl_waterfall.push(waterfall_width);
   if (redraw_trace) {
     M5.Display.drawFastVLine(kSpectrumX + draw_width / 2, kSpectrumY + 1,
                              kSpectrumHeight - 2, TFT_GREEN);
@@ -7336,19 +7358,13 @@ void handle_fm_dashboard_action(const orcsdr::fm::Action& action) {
       break;
     case ActionKind::seek_down:
     case ActionKind::seek_up: {
-      int selected = -1;
-      if (action.kind == ActionKind::seek_down) {
-        for (int i = fm_preset_count - 1; i >= 0; --i)
-          if (fm_presets[i].freq_hz + 50000u < rtl_ui_frequency_hz) { selected = i; break; }
-        if (selected < 0 && fm_preset_count) selected = fm_preset_count - 1;
-      } else {
-        for (int i = 0; i < fm_preset_count; ++i)
-          if (fm_presets[i].freq_hz > rtl_ui_frequency_hz + 50000u) { selected = i; break; }
-        if (selected < 0 && fm_preset_count) selected = 0;
+      const int8_t direction = action.kind == ActionKind::seek_down ? -1 : 1;
+      if (active_scan == ActiveScan::fm_seek) {
+        // Pressing SEEK again while one is running stops it where it is.
+        fm_seek_cancel.store(true, std::memory_order_release);
+        break;
       }
-      if (selected >= 0) tune(fm_presets[selected].freq_hz);
-      else tune(rtl_step_frequency(RtlBand::fm, rtl_ui_frequency_hz,
-                                   action.kind == ActionKind::seek_down ? -1 : 1));
+      fm_seek_requested.store(direction, std::memory_order_release);
       break;
     }
     case ActionKind::save_preset:
@@ -7883,8 +7899,23 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
   refresh_active_screen();
 }
 
+// scan::Engine walks start_hz + index * step_hz in uint32 arithmetic, so a
+// downward seek runs off the bottom of the band and wraps to a huge value.
+// Fold the target back into the FM band so a seek started near 88 MHz
+// continues from the top instead of dying out of range.
+uint32_t fm_seek_wrap(uint32_t frequency_hz) {
+  constexpr int64_t span = static_cast<int64_t>(kRtlFmMaxHz) - kRtlFmMinHz;
+  int64_t value = static_cast<int64_t>(frequency_hz);
+  if (value > static_cast<int64_t>(kRtlFmMaxHz) + span) value -= 0x100000000LL;
+  while (value < static_cast<int64_t>(kRtlFmMinHz)) value += span;
+  while (value > static_cast<int64_t>(kRtlFmMaxHz)) value -= span;
+  return static_cast<uint32_t>(value);
+}
+
 bool scan_retune(uint32_t frequency_hz, void*) {
-  if (active_scan == ActiveScan::fm_presets) reset_spectrum_renderer();
+  if (active_scan == ActiveScan::fm_presets || active_scan == ActiveScan::fm_seek)
+    reset_spectrum_renderer();
+  if (active_scan == ActiveScan::fm_seek) frequency_hz = fm_seek_wrap(frequency_hz);
   return request_hot_retune_for(scan_radio_token, frequency_hz);
 }
 
@@ -7902,6 +7933,29 @@ void scan_measure(size_t index, uint32_t frequency_hz, void*) {
     if (serial_verbosity_at(SerialVerbosity::trace))
       Serial.printf("RTL_PRESET_SCAN sample center=%u peak=%u level=%.1f\n",
                     frequency_hz, found_hz, static_cast<double>(level));
+    return;
+  }
+  if (active_scan == ActiveScan::fm_seek) {
+    const float level = rtl_scope_peak_level.load(std::memory_order_relaxed);
+    if (level < kFmPresetMinDbfs) return;
+    const int32_t offset = rtl_scope_peak_offset_hz.load(std::memory_order_relaxed);
+    const int64_t found = static_cast<int64_t>(fm_seek_wrap(frequency_hz)) + offset;
+    const uint32_t station_hz = rtl_clamp_frequency(
+        RtlBand::fm, found > 0 ? static_cast<uint32_t>(found) : 0u);
+    const uint32_t snapped_hz = ((station_hz + 50000u) / 100000u) * 100000u;
+    // Must be a different station in the direction of travel, else the sweep
+    // would immediately "find" the one already tuned. Measured modulo the band
+    // so a hit found after wrapping an edge still counts.
+    constexpr int64_t band_span = static_cast<int64_t>(kRtlFmMaxHz) - kRtlFmMinHz;
+    int64_t delta = static_cast<int64_t>(snapped_hz) - fm_seek_origin_hz;
+    if (fm_seek_direction > 0 && delta < 0) delta += band_span;
+    if (fm_seek_direction < 0 && delta > 0) delta -= band_span;
+    if (fm_seek_direction > 0 ? delta < 150000 : delta > -150000) return;
+    fm_seek_hit_hz = snapped_hz;
+    fm_seek_stop_pending = true;
+    if (serial_verbosity_at(SerialVerbosity::trace))
+      Serial.printf("RTL_FM_SEEK hit=%lu level=%.1f\n",
+                    static_cast<unsigned long>(snapped_hz), static_cast<double>(level));
     return;
   }
   if (active_scan == ActiveScan::p25_survey) {
@@ -7929,6 +7983,18 @@ void scan_finished(orcsdr::scan::Finish reason, void*) {
                               ? "done"
                               : reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed";
     Serial.printf("RTL_PRESET_SCAN %s found=%d\n", outcome, fm_preset_count);
+    return;
+  }
+  if (finished == ActiveScan::fm_seek) {
+    const uint32_t target = fm_seek_hit_hz ? fm_seek_hit_hz : fm_seek_origin_hz;
+    (void)request_hot_retune_for(scan_radio_token, target);
+    rtl_ui_frequency_hz = target;
+    rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+    Serial.printf("RTL_FM_SEEK %s frequency_hz=%lu\n",
+                  fm_seek_hit_hz ? "found" : "no-station",
+                  static_cast<unsigned long>(target));
+    fm_seek_hit_hz = 0;
+    fm_seek_direction = 0;
     return;
   }
   if (finished != ActiveScan::p25_survey) return;
@@ -8003,6 +8069,42 @@ void service_shared_scan(uint32_t now) {
       rtl_scope_span_hz.store(kRtlScopeSpanMaxHz, std::memory_order_relaxed);
       rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
       Serial.println("RTL_PRESET_SCAN start");
+    }
+  }
+  if (active_scan == ActiveScan::fm_seek &&
+      (fm_seek_stop_pending || fm_seek_cancel.exchange(false, std::memory_order_acq_rel))) {
+    // Stop from outside the measure callback so the engine is not re-entered.
+    fm_seek_stop_pending = false;
+    scan_engine.cancel(false, callbacks);
+  }
+  if (const int8_t direction =
+          fm_seek_requested.exchange(0, std::memory_order_acq_rel);
+      direction != 0 && !scan_engine.active() && g_stream_band == RtlBand::fm &&
+      !rtl_auto_fm_active.load(std::memory_order_acquire)) {
+    const auto session = radio_session.snapshot();
+    scan_radio_token = {session.owner, session.generation};
+    // One pass over the whole band from the current dial, wrapping at the
+    // edges, so a seek near 107.9 still reaches the bottom of the band.
+    const size_t count =
+        (kRtlFmMaxHz - kRtlFmMinHz + kRtlFmAutoStepHz - 1) / kRtlFmAutoStepHz;
+    const uint32_t origin = rtl_clamp_frequency(RtlBand::fm, rtl_ui_frequency_hz);
+    const int64_t first = static_cast<int64_t>(origin) +
+                          static_cast<int64_t>(direction) * kRtlFmAutoStepHz / 2;
+    const orcsdr::scan::Plan plan{
+        orcsdr::scan::Mode::frequency_range, nullptr, count,
+        rtl_clamp_frequency(RtlBand::fm, first > 0 ? static_cast<uint32_t>(first) : 0u),
+        static_cast<uint32_t>(static_cast<int32_t>(kRtlFmAutoStepHz) * direction),
+        kRtlFmAutoSettleMs, false};
+    if (scan_engine.start(plan, origin, now)) {
+      active_scan = ActiveScan::fm_seek;
+      fm_seek_direction = direction;
+      fm_seek_origin_hz = origin;
+      fm_seek_hit_hz = 0;
+      fm_seek_stop_pending = false;
+      rtl_scope_span_hz.store(kRtlScopeSpanMaxHz, std::memory_order_relaxed);
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_FM_SEEK start direction=%d from_hz=%lu\n",
+                    static_cast<int>(direction), static_cast<unsigned long>(origin));
     }
   }
   if (!scan_engine.active() && g_stream_band == RtlBand::p25 &&
@@ -8299,6 +8401,7 @@ const orcsdr::settings::State& global_settings_state() {
     target.archive_bytes = source.archive_bytes;
     target.installed = source.installed;
     target.update_available = source.update_available;
+    target.available = source.available;
   }
   state.companion_supported = false;
   state.web_console_enabled = settings_web_console_enabled;

@@ -400,6 +400,7 @@ bool parse_manifest(const uint8_t* data, size_t size) {
       views[index].runtime_bytes = parsed[index].runtime.bytes;
       views[index].archive_bytes = parsed[index].archive.bytes;
       strlcpy(views[index].status, "AVAILABLE", sizeof(views[index].status));
+      views[index].available = true;
       if (node_index + 1 == pack_count) ok = true;
     }
     if (ok) {
@@ -763,6 +764,22 @@ bool request(Operation operation, uint8_t pack_index, bool needs_wifi) {
   if (needs_wifi && !orcsdr::wifi::connected()) {
     set_message("Connect Wi-Fi before downloading");
     return false;
+  }
+  // An install used to queue a worker for a pack the catalog does not carry,
+  // which reported "Data operation queued" and then silently did nothing.
+  if (operation == Operation::install) {
+    if (pack_index >= kPackCount) {
+      set_message("Unknown data pack");
+      return false;
+    }
+    if (!g_state.ready) {
+      set_message("Run Check for Updates first");
+      return false;
+    }
+    if (!g_packs[pack_index].available) {
+      set_message("Not in catalog - nothing to download yet");
+      return false;
+    }
   }
   if ((!g_fs->exists("/orcsdr") && !g_fs->mkdir("/orcsdr")) ||
       (!g_fs->exists(kDataRoot) && !g_fs->mkdir(kDataRoot))) {

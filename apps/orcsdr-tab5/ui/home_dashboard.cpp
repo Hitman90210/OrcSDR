@@ -2,6 +2,7 @@
 
 #include "dashboard_audio_control.hpp"
 #include "orc_badge.hpp"
+#include "waterfall_view.hpp"
 
 #include <M5Unified.h>
 
@@ -46,6 +47,7 @@ bool browser = false;
 int32_t scroll_offset_px = 0;
 uint32_t last_spectrum_ms = 0;
 float spectrum_levels[256]{};
+WaterfallView waterfall(kPlotX + 1, kWaterfallY + 1, kPlotW - 2, kWaterfallH - 2);
 uint8_t waterfall_contrast = 5;
 
 struct Gesture {
@@ -560,6 +562,7 @@ void enter(const Snapshot& snapshot) {
   browser = false;
   gesture = {};
   last_spectrum_ms = 0;
+  waterfall.clear();
   clamp_scroll();
   draw_all();
 }
@@ -662,17 +665,18 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
   M5.Display.drawFastVLine(kPlotX + kPlotW / 2, kSpectrumY, kSpectrumH, kGreen);
   M5.Display.clearClipRect();
   draw_spectrum_axis();
-  M5.Display.setScrollRect(kPlotX + 1, kWaterfallY + 1, kPlotW - 2,
-                           kWaterfallH - 2, TFT_BLACK);
-  M5.Display.scroll(0, -2);
-  for (size_t i = 0; i < samples; ++i) {
-    const float normalized = std::clamp(
-        (spectrum_levels[i] - floor) / waterfall_range_db(waterfall_contrast),
-        0.0f, 1.0f);
-    const int x = kPlotX + 1 + static_cast<int>(i * (kPlotW - 2) / samples);
-    const int x2 = kPlotX + 1 + static_cast<int>((i + 1) * (kPlotW - 2) / samples);
-    M5.Display.fillRect(x, kWaterfallY + kWaterfallH - 3, std::max(1, x2 - x), 2,
-                        waterfall_color(normalized));
+  if (uint16_t* row = waterfall.next_row()) {
+    for (size_t i = 0; i < samples; ++i) {
+      const float normalized = std::clamp(
+          (spectrum_levels[i] - floor) / waterfall_range_db(waterfall_contrast),
+          0.0f, 1.0f);
+      const int x0 = static_cast<int>(i * (kPlotW - 2) / samples);
+      const int x1 =
+          std::min(kPlotW - 2, static_cast<int>((i + 1) * (kPlotW - 2) / samples));
+      const uint16_t color = waterfall_color(normalized);
+      for (int p = x0; p < std::max(x0 + 1, x1); ++p) row[p] = color;
+    }
+    waterfall.push();
   }
   M5.Display.endWrite();
 }

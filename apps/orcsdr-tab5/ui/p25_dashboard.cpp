@@ -2,6 +2,7 @@
 
 #include "dashboard_audio_control.hpp"
 #include "orc_badge.hpp"
+#include "waterfall_view.hpp"
 #include "text_editor.hpp"
 
 #include <M5Unified.h>
@@ -43,7 +44,8 @@ View g_view = View::monitor;
 bool g_active = false;
 audio_header::Control g_audio_control{};
 uint32_t g_last_dynamic_ms = 0;
-EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kSpectrumW]{};
+EXT_RAM_BSS_ATTR WaterfallView g_waterfall(kSpectrumX + 1, kWaterfallY + 1, kSpectrumW - 2,
+                          kWaterfallH - 2);
 uint8_t g_profile_cursor = 0;
 bool g_delete_armed = false;
 char g_profile_name[48]{};
@@ -272,8 +274,7 @@ void draw_spectrum_static() {
     M5.Display.drawFastHLine(kSpectrumX, kSpectrumY + i * kSpectrumH / 4, kSpectrumW, kGrid);
   }
   M5.Display.drawRect(kSpectrumX, kWaterfallY, kSpectrumW, kWaterfallH, kCyan);
-  M5.Display.setScrollRect(kSpectrumX + 1, kWaterfallY + 1, kSpectrumW - 2,
-                           kWaterfallH - 2);
+  g_waterfall.clear(kBg);
   button(390, 565, 80, 45, "—");
   button(810, 565, 80, 45, "+");
   text("TAP SPECTRUM TO TUNE", 1050, 582, kCyan, 2);
@@ -622,6 +623,8 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
   }
   int px = kSpectrumX;
   int py = kSpectrumY + kSpectrumH - 2;
+  const int wf_w = g_waterfall.width();
+  uint16_t* wf_row = g_waterfall.next_row();
   for (size_t i = 0; i < visible_bins; ++i) {
     const float normalized = std::clamp((levels[first_bin + i] - floor) / 48.0f, 0.0f, 1.0f);
     const int x = kSpectrumX + static_cast<int>(i * (kSpectrumW - 1) / (visible_bins - 1));
@@ -629,10 +632,12 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
     if (i) M5.Display.drawLine(px, py, x, y, kGreen);
     px = x;
     py = y;
-    const int x0 = static_cast<int>(i * kSpectrumW / visible_bins);
-    const int x1 = static_cast<int>((i + 1) * kSpectrumW / visible_bins);
+    if (wf_row == nullptr) continue;
+    const int x0 = static_cast<int>(i * wf_w / visible_bins);
+    const int x1 = std::min(wf_w, std::max(x0 + 1,
+                                           static_cast<int>((i + 1) * wf_w / visible_bins)));
     const uint16_t color = waterfall_color(normalized);
-    for (int p = x0; p < x1; ++p) g_waterfall_row[p] = color;
+    for (int p = x0; p < x1; ++p) wf_row[p] = color;
   }
   const int center = kSpectrumX + kSpectrumW / 2;
   const int half_filter = std::max(3, static_cast<int>(12500ull * kSpectrumW /
@@ -640,9 +645,7 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
   M5.Display.drawFastVLine(center, kSpectrumY, kSpectrumH, kCyan);
   M5.Display.drawFastVLine(center - half_filter, kSpectrumY, kSpectrumH, kCyan);
   M5.Display.drawFastVLine(center + half_filter, kSpectrumY, kSpectrumH, kCyan);
-  M5.Display.scroll(0, -1);
-  M5.Display.pushImage(kSpectrumX, kWaterfallY + kWaterfallH - 2, kSpectrumW, 1,
-                       g_waterfall_row);
+  g_waterfall.push();
   M5.Display.drawFastVLine(center, kWaterfallY, kWaterfallH, kCyan);
   M5.Display.endWrite();
 }

@@ -302,9 +302,12 @@ void draw_data_maps() {
     text(detail, 350, y + 47, TFT_WHITE, 1);
     text(pack.status[0] ? pack.status : "CHECK CATALOG", 350, y + 70,
          pack.installed ? kGreen : kMuted, 1);
-    const char* install = pack.installed ? (pack.update_available ? "UPDATE" : "REINSTALL") : "INSTALL";
-    button(install, 930, y + 14, 132, 42,
-           g_state.catalog_busy || !g_state.catalog_ready ? TFT_DARKGREY : TFT_DARKCYAN);
+    const char* install = !pack.available ? "UNAVAILABLE"
+                          : pack.installed ? (pack.update_available ? "UPDATE" : "REINSTALL")
+                                           : "INSTALL";
+    const bool can_install =
+        pack.available && g_state.catalog_ready && !g_state.catalog_busy;
+    button(install, 930, y + 14, 132, 42, can_install ? TFT_DARKCYAN : TFT_DARKGREY);
     button(g_catalog_remove_armed == i ? "CONFIRM" : "REMOVE", 1072, y + 14, 126, 42,
            pack.installed && !g_state.catalog_busy ? TFT_MAROON : TFT_DARKGREY);
   }
@@ -836,7 +839,8 @@ Action handle_touch(int32_t x, int32_t y) {
       return {ActionKind::catalog_check, 0};
     for (uint8_t i = 0; i < 5; ++i) {
       const int row_y = 185 + i * 96;
-      if (hit(x, y, 930, row_y + 14, 132, 42) && g_state.catalog_ready && !g_state.catalog_busy)
+      if (hit(x, y, 930, row_y + 14, 132, 42) && g_state.catalog_ready &&
+          !g_state.catalog_busy && g_state.catalog_packs[i].available)
         return {ActionKind::catalog_install, i};
       if (hit(x, y, 1072, row_y + 14, 126, 42) && g_state.catalog_packs[i].installed && !g_state.catalog_busy) {
         if (g_catalog_remove_armed == i) {

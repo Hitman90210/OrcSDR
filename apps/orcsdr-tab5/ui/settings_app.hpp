@@ -40,6 +40,7 @@ struct CatalogPackView {
   uint32_t archive_bytes = 0;
   bool installed = false;
   bool update_available = false;
+  bool available = false;
 };
 
 struct State {

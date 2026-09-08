@@ -31,6 +31,7 @@ idf_component_register(
         "../ui/screen_controller.cpp"
         "../ui/scan_engine.cpp"
         "../ui/serial_verbosity.cpp"
+        "../ui/waterfall_view.cpp"
         "../ui/fm_dashboard.cpp"
         "../ui/fm_config.cpp"
         "../ui/home_dashboard.cpp"

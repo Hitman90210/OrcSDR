@@ -21,6 +21,9 @@ struct PackView {
   uint32_t archive_bytes = 0;
   bool installed = false;
   bool update_available = false;
+  // The catalog carries this pack. False for a built-in id the published
+  // manifest does not list, in which case there is nothing to download.
+  bool available = false;
 };
 
 struct State {
