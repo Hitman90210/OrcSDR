@@ -9,6 +9,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# [Convert]::ToHexString is .NET 5+, so this script threw
+# "does not contain a method named 'ToHexString'" on stock Windows PowerShell
+# 5.1 (.NET Framework), which is what ships with Windows. Same output, but it
+# runs on both 5.1 and 7.
+function ConvertTo-HexString([byte[]]$Bytes) {
+    ($Bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+}
+
 $source = (Resolve-Path -LiteralPath $Path).Path
 if (-not $Destination) {
     $Destination = '/orcsdr/' + [IO.Path]::GetFileName($source)
@@ -23,7 +32,7 @@ if ($file.Length -le 0 -or $file.Length -gt 64MB) {
     throw 'File must be between 1 byte and 64 MiB.'
 }
 $sha = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
-$pathHex = [Convert]::ToHexString([Text.Encoding]::ASCII.GetBytes($Destination)).ToLowerInvariant()
+$pathHex = ConvertTo-HexString ([Text.Encoding]::ASCII.GetBytes($Destination))
 
 $serial = [IO.Ports.SerialPort]::new($Port, 115200, 'None', 8, 'One')
 $serial.DtrEnable = $false

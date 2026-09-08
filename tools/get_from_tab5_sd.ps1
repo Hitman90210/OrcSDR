@@ -9,10 +9,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# [Convert]::ToHexString is .NET 5+, so this script threw
+# "does not contain a method named 'ToHexString'" on stock Windows PowerShell
+# 5.1 (.NET Framework), which is what ships with Windows. Same output, but it
+# runs on both 5.1 and 7.
+function ConvertTo-HexString([byte[]]$Bytes) {
+    ($Bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+}
+
 if ($SourcePath -notmatch '^/orcsdr/[\x20-\x7e]+$' -or $SourcePath.Contains('..')) {
     throw 'SourcePath must be an ASCII path below /orcsdr/ without ..'
 }
-$pathHex = [Convert]::ToHexString([Text.Encoding]::ASCII.GetBytes($SourcePath)).ToLowerInvariant()
+$pathHex = ConvertTo-HexString ([Text.Encoding]::ASCII.GetBytes($SourcePath))
 
 $serial = [IO.Ports.SerialPort]::new($Port, 115200, 'None', 8, 'One')
 $serial.DtrEnable = $false

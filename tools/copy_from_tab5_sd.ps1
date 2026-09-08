@@ -12,6 +12,23 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# [Convert]::ToHexString is .NET 5+, so this script threw
+# "does not contain a method named 'ToHexString'" on stock Windows PowerShell
+# 5.1 (.NET Framework), which is what ships with Windows. Same output, but it
+# runs on both 5.1 and 7.
+function ConvertTo-HexString([byte[]]$Bytes) {
+    ($Bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+}
+function ConvertFrom-HexString([string]$Hex) {
+    # [Convert]::FromHexString is .NET 5+ as well.
+    $out = New-Object byte[] ($Hex.Length / 2)
+    for ($i = 0; $i -lt $out.Length; $i++) {
+        $out[$i] = [Convert]::ToByte($Hex.Substring($i * 2, 2), 16)
+    }
+    ,$out
+}
+
 $serial = [IO.Ports.SerialPort]::new($Port, 115200, 'None', 8, 'One')
 $serial.DtrEnable = $false
 $serial.RtsEnable = $false
@@ -43,7 +60,7 @@ function Get-Tab5Files {
             throw "Invalid list response: $line"
         }
         $files += [pscustomobject]@{
-            Path = [Text.Encoding]::ASCII.GetString([Convert]::FromHexString($Matches[3]))
+            Path = [Text.Encoding]::ASCII.GetString((ConvertFrom-HexString $Matches[3]))
             Bytes = [uint64]$Matches[1]
             Modified = [uint64]$Matches[2]
         }
@@ -74,7 +91,7 @@ try {
     }
     if (Test-Path -LiteralPath $Destination) { throw "Destination already exists: $Destination" }
 
-    $pathHex = [Convert]::ToHexString([Text.Encoding]::ASCII.GetBytes($Path)).ToLowerInvariant()
+    $pathHex = ConvertTo-HexString ([Text.Encoding]::ASCII.GetBytes($Path))
     $serial.WriteLine("SD_GET_BEGIN $pathHex")
     $ready = Wait-Tab5Line @('SD_GET_READY', 'SD_GET_ERROR')
     if ($ready.StartsWith('SD_GET_ERROR')) { throw $ready }

@@ -46,9 +46,24 @@ SD_GET_BEGIN / SD_GET_CHUNK            # retrieve it
 UI_DOC_EXIT                            # restore the previous screen
 ```
 
-**Two traps worth knowing before you use it.** Opening a serial connection to
-COM3 resets the P4 (native USB Serial/JTAG), so every new `serial.Serial()`
-reboots the device. And an authenticated session drops after 5 s of silence
+**Three traps worth knowing before you use it.** Opening a serial connection
+to COM3 *can* reset the P4 (native USB Serial/JTAG) — but `tools/help_media.py`
+sets `dtr = False; rts = False` **before** opening precisely to avoid that, and
+`copy_to_tab5_sd.ps1` does the same. So a script built on those helpers does
+**not** reboot the device, and anything cached at boot (the offline map, the
+ATC preset) will still hold pre-change state. To force a real reboot, toggle
+RTS yourself:
+
+```python
+s = serial.Serial("COM3", 115200, timeout=1)
+s.setDTR(False); s.setRTS(True); time.sleep(0.1); s.setRTS(False)
+```
+
+This cost an hour: a map uploaded to the SD card kept reading as "not loaded"
+because `offline_map::load()` only runs at boot and the device had never
+actually rebooted.
+
+And an authenticated session drops after 5 s of silence
 (`kSessionTimeoutMs`), which a long main-loop stall alone is enough to trip —
 several early "the device is broken" results were actually expired sessions.
 Sweep scripts here reconnect on failure for exactly that reason.
@@ -130,7 +145,7 @@ auto-start, the second because every catalog check in it returned
 check never ran at all. Neither measured anything.
 
 The valid experiment uses **Wi-Fi association** as the probe (~25 s per trial
-instead of 90) with a keepalive every 2 s, rebooting between trials:
+instead of 90) with a keepalive every 2 s:
 
 | Condition | Trials | Connected | SDIO errors |
 | --- | --- | --- | --- |
