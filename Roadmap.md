@@ -180,6 +180,25 @@ recorded-IQ and live-air acceptance tied to named evidence; this documentation
 review does not establish a new hardware pass. The serial regression bridge
 is not the native decoding implementation.
 
+## Product initiative — POCSAG pager dashboard
+
+A receive-only POCSAG pager monitor: native FSK/BCH decode, an in-memory
+CAPCODE identity table, a RAM-only session list, and a five-view
+M5GFX dashboard (LIVE/IDS/SIGNAL/ACTIVITY/SESSION), architected like P25 —
+a pure host-testable protocol/DSP core, a thin runtime adapter, and a
+`ScreenController`-routed dashboard that only ever renders a snapshot.
+POCSAG rides the existing hardware-verified 960 kS/s RTL front end rather
+than adding a second high-rate IQ path. Frequency and baud are a
+user-edited SD scan profile (`/orcsdr/pocsag_scan.cfg`), not a hardcoded default —
+POCSAG channels vary by country and carrier.
+
+**Status: Hardware-verified at 1200 baud.** The Tab5 decoded an in-house
+433.920 MHz `TEST` transmission on CAPCODE 1234560; the same transmission was
+independently decoded by a Flipper Zero. LIVE, IDS, SIGNAL, ACTIVITY, and
+SESSION render bounded live data. SD persistence, editing UI, searchable
+archive, profile editor, and broader RF acceptance remain open. See
+`phasing.md` Phase 10.
+
 ## Summary table
 
 | Gap | New or already tracked | Phase |
@@ -193,3 +212,4 @@ is not the native decoding implementation.
 | Global Settings and connectivity | Product initiative | Phase 7 |
 | Automated guide and media | Product initiative | Phase 8 |
 | Native Meshtastic receive | Product initiative | Phase 9 |
+| POCSAG pager dashboard | Product initiative | Phase 10 |
