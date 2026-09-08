@@ -3790,6 +3790,7 @@ bool lora_native_decoder_start() {
 
 void lora_iq_offer(const uint8_t* iq, size_t bytes) {
   if (iq == nullptr || bytes == 0) return;
+  if (orcsdr::lora_channel::survey_active()) return;
   lora_pre_roll_append(iq, bytes);
   if (g_iq_rec_active.load(std::memory_order_relaxed)) {
     iq_rec_append(iq, bytes);
@@ -8523,6 +8524,7 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.sd_logging = lora_log_ready.load(std::memory_order_relaxed);
   snapshot.survey_active = orcsdr::lora_channel::survey_active();
   snapshot.survey_progress = orcsdr::lora_channel::survey_progress();
+  snapshot.iq_recording = g_iq_rec_active.load(std::memory_order_relaxed);
   snapshot.battery_percent = M5.Power.getBatteryLevel();
   snapshot.native_decoder_ready =
       lora_native_decoder_ready.load(std::memory_order_acquire) &&
@@ -8576,6 +8578,7 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.revision ^= static_cast<uint32_t>(snapshot.selected_node) << 8;
   snapshot.revision ^= snapshot.survey_active ? 1u : 0u;
   snapshot.revision ^= snapshot.sd_logging ? 2u : 0u;
+  snapshot.revision ^= snapshot.iq_recording ? 4u : 0u;
   return snapshot;
 }
 
@@ -8929,7 +8932,7 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
       if (orcsdr::lora_channel::survey_active()) {
         request_hot_retune(orcsdr::lora_channel::cancel_survey());
       } else if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running) {
-        orcsdr::lora_channel::start_survey(rtl_ui_frequency_hz, millis());
+        orcsdr::lora_channel::start_survey(lora_config_frequency_hz, millis());
         Serial.printf("RTL_LORA_SURVEY start region=%s spans=%u dwell_ms=750\n",
                       lora_region_name,
                       static_cast<unsigned>(orcsdr::lora_channel::survey_span_count()));
@@ -10772,6 +10775,14 @@ void poll_sdr_touch(bool from_stream) {
     if (pressed && !was_pressed) {
       if (!handle_nav_touch(touch.x, touch.y)) handle_tool_tab_touch(touch.x, touch.y);
     }
+    was_pressed = pressed;
+    return;
+  }
+
+  // The LoRa dashboard owns its plot and controls. Generic SDR scope gestures
+  // overlap the channel-picker arrows and must not turn those taps into retunes.
+  if (rtl_ui_band == RtlBand::lora && orcsdr::lora::active()) {
+    if (pressed && !was_pressed) handle_sdr_touch(touch.x, touch.y);
     was_pressed = pressed;
     return;
   }

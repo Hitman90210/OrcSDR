@@ -196,7 +196,7 @@ void draw_metric(int x, int y, int w, const char* title, const char* value,
 }
 
 void draw_plot_static() {
-  card(24, 138, 1128, 430);
+  card(24, 138, 1224, 430);
   text("PASSIVE LORA MONITOR", 60, 164, kGreen, 3, middle_left);
   char value[64];
   snprintf(value, sizeof(value), "CENTER %.3f MHz", g_snapshot.frequency_hz / 1000000.0);
@@ -214,7 +214,7 @@ void draw_plot_static() {
   M5.Display.drawRect(kPlotX, kWaterfallY, kPlotW, kWaterfallH, kCyan);
   M5.Display.setScrollRect(kPlotX + 1, kWaterfallY + 1, kPlotW - 2, kWaterfallH - 2,
                            kBg);
-  card(846, 270, 280, 258);
+  card(846, 270, 382, 258);
   text("RECENT", 868, 294, kCyan, 2, middle_left);
   button(34, 578, 250, 48, "SCAN BAND", kCyan, g_snapshot.survey_active);
   button(300, 578, 250, 48, "RECORD IQ", kCyan);
@@ -279,14 +279,15 @@ void draw_health_static() {
   button(804, 578, 242, 48, "CLEAR EVENTS", kCyan);
 }
 
-void draw_event_row(const Event& event, int x, int y, int w, bool detailed) {
+void draw_event_row(const Event& event, int x, int y, int w, bool detailed,
+                    int message_size) {
   M5.Display.fillRoundRect(x, y, w, detailed ? 66 : 58, 8, kPanel);
   M5.Display.drawRoundRect(x, y, w, detailed ? 66 : 58, 8, event.verified ? kGrid : kYellow);
   char sender[16];
   format_id(sender, sizeof(sender), event.sender);
   text(sender, x + 16, y + 19, event.verified ? kGreen : kYellow, 2, middle_left);
   text(event.text[0] ? event.text : (event.encrypted ? "ENCRYPTED FRAME" : "WAITING"),
-       x + 16, y + (detailed ? 45 : 40), TFT_WHITE, detailed ? 2 : 1, middle_left);
+       x + 16, y + (detailed ? 45 : 40), TFT_WHITE, message_size, middle_left);
   char age[20];
   const uint32_t seconds = event.sender == 0 ? 0 : (millis() - event.received_ms) / 1000u;
   snprintf(age, sizeof(age), "%lus", static_cast<unsigned long>(seconds));
@@ -294,11 +295,11 @@ void draw_event_row(const Event& event, int x, int y, int w, bool detailed) {
 }
 
 void draw_overview_dynamic() {
-  M5.Display.fillRect(854, 310, 260, 205, kPanel);
+  M5.Display.fillRect(854, 310, 366, 205, kPanel);
   for (size_t i = 0; i < 3 && i < g_snapshot.event_count; ++i)
-    draw_event_row(g_snapshot.events[i], 862, 318 + static_cast<int>(i) * 62, 244, false);
+    draw_event_row(g_snapshot.events[i], 862, 318 + static_cast<int>(i) * 62, 350, false, 3);
   if (g_snapshot.event_count == 0)
-    text("WAITING FOR VERIFIED TRAFFIC", 980, 410, kMuted, 1);
+    text("WAITING FOR VERIFIED TRAFFIC", 1037, 410, kMuted, 1);
 }
 
 void draw_nodes_dynamic() {
@@ -353,7 +354,7 @@ void draw_traffic_dynamic() {
   M5.Display.fillRect(400, 192, 834, 400, kPanel);
   for (size_t i = 0; i < std::min<size_t>(5, g_snapshot.event_count); ++i) {
     const Event& event = g_snapshot.events[i];
-    draw_event_row(event, 408, 204 + static_cast<int>(i) * 72, 814, true);
+    draw_event_row(event, 408, 204 + static_cast<int>(i) * 72, 814, true, 2);
     char sender[16]; format_id(sender, sizeof(sender), event.sender);
     text(sender, 62, 215 + static_cast<int>(i) * 72, event.verified ? kGreen : kYellow,
          2, middle_left);
@@ -418,8 +419,8 @@ void draw_health_dynamic() {
   text("RX ONLY", 1200, 196, kGreen, 2);
   M5.Display.fillRect(40, 290, 780, 240, kPanel);
   M5.Display.fillRect(870, 290, 360, 240, kPanel);
-  draw_event_row(g_snapshot.events[0], 880, 306, 340, true);
-  draw_event_row(g_snapshot.events[1], 880, 382, 340, true);
+  draw_event_row(g_snapshot.events[0], 880, 306, 340, true, 2);
+  draw_event_row(g_snapshot.events[1], 880, 382, 340, true, 2);
   snprintf(value, sizeof(value), "RATE %.3f MSPS", g_snapshot.effective_sps / 1000000.0);
   text(value, 60, 548, kGreen, 1, middle_left);
   snprintf(value, sizeof(value), "USB %lu  DROP %lu  CRC %lu",
@@ -435,6 +436,22 @@ void draw_dynamic() {
   else if (g_view == View::traffic) draw_traffic_dynamic();
   else if (g_view == View::map) draw_map_dynamic();
   else draw_health_dynamic();
+  if (g_view == View::overview || g_view == View::rf_health) {
+    char scan_label[24] = "SCAN BAND";
+    if (g_snapshot.survey_active) {
+      snprintf(scan_label, sizeof(scan_label), "SCANNING %lu/%u",
+               static_cast<unsigned long>(g_snapshot.survey_progress),
+               static_cast<unsigned>(lora_channel::survey_span_count()));
+    }
+    const int scan_x = g_view == View::overview ? 34 : 24;
+    const int record_x = g_view == View::overview ? 300 : 284;
+    const int width = g_view == View::overview ? 250 : 242;
+    button(scan_x, 578, width, 48, scan_label,
+           g_snapshot.survey_active ? kGreen : kCyan, g_snapshot.survey_active);
+    button(record_x, 578, width, 48,
+           g_snapshot.iq_recording ? "CAPTURING IQ" : "RECORD IQ",
+           g_snapshot.iq_recording ? kGreen : kCyan, g_snapshot.iq_recording);
+  }
 }
 
 void draw_channels_overlay() {

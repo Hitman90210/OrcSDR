@@ -71,6 +71,7 @@ struct Snapshot {
   bool sound_enabled = true;
   bool sd_logging = false;
   bool survey_active = false;
+  bool iq_recording = false;
   bool native_decoder_ready = false;
   bool key_loaded = false;
   char profile[24]{};
