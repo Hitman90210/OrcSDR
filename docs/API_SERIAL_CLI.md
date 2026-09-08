@@ -139,7 +139,7 @@ proper pairing client, not something to hand-roll casually.
 
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
-| `RTL_TUNE <BAND> <HZ>` | yes | `RTL_TUNE_OK band=... frequency_hz=...` | `BAND` = `FM\|AM\|WX\|CB\|P25\|LORA\|BROWSE`. Full retune (stops/restarts the capture path as needed). |
+| `RTL_TUNE <BAND> <HZ>` | yes | `RTL_TUNE_OK band=... frequency_hz=...` | `BAND` = `FM\|AM\|WX\|CB\|GMRS\|P25\|LORA\|BROWSE`. Full retune (stops/restarts the capture path as needed). On a channelised band (`WX`/`CB`/`GMRS`) the frequency snaps to the nearest published channel. |
 | `RTL_FREQ` | no | `RTL_FREQ_STATUS band=... frequency_hz=... mode=...` | Query only. |
 | `RTL_FREQ <HZ>` | yes | `RTL_FREQ_OK band=... frequency_hz=...` | Hot retune *within* the current band — cheaper than `RTL_TUNE`, use for stepping/scanning. |
 | `RTL_CAPTURE` / `RTL_LISTEN <BAND>` | yes | `RTL_CAPTURE_QUEUED ...` or `RTL_CAPTURE_BUSY_OR_UNAVAILABLE` | Older, band-limited entry point (`FM`/`KZEL`/`NOAA`/`WX`/`AM`/`LORA` only, no `CB`/`BROWSE`, no arbitrary frequency). `RTL_LISTEN` is continuous, bare `RTL_CAPTURE` is one-shot. Prefer `RTL_TUNE` for new work — this exists for compatibility with older tooling. |
@@ -152,6 +152,46 @@ Band default frequencies (used when a command doesn't specify one, e.g.
 overrides this), AM/WX/CB/LoRa each have their own fixed default — see
 `rtl_band_default_frequency()` in `main.cpp` for exact values, they're
 band-plan specific and not usually worth hardcoding in a client.
+
+## Channel scan (CB, GMRS/FRS, NOAA weather)
+
+Steps the band's published channel list, stops on a channel that is busy, and
+resumes 2.5 s after it goes quiet. Only on channelised bands, and only while the
+receiver is streaming — every hop is a hot retune.
+
+| Command | Auth | Reply | Notes |
+|---|---|---|---|
+| `RTL_CHANNEL_SCAN` | yes | `RTL_CHANNEL_SCAN_QUEUED`, or `RTL_CHANNEL_SCAN_INVALID` | Toggle. Unhandled cases print `RTL_CHANNEL_SCAN_UNAVAILABLE band=... busy=... streaming=...`. |
+| `RTL_CHANNEL_SCAN_STOP` | yes | `RTL_CHANNEL_SCAN_STOP_QUEUED` | Also happens on any deliberate retune, band change, or channel step. |
+| `RTL_CHANNEL_SCAN_STATUS` | no | `RTL_CHANNEL_SCAN_STATUS active=.. holding=.. band=.. hits=.. stale_skips=.. squelch_dbfs=.. min_snr_db=.. dwell_ms=..` | `holding=1` means parked on a busy channel. |
+| `RTL_CHANNEL_PROBE` | no | `RTL_CHANNEL_PROBE band=.. frequency_hz=.. level_dbfs=.. snr_db=.. min_snr_db=.. offset_hz=.. tolerance_hz=.. seq=.. busy=..` | The detector's own reading for the channel on the dial. Use it to calibrate the squelch against your own noise floor. |
+| `RTL_SQUELCH` | no | `RTL_SQUELCH_STATUS dbfs=.. open=..` | |
+| `RTL_SQUELCH <-90..0>` | yes | `RTL_SQUELCH_OK dbfs=..` | `-90` opens the squelch. Also gates CB and GMRS audio, and is what the CB panel's SQL-/SQL+ set. |
+
+Unfolding the scan's progress live needs `RTL_SERIAL VERBOSITY TRACE`, which adds
+one `RTL_CHANNEL_SCAN_SAMPLE ... windows=N busy=0|1` per channel visited.
+
+**How "busy" is decided.** The obvious test — did the signal level rise — does
+not work here, because the tuner hears 960 kHz at once, which on GMRS is 38
+channels' worth of spectrum. Measured on real hardware: with one NOAA
+transmitter on 162.550, *all seven* weather channels read 54–58 dB SNR, so a
+level-only detector stops on every one of them. A channel counts as busy only
+when all three of these hold:
+
+- the strongest visible spectrum bin sits within half a channel of the dial, so
+  a neighbour is credited to its own channel (this is what separated 162.550
+  from its six neighbours — their peaks were 26–150 kHz off centre);
+- that reading is above the squelch level;
+- it stands `min_snr_db` above the mean of the visible bins. The thresholds are
+  measured per band, not guessed: an empty GMRS sweep peaks at 11.6 dB of
+  peak-to-mean from noise statistics alone, and CB at 27 MHz peaks at 17 dB
+  because the tuner's LO leakage has skirts there, so the floors are 20 dB and
+  25 dB respectively.
+
+Readings are also freshness-checked. The spectrum refreshes about 9.5 times a
+second, so a scan hopping faster than that can read the *previous* channel's
+numbers; each measurement must come from at least two windows newer than the
+retune, and `stale_skips` counts any that did not.
 
 ## Volume
 

@@ -9,8 +9,16 @@
 namespace orcsdr::radio_ui {
 namespace {
 constexpr uint16_t kGrid = 0x2104;
-constexpr int kBandWidths[] = {110, 110, 110, 120, 140, 160, 170, 200};
+// FM AM WX CB GMRS LORA BROWSE REC START. The row was already 1252 px wide of
+// the 1280 available, so fitting GMRS meant taking the slack out of the labels
+// that had it rather than appending: at text size 3 a glyph is 18 px, so
+// "BROWSE" needs 108 and "START" 90 -- every width below still clears its
+// longest label with >= 20 px of padding a side.
+constexpr int kBandWidths[] = {100, 100, 100, 100, 130, 120, 150, 130, 160};
 constexpr int kTuneWidths[] = {170, 170, 220, 150, 150, 220};
+// Channelized bands (CB/GMRS/weather) trade a little width off every button to
+// make room for SCAN: CH- CH+ SCAN SOUND VOL- VOL+ GFX.
+constexpr int kChannelTuneWidths[] = {160, 160, 150, 200, 130, 130, 190};
 }
 
 uint16_t waterfall_color(float level) {
@@ -110,8 +118,12 @@ int button_at(int x, int y, int height, int gap, int touch_x, int touch_y,
   return -1;
 }
 
-ControlAction control_action(const ControlLayout& layout, bool lora, int touch_x,
+ControlAction control_action(const ControlLayout& layout, ControlRow row, int touch_x,
                              int touch_y) {
+  const bool lora = row == ControlRow::lora;
+  const int* tune_widths = row == ControlRow::channels ? kChannelTuneWidths : kTuneWidths;
+  const size_t tune_count =
+      row == ControlRow::channels ? std::size(kChannelTuneWidths) : std::size(kTuneWidths);
   const int index = button_at(layout.edge, lora ? layout.tune_y : layout.band_y,
                               layout.height, layout.gap, touch_x, touch_y,
                               lora ? kTuneWidths : kBandWidths,
@@ -119,7 +131,19 @@ ControlAction control_action(const ControlLayout& layout, bool lora, int touch_x
   if (index < 0) {
     if (lora) return ControlAction::none;
     const int tune = button_at(layout.edge, layout.tune_y, layout.height, layout.gap,
-                               touch_x, touch_y, kTuneWidths, std::size(kTuneWidths));
+                               touch_x, touch_y, tune_widths, tune_count);
+    if (row == ControlRow::channels) {
+      switch (tune) {
+        case 0: return ControlAction::frequency_down;
+        case 1: return ControlAction::frequency_up;
+        case 2: return ControlAction::toggle_channel_scan;
+        case 3: return ControlAction::toggle_sound;
+        case 4: return ControlAction::volume_down;
+        case 5: return ControlAction::volume_up;
+        case 6: return ControlAction::toggle_graphics;
+        default: return ControlAction::none;
+      }
+    }
     switch (tune) {
       case 0: return ControlAction::frequency_down;
       case 1: return ControlAction::frequency_up;
@@ -146,22 +170,37 @@ ControlAction control_action(const ControlLayout& layout, bool lora, int touch_x
     case 1: return ControlAction::am;
     case 2: return ControlAction::wx;
     case 3: return ControlAction::cb;
-    case 4: return ControlAction::lora;
-    case 5: return ControlAction::browse;
-    case 6: return ControlAction::toggle_audio_record;
-    case 7: return ControlAction::toggle_capture;
+    case 4: return ControlAction::gmrs;
+    case 5: return ControlAction::lora;
+    case 6: return ControlAction::browse;
+    case 7: return ControlAction::toggle_audio_record;
+    case 8: return ControlAction::toggle_capture;
     default: return ControlAction::none;
   }
 }
 
 bool self_check() {
   constexpr int widths[] = {110, 170};
+  constexpr ControlLayout layout{32, 100, 200, 64, 12};
+  // The band row's fifth button became GMRS and everything after it shifted;
+  // pin both ends so a future width edit cannot silently renumber the row.
+  const int gmrs_x = 32 + 100 + 12 + 100 + 12 + 100 + 12 + 100 + 12 + 4;
+  const int scan_x = 32 + 160 + 12 + 160 + 12 + 4;
   return button_at(32, 100, 64, 12, 40, 120, widths, std::size(widths)) == 0 &&
          button_at(32, 100, 64, 12, 200, 120, widths, std::size(widths)) == 1 &&
          button_at(32, 100, 64, 12, 32, 164, widths, std::size(widths)) == -1 &&
-         control_action({32, 100, 200, 64, 12}, false, 40, 120) == ControlAction::fm &&
-         control_action({32, 100, 200, 64, 12}, true, 40, 220) ==
-             ControlAction::frequency_down;
+         control_action(layout, ControlRow::standard, 40, 120) == ControlAction::fm &&
+         control_action(layout, ControlRow::standard, gmrs_x, 120) ==
+             ControlAction::gmrs &&
+         control_action(layout, ControlRow::lora, 40, 220) ==
+             ControlAction::frequency_down &&
+         control_action(layout, ControlRow::channels, scan_x, 220) ==
+             ControlAction::toggle_channel_scan &&
+         // The narrower channel-row buttons put a different control under that
+         // same pixel on the standard row; the two rows must not be
+         // interchangeable, or a tap would land on whichever was drawn last.
+         control_action(layout, ControlRow::standard, scan_x, 220) ==
+             ControlAction::frequency_up;
 }
 
 }  // namespace orcsdr::radio_ui

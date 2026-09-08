@@ -196,6 +196,21 @@ see `docs/DATA_SOURCE_LEDGER.md`.
   everywhere in the US, so the Weather screen's channel picker needs no local
   data at all. Which transmitter you hear depends only on where you are.
 - **CB** — the 40 channels are fixed by regulation.
+- **GMRS / FRS** — 30 channels, also fixed by regulation: 1–7 and 8–14 are the
+  462/467.5625 MHz interstitials, 15–22 the 462.5500 MHz main channels, and
+  R15–R22 the 467.5500 MHz repeater *inputs* (listening on those hears the
+  station uplinking to the repeater rather than the repeater's output, which
+  15–22 already carry). Receive-only: the dashboard names the channels so you
+  can identify what you are hearing, which is not authority to transmit —
+  GMRS needs an FCC licence.
+
+All three of these, plus weather, have a **SCAN** button that walks the channel
+list, stops on a busy channel, and picks up again about 2.5 s after it falls
+quiet. If it stops too eagerly or not eagerly enough where you live, the squelch
+is the dial to turn: raise it with the CB panel's SQL+ or over serial with
+`RTL_SQUELCH`, and use `RTL_CHANNEL_PROBE` to see what the detector actually
+reads on a given channel. `docs/API_SERIAL_CLI.md` explains how "busy" is
+decided and why a plain signal-strength test does not work.
 - **LoRa** — the Meshtastic US band is 104 frequency slots of 250 kHz starting
   at 902.125 MHz, and **slot 20 (906.875 MHz) is the LongFast default**. The
   LoRa dashboard's CHANNELS button opens a picker for stepping slots or jumping

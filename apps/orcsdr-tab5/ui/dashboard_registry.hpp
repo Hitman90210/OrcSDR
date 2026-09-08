@@ -22,6 +22,12 @@ enum class Id : uint8_t {
   rf_lab,
   wifi_analysis,
   pocsag,
+  // New ids go on the END, never in the middle: these values are written to
+  // NVS by persist_dashboard_open and the dash_recent list, so inserting gmrs
+  // next to cb (where it belongs on screen) would have shifted lora through
+  // settings by one and made every upgraded device restore the wrong tile.
+  // Where a dashboard appears in the grid comes from kEntries' order instead.
+  gmrs,
   count,
 };
 

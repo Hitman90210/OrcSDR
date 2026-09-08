@@ -337,8 +337,15 @@ void draw_spectrum_axis() {
 constexpr uint32_t kWxChannelsHz[7] = {162400000, 162425000, 162450000,
                                        162475000, 162500000, 162525000,
                                        162550000};
-constexpr int kWxButtonY = 570, kWxButtonW = 82, kWxButtonH = 54,
-              kWxButtonPitch = 86, kWxButtonX = kPlotX + 6;
+// Narrowed from 82/86 to make room for the SCAN button at the right-hand end
+// of the same strip; seven buttons now end at 850 instead of 934.
+constexpr int kWxButtonY = 570, kWxButtonW = 70, kWxButtonH = 54,
+              kWxButtonPitch = 74, kWxButtonX = kPlotX + 6;
+// SCAN. On a band with a fixed channel plan the span control adjusts nothing
+// worth adjusting, so on CB and GMRS this takes the span stepper's footprint;
+// on weather, where the strip is the WX1-7 picker, it sits at the far right.
+constexpr int kScanX = 338, kScanY = 571, kScanW = 270, kScanH = 48;
+constexpr int kWxScanX = 852, kWxScanW = 82;
 
 bool weather_view() {
   return current.active_dashboard == dashboards::Id::weather;
@@ -353,9 +360,22 @@ int weather_channel_at(int32_t x, int32_t y) {
   return offset - index * kWxButtonPitch < kWxButtonW ? index : -1;
 }
 
+// SCAN / SCAN* / HOLD, coloured so a glance says which: green offers to start,
+// red says the sweep is moving, amber says it has parked on a busy channel.
+void draw_scan_button(int x, int y, int w, int h) {
+  const bool on = current.channel_scan_active;
+  const bool holding = current.channel_scan_holding;
+  const uint16_t colour = !on ? kGreen : holding ? TFT_ORANGE : TFT_RED;
+  if (on) M5.Display.fillRoundRect(x, y, w, h, 7, holding ? 0x3200 : 0x3000);
+  panel(x, y, w, h, colour, 7);
+  text(!on ? "SCAN" : holding ? "HOLD" : "SCAN*", x + w / 2, y + h / 2, colour, 2,
+       middle_center);
+}
+
 void draw_weather_channels() {
   M5.Display.fillRect(kPlotX, 564, 610, 62, TFT_BLACK);
   panel(kPlotX, 564, 610, 62, kCyan, 9);
+  draw_scan_button(kWxScanX, kWxButtonY, kWxScanW, kWxButtonH);
   char value[16];
   for (size_t i = 0; i < std::size(kWxChannelsHz); ++i) {
     const int x = kWxButtonX + static_cast<int>(i) * kWxButtonPitch;
@@ -378,16 +398,28 @@ void draw_tuning_controls() {
   }
   M5.Display.fillRect(kPlotX, 564, 610, 62, TFT_BLACK);
   panel(kPlotX, 564, 610, 62, kCyan, 9);
-  panel(338, 571, 60, 48, kCyan, 7); text("<", 368, 595, kGreen, 3, middle_center);
-  text("SPAN", 470, 578, kCyan, 2, middle_center);
   char value[24];
-  snprintf(value, sizeof(value), "%.0f kHz", current.span_hz / 1000.0);
-  text(value, 470, 606, kGreen, 2, middle_center);
-  panel(548, 571, 60, 48, kCyan, 7); text(">", 578, 595, kGreen, 3, middle_center);
+  if (current.channel != 0) {
+    // Nothing to span on a fixed channel plan -- the tuner sits on published
+    // frequencies and the step is the channel spacing -- so the span stepper's
+    // space goes to the control that a channelized band actually wants.
+    draw_scan_button(kScanX, kScanY, kScanW, kScanH);
+  } else {
+    panel(338, 571, 60, 48, kCyan, 7); text("<", 368, 595, kGreen, 3, middle_center);
+    text("SPAN", 470, 578, kCyan, 2, middle_center);
+    snprintf(value, sizeof(value), "%.0f kHz", current.span_hz / 1000.0);
+    text(value, 470, 606, kGreen, 2, middle_center);
+    panel(548, 571, 60, 48, kCyan, 7); text(">", 578, 595, kGreen, 3, middle_center);
+  }
   panel(640, 571, 60, 48, kCyan, 7); text("<", 670, 595, kGreen, 3, middle_center);
   if (current.channel != 0) {
     text("CHANNEL", 780, 578, kCyan, 2, middle_center);
-    snprintf(value, sizeof(value), "CH %u", current.channel);
+    // The name, not the position: GMRS entry 23 prints as R15. The card above
+    // carries the position ("23 / 30"), so the two never say the same thing.
+    if (current.channel_label[0])
+      snprintf(value, sizeof(value), "CH %s", current.channel_label);
+    else
+      snprintf(value, sizeof(value), "CH %u", current.channel);
   } else {
     text("STEP", 780, 578, kCyan, 2, middle_center);
     snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
@@ -490,6 +522,8 @@ void draw_receiver_chrome() {
   // leaves the bottom row's FILTER slot free for a wider SIGNAL.
   if (current.channel != 0) {
     text("CHANNEL", 930, 484, kCyan, 2, middle_center);
+    // Position in the band, never the channel's name -- the stepper below
+    // shows the name, and the whole point of this card is to not repeat it.
     if (current.channel_count)
       snprintf(value, sizeof(value), "%u / %u", current.channel, current.channel_count);
     else
@@ -601,13 +635,22 @@ Action tap_action(int32_t x, int32_t y) {
   // The channel picker replaces the span/step strip, so it has to swallow the
   // whole panel -- a tap in a gap must not fall through to span_down.
   if (weather_view() && inside(x, y, kPlotX, 564, 610, 62)) {
+    if (inside(x, y, kWxScanX, kWxButtonY, kWxScanW, kWxButtonH))
+      return {ActionKind::toggle_channel_scan};
     const int channel = weather_channel_at(x, y);
     if (channel < 0) return {};
     return {ActionKind::tune_frequency, dashboards::Id::count,
             kWxChannelsHz[channel]};
   }
-  if (inside(x, y, 338, 571, 60, 48)) return {ActionKind::span_down};
-  if (inside(x, y, 548, 571, 60, 48)) return {ActionKind::span_up};
+  // SCAN sits where the span stepper would be, so it has to be tested first
+  // and the span taps only offered on the bands that still draw them.
+  if (current.channel != 0) {
+    if (inside(x, y, kScanX, kScanY, kScanW, kScanH))
+      return {ActionKind::toggle_channel_scan};
+  } else {
+    if (inside(x, y, 338, 571, 60, 48)) return {ActionKind::span_down};
+    if (inside(x, y, 548, 571, 60, 48)) return {ActionKind::span_up};
+  }
   if (inside(x, y, 640, 571, 60, 48))
     return {current.channel != 0 ? ActionKind::channel_down : ActionKind::step_down};
   if (inside(x, y, 864, 571, 60, 48))
@@ -862,6 +905,34 @@ Action handle_touch(int32_t x, int32_t y, bool pressed) {
 bool active() { return shown; }
 bool browser_active() { return shown && browser; }
 
+// SCAN and the span stepper share pixels, so which one a tap means depends on
+// whether the band is channelized. Prove both readings of the same point, and
+// that the weather strip -- whose picker swallows the whole panel -- still
+// separates its SCAN button from channel WX7 next to it.
+bool scan_button_self_check() {
+  const Snapshot saved = current;
+  bool ok = true;
+  current = {};
+  current.channel = 0;
+  current.active_dashboard = dashboards::Id::shortwave;
+  ok = ok && tap_action(kScanX + 4, kScanY + 4).kind == ActionKind::span_down;
+  current.channel = 1;
+  current.channel_count = 30;
+  current.active_dashboard = dashboards::Id::gmrs;
+  ok = ok && tap_action(kScanX + 4, kScanY + 4).kind == ActionKind::toggle_channel_scan &&
+       tap_action(kScanX + kScanW - 4, kScanY + 4).kind ==
+           ActionKind::toggle_channel_scan &&
+       tap_action(865, 572).kind == ActionKind::channel_up;
+  current.active_dashboard = dashboards::Id::weather;
+  current.channel_count = 7;
+  ok = ok && tap_action(kWxScanX + 4, kWxButtonY + 4).kind ==
+                 ActionKind::toggle_channel_scan &&
+       tap_action(kWxButtonX + 6 * kWxButtonPitch + 4, kWxButtonY + 4).kind ==
+           ActionKind::tune_frequency;
+  current = saved;
+  return ok;
+}
+
 bool self_check() {
   const float levels[] = {60.0f, 60.0f, 60.0f, 84.0f};
   return dashboards::self_check() && kVisibleRows == 7 && kTapDragThreshold == 10 &&
@@ -874,6 +945,7 @@ bool self_check() {
              ActionKind::waterfall_contrast_up &&
          tap_action(339, 572).kind == ActionKind::span_down &&
          tap_action(865, 572).kind == ActionKind::step_up &&
+         scan_button_self_check() &&
          tap_action(999, 469).kind == ActionKind::volume_down &&
          tap_action(1223, 13).kind == ActionKind::open_device_settings &&
          tap_action(1100, 13).kind == ActionKind::sound_toggle &&

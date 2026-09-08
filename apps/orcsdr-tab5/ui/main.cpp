@@ -548,6 +548,32 @@ constexpr float kFmPresetMinDbfs = -70.0f;
 // occupied US channels read 16.3-33.2 dB. 15 dB sits 5 dB above the worst
 // noise sample in that sweep and below every real station in it.
 constexpr float kFmSeekMinSnrDb = 15.0f;
+// Channel scan. The dwell has to cover the hot retune plus the two spectrum
+// windows scan_measure insists on. Measured on this hardware, on all three
+// channelized bands, the spectrum refreshes 9.4-9.8 times a second, so two
+// windows take about 210 ms; 250 ms left only 40 ms of margin and the sweep
+// really did read one channel late. 400 ms roughly doubles the margin and
+// still sweeps 40 CB channels in 16 s or 30 GMRS channels in 12 s.
+constexpr uint32_t kChannelScanDwellMs = 400;
+// How far a carrier must stand above the mean of the visible bins. Measured on
+// this hardware with nothing on the air, not guessed:
+//
+//   GMRS 462/467 MHz  153 samples, peak-to-mean 5.4 - 11.6 dB. That is just
+//                     the statistics of the largest of 256 noise bins.
+//   CB   27 MHz       25 samples, 13.0 - 17.0 dB even after the DC notch --
+//                     the tuner's LO leakage has skirts a bin wide, and 27 MHz
+//                     sits at the bottom of the R820T's range where they are
+//                     worst. Notching those bins too would remove the very
+//                     bins a real on-channel signal lives in, so the floor is
+//                     raised instead.
+//
+// Each threshold clears its band's measured ceiling by about 8 dB. For scale, a
+// live NOAA transmitter reads 60 dB, so genuine signals have room to spare.
+constexpr float kChannelScanMinSnrDb = 20.0f;
+constexpr float kChannelScanMinSnrCbDb = 25.0f;
+// Keep listening this long after the channel goes quiet, so the gaps between
+// overs in a conversation do not send the scan away mid-exchange.
+constexpr uint32_t kChannelScanResumeMs = 2500;
 /** LO quantize for hot retune — finer than this thrashes USB/audio. */
 constexpr uint32_t kRtlHotRetuneQuantHz = 5000;
 /** Min time between LO applies (each apply drains bulk + EP0). */
@@ -631,6 +657,24 @@ constexpr double kRtlXtalHz = 28800000.0;
 using RtlBand = orcsdr::radio::Band;
 enum class CbMode : uint8_t { am, usb, lsb };
 
+// FRS/GMRS channel plan. 1-7 and 8-14 are the 462/467.5625 MHz interstitials,
+// 15-22 the 462.5500 MHz main channels, and R15-R22 the 467.5500 MHz repeater
+// *inputs* -- listening there hears the station uplinking rather than the
+// repeater output, which is what 15-22 already carry. Receive-only: this is
+// identification help, not authority to transmit (GMRS needs a licence).
+constexpr uint32_t kGmrsChannelsHz[] = {
+    462562500, 462587500, 462612500, 462637500, 462662500, 462687500,
+    462712500, 467562500, 467587500, 467612500, 467637500, 467662500,
+    467687500, 467712500, 462550000, 462575000, 462600000, 462625000,
+    462650000, 462675000, 462700000, 462725000, 467550000, 467575000,
+    467600000, 467625000, 467650000, 467675000, 467700000, 467725000};
+constexpr const char* kGmrsChannelNames[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13",
+    "14", "15", "16", "17", "18", "19", "20", "21", "22", "R15", "R16",
+    "R17", "R18", "R19", "R20", "R21", "R22"};
+static_assert(std::size(kGmrsChannelsHz) == std::size(kGmrsChannelNames));
+constexpr uint32_t kGmrsDefaultHz = 462562500;   // Channel 1.
+
 constexpr uint32_t kCbChannelsHz[] = {
     26965000, 26975000, 26985000, 27005000, 27015000, 27025000, 27035000,
     27055000, 27065000, 27075000, 27085000, 27105000, 27115000, 27125000,
@@ -678,7 +722,7 @@ constexpr RfBandGuide kRfBandGuide[] = {
     {406000000, 406100000, 406050000, RtlBand::browse, "DISTRESS SAT", "UHF / emergency beacons", false},
     {420000000, 450000000, 446000000, RtlBand::browse, "HAM RADIO", "UHF / 70 cm amateur", true},
     {136000000, 941000000, kP25DefaultHz, RtlBand::p25, "P25 PHASE I", "VHF, UHF, 700, 800 and 900 MHz", true},
-    {462550000, 467725000, 462562500, RtlBand::browse, "FRS / GMRS", "UHF / personal two-way", false},
+    {462550000, 467725000, kGmrsDefaultHz, RtlBand::gmrs, "FRS / GMRS", "UHF / 30 personal two-way channels", true},
     {kLoraMinHz, kLoraMaxHz, kLoraDefaultHz, RtlBand::lora, "LORA / ISM", "UHF / LoRa CSS and mesh data", true},
     {977900000, 978100000, 978000000, RtlBand::browse, "ADS-B UAT", "UHF / aircraft position", false},
     {1089900000, 1090100000, kAdsbDefaultHz, RtlBand::adsb, "ADS-B / MODE S", "L-band / aircraft tracking", true},
@@ -690,9 +734,9 @@ constexpr RfBandGuide kRfBandGuide[] = {
 static_assert(std::size(kRfBandGuide) == 22);
 constexpr const char* kRfQuickLabels[] = {
     "CB 27", "HAM 10M", "HAM 6M", "FM RADIO", "AIRBAND", "NOAA SAT",
-    "HAM 2M", "NOAA WX", "HAM 70CM", "P25 PHASE I", "LORA 915", "ADS-B 1090",
-    "POCSAG"};
-static_assert(std::size(kRfQuickLabels) == 13);
+    "HAM 2M", "NOAA WX", "HAM 70CM", "P25 PHASE I", "GMRS / FRS", "LORA 915",
+    "ADS-B 1090", "POCSAG"};
+static_assert(std::size(kRfQuickLabels) == 14);
 
 constexpr bool rf_band_guide_valid() {
   size_t quick_count = 0;
@@ -1109,7 +1153,14 @@ static std::atomic<int> rtl_fm_preset_scan_total_steps{1};
 static std::atomic<int> rtl_fm_preset_scan_found{0};
 static std::atomic<uint32_t> rtl_fm_preset_scan_freq_hz{kRtlFmMinHz};
 
-enum class ActiveScan : uint8_t { none, fm_presets, p25_survey, fm_seek, pocsag_discovery };
+enum class ActiveScan : uint8_t {
+  none,
+  fm_presets,
+  p25_survey,
+  fm_seek,
+  pocsag_discovery,
+  channel_scan
+};
 orcsdr::radio::Session radio_session;
 orcsdr::scan::Engine scan_engine;
 ActiveScan active_scan = ActiveScan::none;  // Streaming task only.
@@ -1130,6 +1181,40 @@ uint32_t fm_seek_origin_hz = 0;             // Streaming task only.
 uint32_t fm_seek_hit_hz = 0;                // Streaming task only.
 bool fm_seek_stop_pending = false;          // Streaming task only.
 std::atomic<bool> p25_survey_cancel_requested{false};
+
+// ---------------------------------------------------------------------------
+// Channel scan (CB, GMRS/FRS, NOAA weather).
+//
+// A channelized band is the one case where "scan" can mean what it means on a
+// real scanner: step the published channel list, stop when a channel is busy,
+// resume when it goes quiet. The hard part is deciding "busy" -- the obvious
+// test, whether the wideband IQ level rose, is wrong here, because the tuner
+// hears 960 kHz at once and on GMRS that is 38 channels' worth of spectrum.
+// A single strong handheld anywhere in that window would stop the scan on
+// every channel in turn, which is exactly the "stops on everything" failure.
+//
+// So a channel counts as busy only when all three hold:
+//   * the strongest visible bin sits within half a channel of the dial, so a
+//     neighbour 25 kHz (GMRS) or 10 kHz (CB) away is attributed to its own
+//     channel and not to this one;
+//   * that bin is above the squelch level the CB panel's SQL-/SQL+ already
+//     set, so a bare noise floor never qualifies;
+//   * it stands kChannelScanMinSnrDb above the mean of the visible bins, so a
+//     band-wide noise rise (a switching supply, an AGC step) lifts peak and
+//     mean together and cancels out instead of reading as a signal.
+std::atomic<bool> channel_scan_requested{false};   // UI -> stream: toggle.
+std::atomic<bool> channel_scan_cancel{false};      // UI -> stream: stop.
+std::atomic<bool> channel_scan_active{false};      // Stream -> UI.
+std::atomic<bool> channel_scan_holding{false};     // Stream -> UI: parked on a hit.
+std::atomic<uint32_t> channel_scan_hits{0};        // Stream -> UI: stops this run.
+uint32_t channel_scan_hit_hz = 0;                  // Streaming task only.
+uint32_t channel_scan_quiet_since_ms = 0;          // Streaming task only.
+bool channel_scan_stop_pending = false;            // Streaming task only.
+RtlBand channel_scan_band = RtlBand::cb;           // Streaming task only.
+// rtl_scope_measurement_seq as it stood when this channel was tuned; the
+// reading is only this channel's once the counter has moved past it.
+uint32_t channel_scan_seq_at_retune = 0;           // Streaming task only.
+std::atomic<uint32_t> channel_scan_stale_skips{0}; // Stream -> UI diagnostics.
 
 // Runs on the streaming task only (single-threaded access to fm_presets).
 void fm_preset_offer(uint32_t freq_hz, float level_dbfs) {
@@ -1181,7 +1266,6 @@ static std::atomic<uint8_t> pocsag_polarity_mode{0};  // 0=AUTO,1=NORMAL,2=INVER
 // actual Decoder::configure() call -- and the reset() it performs -- only
 // ever happens from the one task that also calls process_cu8() on it.
 static std::atomic<bool> pocsag_config_apply_pending{false};
-static bool pocsag_config_loaded = false;
 
 // "FIND PAGERS" discovery scan (Streaming task only, same ownership
 // discipline as the FM preset/P25 survey scan state above).
@@ -1236,8 +1320,11 @@ void load_pocsag_scan_list() {
 
 static std::atomic<CbMode> cb_mode{CbMode::am};
 static std::atomic<int32_t> cb_clarifier_hz{0};
-static std::atomic<int32_t> cb_squelch_dbfs{-75};
-static std::atomic<bool> cb_squelch_open{false};
+// Was cb_squelch_*: the CB panel's SQL-/SQL+ set it, but it now also gates
+// GMRS audio and sets the channel scanner's stop level on every channelized
+// band, so the name no longer says CB.
+static std::atomic<int32_t> channel_squelch_dbfs{-75};
+static std::atomic<bool> channel_squelch_open{false};
 static std::atomic<uint8_t> lora_sf{11};
 static std::atomic<uint32_t> lora_bandwidth_hz{250000};
 static std::atomic<bool> lora_detector_enabled{true};
@@ -1320,6 +1407,13 @@ static std::atomic<float> rtl_scope_peak_level{-120.0f};
 // peak level cannot tell a station from the noise floor (the floor moves with
 // gain and antenna), which made FM seek stop on the first window every time.
 static std::atomic<float> rtl_scope_peak_snr_db{0.0f};
+// Bumped every time the three values above are recomputed. A scan hops faster
+// than the spectrum refreshes, so without a way to tell a fresh reading from
+// last channel's the sweep can credit one channel's carrier to the next one it
+// lands on -- which it did, stopping a NOAA sweep on 162.400 for a signal that
+// is really on 162.550. Consumers compare against the value they saw before
+// the retune; equal means "nothing new, do not judge this channel yet".
+static std::atomic<uint32_t> rtl_scope_measurement_seq{0};
 static std::atomic<bool> rtl_auto_fm_requested{false};
 static std::atomic<bool> rtl_auto_fm_active{false};
 static float rtl_signal_dbfs_smooth = -80.0f;
@@ -2350,6 +2444,7 @@ const char* rtl_band_name(RtlBand band) {
     case RtlBand::am: return "AM";
     case RtlBand::wx: return "WX";
     case RtlBand::cb: return "CB";
+    case RtlBand::gmrs: return "GMRS";
     case RtlBand::lora: return "LORA";
     case RtlBand::browse: return "BROWSE";
     case RtlBand::adsb: return "ADSB";
@@ -2366,6 +2461,7 @@ bool rtl_band_from_name(const char* name, RtlBand* out_band) {
   if (strcmp(name, "AM") == 0) { *out_band = RtlBand::am; return true; }
   if (strcmp(name, "WX") == 0) { *out_band = RtlBand::wx; return true; }
   if (strcmp(name, "CB") == 0) { *out_band = RtlBand::cb; return true; }
+  if (strcmp(name, "GMRS") == 0) { *out_band = RtlBand::gmrs; return true; }
   if (strcmp(name, "LORA") == 0) { *out_band = RtlBand::lora; return true; }
   if (strcmp(name, "BROWSE") == 0) { *out_band = RtlBand::browse; return true; }
   if (strcmp(name, "ADSB") == 0) { *out_band = RtlBand::adsb; return true; }
@@ -2378,6 +2474,7 @@ const char* rtl_mode_name(RtlBand band) {
   switch (band) {
     case RtlBand::am: return "AM";
     case RtlBand::wx: return "NFM";
+    case RtlBand::gmrs: return "NFM";
     case RtlBand::cb:
       return cb_mode.load(std::memory_order_relaxed) == CbMode::usb ? "USB"
              : cb_mode.load(std::memory_order_relaxed) == CbMode::lsb ? "LSB"
@@ -2399,6 +2496,7 @@ uint32_t rtl_band_default_frequency(RtlBand band) {
     case RtlBand::am: return kRtlAmDefaultHz;
     case RtlBand::wx: return kRtlWxHz;
     case RtlBand::cb: return kCbDefaultHz;
+    case RtlBand::gmrs: return kGmrsDefaultHz;
     case RtlBand::lora: return rtl_saved_lora_hz;
     case RtlBand::browse: return kRtlBrowseDefaultHz;
     case RtlBand::adsb: return kAdsbDefaultHz;
@@ -2413,7 +2511,7 @@ uint32_t rtl_filter_default_hz(RtlBand band) {
   if (band == RtlBand::am || band == RtlBand::cb) return kRtlAmFilterDefaultHz;
   if (band == RtlBand::p25) return kP25StepHz;
   if (band == RtlBand::wx || band == RtlBand::browse || band == RtlBand::adsb ||
-      band == RtlBand::pocsag)
+      band == RtlBand::pocsag || band == RtlBand::gmrs)
     return kRtlWxFilterDefaultHz;
   return kRtlFmFilterDefaultHz;
 }
@@ -2460,6 +2558,16 @@ uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
       if (frequency_hz < kRtlAmMinHz) return kRtlAmMinHz;
       if (frequency_hz > kRtlAmMaxHz) return kRtlAmMaxHz;
       return frequency_hz;
+    case RtlBand::gmrs: {
+      uint32_t nearest = kGmrsChannelsHz[0];
+      uint32_t best = UINT32_MAX;
+      for (const uint32_t channel : kGmrsChannelsHz) {
+        const uint32_t distance = channel > frequency_hz ? channel - frequency_hz
+                                                         : frequency_hz - channel;
+        if (distance < best) { best = distance; nearest = channel; }
+      }
+      return nearest;
+    }
     case RtlBand::wx: {
       uint32_t nearest = kRtlWxChannelsHz[0];
       uint32_t best = UINT32_MAX;
@@ -2519,6 +2627,14 @@ void persist_fm_presets() {
 }
 
 uint32_t rtl_step_frequency(RtlBand band, uint32_t frequency_hz, int direction) {
+  if (band == RtlBand::gmrs) {
+    const uint32_t current = rtl_clamp_frequency(band, frequency_hz);
+    constexpr int count = static_cast<int>(std::size(kGmrsChannelsHz));
+    int channel = 0;
+    while (channel + 1 < count && kGmrsChannelsHz[channel] != current) ++channel;
+    channel = direction < 0 ? (channel + count - 1) % count : (channel + 1) % count;
+    return kGmrsChannelsHz[channel];
+  }
   if (band == RtlBand::wx) {
     const uint32_t current = rtl_clamp_frequency(band, frequency_hz);
     constexpr int count = static_cast<int>(std::size(kRtlWxChannelsHz));
@@ -2557,6 +2673,13 @@ uint32_t rtl_step_frequency(RtlBand band, uint32_t frequency_hz, int direction) 
   return rtl_clamp_frequency(band, frequency_hz + step);
 }
 
+size_t gmrs_channel_index(uint32_t frequency_hz) {
+  const uint32_t snapped = rtl_clamp_frequency(RtlBand::gmrs, frequency_hz);
+  for (size_t channel = 0; channel < std::size(kGmrsChannelsHz); ++channel)
+    if (kGmrsChannelsHz[channel] == snapped) return channel;
+  return 0;
+}
+
 size_t wx_channel_index(uint32_t frequency_hz) {
   const uint32_t snapped = rtl_clamp_frequency(RtlBand::wx, frequency_hz);
   for (size_t channel = 0; channel < std::size(kRtlWxChannelsHz); ++channel)
@@ -2570,6 +2693,72 @@ size_t cb_channel_index(uint32_t frequency_hz) {
     if (kCbChannelsHz[channel] == snapped) return channel;
   }
   return 18;
+}
+
+// The published channel list for a band, or nullptr if the band is a
+// continuous dial. Also gives the scanner its adjacent-channel spacing, which
+// is what bounds how far off centre a peak may sit and still count as this
+// channel's: half a channel either way, so CB's 10 kHz plan tolerates 5 kHz
+// (about one 3.75 kHz spectrum bin) and GMRS's 25 kHz plan tolerates 12.5.
+struct ChannelPlan {
+  const uint32_t* channels_hz = nullptr;
+  size_t count = 0;
+  uint32_t spacing_hz = 0;
+};
+
+ChannelPlan channel_plan_for(RtlBand band) {
+  switch (band) {
+    case RtlBand::cb: return {kCbChannelsHz, std::size(kCbChannelsHz), 10000};
+    // 12.5 kHz, not the 25 kHz a channel-number-to-channel-number step covers:
+    // the FRS interstitials (ch 1-7) sit exactly halfway between the main GMRS
+    // channels (ch 15-22), so 462.5500 and 462.5625 are the real neighbours.
+    // Using 25 kHz here would have let ch 15's carrier stop the scan on ch 1.
+    case RtlBand::gmrs: return {kGmrsChannelsHz, std::size(kGmrsChannelsHz), 12500};
+    case RtlBand::wx: return {kRtlWxChannelsHz, std::size(kRtlWxChannelsHz), 25000};
+    default: return {};
+  }
+}
+
+bool rtl_band_is_channelized(RtlBand band) {
+  return channel_plan_for(band).channels_hz != nullptr;
+}
+
+float channel_scan_min_snr_db(RtlBand band) {
+  return band == RtlBand::cb ? kChannelScanMinSnrCbDb : kChannelScanMinSnrDb;
+}
+
+// The scanner's "is this channel busy" test rests on two things being true of
+// every plan: each channel must be its own nearest channel (so a hop lands
+// where the sweep meant to), and no two channels may sit closer together than
+// the +/- half-spacing window, or a neighbour's carrier would be credited to
+// the channel we are sitting on and the scan would stop on both.
+bool channel_plan_self_check() {
+  constexpr RtlBand bands[] = {RtlBand::cb, RtlBand::gmrs, RtlBand::wx};
+  for (const RtlBand band : bands) {
+    const ChannelPlan plan = channel_plan_for(band);
+    if (plan.channels_hz == nullptr || plan.count == 0 || plan.spacing_hz == 0)
+      return false;
+    for (size_t i = 0; i < plan.count; ++i) {
+      if (rtl_clamp_frequency(band, plan.channels_hz[i]) != plan.channels_hz[i])
+        return false;
+      for (size_t j = i + 1; j < plan.count; ++j) {
+        const uint32_t gap = plan.channels_hz[i] > plan.channels_hz[j]
+                                 ? plan.channels_hz[i] - plan.channels_hz[j]
+                                 : plan.channels_hz[j] - plan.channels_hz[i];
+        if (gap <= plan.spacing_hz / 2) return false;
+      }
+    }
+  }
+  // Stepping wraps in both directions and visits every channel exactly once.
+  const ChannelPlan gmrs = channel_plan_for(RtlBand::gmrs);
+  uint32_t walk = gmrs.channels_hz[0];
+  for (size_t i = 0; i < gmrs.count; ++i) walk = rtl_step_frequency(RtlBand::gmrs, walk, 1);
+  if (walk != gmrs.channels_hz[0]) return false;
+  if (rtl_step_frequency(RtlBand::gmrs, gmrs.channels_hz[0], -1) !=
+      gmrs.channels_hz[gmrs.count - 1])
+    return false;
+  return gmrs_channel_index(kGmrsDefaultHz) == 0 &&
+         std::size(kGmrsChannelsHz) == std::size(kGmrsChannelNames);
 }
 
 void log_dram_budget(const char* stage) {
@@ -5007,21 +5196,23 @@ void draw_sdr_controls(RtlBand band, bool running) {
   }
   const bool rec_on = g_audio_rec_active.load(std::memory_order_acquire);
   const orcsdr::radio_ui::Button band_row[] = {
-      {110, "FM",
+      {100, "FM",
        static_cast<uint32_t>(band == RtlBand::fm ? TFT_DARKGREEN : TFT_DARKGREY)},
-      {110, "AM",
+      {100, "AM",
        static_cast<uint32_t>(band == RtlBand::am ? TFT_DARKGREEN : TFT_DARKGREY)},
-      {110, "WX",
+      {100, "WX",
        static_cast<uint32_t>(band == RtlBand::wx ? TFT_DARKGREEN : TFT_DARKGREY)},
-      {120, "CB",
+      {100, "CB",
        static_cast<uint32_t>(band == RtlBand::cb ? TFT_DARKGREEN : TFT_DARKGREY)},
-      {140, "LORA",
+      {130, "GMRS",
+       static_cast<uint32_t>(band == RtlBand::gmrs ? TFT_DARKGREEN : TFT_DARKGREY)},
+      {120, "LORA",
        static_cast<uint32_t>(band == RtlBand::lora ? TFT_DARKGREEN : TFT_DARKGREY)},
-      {160, "BROWSE",
+      {150, "BROWSE",
        static_cast<uint32_t>(band == RtlBand::browse ? TFT_DARKGREEN : TFT_DARKGREY)},
-      {170, rec_on ? "REC*" : "REC",
+      {130, rec_on ? "REC*" : "REC",
        static_cast<uint32_t>(rec_on ? TFT_MAROON : TFT_DARKGREY)},
-      {200, running ? "STOP" : "START",
+      {160, running ? "STOP" : "START",
        static_cast<uint32_t>(running ? TFT_MAROON : TFT_DARKGREEN)},
   };
   const bool gfx_on = rtl_graphics_enabled.load(std::memory_order_acquire);
@@ -5036,10 +5227,33 @@ void draw_sdr_controls(RtlBand band, bool running) {
       {220, gfx_on ? "GFX ON" : "GFX OFF",
        static_cast<uint32_t>(gfx_on ? TFT_DARKGREEN : TFT_MAROON)},
   };
+  // On a channelized band FREQ +/- is really CH +/-, and there is a SCAN to
+  // offer; SCAN turns amber while it is parked on a busy channel so a glance
+  // says whether the sweep is moving or listening.
+  const bool scanning = channel_scan_active.load(std::memory_order_acquire);
+  const bool holding = channel_scan_holding.load(std::memory_order_acquire);
+  const orcsdr::radio_ui::Button channel_row[] = {
+      {160, "CH -", TFT_DARKGREY},
+      {160, "CH +", TFT_DARKGREY},
+      {150, scanning ? (holding ? "HOLD" : "SCAN*") : "SCAN",
+       static_cast<uint32_t>(scanning ? (holding ? TFT_OLIVE : TFT_MAROON)
+                                      : TFT_DARKGREEN)},
+      {200, sound_on ? "SOUND ON" : "SOUND OFF",
+       static_cast<uint32_t>(sound_on ? TFT_DARKGREEN : TFT_MAROON)},
+      {130, "VOL -", TFT_NAVY},
+      {130, "VOL +", TFT_NAVY},
+      {190, gfx_on ? "GFX ON" : "GFX OFF",
+       static_cast<uint32_t>(gfx_on ? TFT_DARKGREEN : TFT_MAROON)},
+  };
+  const bool channels = rtl_band_is_channelized(band);
   orcsdr::radio_ui::draw_button_row(kSdrEdge, kSdrBandY, kSdrControlsHeight,
                                     kSdrGap, band_row, std::size(band_row));
-  orcsdr::radio_ui::draw_button_row(kSdrEdge, kSdrTuneY, kSdrControlsHeight,
-                                    kSdrGap, tune_row, std::size(tune_row));
+  if (channels)
+    orcsdr::radio_ui::draw_button_row(kSdrEdge, kSdrTuneY, kSdrControlsHeight,
+                                      kSdrGap, channel_row, std::size(channel_row));
+  else
+    orcsdr::radio_ui::draw_button_row(kSdrEdge, kSdrTuneY, kSdrControlsHeight,
+                                      kSdrGap, tune_row, std::size(tune_row));
 }
 
 /** Freeze scope/waterfall with a clear banner (audio keeps running). */
@@ -5141,12 +5355,12 @@ void draw_cb_dashboard(bool static_panel) {
   M5.Display.drawString(text, kCbPanelX + 229, kCbPanelY + 198);
   const CbMode mode = cb_mode.load(std::memory_order_relaxed);
   const int clarifier = cb_clarifier_hz.load(std::memory_order_relaxed);
-  const int squelch = cb_squelch_dbfs.load(std::memory_order_relaxed);
+  const int squelch = channel_squelch_dbfs.load(std::memory_order_relaxed);
   snprintf(text, sizeof(text), "%s %+.1fk SQL%d",
            mode == CbMode::usb ? "USB" : mode == CbMode::lsb ? "LSB" : "AM",
            clarifier / 1000.0, squelch);
   M5.Display.setTextSize(1);
-  M5.Display.setTextColor(cb_squelch_open.load(std::memory_order_relaxed)
+  M5.Display.setTextColor(channel_squelch_open.load(std::memory_order_relaxed)
                               ? TFT_GREEN
                               : TFT_LIGHTGREY,
                           TFT_BLACK);
@@ -5711,7 +5925,10 @@ void draw_band_edges() {
 // screen on top of it does not show a spectrum.
 bool spectrum_measurement_wanted() {
   return fm_seek_active.load(std::memory_order_acquire) ||
-         rtl_fm_preset_scan_active.load(std::memory_order_acquire);
+         rtl_fm_preset_scan_active.load(std::memory_order_acquire) ||
+         // Both halves of a channel scan read the spectrum: the sweep to
+         // decide whether to stop, and the hold to decide when to resume.
+         channel_scan_active.load(std::memory_order_acquire);
 }
 
 void draw_spectrum(const uint8_t* iq, size_t bytes) {
@@ -5825,6 +6042,17 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     }
   }
 
+  // The tuner leaks its own LO into the centre bin, so bin 128 carries a spike
+  // that is always there and always exactly on the dial. On a strong band it is
+  // buried, but on quiet CB it stood ~20 dB over the mean on every channel --
+  // enough to look to the channel scanner like a carrier sitting dead centre,
+  // which is the one thing it treats as proof the channel is occupied. It
+  // stopped on CB channel 18, 19, 20, 21 and 22 alike. LO leakage is a single
+  // impulse, while a real signal on the dial also lifts the bins either side,
+  // so interpolating just this bin removes the artefact and leaves the signal.
+  constexpr size_t kDcBin = kRtlSpectrumBins / 2;
+  power_acc[kDcBin] = 0.5f * (power_acc[kDcBin - 1] + power_acc[kDcBin + 1]);
+
   size_t visible_bins = static_cast<size_t>(
       (static_cast<uint64_t>(rtl_scope_span_hz.load(std::memory_order_relaxed)) *
        kRtlSpectrumBins) /
@@ -5870,6 +6098,9 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   rtl_scope_peak_snr_db.store(
       level_count ? strongest - level_sum / static_cast<float>(level_count) : 0.0f,
       std::memory_order_relaxed);
+  // Release, and last: a reader that sees this value is guaranteed to see the
+  // three measurements it describes.
+  rtl_scope_measurement_seq.fetch_add(1, std::memory_order_release);
   const float floor = maximum - 48.0f;
   if (orcsdr::web_console::enabled())
     orcsdr::web_console::update_spectrum(rtl_spectrum_levels, kRtlSpectrumBins);
@@ -6593,16 +6824,16 @@ void demodulate_ssb(const uint8_t* iq, size_t bytes, float audio_scale, CbMode m
   queue_audio_samples(audio, audio_count);
 }
 
-bool cb_audio_gate_open() {
-  const int threshold = cb_squelch_dbfs.load(std::memory_order_relaxed);
+bool channel_audio_gate_open() {
+  const int threshold = channel_squelch_dbfs.load(std::memory_order_relaxed);
   if (threshold <= -90) {
-    cb_squelch_open.store(true, std::memory_order_relaxed);
+    channel_squelch_open.store(true, std::memory_order_relaxed);
     return true;
   }
   const float signal = rtl_signal_dbfs.load(std::memory_order_relaxed);
-  bool open = cb_squelch_open.load(std::memory_order_relaxed);
+  bool open = channel_squelch_open.load(std::memory_order_relaxed);
   open = open ? signal >= threshold - 3 : signal >= threshold;
-  cb_squelch_open.store(open, std::memory_order_relaxed);
+  channel_squelch_open.store(open, std::memory_order_relaxed);
   return open;
 }
 
@@ -6752,7 +6983,7 @@ static void rtl_dsp_task(void *) {
          g_audio_rec_active.load(std::memory_order_relaxed)) &&
         !rtl_audio_test_tone.load(std::memory_order_relaxed)) {
       if (block.band == RtlBand::cb) {
-        if (cb_audio_gate_open()) {
+        if (channel_audio_gate_open()) {
           const CbMode mode = cb_mode.load(std::memory_order_relaxed);
           if (mode == CbMode::am) demodulate_am(block.data, block.bytes, block.audio_scale);
           else demodulate_ssb(block.data, block.bytes, block.audio_scale, mode);
@@ -6761,6 +6992,15 @@ static void rtl_dsp_task(void *) {
         }
       } else if (block.band == RtlBand::am) {
         demodulate_am(block.data, block.bytes, block.audio_scale);
+      } else if (block.band == RtlBand::gmrs) {
+        // Squelched like CB: GMRS channels are silent most of the time, and a
+        // scanner that parks on a channel is unusable if the speaker carries
+        // open-channel hiss between transmissions. NOAA weather is deliberately
+        // left ungated -- it broadcasts continuously, so a squelch there only
+        // ever cuts off a weak-but-wanted station.
+        if (channel_audio_gate_open()) demodulate_fm(block.data, block.bytes,
+                                                     block.audio_scale, false);
+        else rtl_audio_play_count = 0;
       } else if (block.band != RtlBand::adsb) {
         demodulate_fm(block.data, block.bytes, block.audio_scale, block.band == RtlBand::fm);
       }
@@ -6792,9 +7032,10 @@ static void rtl_driver_app_task(void *) {
           band, rtl_requested_frequency_hz.load(std::memory_order_acquire));
       const uint8_t volume = rtl_requested_volume.load(std::memory_order_acquire);
       g_stream_band = band;
-      g_stream_audio_scale = (band == RtlBand::wx || band == RtlBand::browse)
-                                 ? 12000.0f
-                                 : (band == RtlBand::am || band == RtlBand::cb) ? 9000.0f : 5500.0f;
+      g_stream_audio_scale =
+          (band == RtlBand::wx || band == RtlBand::browse || band == RtlBand::gmrs)
+              ? 12000.0f
+              : (band == RtlBand::am || band == RtlBand::cb) ? 9000.0f : 5500.0f;
       rtl_live_volume.store(volume, std::memory_order_release);
       rtl_ui_band = band;
       rtl_ui_frequency_hz = frequency_hz;
@@ -8437,10 +8678,46 @@ uint32_t fm_seek_wrap(uint32_t frequency_hz) {
   return static_cast<uint32_t>(value);
 }
 
+// Is the dial's own channel occupied right now? See the channel-scan block at
+// the top of the file for why all three tests are needed.
+bool channel_is_busy(RtlBand band, float* out_level_dbfs, float* out_snr_db,
+                     int32_t* out_offset_hz) {
+  const ChannelPlan plan = channel_plan_for(band);
+  // rtl_signal_dbfs is genuine dBFS (update_signal_level_from_iq normalises to
+  // full scale), which is what the squelch setting is expressed in. Note that
+  // rtl_scope_peak_level is NOT: draw_spectrum leaves it as raw 10*log10 of
+  // bin power, so it reads around +55 where the squelch default is -75 and
+  // comparing the two -- as this did at first, and as the FM seek still does
+  // -- is a test that can never fail. Only its ratio to the mean, the SNR, is
+  // meaningful, so that is all it is used for here.
+  const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
+  const float snr_db = rtl_scope_peak_snr_db.load(std::memory_order_relaxed);
+  const int32_t offset_hz = rtl_scope_peak_offset_hz.load(std::memory_order_relaxed);
+  if (out_level_dbfs) *out_level_dbfs = level;
+  if (out_snr_db) *out_snr_db = snr_db;
+  if (out_offset_hz) *out_offset_hz = offset_hz;
+  if (plan.spacing_hz == 0) return false;
+  const int32_t tolerance_hz = static_cast<int32_t>(plan.spacing_hz / 2);
+  const int32_t distance_hz = offset_hz < 0 ? -offset_hz : offset_hz;
+  const float squelch =
+      static_cast<float>(channel_squelch_dbfs.load(std::memory_order_relaxed));
+  return distance_hz <= tolerance_hz && level >= squelch &&
+         snr_db >= channel_scan_min_snr_db(band);
+}
+
 bool scan_retune(uint32_t frequency_hz, void*) {
-  if (active_scan == ActiveScan::fm_presets || active_scan == ActiveScan::fm_seek)
+  if (active_scan == ActiveScan::fm_presets || active_scan == ActiveScan::fm_seek ||
+      active_scan == ActiveScan::channel_scan)
     reset_spectrum_renderer();
   if (active_scan == ActiveScan::fm_seek) frequency_hz = fm_seek_wrap(frequency_hz);
+  // A channel scan is short and stays inside one band, so the dial can follow
+  // it the way a scanner's display does. An FM seek deliberately does not --
+  // sweeping 32 MHz in 800 kHz steps would just make the readout thrash.
+  if (active_scan == ActiveScan::channel_scan) {
+    rtl_ui_frequency_hz = frequency_hz;
+    channel_scan_seq_at_retune =
+        rtl_scope_measurement_seq.load(std::memory_order_acquire);
+  }
   // Each discovery candidate must start with a clean decoder: without this,
   // stats() would accumulate across channels and scan_measure's per-channel
   // read would reflect the WHOLE scan so far, not just this one candidate.
@@ -8501,6 +8778,33 @@ void scan_measure(size_t index, uint32_t frequency_hz, void*) {
                     static_cast<unsigned long>(snapped_hz), static_cast<double>(level));
     return;
   }
+  if (active_scan == ActiveScan::channel_scan) {
+    float level = 0.0f;
+    float snr_db = 0.0f;
+    int32_t offset_hz = 0;
+    // Two windows, not one. The first to complete after a hop can still be
+    // built from IQ captured while the tuner was moving -- the same transient
+    // the FM seek discards its window 0 for -- so only the second is certainly
+    // this channel's. Under-dwelling shows up here as stale_skips rather than
+    // as a stop on the wrong channel.
+    const uint32_t seq = rtl_scope_measurement_seq.load(std::memory_order_acquire);
+    const uint32_t fresh = seq - channel_scan_seq_at_retune;
+    const bool busy =
+        fresh >= 2 && channel_is_busy(channel_scan_band, &level, &snr_db, &offset_hz);
+    if (fresh < 2) channel_scan_stale_skips.fetch_add(1, std::memory_order_relaxed);
+    if (serial_verbosity_at(SerialVerbosity::trace))
+      Serial.printf("RTL_CHANNEL_SCAN_SAMPLE index=%u frequency_hz=%lu level=%.1f "
+                    "snr_db=%.1f offset_hz=%ld windows=%lu busy=%d\n",
+                    static_cast<unsigned>(index),
+                    static_cast<unsigned long>(frequency_hz),
+                    static_cast<double>(level), static_cast<double>(snr_db),
+                    static_cast<long>(offset_hz),
+                    static_cast<unsigned long>(fresh), busy ? 1 : 0);
+    if (!busy) return;
+    channel_scan_hit_hz = frequency_hz;
+    channel_scan_stop_pending = true;
+    return;
+  }
   if (active_scan == ActiveScan::p25_survey) {
     const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
     const auto decoded = orcsdr::p25decoder::snapshot();
@@ -8557,6 +8861,47 @@ void scan_finished(orcsdr::scan::Finish reason, void*) {
     fm_seek_hit_hz = 0;
     fm_seek_direction = 0;
     fm_seek_active.store(false, std::memory_order_release);
+    return;
+  }
+  if (finished == ActiveScan::channel_scan) {
+    // A pass ends one of three ways. A hit means "park here and listen"; the
+    // scan stays active so the service loop resumes it when the channel goes
+    // quiet. No hit means "go round again" -- a scanner cycles, it does not
+    // stop at the end of the list. A cancel with no hit, or a retune failure,
+    // ends the run.
+    //
+    // The hit test deliberately does not care whether the pass was cancelled
+    // or completed. Engine::service() calls measure() and then, on the last
+    // index, finish(completed) within the same call -- so a hit on the final
+    // channel of a pass arrives here as "completed" before service_channel_scan
+    // ever gets to cancel. Requiring "cancelled" here dropped exactly those
+    // hits, and since the sweep starts just after the current dial the final
+    // channel is the one the user was already listening to.
+    channel_scan_stop_pending = false;
+    if (channel_scan_hit_hz != 0 && reason != orcsdr::scan::Finish::retune_failed) {
+      (void)request_hot_retune_for(scan_radio_token, channel_scan_hit_hz);
+      rtl_ui_frequency_hz = channel_scan_hit_hz;
+      channel_scan_holding.store(true, std::memory_order_release);
+      channel_scan_quiet_since_ms = 0;
+      channel_scan_hits.fetch_add(1, std::memory_order_relaxed);
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_CHANNEL_SCAN hold frequency_hz=%lu\n",
+                    static_cast<unsigned long>(channel_scan_hit_hz));
+      return;
+    }
+    if (reason == orcsdr::scan::Finish::completed &&
+        channel_scan_active.load(std::memory_order_acquire)) {
+      // service_shared_scan starts the next pass; leaving active_scan clear is
+      // what lets it, since the engine refuses to start while one is running.
+      return;
+    }
+    channel_scan_active.store(false, std::memory_order_release);
+    channel_scan_holding.store(false, std::memory_order_release);
+    channel_scan_hit_hz = 0;
+    rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+    Serial.printf("RTL_CHANNEL_SCAN stop reason=%s frequency_hz=%lu\n",
+                  reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed",
+                  static_cast<unsigned long>(rtl_ui_frequency_hz));
     return;
   }
   if (finished == ActiveScan::pocsag_discovery) {
@@ -8642,6 +8987,118 @@ void cancel_active_scan(bool restore) {
   scan_engine.cancel(restore, scan_callbacks());
 }
 
+// Start a pass over the current band's channel list, beginning after
+// `after_hz` so resuming from a hold does not immediately re-find the channel
+// it just left. restore=false: a hit is where we want to end up, not something
+// to undo.
+bool start_channel_scan_pass(uint32_t now, uint32_t after_hz) {
+  const ChannelPlan plan = channel_plan_for(channel_scan_band);
+  if (plan.channels_hz == nullptr || plan.count == 0) return false;
+  size_t first = 0;
+  if (after_hz != 0) {
+    for (size_t i = 0; i < plan.count; ++i)
+      if (plan.channels_hz[i] == after_hz) { first = (i + 1) % plan.count; break; }
+  }
+  const auto session = radio_session.snapshot();
+  scan_radio_token = {session.owner, session.generation};
+  // The engine walks a channel list from index 0, so rotate our own copy to
+  // put the resume point first rather than teaching the engine an offset.
+  static uint32_t rotated[std::max(std::size(kCbChannelsHz), std::size(kGmrsChannelsHz))];
+  static_assert(std::size(rotated) >= std::size(kRtlWxChannelsHz));
+  for (size_t i = 0; i < plan.count; ++i)
+    rotated[i] = plan.channels_hz[(first + i) % plan.count];
+  const orcsdr::scan::Plan scan_plan{orcsdr::scan::Mode::channel_list, rotated,
+                                     plan.count, 0, 0, kChannelScanDwellMs, false};
+  if (!scan_engine.start(scan_plan, rtl_ui_frequency_hz, now)) return false;
+  active_scan = ActiveScan::channel_scan;
+  channel_scan_hit_hz = 0;
+  channel_scan_stop_pending = false;
+  channel_scan_holding.store(false, std::memory_order_release);
+  return true;
+}
+
+void service_channel_scan(uint32_t now, const orcsdr::scan::Callbacks& callbacks) {
+  const bool running = channel_scan_active.load(std::memory_order_acquire);
+  if (channel_scan_cancel.exchange(false, std::memory_order_acq_rel) && running) {
+    channel_scan_active.store(false, std::memory_order_release);
+    channel_scan_holding.store(false, std::memory_order_release);
+    channel_scan_hit_hz = 0;
+    if (active_scan == ActiveScan::channel_scan) {
+      scan_engine.cancel(false, callbacks);
+    } else {
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_CHANNEL_SCAN stop reason=cancelled frequency_hz=%lu\n",
+                    static_cast<unsigned long>(rtl_ui_frequency_hz));
+    }
+    return;
+  }
+  // Stop from outside the measure callback so the engine is not re-entered --
+  // the same rule the FM seek follows.
+  if (active_scan == ActiveScan::channel_scan && channel_scan_stop_pending) {
+    channel_scan_stop_pending = false;
+    scan_engine.cancel(false, callbacks);
+    return;
+  }
+  if (channel_scan_requested.exchange(false, std::memory_order_acq_rel)) {
+    if (running) {
+      channel_scan_cancel.store(true, std::memory_order_release);
+      return;
+    }
+    // Every hop is a hot retune of a live stream, so a stopped receiver would
+    // simply fail the first one; say so up front instead.
+    const bool streaming =
+        rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running;
+    if (scan_engine.active() || !rtl_band_is_channelized(g_stream_band) || !streaming) {
+      Serial.printf("RTL_CHANNEL_SCAN_UNAVAILABLE band=%s busy=%d streaming=%d\n",
+                    rtl_band_name(g_stream_band), scan_engine.active() ? 1 : 0,
+                    streaming ? 1 : 0);
+      return;
+    }
+    channel_scan_band = g_stream_band;
+    channel_scan_hits.store(0, std::memory_order_relaxed);
+    channel_scan_stale_skips.store(0, std::memory_order_relaxed);
+    if (start_channel_scan_pass(now, rtl_ui_frequency_hz)) {
+      channel_scan_active.store(true, std::memory_order_release);
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_CHANNEL_SCAN start band=%s channels=%u dwell_ms=%lu\n",
+                    rtl_band_name(channel_scan_band),
+                    static_cast<unsigned>(channel_plan_for(channel_scan_band).count),
+                    static_cast<unsigned long>(kChannelScanDwellMs));
+    }
+    return;
+  }
+  if (!running) return;
+  // Leaving the band by any other route (a band button, the serial CLI, a
+  // dashboard tile) has to end the run, or the next pass would sweep CB
+  // channels while the receiver is somewhere else entirely.
+  if (g_stream_band != channel_scan_band) {
+    channel_scan_cancel.store(true, std::memory_order_release);
+    return;
+  }
+  if (channel_scan_holding.load(std::memory_order_acquire)) {
+    if (channel_is_busy(channel_scan_band, nullptr, nullptr, nullptr)) {
+      channel_scan_quiet_since_ms = 0;
+      return;
+    }
+    if (channel_scan_quiet_since_ms == 0) {
+      channel_scan_quiet_since_ms = now;
+      return;
+    }
+    if (now - channel_scan_quiet_since_ms < kChannelScanResumeMs) return;
+    const uint32_t from_hz = channel_scan_hit_hz;
+    channel_scan_quiet_since_ms = 0;
+    if (start_channel_scan_pass(now, from_hz)) {
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_CHANNEL_SCAN resume after_hz=%lu\n",
+                    static_cast<unsigned long>(from_hz));
+    }
+    return;
+  }
+  // A completed pass found nothing; go round again.
+  if (active_scan == ActiveScan::none && !scan_engine.active())
+    (void)start_channel_scan_pass(now, rtl_ui_frequency_hz);
+}
+
 void service_shared_scan(uint32_t now) {
   const auto callbacks = scan_callbacks();
   if (cancel_scan_for_takeover.exchange(false, std::memory_order_acq_rel))
@@ -8660,6 +9117,7 @@ void service_shared_scan(uint32_t now) {
       active_scan == ActiveScan::pocsag_discovery) {
     scan_engine.cancel(true, callbacks);
   }
+  service_channel_scan(now, callbacks);
 
   if (!scan_engine.active() && g_stream_band == RtlBand::fm &&
       !rtl_auto_fm_active.load(std::memory_order_acquire) &&
@@ -9078,6 +9536,7 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
   snapshot.step_hz = rtl_ui_band == RtlBand::fm       ? rtl_fm_step_hz
                      : rtl_ui_band == RtlBand::p25    ? kP25StepHz
                      : rtl_ui_band == RtlBand::cb     ? 10000
+                     : rtl_ui_band == RtlBand::gmrs   ? 25000
                      : rtl_ui_band == RtlBand::lora   ? 125000
                      : rtl_ui_band == RtlBand::am     ? kRtlAmStepHz
                                                        : 12500;
@@ -9089,12 +9548,28 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
           ? static_cast<uint8_t>(cb_channel_index(rtl_ui_frequency_hz) + 1)
       : rtl_ui_band == RtlBand::wx
           ? static_cast<uint8_t>(wx_channel_index(rtl_ui_frequency_hz) + 1)
+      : rtl_ui_band == RtlBand::gmrs
+          ? static_cast<uint8_t>(gmrs_channel_index(rtl_ui_frequency_hz) + 1)
           : 0;
   snapshot.channel_count =
       demo ? 0
       : rtl_ui_band == RtlBand::cb ? static_cast<uint8_t>(std::size(kCbChannelsHz))
       : rtl_ui_band == RtlBand::wx ? static_cast<uint8_t>(std::size(kRtlWxChannelsHz))
-                                   : 0;
+      : rtl_ui_band == RtlBand::gmrs
+          ? static_cast<uint8_t>(std::size(kGmrsChannelsHz))
+          : 0;
+  // GMRS numbering is not its index: channels 15-22 repeat as repeater inputs
+  // R15-R22, so entry 23 is "R15", not channel 23. Give the card the real name.
+  if (!demo && rtl_ui_band == RtlBand::gmrs)
+    strlcpy(snapshot.channel_label,
+            kGmrsChannelNames[gmrs_channel_index(rtl_ui_frequency_hz)],
+            sizeof(snapshot.channel_label));
+  else
+    snapshot.channel_label[0] = '\0';
+  snapshot.channel_scan_active =
+      !demo && channel_scan_active.load(std::memory_order_acquire);
+  snapshot.channel_scan_holding =
+      !demo && channel_scan_holding.load(std::memory_order_acquire);
   snapshot.active_dashboard = demo ? orcsdr::dashboards::Id::home
                                     : dashboard_for_band(rtl_ui_band, rtl_ui_frequency_hz);
   // Id::utilities has no registry entry, so a frequency in no named band (say
@@ -9103,7 +9578,7 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
   if (!demo && orcsdr::dashboards::find(snapshot.active_dashboard) == nullptr)
     strlcpy(snapshot.band_label, rtl_band_name(rtl_ui_band), sizeof(snapshot.band_label));
   else
-    snapshot.band_label[0] = ' ';
+    snapshot.band_label[0] = '\0';
   snapshot.battery_percent = demo ? 76 : device.battery_percent;
   snapshot.vbus_mv = demo ? 5000 : device.vbus_mv;
   snapshot.volume = demo ? 128 : rtl_live_volume.load(std::memory_order_acquire);
@@ -9252,6 +9727,7 @@ orcsdr::dashboards::Id dashboard_for_band(RtlBand band, uint32_t frequency_hz) {
     case RtlBand::adsb: return Id::adsb;
     case RtlBand::pocsag: return Id::pocsag;
     case RtlBand::wx: return Id::weather;
+    case RtlBand::gmrs: return Id::gmrs;
     case RtlBand::cb: return Id::cb;
     case RtlBand::lora: return Id::lora;
     case RtlBand::am: return Id::shortwave;
@@ -9315,6 +9791,7 @@ void open_dashboard(orcsdr::dashboards::Id id) {
     case Id::shortwave: band = RtlBand::browse; frequency = 7100000; break;
     case Id::weather: band = RtlBand::wx; frequency = kRtlWxHz; break;
     case Id::cb: band = RtlBand::cb; frequency = kCbDefaultHz; break;
+    case Id::gmrs: band = RtlBand::gmrs; frequency = kGmrsDefaultHz; break;
     case Id::lora: band = RtlBand::lora; frequency = rtl_saved_lora_hz; break;
     case Id::airband: band = RtlBand::browse; frequency = 121500000; break;
     case Id::marine: band = RtlBand::browse; frequency = 156800000; break;
@@ -9387,10 +9864,28 @@ void handle_home_action(const orcsdr::home::Action& action) {
       break;
     case ActionKind::channel_down:
     case ActionKind::channel_up:
-      if (rtl_ui_band == RtlBand::cb) {
-        const size_t current = cb_channel_index(rtl_ui_frequency_hz);
-        tune_cb_channel((current + (action.kind == ActionKind::channel_down ? 39 : 1)) % 40);
+      // Was CB-only, so the stepper on the weather and GMRS dashboards drew a
+      // < and a > that did nothing. rtl_step_frequency already knows every
+      // band's channel list and wraps at both ends.
+      if (rtl_band_is_channelized(rtl_ui_band)) {
+        const uint32_t next = rtl_step_frequency(
+            rtl_ui_band, rtl_ui_frequency_hz,
+            action.kind == ActionKind::channel_down ? -1 : 1);
+        if (rtl_ui_band == RtlBand::cb) {
+          tune_cb_channel(cb_channel_index(next));
+        } else {
+          if (channel_scan_active.load(std::memory_order_acquire))
+            channel_scan_cancel.store(true, std::memory_order_release);
+          if (rtl_capture_state.load(std::memory_order_acquire) ==
+              RtlCaptureState::running)
+            request_hot_retune(next);
+          else
+            queue_local_rtl_listen(rtl_ui_band, next);
+        }
       }
+      break;
+    case ActionKind::toggle_channel_scan:
+      channel_scan_requested.store(true, std::memory_order_release);
       break;
     default: return;
   }
@@ -9976,16 +10471,21 @@ void load_state() {
         preferences.getUInt("last_band", static_cast<uint32_t>(RtlBand::fm)));
     if (stored_band == RtlBand::fm || stored_band == RtlBand::am ||
         stored_band == RtlBand::wx || stored_band == RtlBand::cb ||
-        stored_band == RtlBand::lora || stored_band == RtlBand::browse ||
-        stored_band == RtlBand::adsb || stored_band == RtlBand::p25) {
+        stored_band == RtlBand::gmrs || stored_band == RtlBand::lora ||
+        stored_band == RtlBand::browse || stored_band == RtlBand::adsb ||
+        stored_band == RtlBand::p25) {
       rtl_ui_band = stored_band;
       rtl_requested_band.store(stored_band, std::memory_order_release);
-      if (stored_band == RtlBand::p25) {
-        rtl_ui_frequency_hz = p25_control_frequency_hz;
-        rtl_requested_frequency_hz.store(p25_control_frequency_hz,
-                                         std::memory_order_release);
-      }
-      Serial.printf("RTL_BAND_RESTORE band=%s\n", rtl_band_name(stored_band));
+      // Only P25 used to restore a frequency to match its band; every other
+      // band came up still holding the *previous* band's frequency and let the
+      // clamp snap it, so restoring CB always landed on channel 1 and GMRS
+      // would always land on channel 15. The band's own default (which for FM
+      // and LoRa is the frequency we just loaded from NVS) is the honest answer.
+      const uint32_t restored_hz = rtl_band_default_frequency(stored_band);
+      rtl_ui_frequency_hz = restored_hz;
+      rtl_requested_frequency_hz.store(restored_hz, std::memory_order_release);
+      Serial.printf("RTL_BAND_RESTORE band=%s hz=%lu\n", rtl_band_name(stored_band),
+                    static_cast<unsigned long>(restored_hz));
     }
   }
   uint8_t recent[orcsdr::dashboards::kRecentCapacity]{};
@@ -10115,6 +10615,12 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     persist_fm_frequency(frequency_hz);
   }
   cancel_scan_for_takeover.store(true, std::memory_order_release);
+  // cancel_scan_for_takeover stops the sweep engine, but a channel scan that
+  // is parked on a hit has no engine running -- and a retune inside the same
+  // band would not trip the band-changed check either -- so it would come back
+  // and drag the dial off wherever this call just put it. Every deliberate
+  // tune, from any surface, ends the scan.
+  channel_scan_cancel.store(true, std::memory_order_release);
   rtl_fm_preset_scan_requested.store(false, std::memory_order_release);
   p25_survey_requested.store(false, std::memory_order_release);
   if (lora_survey_active) lora_survey_active = false;
@@ -10150,6 +10656,7 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     append_journal(band == RtlBand::am       ? "sdr_am"
                    : band == RtlBand::wx     ? "sdr_wx"
                    : band == RtlBand::cb     ? "sdr_cb"
+                   : band == RtlBand::gmrs   ? "sdr_gmrs"
                    : band == RtlBand::lora   ? "sdr_lora"
                    : band == RtlBand::browse ? "sdr_browse"
                    : band == RtlBand::adsb   ? "sdr_adsb"
@@ -10231,9 +10738,9 @@ bool handle_cb_touch(int32_t x, int32_t y) {
       rtl_audio.ssb_cos = 1.0f;
       rtl_audio.ssb_sin = 0.0f;
     } else if (control == 4 || control == 5) {
-      int threshold = cb_squelch_dbfs.load(std::memory_order_relaxed);
+      int threshold = channel_squelch_dbfs.load(std::memory_order_relaxed);
       threshold = constrain(threshold + (control == 4 ? -5 : 5), -90, -35);
-      cb_squelch_dbfs.store(threshold, std::memory_order_relaxed);
+      channel_squelch_dbfs.store(threshold, std::memory_order_relaxed);
       Serial.printf("RTL_CB_SQUELCH dbfs=%d\n", threshold);
     } else {
       return true;
@@ -10589,7 +11096,8 @@ void handle_sdr_touch(int32_t x, int32_t y) {
   const orcsdr::radio_ui::ControlLayout control_layout{
       kSdrEdge, kSdrBandY, kSdrTuneY, kSdrControlsHeight, kSdrGap};
   if (rtl_ui_band == RtlBand::lora) {
-    const auto action = orcsdr::radio_ui::control_action(control_layout, true, x, y);
+    const auto action = orcsdr::radio_ui::control_action(control_layout,
+                                     orcsdr::radio_ui::ControlRow::lora, x, y);
     if (action == orcsdr::radio_ui::ControlAction::none) return;
     if (action == orcsdr::radio_ui::ControlAction::frequency_down ||
         action == orcsdr::radio_ui::ControlAction::frequency_up) {
@@ -10627,7 +11135,11 @@ void handle_sdr_touch(int32_t x, int32_t y) {
                           RtlCaptureState::running);
     return;
   }
-  const auto action = orcsdr::radio_ui::control_action(control_layout, false, x, y);
+  const auto action = orcsdr::radio_ui::control_action(
+      control_layout,
+      rtl_band_is_channelized(rtl_ui_band) ? orcsdr::radio_ui::ControlRow::channels
+                                           : orcsdr::radio_ui::ControlRow::standard,
+      x, y);
   if (action == orcsdr::radio_ui::ControlAction::fm) {
       queue_local_rtl_listen(RtlBand::fm, rtl_ui_band == RtlBand::fm
                                                ? rtl_ui_frequency_hz
@@ -10646,6 +11158,18 @@ void handle_sdr_touch(int32_t x, int32_t y) {
       queue_local_rtl_listen(RtlBand::lora, rtl_ui_band == RtlBand::lora
                                                 ? rtl_ui_frequency_hz
                                                 : kLoraDefaultHz);
+  } else if (action == orcsdr::radio_ui::ControlAction::gmrs) {
+      queue_local_rtl_listen(RtlBand::gmrs, rtl_ui_band == RtlBand::gmrs
+                                                ? rtl_ui_frequency_hz
+                                                : kGmrsDefaultHz);
+  } else if (action == orcsdr::radio_ui::ControlAction::toggle_channel_scan) {
+      // The streaming task owns active_scan, so the touch handler only asks;
+      // service_channel_scan decides on its own thread whether it can start.
+      channel_scan_requested.store(true, std::memory_order_release);
+      const bool running =
+          rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running;
+      draw_sdr_controls(rtl_ui_band, running);
+      return;
   } else if (action == orcsdr::radio_ui::ControlAction::browse) {
       queue_local_rtl_listen(RtlBand::browse,
                              rtl_ui_band == RtlBand::browse
@@ -10680,6 +11204,10 @@ void handle_sdr_touch(int32_t x, int32_t y) {
   if (action == orcsdr::radio_ui::ControlAction::none) return;
   if (action == orcsdr::radio_ui::ControlAction::frequency_down ||
       action == orcsdr::radio_ui::ControlAction::frequency_up) {
+    // Choosing a channel by hand overrides the scan; otherwise the sweep would
+    // move the dial off the channel a moment after the user picked it.
+    if (channel_scan_active.load(std::memory_order_acquire))
+      channel_scan_cancel.store(true, std::memory_order_release);
     const uint32_t next = rtl_step_frequency(rtl_ui_band, rtl_ui_frequency_hz,
                                              action == orcsdr::radio_ui::ControlAction::frequency_down ? -1 : 1);
     const RtlCaptureState st = rtl_capture_state.load(std::memory_order_acquire);
@@ -10836,6 +11364,9 @@ constexpr UiDocScreen kUiDocScreens[] = {
     {"cb.radio", "live,demo"},
     {"cb.scope", "live,demo"},
     {"cb.capture", "live,demo"},
+    {"gmrs.radio", "live,demo"},
+    {"gmrs.scope", "live,demo"},
+    {"gmrs.capture", "live,demo"},
     {"browse.radio", "live,demo"},
     {"browse.scope", "live,demo"},
     {"browse.capture", "live,demo"},
@@ -10871,6 +11402,9 @@ struct UiDocState {
   CbMode cb_mode_value = CbMode::am;
   int32_t cb_clarifier = 0;
   int32_t cb_squelch = -55;
+  // Documentation mode stages each band's own filter, so it has to put the
+  // live one back on the way out.
+  uint32_t filter_bandwidth_hz = kRtlFmFilterDefaultHz;
   bool cb_squelch_was_open = false;
   char current_screen[40]{};
   bool current_demo = true;
@@ -10907,6 +11441,7 @@ bool ui_doc_self_check() {
       ui_doc_prefix_count("am.") != static_cast<uint8_t>(OrcTool::Count) ||
       ui_doc_prefix_count("wx.") != static_cast<uint8_t>(OrcTool::Count) ||
       ui_doc_prefix_count("cb.") != static_cast<uint8_t>(OrcTool::Count) ||
+      ui_doc_prefix_count("gmrs.") != static_cast<uint8_t>(OrcTool::Count) ||
       ui_doc_prefix_count("browse.") != static_cast<uint8_t>(OrcTool::Count) ||
       !orcsdr::ui_capture::valid_slug("fm-listen") ||
       orcsdr::ui_capture::valid_slug("../private")) return false;
@@ -11183,6 +11718,7 @@ bool ui_doc_view_for_suffix(const char* suffix, orcsdr::p25::View* view) {
   struct GenericBand { const char* name; RtlBand band; uint32_t frequency; };
   static constexpr GenericBand bands[] = {{"am.", RtlBand::am, kRtlAmDefaultHz},
       {"wx.", RtlBand::wx, kRtlWxHz}, {"cb.", RtlBand::cb, kCbDefaultHz},
+      {"gmrs.", RtlBand::gmrs, kGmrsDefaultHz},
       {"browse.", RtlBand::browse, kRtlBrowseDefaultHz}};
   for (const auto& entry : bands) {
     const size_t prefix = strlen(entry.name);
@@ -11194,14 +11730,20 @@ bool ui_doc_view_for_suffix(const char* suffix, orcsdr::p25::View* view) {
     rtl_ui_active.store(true, std::memory_order_release);
     rtl_ui_band = entry.band;
     rtl_ui_frequency_hz = entry.frequency;
+    // Staging a band means staging its filter too. Without this the footer
+    // kept whatever the last band left behind, so a freshly booted device
+    // captured the GMRS and weather screens claiming "BW 260 kHz" -- the FM
+    // default -- when both bands actually run at 25.
+    rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(entry.band),
+                                  std::memory_order_relaxed);
     g_orc_tool.store(static_cast<uint8_t>(tool), std::memory_order_release);
     if (demo) {
       rtl_signal_dbfs_smooth = -38.0f;
       if (entry.band == RtlBand::cb) {
         cb_mode.store(CbMode::am, std::memory_order_relaxed);
         cb_clarifier_hz.store(0, std::memory_order_relaxed);
-        cb_squelch_dbfs.store(-55, std::memory_order_relaxed);
-        cb_squelch_open.store(true, std::memory_order_relaxed);
+        channel_squelch_dbfs.store(-55, std::memory_order_relaxed);
+        channel_squelch_open.store(true, std::memory_order_relaxed);
       }
     }
     draw_sdr_screen(entry.band, entry.frequency, rtl_ui_volume);
@@ -11295,6 +11837,7 @@ bool ui_doc_live_band(const char* screen_id, RtlBand* band, uint32_t* frequency_
   struct Entry { const char* prefix; RtlBand band; uint32_t frequency; };
   static constexpr Entry entries[] = {{"am.", RtlBand::am, kRtlAmDefaultHz},
       {"wx.", RtlBand::wx, kRtlWxHz}, {"cb.", RtlBand::cb, kCbDefaultHz},
+      {"gmrs.", RtlBand::gmrs, kGmrsDefaultHz},
       {"browse.", RtlBand::browse, kRtlBrowseDefaultHz}};
   for (const auto& entry : entries)
     if (strncmp(screen_id, entry.prefix, strlen(entry.prefix)) == 0) {
@@ -11331,8 +11874,9 @@ void ui_doc_enter() {
   ui_doc.signal_dbfs = rtl_signal_dbfs_smooth;
   ui_doc.cb_mode_value = cb_mode.load(std::memory_order_relaxed);
   ui_doc.cb_clarifier = cb_clarifier_hz.load(std::memory_order_relaxed);
-  ui_doc.cb_squelch = cb_squelch_dbfs.load(std::memory_order_relaxed);
-  ui_doc.cb_squelch_was_open = cb_squelch_open.load(std::memory_order_relaxed);
+  ui_doc.filter_bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
+  ui_doc.cb_squelch = channel_squelch_dbfs.load(std::memory_order_relaxed);
+  ui_doc.cb_squelch_was_open = channel_squelch_open.load(std::memory_order_relaxed);
   ui_documentation_mode = true;
   orcsdr::screens::begin_transition(orcsdr::screens::Id::documentation, millis());
   orcsdr::screens::finish_transition();
@@ -11360,8 +11904,9 @@ bool ui_doc_pause_reception() {
   rtl_signal_dbfs_smooth = ui_doc.signal_dbfs;
   cb_mode.store(ui_doc.cb_mode_value, std::memory_order_relaxed);
   cb_clarifier_hz.store(ui_doc.cb_clarifier, std::memory_order_relaxed);
-  cb_squelch_dbfs.store(ui_doc.cb_squelch, std::memory_order_relaxed);
-  cb_squelch_open.store(ui_doc.cb_squelch_was_open, std::memory_order_relaxed);
+  rtl_filter_bandwidth_hz.store(ui_doc.filter_bandwidth_hz, std::memory_order_relaxed);
+  channel_squelch_dbfs.store(ui_doc.cb_squelch, std::memory_order_relaxed);
+  channel_squelch_open.store(ui_doc.cb_squelch_was_open, std::memory_order_relaxed);
   rtl_graphics_enabled.store(ui_doc.graphics_enabled, std::memory_order_release);
   rtl_ui_band = ui_doc.band;
   rtl_ui_frequency_hz = ui_doc.frequency_hz;
@@ -12578,6 +13123,12 @@ void process_command(char* command) {
     Serial.println("RTL_PRESET_SCAN                - start FM band scan for presets (auth, FM only)");
     Serial.println("RTL_PRESET_LIST                - list current FM presets");
     Serial.println("RTL_PRESET_TUNE <n>            - tune to preset n, 1-based (auth, FM only)");
+    Serial.println("RTL_CHANNEL_SCAN               - start/stop channel scan (auth, CB|GMRS|WX)");
+    Serial.println("RTL_CHANNEL_SCAN_STOP          - stop channel scan (auth)");
+    Serial.println("RTL_CHANNEL_SCAN_STATUS        - scan state, hit count, thresholds");
+    Serial.println("RTL_CHANNEL_PROBE              - detector reading for the channel on the dial");
+    Serial.println("RTL_SQUELCH                    - query squelch (CB/GMRS audio + scan stop level)");
+    Serial.println("RTL_SQUELCH <-90..-20>         - set squelch dBFS, -90 opens it (auth)");
     Serial.println("RTL_RDS_STATUS                 - on-demand RDS Stage1/2 diagnostic dump");
     Serial.println("RTL_RDS_CAPTURE_START/STOP/STATUS - capture FM MPX to SD for replay");
     Serial.println("RTL_RDS_REPLAY <path.s16>       - replay captured MPX while radio is stopped");
@@ -13114,6 +13665,82 @@ void process_command(char* command) {
     }
     rtl_fm_preset_scan_requested.store(true, std::memory_order_relaxed);
     Serial.println("RTL_PRESET_SCAN_QUEUED");
+    return;
+  }
+  if (strcmp(command, "RTL_CHANNEL_SCAN") == 0 && authenticated) {
+    if (!rtl_band_is_channelized(rtl_ui_band)) {
+      Serial.println("RTL_CHANNEL_SCAN_INVALID channelized bands only (CB|GMRS|WX)");
+      return;
+    }
+    channel_scan_requested.store(true, std::memory_order_release);
+    Serial.println("RTL_CHANNEL_SCAN_QUEUED");
+    return;
+  }
+  if (strcmp(command, "RTL_CHANNEL_SCAN_STOP") == 0 && authenticated) {
+    channel_scan_cancel.store(true, std::memory_order_release);
+    Serial.println("RTL_CHANNEL_SCAN_STOP_QUEUED");
+    return;
+  }
+  if (strcmp(command, "RTL_CHANNEL_PROBE") == 0) {
+    // Exactly what the scanner's stop test sees for the channel on the dial
+    // right now, so a threshold can be calibrated against a real band instead
+    // of guessed. offset_hz is the distance from the dial to the strongest
+    // visible bin; it is what tells a signal on this channel apart from a
+    // stronger one on a neighbour inside the same 960 kHz window.
+    float level = 0.0f;
+    float snr_db = 0.0f;
+    int32_t offset_hz = 0;
+    const bool busy = channel_is_busy(rtl_ui_band, &level, &snr_db, &offset_hz);
+    const ChannelPlan plan = channel_plan_for(rtl_ui_band);
+    Serial.printf("RTL_CHANNEL_PROBE band=%s frequency_hz=%lu level_dbfs=%.1f "
+                  "snr_db=%.1f min_snr_db=%.1f offset_hz=%ld tolerance_hz=%lu "
+                  "seq=%lu busy=%d\n",
+                  rtl_band_name(rtl_ui_band),
+                  static_cast<unsigned long>(rtl_ui_frequency_hz),
+                  static_cast<double>(level), static_cast<double>(snr_db),
+                  static_cast<double>(channel_scan_min_snr_db(rtl_ui_band)),
+                  static_cast<long>(offset_hz),
+                  static_cast<unsigned long>(plan.spacing_hz / 2),
+                  static_cast<unsigned long>(
+                      rtl_scope_measurement_seq.load(std::memory_order_acquire)),
+                  busy ? 1 : 0);
+    return;
+  }
+  if (strcmp(command, "RTL_CHANNEL_SCAN_STATUS") == 0) {
+    Serial.printf("RTL_CHANNEL_SCAN_STATUS active=%d holding=%d band=%s hits=%lu "
+                  "stale_skips=%lu squelch_dbfs=%ld min_snr_db=%.1f dwell_ms=%lu\n",
+                  channel_scan_active.load(std::memory_order_acquire) ? 1 : 0,
+                  channel_scan_holding.load(std::memory_order_acquire) ? 1 : 0,
+                  rtl_band_name(rtl_ui_band),
+                  static_cast<unsigned long>(
+                      channel_scan_hits.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long>(
+                      channel_scan_stale_skips.load(std::memory_order_relaxed)),
+                  static_cast<long>(
+                      channel_squelch_dbfs.load(std::memory_order_relaxed)),
+                  static_cast<double>(channel_scan_min_snr_db(rtl_ui_band)),
+                  static_cast<unsigned long>(kChannelScanDwellMs));
+    return;
+  }
+  if (strncmp(command, "RTL_SQUELCH ", 12) == 0 && authenticated) {
+    const long value = strtol(command + 12, nullptr, 10);
+    // Up to 0 dBFS: a strong local NOAA transmitter reads about -2 dBFS
+    // wideband, so a ceiling of -20 could not express "tighter than that" and
+    // left no way to test the scanner's resume path against a signal that
+    // never stops.
+    if (value < -90 || value > 0) {
+      Serial.println("RTL_SQUELCH_INVALID range -90..0 dBFS (-90 = open)");
+      return;
+    }
+    channel_squelch_dbfs.store(static_cast<int32_t>(value), std::memory_order_relaxed);
+    Serial.printf("RTL_SQUELCH_OK dbfs=%ld\n", value);
+    return;
+  }
+  if (strcmp(command, "RTL_SQUELCH") == 0) {
+    Serial.printf("RTL_SQUELCH_STATUS dbfs=%ld open=%d\n",
+                  static_cast<long>(
+                      channel_squelch_dbfs.load(std::memory_order_relaxed)),
+                  channel_squelch_open.load(std::memory_order_relaxed) ? 1 : 0);
     return;
   }
   if (strcmp(command, "RTL_POCSAG STATUS") == 0) {
@@ -13716,6 +14343,8 @@ void setup() {
                                             : "RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
   Serial.println(orcsdr::rf24::self_check() ? "RF24_DASHBOARD_SELF_CHECK_OK"
                                             : "RF24_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(channel_plan_self_check() ? "ORC_CHANNEL_PLAN_SELF_CHECK_OK"
+                                           : "ORC_CHANNEL_PLAN_SELF_CHECK_FAIL");
   Serial.println(ui_doc_self_check() ? "UI_DOC_SELF_CHECK_OK" : "UI_DOC_SELF_CHECK_FAIL");
 
 #if ORC_LORA_TEST_BUILD

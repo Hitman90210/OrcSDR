@@ -34,12 +34,18 @@ struct ControlLayout {
   int gap = 0;
 };
 
+// Which second row the radio screen is showing. LoRa puts its own controls
+// where the band buttons go; channelized bands (CB/GMRS/weather) keep the band
+// row but swap the tune row for one with a SCAN button.
+enum class ControlRow : uint8_t { standard, lora, channels };
+
 enum class ControlAction : uint8_t {
   none,
   fm,
   am,
   wx,
   cb,
+  gmrs,
   lora,
   browse,
   toggle_audio_record,
@@ -51,6 +57,7 @@ enum class ControlAction : uint8_t {
   volume_down,
   volume_up,
   toggle_graphics,
+  toggle_channel_scan,
   cycle_lora_bandwidth,
   cycle_lora_spreading_factor,
 };
@@ -62,7 +69,7 @@ void draw_filter_edges(const ScopeGeometry& geometry, const ScopeState& state);
 void draw_button_row(int x, int y, int height, int gap, const Button* buttons, size_t count);
 int button_at(int x, int y, int height, int gap, int touch_x, int touch_y,
               const int* widths, size_t count);
-ControlAction control_action(const ControlLayout& layout, bool lora, int touch_x,
+ControlAction control_action(const ControlLayout& layout, ControlRow row, int touch_x,
                              int touch_y);
 bool self_check();
 

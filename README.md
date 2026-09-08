@@ -129,7 +129,7 @@ verification loop, the known traps, and what is still open.
 
 These are the completed dashboards in the current Tab5 firmware. Each section below is what you actually do on that screen, with a live capture of that screen.
 
-Weather radio and CB are finished and channelised — weather has a WX1–WX7 picker over the seven NOAA channels, CB the standard 40. POCSAG pager receive is also present. AM and the shared “browse the whole tuner” shell run on the same Home workspace and are not given their own section below.
+Weather radio, CB and GMRS/FRS are finished and channelised — weather has a WX1–WX7 picker over the seven NOAA channels, CB the standard 40, GMRS/FRS the 30 channels of the 462/467 MHz plan (1–22 plus the R15–R22 repeater inputs). All three carry a **SCAN** button that steps the channel list, stops on a busy channel, and resumes ~2.5 s after it goes quiet. GMRS/FRS is receive-only: it names the channels so you can tell what you are hearing, and transmitting on GMRS needs an FCC licence. POCSAG pager receive is also present. AM and the shared “browse the whole tuner” shell run on the same Home workspace and are not given their own section below.
 
 Quick map:
 

@@ -23,6 +23,11 @@ struct Snapshot {
   uint8_t volume = 0;
   uint8_t channel = 0;  // 1-40 on CB, 1-7 on NOAA weather; 0 = not channelized
   uint8_t channel_count = 0;  // How many channels the band has; 0 if unchannelized
+  // Set when the channel's printed name is not its position -- GMRS entry 23
+  // is "R15", not channel 23. Empty means "number the position".
+  char channel_label[8]{};
+  bool channel_scan_active = false;   // A channel scan is running.
+  bool channel_scan_holding = false;  // ...and parked on a busy channel.
   // Shown as the header title when active_dashboard has no registry entry
   // (e.g. browsing 146.520 MHz, which is in no named band). Empty otherwise.
   char band_label[16]{};
@@ -57,6 +62,7 @@ enum class ActionKind : uint8_t {
   volume_up,
   channel_down,
   channel_up,
+  toggle_channel_scan,
   open_device_settings,
   waterfall_contrast_down,
   waterfall_contrast_up,
