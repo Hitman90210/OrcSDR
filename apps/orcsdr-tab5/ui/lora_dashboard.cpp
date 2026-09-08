@@ -113,13 +113,19 @@ void draw_header() {
   text("LORA MESH", 520, 47, TFT_WHITE, 4, middle_left);
   text("Meshtastic RX Monitor", 520, 83, kCyan, 2, middle_left);
   M5.Display.drawFastVLine(852, 20, 80, kCyan);
-  text(g_snapshot.wifi_connected ? "WI-FI ONLINE" : "WI-FI OFFLINE", 885, 44,
+  // The shared header icons occupy x=1040..1268, y=12..66 and are drawn after
+  // this block, so the second status column at x=1050 was painted over: the
+  // decoder state at y=44 was completely hidden behind the Home icon, and the
+  // key state at y=73 sat clipped against the icons' bottom edge. There is
+  // only 188px between the divider (852) and the icons, which cannot hold two
+  // columns, so these stack as three rows in the space that is actually free.
+  text(g_snapshot.wifi_connected ? "WI-FI ONLINE" : "WI-FI OFFLINE", 866, 36,
        g_snapshot.wifi_connected ? kGreen : kMuted, 1, middle_left);
-  text(g_snapshot.running ? "RX ONLY" : "RX STOPPED", 885, 73,
+  text(g_snapshot.running ? "RX ONLY" : "RX STOPPED", 866, 58,
        g_snapshot.running ? kGreen : kMuted, 2, middle_left);
-  text(g_snapshot.native_decoder_ready ? "DECODE" : "PHY PENDING", 1050, 44,
+  text(g_snapshot.native_decoder_ready ? "DECODE" : "PHY PENDING", 866, 80,
        g_snapshot.native_decoder_ready ? kGreen : kYellow, 1, middle_left);
-  text(g_snapshot.key_loaded ? "KEY LOADED" : "PUBLIC ONLY", 1050, 73,
+  text(g_snapshot.key_loaded ? "KEY LOADED" : "PUBLIC ONLY", 946, 80,
        g_snapshot.key_loaded ? kGreen : kMuted, 1, middle_left);
   audio_header::draw_home_button();
   audio_header::draw_mute_button(g_snapshot.sound_enabled);
@@ -230,37 +236,48 @@ void draw_nodes_static() {
   text("SELECTED NODE", 844, 199, kCyan, 2, middle_left);
   card(822, 382, 426, 207);
   text("VERIFIED LINKS", 844, 406, kCyan, 2, middle_left);
-  button(32, 604, 228, 42, "FILTER", kCyan);
-  button(278, 604, 228, 42, "FAVORITE", kCyan);
-  button(524, 604, 228, 42, "VIEW DETAILS", kCyan);
-  button(770, 604, 228, 42, "EXPORT LOG", kCyan);
+  // The tab bar starts at kTabsY (640), so a 42px button row at y=604 ended
+  // at 646 and had its bottom edge cut off by the tabs. Ends at 634 now.
+  button(32, 592, 228, 42, "FILTER", kCyan);
+  button(278, 592, 228, 42, "FAVORITE", kCyan);
+  button(524, 592, 228, 42, "VIEW DETAILS", kCyan);
+  button(770, 592, 228, 42, "EXPORT LOG", kCyan);
 }
 
 void draw_traffic_static() {
-  card(28, 144, 335, 464);
+  // Cards ran to y=608 and the 42px button row started at 616, so the row
+  // ended at 658 -- 18px behind the tab bar, which starts at kTabsY (640).
+  // Cards shortened to end at 584 so the row fits fully above the tabs.
+  card(28, 144, 335, 440);
   text("SOURCES", 52, 170, kGreen, 2, middle_left);
-  card(386, 144, 862, 464);
+  card(386, 144, 862, 440);
   text("DECODED TRAFFIC", 412, 170, kGreen, 2, middle_left);
-  button(386, 616, 202, 42, "VIEW RAW", kCyan);
-  button(604, 616, 202, 42, "SAVE LOG", kCyan);
-  button(822, 616, 202, 42, "FILTER TYPE", kCyan);
-  button(1040, 616, 202, 42, "CLEAR EVENTS", kCyan);
+  button(386, 592, 202, 42, "VIEW RAW", kCyan);
+  button(604, 592, 202, 42, "SAVE LOG", kCyan);
+  button(822, 592, 202, 42, "FILTER TYPE", kCyan);
+  button(1040, 592, 202, 42, "CLEAR EVENTS", kCyan);
 }
 
 void draw_map_static() {
-  card(24, 138, 896, 452);
+  // Same tab-bar clash as the nodes/traffic views: the 42px row at y=604 ran
+  // to 646, past kTabsY (640). Cards trimmed 4px so the row clears them too.
+  card(24, 138, 896, 448);
   text("GEOGRAPHIC MAP", 48, 165, kCyan, 2, middle_left);
-  card(942, 138, 306, 452);
+  card(942, 138, 306, 448);
   text("SELECTED NODE", 966, 165, kCyan, 2, middle_left);
-  button(26, 604, 210, 42, "CENTER MAP", kCyan);
-  button(252, 604, 210, 42, "FOLLOW NODE", kCyan, g_follow_node);
+  button(26, 592, 210, 42, "CENTER MAP", kCyan);
+  button(252, 592, 210, 42, "FOLLOW NODE", kCyan, g_follow_node);
   text("VERIFIED POSITIONS ONLY", 590, 625, kMuted, 1);
   text("15 NM", 870, 625, kMuted, 1);
 }
 
 void draw_health_static() {
   const char* titles[] = {"FREQUENCY", "REGION", "MONITOR", "ENCRYPTED", "NODES", "MODE"};
-  const int widths[] = {230, 220, 240, 230, 180, 170};
+  // These summed to 1270 which, with the 8px gaps and the x=24 start, ran the
+  // row out to 1334 on a 1280-wide screen -- the MODE card was cut off by the
+  // display edge. Rebalanced to 1184 so the row ends at 1248, flush with the
+  // SPECTRUM/RECENT EVENTS panels below it.
+  const int widths[] = {215, 205, 225, 215, 165, 159};
   int x = 24;
   for (int i = 0; i < 6; ++i) {
     card(x, 138, widths[i], 92);
@@ -283,8 +300,14 @@ void draw_event_row(const Event& event, int x, int y, int w, bool detailed) {
   char sender[16];
   format_id(sender, sizeof(sender), event.sender);
   text(sender, x + 16, y + 19, event.verified ? kGreen : kYellow, 2, middle_left);
+  // Event text is variable-length (Meshtastic payloads) and was drawn
+  // unclipped: "Position and telemetry received" is 360px at size 2, which
+  // overran this row and, on the RF Health panel's 340px rows, ran off the
+  // right of the screen. Clip it to the row interior.
+  M5.Display.setClipRect(x + 16, y + 30, w - 32, detailed ? 32 : 24);
   text(event.text[0] ? event.text : (event.encrypted ? "ENCRYPTED FRAME" : "WAITING"),
        x + 16, y + (detailed ? 45 : 40), TFT_WHITE, detailed ? 2 : 1, middle_left);
+  M5.Display.clearClipRect();
   char age[20];
   const uint32_t seconds = event.sender == 0 ? 0 : (millis() - event.received_ms) / 1000u;
   snprintf(age, sizeof(age), "%lus", static_cast<unsigned long>(seconds));
@@ -540,16 +563,16 @@ Action handle_touch(int32_t x, int32_t y) {
   } else if (g_view == View::nodes) {
     if (hit(x, y, 48, 236, 736, 324)) return {ActionKind::select_node,
         static_cast<uint32_t>((y - 236) / 54)};
-    if (hit(x, y, 32, 604, 228, 42)) return {ActionKind::filter_next};
-    if (hit(x, y, 278, 604, 228, 42)) return {ActionKind::toggle_favorite};
-    if (hit(x, y, 770, 604, 228, 42)) return {ActionKind::export_log};
+    if (hit(x, y, 32, 592, 228, 42)) return {ActionKind::filter_next};
+    if (hit(x, y, 278, 592, 228, 42)) return {ActionKind::toggle_favorite};
+    if (hit(x, y, 770, 592, 228, 42)) return {ActionKind::export_log};
   } else if (g_view == View::traffic) {
-    if (hit(x, y, 604, 616, 202, 42)) return {ActionKind::export_log};
-    if (hit(x, y, 822, 616, 202, 42)) return {ActionKind::filter_next};
-    if (hit(x, y, 1040, 616, 202, 42)) return {ActionKind::clear_events};
+    if (hit(x, y, 604, 592, 202, 42)) return {ActionKind::export_log};
+    if (hit(x, y, 822, 592, 202, 42)) return {ActionKind::filter_next};
+    if (hit(x, y, 1040, 592, 202, 42)) return {ActionKind::clear_events};
   } else if (g_view == View::map) {
-    if (hit(x, y, 26, 604, 210, 42)) return {ActionKind::center_map};
-    if (hit(x, y, 252, 604, 210, 42)) return {ActionKind::follow_node};
+    if (hit(x, y, 26, 592, 210, 42)) return {ActionKind::center_map};
+    if (hit(x, y, 252, 592, 210, 42)) return {ActionKind::follow_node};
   } else {
     if (hit(x, y, 24, 578, 242, 48)) return {ActionKind::scan_toggle};
     if (hit(x, y, 284, 578, 242, 48)) return {ActionKind::record_iq_toggle};

@@ -379,6 +379,11 @@ int scan_results(ScanResult* results, size_t capacity) {
       esp_wifi_scan_get_ap_num(&count) != ESP_OK) return -1;
   if (results == nullptr || capacity == 0) return count;
   const uint16_t take = static_cast<uint16_t>(count < capacity ? count : capacity);
+  // Deliberately on the stack, not static: internal RAM is far scarcer than
+  // main-task stack here. Making this (and the ScanResult array in
+  // poll_wifi()) static moved ~5KB into .bss, dropped free internal RAM from
+  // 43KB to 40KB, and boot-looped the device -- app_main aborts with
+  // ESP_ERR_NO_MEM when it cannot reserve its 40K internal/DMA pool.
   wifi_ap_record_t records[16]{};
   uint16_t received = take < 16 ? take : 16;
   if (esp_wifi_scan_get_ap_records(&received, records) != ESP_OK) return -1;
@@ -442,7 +447,39 @@ const char* ip() {
   snprintf(snapshot, sizeof(snapshot), IPSTR, IP2STR(&address));
   return snapshot;
 }
-int16_t rssi() { wifi_ap_record_t ap{}; return esp_wifi_sta_get_ap_info(&ap) == ESP_OK ? ap.rssi : 0; }
+// esp_wifi_sta_get_ap_info() is an RPC round trip to the C6 (rpc_v2
+// Req_WifiStaGetApInfo, msg_id 294), not a local register read, and it blocks
+// the caller until the C6 answers or the 5s RPC timeout expires. Its only
+// caller is device_status::collect(), which the Home dashboard refreshes at
+// 2 Hz -- so while the SDIO transport was wedged, the UI thread blocked for
+// 5s at a time, twice a second. Hardware-confirmed: every "RTL_MAIN_STALL
+// stage=loop_gap elapsed_ms=5000+" seen in testing paired with an
+// "eh_host_feat_rpc: request: no response ... msg_id=294 (5000 ms)" warning
+// immediately before it -- the wedge itself doesn't freeze the UI, this poll
+// blocking on it does.
+//
+// RSSI is a cosmetic readout, so serve it from cache, refresh it far less
+// often than the UI repaints, and don't issue the call at all while the
+// transport is known-wedged. The rarer probe interval while unhealthy still
+// lets a link that recovered on its own get noticed: a completed round trip
+// is direct proof the transport works, so it clears the sticky unhealthy
+// flag the same way a successful HTTPS fetch does.
+int16_t rssi() {
+  constexpr uint32_t kRefreshMs = 5000;
+  constexpr uint32_t kProbeWhileWedgedMs = 30000;
+  static int16_t cached = 0;
+  static uint32_t last_ms = 0;
+  const uint32_t now_ms = static_cast<uint32_t>(xTaskGetTickCount()) * portTICK_PERIOD_MS;
+  const bool healthy = g_transport_healthy.load(std::memory_order_acquire);
+  if (last_ms != 0 && now_ms - last_ms < (healthy ? kRefreshMs : kProbeWhileWedgedMs))
+    return cached;
+  last_ms = now_ms;
+  wifi_ap_record_t ap{};
+  if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) return cached;
+  cached = ap.rssi;
+  if (!healthy) note_transport_recovered();
+  return cached;
+}
 bool hosted_versions_match() { return g_versions_match; }
 const char* hosted_c6_version() { return g_c6_version; }
 bool hosted_transport_ready() { return g_hosted_transport_ready; }

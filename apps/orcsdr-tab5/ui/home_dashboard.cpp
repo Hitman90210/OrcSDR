@@ -33,7 +33,12 @@ constexpr int kVisibleRows = 7;
 constexpr int kAllY = 590;
 constexpr int kTapDragThreshold = 10;
 constexpr int kHeaderStatusX = 595;
-constexpr int kHeaderStatusW = 474;
+// 474 was too narrow for the panel's own worst-case content: the Wi-Fi cell
+// (divider at +114) had to hold an IP at +54 that needs up to 90px, and the
+// battery cell's "100%" at +322 ran past its divider at +352 into the clock.
+// Widened to the limit the self_check() below enforces against the shared
+// mute button at x=1099, and the cell dividers rebalanced to match.
+constexpr int kHeaderStatusW = 492;
 
 Snapshot current{};
 bool shown = false;
@@ -148,17 +153,22 @@ void draw_header_status() {
   text("Wi-Fi", kHeaderStatusX + 54, 42, TFT_WHITE, 2);
   text(current.wifi_connected && current.wifi_ip[0] ? current.wifi_ip : "OFFLINE",
        kHeaderStatusX + 54, 66, current.wifi_connected ? kCyan : TFT_ORANGE, 1);
-  M5.Display.drawFastVLine(kHeaderStatusX + 114, 30, 52, kDim);
-  draw_usb_icon(kHeaderStatusX + 135, 54, current.driver_ready ? kCyan : kDim);
-  text("RTL-SDR", kHeaderStatusX + 148, 42, TFT_WHITE, 2);
-  text(current.driver_ready ? "READY" : "NOT READY", kHeaderStatusX + 158, 66,
+  M5.Display.drawFastVLine(kHeaderStatusX + 146, 30, 52, kDim);
+  draw_usb_icon(kHeaderStatusX + 167, 54, current.driver_ready ? kCyan : kDim);
+  text("RTL-SDR", kHeaderStatusX + 178, 42, TFT_WHITE, 2);
+  text(current.driver_ready ? "READY" : "NOT READY", kHeaderStatusX + 188, 66,
        current.driver_ready ? kCyan : TFT_ORANGE, 1);
-  M5.Display.drawFastVLine(kHeaderStatusX + 238, 30, 52, kDim);
-  draw_battery(kHeaderStatusX + 254, 39);
+  M5.Display.drawFastVLine(kHeaderStatusX + 266, 30, 52, kDim);
+  draw_battery(kHeaderStatusX + 276, 39);
   char value[12];
   snprintf(value, sizeof(value), "%ld%%", static_cast<long>(current.battery_percent));
-  text(current.battery_percent >= 0 ? value : "--", kHeaderStatusX + 322, 54, TFT_WHITE, 2);
-  M5.Display.drawFastVLine(kHeaderStatusX + 352, 30, 52, kDim);
+  // Right-aligned against its divider and at the same size as this panel's
+  // other secondary values (the IP and READY): left-aligned at size 2 it was
+  // 48px wide starting at +322, which crossed the divider and collided with
+  // the clock as soon as the battery read three digits.
+  text(current.battery_percent >= 0 ? value : "--", kHeaderStatusX + 374, 54, TFT_WHITE, 1,
+       middle_right);
+  M5.Display.drawFastVLine(kHeaderStatusX + 382, 30, 52, kDim);
   text(current.clock[0] ? current.clock : "--:--", kHeaderStatusX + kHeaderStatusW - 12, 42, TFT_WHITE, 2,
        middle_right);
   text(current.date[0] ? current.date : "UPTIME", kHeaderStatusX + kHeaderStatusW - 12, 68, kCyan, 2,

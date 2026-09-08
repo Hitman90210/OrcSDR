@@ -371,7 +371,10 @@ void draw_selected_summary(int x, int y, int w, int h) {
   if (g_aircraft_count == 0) {
     card(x, y, w, h);
     text("SEARCHING", x + w / 2, y + h / 2 - 20, kBlue, 4);
-    text("No aircraft in the last 60 seconds", x + w / 2, y + h / 2 + 35,
+    // "No aircraft in the last 60 seconds" needed ~432px in this 392px card
+    // (size-1 text here is the proportional DejaVu24 -- see text() above),
+    // so it overflowed both card edges and ran off the right of the screen.
+    text("No aircraft in 60 seconds", x + w / 2, y + h / 2 + 35,
          TFT_LIGHTGREY, 2);
     return;
   }
@@ -707,12 +710,16 @@ void draw_stats() {
   else strlcpy(value, "--", sizeof(value));
   text(value, 36, 157, TFT_WHITE, 3, middle_left);
   const int active_bars = std::clamp(static_cast<int>((signal + 100.0f) / 5.0f), 0, 14);
+  // Every bar's bottom edge lands on the same y (top + height cancels the
+  // per-bar offset), which used to be 292 -- exactly the y the axis labels
+  // below are centred on, so the labels' upper half was drawn behind the
+  // bars. Bars now end at 284 and the labels sit clear underneath.
   for (int i = 0; i < 14; ++i)
-    M5.Display.fillRect(38 + i * 24, 270 - i * 4, 17, 22 + i * 4,
+    M5.Display.fillRect(38 + i * 24, 262 - i * 4, 17, 22 + i * 4,
                         i < active_bars ? kGreen : TFT_DARKGREY);
-  text("-100", 36, 292, kMuted, 1, middle_left);
-  text("-50", 208, 292, kMuted, 1);
-  text("0 dBFS", 390, 292, kMuted, 1, middle_right);
+  text("-100", 36, 300, kMuted, 1, middle_left);
+  text("-50", 208, 300, kMuted, 1);
+  text("0 dBFS", 390, 300, kMuted, 1, middle_right);
 
   card(426, 88, 400, 226);
   text("MESSAGE RATE", 448, 116, kBlue, 1, middle_left);

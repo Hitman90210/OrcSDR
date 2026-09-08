@@ -281,8 +281,13 @@ void draw_station_dynamic() {
   text(value, 55, 202, TFT_WHITE, 6, middle_left);
   text(g_snapshot.program_service[0] ? g_snapshot.program_service : "—",
        575, 190, TFT_WHITE, 4, middle_left);
+  // RDS RadioText is up to 64 characters -- 768px at size 2 -- so every place
+  // it is drawn needs clipping to its container or it runs past the edge.
+  // Here that is the banner's inner panel (44..1214).
+  M5.Display.setClipRect(44, 159, 1170, 86);
   text(g_snapshot.radio_text[0] ? g_snapshot.radio_text : "RDS station data unavailable",
        575, 226, TFT_WHITE, 2, middle_left);
+  M5.Display.clearClipRect();
 
   M5.Display.fillRect(45, 335, 238, 250, kPanel);
   for (int i = 0; i < 11; ++i) {
@@ -290,8 +295,11 @@ void draw_station_dynamic() {
     const int h = 20 + static_cast<int>(wave * 100 * std::clamp((g_snapshot.left_dbfs + 40) / 40, 0.0f, 1.0f));
     M5.Display.fillRect(58 + i * 19, 475 - h, 12, h, i < 8 ? kGreen : kGrid);
   }
+  // Centred in a 280px card (24..304); see the RadioText note above.
+  M5.Display.setClipRect(34, 538, 260, 34);
   text(g_snapshot.radio_text[0] ? g_snapshot.radio_text : "Waiting for RadioText",
        164, 555, TFT_WHITE, 2);
+  M5.Display.clearClipRect();
 
   const char* values[] = {
       g_snapshot.program_service[0] ? g_snapshot.program_service : "—",
@@ -300,7 +308,10 @@ void draw_station_dynamic() {
       g_snapshot.program_type[0] ? g_snapshot.program_type : "—"};
   const int ys[] = {345, 415, 495, 565};
   M5.Display.fillRect(410, 315, 505, 285, kPanel);
+  // values[1] is RadioText (see note above) -- clip the column to the panel.
+  M5.Display.setClipRect(415, 315, 495, 285);
   for (int i = 0; i < 4; ++i) text(values[i], 425, ys[i], TFT_WHITE, i == 1 ? 2 : 3, middle_left);
+  M5.Display.clearClipRect();
 
   M5.Display.fillRect(975, 330, 260, 260, kPanel);
   text(g_snapshot.stereo ? "Stereo" : "Mono", 1100, 348,
@@ -315,7 +326,17 @@ void health_card(int x, int y, int w, int h, const char* title, const char* valu
                  bool healthy) {
   card(x, y, w, h);
   text(title, x + w / 2, y + 24, kCyan, 2);
-  text(value, x + w / 2, y + 70, healthy ? kGreen : kYellow, 3);
+  // The value is centred across the whole card while the status dot sits in
+  // the bottom-right corner (centre x+w-30, r=15), so a value wide enough to
+  // reach x+w-45 runs straight through it -- "959.8 / 960.0 kS/s" at size 3
+  // needed 324px in a 290px card and overflowed both edges and the dot.
+  // Step the size down until the centred string clears the dot's column.
+  // (Default 6x8 font: one character advances 6*size px.)
+  const int max_width = w - 90;
+  const int length = static_cast<int>(strlen(value));
+  int size = 3;
+  while (size > 1 && length * 6 * size > max_width) --size;
+  text(value, x + w / 2, y + 70, healthy ? kGreen : kYellow, size);
   M5.Display.drawCircle(x + w - 30, y + h - 28, 15, healthy ? kGreen : kYellow);
 }
 
@@ -342,7 +363,9 @@ void draw_health_dynamic() {
 
   const int xs[] = {24, 326, 628, 930};
   char values[8][40];
-  snprintf(values[0], sizeof(values[0]), "%.1f / %.1f kS/s",
+  // No spaces around the slash: this keeps the string at 16 characters, which
+  // health_card() can still render at size 2 rather than dropping to size 1.
+  snprintf(values[0], sizeof(values[0]), "%.1f/%.1f kS/s",
            g_snapshot.effective_sps / 1000.0, g_snapshot.target_sps / 1000.0);
   snprintf(values[1], sizeof(values[1]), "%lu", static_cast<unsigned long>(g_snapshot.usb_overruns));
   snprintf(values[2], sizeof(values[2]), "%lu", static_cast<unsigned long>(g_snapshot.consumer_drops));

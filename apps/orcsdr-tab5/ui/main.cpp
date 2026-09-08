@@ -1375,6 +1375,11 @@ bool settings_wifi_external_antenna = false;
 bool wifi_connected = false;
 bool wifi_connecting = false;
 bool wifi_resetting_link = false;
+// Auto-reconnect backoff. A failed connect used to be terminal for the whole
+// session; see service_wifi_auto_reconnect().
+uint32_t wifi_retry_at_ms = 0;
+uint16_t wifi_retry_backoff_s = 0;
+bool wifi_auto_reconnect_suppressed = false;
 // Power Off remains a separate, conservative path until its freeze is isolated.
 bool wifi_poweroff_radio_paused = false;
 bool wifi_connect_radio_paused = false;
@@ -6958,6 +6963,7 @@ void start_wifi_connection(bool pause_radio = false) {
   if (!settings_wifi_power_enabled) return;
   if (!wifi_station_ready) initialize_wifi();
   if (!wifi_station_ready || !wifi_ssid[0]) return;
+  wifi_auto_reconnect_suppressed = false;
   if (pause_radio && !pause_radio_for_io(wifi_connect_radio_paused)) {
     strlcpy(wifi_status_message, "Radio pause failed", sizeof(wifi_status_message));
     Serial.println("RTL_WIFI_CONNECT_ERROR radio_pause_failed");
@@ -7013,6 +7019,11 @@ bool disconnect_wifi() {
   wifi_connect_pause_requested.store(false, std::memory_order_release);
   wifi_connecting = false;
   wifi_save_after_connect = false;
+  // An explicit disconnect is a user decision; don't let the auto-retry below
+  // undo it. Any later explicit connect clears this again.
+  wifi_auto_reconnect_suppressed = true;
+  wifi_retry_at_ms = 0;
+  wifi_retry_backoff_s = 0;
   if (wifi_connected) {
     orcsdr::wifi::disconnect();
   }
@@ -7083,6 +7094,39 @@ void resume_radio_after_io(bool& paused) {
 bool pause_radio_for_catalog() { return pause_radio_for_io(catalog_radio_paused); }
 void resume_radio_after_catalog() { resume_radio_after_io(catalog_radio_paused); }
 
+// A failed connect used to be terminal for the session: poll_wifi() reports
+// "Connection failed" and nothing ever tries again, so the user had to
+// reconnect by hand from Settings. That bites most at boot, where the station
+// has not scanned yet and the first attempts come back
+// WIFI_REASON_NO_AP_FOUND (201) even though the AP is present -- both
+// boot attempts can fail and leave Wi-Fi off for the whole session.
+//
+// Retry a saved profile on a widening backoff (15s, 30s, 60s cap) while
+// auto-connect is enabled, and stand down the moment a connection takes or
+// the user disconnects explicitly.
+void service_wifi_auto_reconnect() {
+  if (wifi_connected || wifi_connecting || wifi_scan_running) {
+    wifi_retry_at_ms = 0;
+    wifi_retry_backoff_s = 0;
+    return;
+  }
+  if (!settings_wifi_start_at_boot || wifi_auto_reconnect_suppressed) return;
+  if (!wifi_profile_count || !wifi_ssid[0]) return;
+  const uint32_t now = millis();
+  if (wifi_retry_at_ms == 0) {
+    wifi_retry_backoff_s = wifi_retry_backoff_s == 0 ? 15
+                           : wifi_retry_backoff_s >= 60 ? 60
+                                                        : static_cast<uint16_t>(wifi_retry_backoff_s * 2);
+    wifi_retry_at_ms = now + wifi_retry_backoff_s * 1000u;
+    return;
+  }
+  if (static_cast<int32_t>(now - wifi_retry_at_ms) < 0) return;
+  wifi_retry_at_ms = 0;
+  Serial.printf("RTL_WIFI_AUTO_RETRY backoff_s=%u\n",
+                static_cast<unsigned>(wifi_retry_backoff_s));
+  start_wifi_connection();
+}
+
 void poll_wifi() {
   if (!settings_wifi_power_enabled) {
     wifi_scan_requested.store(false, std::memory_order_release);
@@ -7094,6 +7138,7 @@ void poll_wifi() {
     start_wifi_connection(wifi_connect_pause_requested.exchange(false, std::memory_order_acq_rel));
   }
   if (!wifi_station_ready) return;
+  service_wifi_auto_reconnect();
   if (!wifi_scan_running && !wifi_connecting && !wifi_connected) return;
   static uint32_t last_wifi_status_ms = 0;
   const uint32_t now_ms = millis();
@@ -7114,6 +7159,9 @@ void poll_wifi() {
                                    ? static_cast<uint8_t>(std::min<int>(
                                          result, std::size(wifi_scan_results)))
                                    : 0;
+      // Stays on the stack -- see the matching note in wifi_service.cpp's
+      // scan_results(): making these static costs internal RAM, which this
+      // app has far less headroom in than stack.
       orcsdr::wifi::ScanResult scan[16]{};
       const int received = orcsdr::wifi::scan_results(scan, std::size(scan));
       wifi_scan_result_count = received > 0 ? static_cast<uint8_t>(std::min<int>(
