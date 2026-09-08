@@ -1964,7 +1964,7 @@ void print_pocsag_status() {
       "uncorrectable=%lu parity_failures=%lu messages=%lu truncated=%lu\n",
       static_cast<unsigned>(stats.lock), static_cast<unsigned>(stats.detected_baud),
       stats.inverted ? 1u : 0u, static_cast<unsigned long>(pocsag_config_frequency_hz),
-      active_scan == ActiveScan::pocsag_discovery ? 1u : 0u,
+      pocsag_scan_active.load(std::memory_order_acquire) ? 1u : 0u,
       static_cast<unsigned long>(stats.batches_synced),
       static_cast<unsigned long>(stats.sync_losses),
       static_cast<unsigned long>(stats.codewords_total),
@@ -1993,7 +1993,7 @@ void publish_pocsag_snapshot(uint32_t now) {
   // header's scan-progress readout of any update for the whole scan -- the
   // user sees no sign it's doing anything. Publish on every sample while a
   // scan is in flight regardless of revision/receiving.
-  const bool scan_in_progress = active_scan == ActiveScan::pocsag_discovery;
+  const bool scan_in_progress = pocsag_scan_active.load(std::memory_order_acquire);
   if (revision == last_revision && !receiving && !scan_in_progress) return;
   last_revision = revision;
 
@@ -2037,7 +2037,7 @@ void publish_pocsag_snapshot(uint32_t now) {
   snapshot.receiving = receiving;
   snapshot.frequency_hz = pocsag_config_frequency_hz;
   snapshot.candidate_count = pocsag_discovery_channel_count;
-  if (active_scan == ActiveScan::pocsag_discovery) {
+  if (pocsag_scan_active.load(std::memory_order_acquire)) {
     const auto scan_progress = scan_engine.progress();
     snapshot.scanning = scan_progress.active;
     snapshot.scan_index = scan_progress.index;

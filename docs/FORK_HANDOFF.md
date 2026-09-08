@@ -471,6 +471,34 @@ county. Full instructions are in **`docs/LOCAL_SETUP.md`**; the short version:
 
 ---
 
+## 7a. Local data: what the published packs cannot give you
+
+Two features depend on data the signed catalog does not carry, and both now
+have a builder that fills the gap from a public-domain source. Both write a
+`local_*.idx` the firmware loads in preference to the packaged file, so the
+signed packs are never mutated.
+
+| Feature | Gap in the published pack | Builder |
+| --- | --- | --- |
+| Offline map | only `lane_county_map` exists | `tools/build_orcmap.py` (OpenStreetMap / Overpass) |
+| Listen to ATC | `faa_aviation` has 40,937 frequency records but **no coordinates**, and none of the optional `ATC` preset lines | `tools/build_atc_presets.py` (OurAirports) |
+
+`docs/LOCAL_SETUP.md` has the commands. Both were verified end to end on
+hardware for Woodbridge, VA: the LoRa map view reads "OFFLINE LOCAL MAP" and
+the ADS-B card reads "KDAA TWR 126.300 / TAP TO LISTEN / READY".
+
+## 7b. Meshtastic frequency slots
+
+The US band is **104 slots of 250 kHz from 902.125 MHz**, so the firmware's
+old fixed 906.875 MHz is slot 20 (LongFast default). The LoRa dashboard's
+CHANNELS button opens a picker (step, quick slots, LONGFAST marker); the same
+is available over serial as `RTL_UI ACTION LORA SLOT <1-104> | SLOT_PREV |
+SLOT_NEXT`. Before this the monitor could only ever watch one slot.
+
+Note for anyone touching that overlay: the LoRa spectrum and waterfall repaint
+on their own timer and will draw straight through a panel unless
+`spectrum_active()` is false while it is up.
+
 ## 8. Still open
 
 1. **SDIO transport wedge** — root cause found (§3a): USB DMA from a streaming

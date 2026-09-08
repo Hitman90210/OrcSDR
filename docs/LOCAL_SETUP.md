@@ -108,7 +108,40 @@ evenly across the whole box instead of running out in one corner.
 
 Data © OpenStreetMap contributors, ODbL.
 
-## 4. Your local P25 system
+## 4. ATC presets for your area
+
+**Listen to ATC does not work from the published data alone.** The signed
+`faa_aviation` pack carries 40,937 FAA frequency records but **no
+coordinates**, and none of the optional `ATC` preset lines the firmware reads,
+so the nearest-airfield lookup has nothing to measure against. That is a gap in
+the published pack, not in your setup.
+
+Fill it from [OurAirports](https://ourairports.com/data/) (public domain),
+which publishes airport coordinates and airport frequencies:
+
+```bash
+python apps/orcsdr-tab5/tools/build_atc_presets.py   --near 38.6582 -77.2497 --out local_atc.idx
+```
+
+Use your own latitude and longitude — the same ones you set in step 1. Copy the
+result to the SD card as **`/orcsdr/data/local_atc.idx`**; the firmware loads it
+in preference to the packaged pack.
+
+The device holds 24 presets and picks the single nearest, so the builder keeps
+the most useful control frequency per airport (tower first, then CTAF/approach)
+for the 24 closest fields. From Woodbridge, VA that gives:
+
+```
+  4.7 NM  KDAA   TWR   126.300 MHz
+  9.7 NM  KNYG   TWR   118.600 MHz
+ 13.0 NM  KHEF   TWR   133.100 MHz
+ 15.3 NM  KDCA   TWR   119.100 MHz
+ 19.7 NM  KIAD   TWR   120.100 MHz
+```
+
+Data © OurAirports contributors, public domain.
+
+## 5. Your local P25 system
 
 P25 trunking is **not** preconfigured for any region — a fresh device reports
 `No P25 system configured`, and it should, because control channels are
@@ -157,12 +190,14 @@ not have to know which of them your site is using.
 Only publish or share talkgroup aliases you have the right to redistribute —
 see `docs/DATA_SOURCE_LEDGER.md`.
 
-## 5. What is still fixed
+## 6. What is still fixed
 
 - **NOAA Weather** — the seven NWR channels (162.400–162.550 MHz) are the same
   everywhere in the US, so the Weather screen's channel picker needs no local
   data at all. Which transmitter you hear depends only on where you are.
 - **CB** — the 40 channels are fixed by regulation.
-- **LoRa** — defaults to the Meshtastic US LongFast slot (906.875 MHz). Change
-  the frequency on the LoRa dashboard for other regions; it is a receive-only
-  monitor for Meshtastic mesh traffic, not a participant in the mesh.
+- **LoRa** — the Meshtastic US band is 104 frequency slots of 250 kHz starting
+  at 902.125 MHz, and **slot 20 (906.875 MHz) is the LongFast default**. The
+  LoRa dashboard's CHANNELS button opens a picker for stepping slots or jumping
+  to a quick slot, so you can watch whichever one your local mesh actually
+  uses. It is a receive-only monitor, not a participant in the mesh.
