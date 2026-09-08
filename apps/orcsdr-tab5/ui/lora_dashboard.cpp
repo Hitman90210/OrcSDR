@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace orcsdr::lora {
@@ -466,40 +467,92 @@ void draw_dynamic() {
 // somewhere else.
 bool g_channels_open = false;
 constexpr int kSlotCount = 104;
-constexpr int kQuick[] = {20, 1, 9, 31, 48, 62, 78, 104};
+constexpr int kDefaultSlot = 20;  // Meshtastic US LongFast, 906.875 MHz.
+constexpr int kQuick[] = {20, 9, 1, 31, 48, 62, 78, 104};
 
 uint32_t slot_frequency_hz(int slot) {
   return 902125000u + static_cast<uint32_t>(slot - 1) * 250000u;
 }
 
-void draw_channels_overlay() {
-  constexpr int kX = 214, kY = 150, kW = 852, kH = 420;
-  M5.Display.fillRoundRect(kX, kY, kW, kH, 14, kBg);
-  M5.Display.drawRoundRect(kX, kY, kW, kH, 14, kCyan);
-  text("MESHTASTIC FREQUENCY SLOT", kX + 28, kY + 34, kCyan, 2, middle_left);
-  text("CLOSE", kX + kW - 74, kY + 34, kYellow, 2, middle_center);
+char g_slot_entry[4]{};
 
-  char value[40];
+// Panel geometry: kept clear of the tab strip at y=640.
+constexpr int kCX = 190, kCY = 128, kCW = 900, kCH = 474;
+constexpr int kKeyX = 686, kKeyY = kCY + 132, kKeyW = 116, kKeyH = 62, kKeyGap = 10;
+
+void slot_entry_push(char digit) {
+  const size_t len = strlen(g_slot_entry);
+  if (len + 1 >= sizeof(g_slot_entry)) return;
+  g_slot_entry[len] = digit;
+  g_slot_entry[len + 1] = ' ';
+}
+
+int slot_entry_value() {
+  return g_slot_entry[0] ? atoi(g_slot_entry) : 0;
+}
+
+// 1-9 then CLR 0 GO, so the keypad reads like a phone.
+const char* key_label(int index) {
+  static const char* kLabels[] = {"1", "2", "3", "4", "5", "6",
+                                  "7", "8", "9", "CLR", "0", "GO"};
+  return kLabels[index];
+}
+
+void key_rect(int index, int* x, int* y) {
+  *x = kKeyX + (index % 3) * (kKeyW + kKeyGap);
+  *y = kKeyY + (index / 3) * (kKeyH + kKeyGap);
+}
+
+void draw_channels_overlay() {
+  M5.Display.fillRoundRect(kCX, kCY, kCW, kCH, 14, kBg);
+  M5.Display.drawRoundRect(kCX, kCY, kCW, kCH, 14, kCyan);
+  text("MESHTASTIC FREQUENCY SLOT", kCX + 26, kCY + 30, kCyan, 2, middle_left);
+  text("CLOSE", kCX + kCW - 72, kCY + 30, kYellow, 2, middle_center);
+
+  char value[44];
   const int slot = g_snapshot.channel_slot;
   if (slot) snprintf(value, sizeof(value), "SLOT %d", slot);
   else snprintf(value, sizeof(value), "OFF-SLOT");
-  text(value, kX + kW / 2, kY + 104, kGreen, 4, middle_center);
+  text(value, kCX + 240, kCY + 92, kGreen, 4, middle_center);
   snprintf(value, sizeof(value), "%.3f MHz", g_snapshot.frequency_hz / 1000000.0);
-  text(value, kX + kW / 2, kY + 152, TFT_WHITE, 3, middle_center);
-  text(slot == 20 ? "LONGFAST DEFAULT" : "", kX + kW / 2, kY + 186, kMuted, 1,
+  text(value, kCX + 240, kCY + 136, TFT_WHITE, 3, middle_center);
+
+  // Always state the default, not only when it happens to be selected --
+  // otherwise there is no way to discover what "normal" is from the device.
+  snprintf(value, sizeof(value), "DEFAULT: SLOT %d  %.3f MHz  (LONGFAST)",
+           kDefaultSlot, slot_frequency_hz(kDefaultSlot) / 1000000.0);
+  text(value, kCX + 240, kCY + 172, slot == kDefaultSlot ? kGreen : kMuted, 1,
        middle_center);
 
-  button(kX + 40, kY + 82, 96, 76, "<", kCyan);
-  button(kX + kW - 136, kY + 82, 96, 76, ">", kCyan);
+  button(kCX + 30, kCY + 68, 92, 72, "<", kCyan);
+  button(kCX + 358, kCY + 68, 92, 72, ">", kCyan);
 
-  text("QUICK SLOTS", kX + 28, kY + 224, kCyan, 1, middle_left);
+  // Direct entry.
+  text("ENTER SLOT 1-104", kKeyX, kCY + 78, kCyan, 1, middle_left);
+  M5.Display.fillRoundRect(kKeyX, kCY + 92, kKeyW * 3 + kKeyGap * 2, 30, 6, kPanel);
+  M5.Display.drawRoundRect(kKeyX, kCY + 92, kKeyW * 3 + kKeyGap * 2, 30, 6, kCyan);
+  text(g_slot_entry[0] ? g_slot_entry : "--", kKeyX + (kKeyW * 3 + kKeyGap * 2) / 2,
+       kCY + 107, g_slot_entry[0] ? kGreen : kMuted, 2, middle_center);
+  for (int i = 0; i < 12; ++i) {
+    int bx, by; key_rect(i, &bx, &by);
+    const bool go = i == 11;
+    const int entered = slot_entry_value();
+    const bool armed = go && entered >= 1 && entered <= kSlotCount;
+    button(bx, by, kKeyW, kKeyH, key_label(i), armed ? kGreen : kCyan, armed);
+  }
+
+  text("QUICK SLOTS   * = default", kCX + 26, kCY + 208, kCyan, 1, middle_left);
   for (size_t i = 0; i < std::size(kQuick); ++i) {
-    const int col = static_cast<int>(i) % 4, row = static_cast<int>(i) / 4;
-    const int bx = kX + 28 + col * 204, by = kY + 244 + row * 78;
+    const int col = static_cast<int>(i) % 2, row = static_cast<int>(i) / 2;
+    const int bx = kCX + 26 + col * 214, by = kCY + 224 + row * 62;
     const bool active = kQuick[i] == slot;
-    snprintf(value, sizeof(value), "%d  %.3f", kQuick[i],
-             slot_frequency_hz(kQuick[i]) / 1000000.0);
-    button(bx, by, 190, 64, value, active ? kGreen : kCyan, active);
+    if (kQuick[i] == kDefaultSlot)
+      snprintf(value, sizeof(value), "%d  %.3f *", kQuick[i],
+               slot_frequency_hz(kQuick[i]) / 1000000.0);
+    else
+      snprintf(value, sizeof(value), "%d  %.3f", kQuick[i],
+               slot_frequency_hz(kQuick[i]) / 1000000.0);
+    button(bx, by, 200, 54, value, active ? kGreen : kCyan, active);
   }
 }
 
@@ -614,23 +667,46 @@ Action handle_touch(int32_t x, int32_t y) {
   if (hit(x, y, 0, kTabsY, 1280, 80))
     return {ActionKind::select_view, static_cast<uint32_t>(x / kTabW)};
   if (g_channels_open && g_view == View::overview) {
-    constexpr int kX = 214, kY = 150, kW = 852, kH = 420;
-    if (hit(x, y, kX + kW - 130, kY + 12, 112, 44)) {
+    if (hit(x, y, kCX + kCW - 128, kCY + 10, 110, 42)) {
       g_channels_open = false;
+      g_slot_entry[0] = ' ';
       draw_static();
       return {};
     }
-    if (hit(x, y, kX + 40, kY + 82, 96, 76)) return {ActionKind::channel_prev};
-    if (hit(x, y, kX + kW - 136, kY + 82, 96, 76)) return {ActionKind::channel_next};
-    for (size_t i = 0; i < std::size(kQuick); ++i) {
-      const int col = static_cast<int>(i) % 4, row = static_cast<int>(i) / 4;
-      if (hit(x, y, kX + 28 + col * 204, kY + 244 + row * 78, 190, 64))
-        return {ActionKind::channel_select, static_cast<uint32_t>(kQuick[i])};
+    if (hit(x, y, kCX + 30, kCY + 68, 92, 72)) return {ActionKind::channel_prev};
+    if (hit(x, y, kCX + 358, kCY + 68, 92, 72)) return {ActionKind::channel_next};
+    for (int i = 0; i < 12; ++i) {
+      int bx, by; key_rect(i, &bx, &by);
+      if (!hit(x, y, bx, by, kKeyW, kKeyH)) continue;
+      if (i == 9) {                       // CLR
+        g_slot_entry[0] = ' ';
+        draw_channels_overlay();
+        return {};
+      }
+      if (i == 11) {                      // GO
+        const int slot = slot_entry_value();
+        g_slot_entry[0] = ' ';
+        if (slot >= 1 && slot <= kSlotCount)
+          return {ActionKind::channel_select, static_cast<uint32_t>(slot)};
+        draw_channels_overlay();
+        return {};
+      }
+      slot_entry_push(i == 10 ? '0' : static_cast<char>('1' + i));
+      draw_channels_overlay();
+      return {};
     }
-    // Anything else inside the panel is swallowed so it cannot reach the
-    // controls underneath it.
-    if (hit(x, y, kX, kY, kW, kH)) return {};
+    for (size_t i = 0; i < std::size(kQuick); ++i) {
+      const int col = static_cast<int>(i) % 2, row = static_cast<int>(i) / 2;
+      if (hit(x, y, kCX + 26 + col * 214, kCY + 224 + row * 62, 200, 54)) {
+        g_slot_entry[0] = ' ';
+        return {ActionKind::channel_select, static_cast<uint32_t>(kQuick[i])};
+      }
+    }
+    // Taps inside the panel are swallowed so they cannot reach the controls
+    // underneath; a tap outside closes it.
+    if (hit(x, y, kCX, kCY, kCW, kCH)) return {};
     g_channels_open = false;
+    g_slot_entry[0] = ' ';
     draw_static();
     return {};
   }
