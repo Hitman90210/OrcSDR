@@ -792,8 +792,16 @@ void draw_stats() {
     strlcpy(atc_line, "NEEDS YOUR LOCATION", sizeof(atc_line));
     atc_hint = "SET IT ON THE SETUP TAB";
   } else {
-    strlcpy(atc_line, "NO ATC WITHIN RANGE", sizeof(atc_line));
-    atc_hint = "NEAREST FIELD IS TOO FAR";
+    // ATC records are an *optional* section of the aviation index (see
+    // atc_presets.hpp) and the published pack does not carry any -- it is an
+    // ORCCAT1 record index with no "ATC <lat> <lon> <hz> <label>" lines. So
+    // "no preset" here usually means the data has none, not that the receiver
+    // is out of range; say so rather than blaming distance.
+    // Kept short: this dashboard draws with proportional DejaVu18, so the
+    // 6px-per-character maths that fits the other screens does not apply and
+    // a 27-character hint ran past the 301px card.
+    strlcpy(atc_line, "NO ATC PRESET FOUND", sizeof(atc_line));
+    atc_hint = "PACK HAS NO ATC DATA";
   }
   const DataCard data[] = {{"FAA AIRCRAFT DB", g_live_snapshot.faa_aircraft_installed ? "INSTALLED" : "NOT INSTALLED", "REGISTRATION LOOKUP", g_live_snapshot.faa_aircraft_installed},
                            {"FAA AVIATION DB", g_live_snapshot.faa_aviation_installed ? "INSTALLED" : "NOT INSTALLED", "AIRPORT / ATC DATA", g_live_snapshot.faa_aviation_installed},

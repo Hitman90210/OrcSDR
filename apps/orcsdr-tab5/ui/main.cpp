@@ -1765,9 +1765,27 @@ void publish_adsb_snapshot(uint32_t now) {
   const uint32_t state_revision = adsb_track_revision.load(std::memory_order_acquire);
   const float message_rate = (messages - last_sample_messages) * 1000.0f /
                              static_cast<float>(now - last_sample_ms);
+  // catalog_state.packs[].installed needs a manifest, and g_packs resets on
+  // boot -- so a pack sitting on the SD card read as NOT INSTALLED after every
+  // reboot until the user ran Check for Updates again. What the card is really
+  // asking is "is the data there", so ask the filesystem. Re-checked only when
+  // the catalog finishes an operation, not every frame.
+  static bool cached_aircraft = false;
+  static bool cached_aviation = false;
+  static bool cached_valid = false;
+  static bool cached_catalog_busy = false;
   const auto catalog_state = orcsdr::catalog::state();
-  const bool faa_aircraft_installed = catalog_state.packs[0].installed;
-  const bool faa_aviation_installed = catalog_state.packs[1].installed;
+  if (!cached_valid || (cached_catalog_busy && !catalog_state.busy)) {
+    cached_aircraft = g_sd_fs != nullptr &&
+                      (g_sd_fs->exists("/orcsdr/data/adsb_aircraft.idx") ||
+                       g_sd_fs->exists("/orcsdr/adsb_aircraft.idx"));
+    cached_aviation =
+        g_sd_fs != nullptr && g_sd_fs->exists(orcsdr::atc::kRuntimePath);
+    cached_valid = true;
+  }
+  cached_catalog_busy = catalog_state.busy;
+  const bool faa_aircraft_installed = cached_aircraft;
+  const bool faa_aviation_installed = cached_aviation;
   last_sample_messages = messages;
   last_sample_ms = now;
   if (state_revision == last_state_revision && fabsf(message_rate - published_rate) < 0.05f &&
@@ -7517,8 +7535,18 @@ void start_wifi_connection(const char* ssid, const char* password, bool save_on_
 
 bool pause_radio_for_io(bool& paused) {
   if (paused) return true;
+  // A catalog operation holds an exclusive window that the Wi-Fi callers
+  // piggyback on. That has to be decided BEFORE claiming `paused`, and must
+  // not fire when the catalog is itself the caller: written as a plain
+  // `if (catalog_radio_paused)` after `paused = true`, it was always true for
+  // pause_radio_for_catalog() -- which passes catalog_radio_paused by
+  // reference -- so the catalog's own pause reported success without ever
+  // stopping the stream. Every catalog download therefore ran against a fully
+  // streaming dongle, the condition measured at 0/15 Wi-Fi associations.
+  const bool catalog_holds =
+      catalog_radio_paused && &paused != &catalog_radio_paused;
   paused = true;
-  if (catalog_radio_paused) return true;
+  if (catalog_holds) return true;
   const bool radio_was_active =
       rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running ||
       rtl_capture_requested.load(std::memory_order_acquire) ||
@@ -7550,8 +7578,13 @@ bool pause_radio_for_io(bool& paused) {
 
 void resume_radio_after_io(bool& paused) {
   if (!paused) return;
+  // Mirror of the pause guard above. This one happened to behave correctly
+  // (it cleared the flag before testing it), but state it explicitly so the
+  // two cannot drift apart again.
+  const bool catalog_holds =
+      catalog_radio_paused && &paused != &catalog_radio_paused;
   paused = false;
-  if (catalog_radio_paused) return;
+  if (catalog_holds) return;
   const bool resume_radio = radio_io_resume_pending;
   const bool resume_speaker = radio_io_speaker_resume_pending;
   radio_io_resume_pending = false;
