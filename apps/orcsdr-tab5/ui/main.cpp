@@ -1346,7 +1346,6 @@ float rtl_spectrum_peak[kRtlSpectrumBins];
 float rtl_spectrum_window[kRtlSpectrumBins];
 int16_t rtl_spectrum_y[kRtlSpectrumBins];
 int16_t rtl_spectrum_peak_y[kRtlSpectrumBins];
-uint16_t rtl_waterfall_row[kSpectrumWidth];
 // The live waterfall keeps its own history instead of calling
 // M5.Display.scroll(): the scroll rect is global display state and this screen
 // only ever set it when the nav panel opened, so the radio waterfall was
@@ -5630,44 +5629,6 @@ void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume) {
   orcsdr::screens::finish_transition();
 }
 
-void draw_documentation_spectrum() {
-  const int width = spectrum_draw_width() - 2;
-  uint8_t strength[kSpectrumWidth];
-  for (int x = 0; x < width; ++x) {
-    const float center = static_cast<float>(x - width / 2);
-    const float side = static_cast<float>(x - width * 3 / 4);
-    const float level = 24.0f + 190.0f * expf(-(center * center) / 850.0f) +
-                        95.0f * expf(-(side * side) / 260.0f) +
-                        8.0f * sinf(static_cast<float>(x) * 0.17f);
-    strength[x] = static_cast<uint8_t>(constrain(level, 0.0f, 255.0f));
-  }
-
-  M5.Display.startWrite();
-  int previous_y = kSpectrumY + kSpectrumHeight - 2;
-  for (int x = 0; x < width; ++x) {
-    const int y = kSpectrumY + kSpectrumHeight - 2 -
-                  strength[x] * (kSpectrumHeight - 4) / 255;
-    if (x != 0)
-      M5.Display.drawLine(kSpectrumX + x, previous_y, kSpectrumX + x + 1, y,
-                          TFT_CYAN);
-    previous_y = y;
-  }
-  for (int row = 1; row < kWaterfallHeight - 1; ++row) {
-    const int shift = (row / 12) % 9 - 4;
-    for (int x = 0; x < width; ++x) {
-      const int source = constrain(x + shift, 0, width - 1);
-      const int noise = ((x * 13 + row * 29) & 31) - 15;
-      rtl_waterfall_row[x] = orcsdr::radio_ui::waterfall_color(
-          constrain((static_cast<int>(strength[source]) + noise) / 255.0f,
-                    0.0f, 1.0f));
-    }
-    M5.Display.pushImage(kSpectrumX + 1, kWaterfallY + row, width, 1,
-                         rtl_waterfall_row);
-  }
-  M5.Display.drawFastVLine(kSpectrumX + width / 2, kSpectrumY + 1,
-                           kSpectrumHeight - 2, TFT_GREEN);
-  M5.Display.endWrite();
-}
 
 void reset_spectrum_renderer() {
   rtl_spectrum_trace_valid = false;
@@ -11245,8 +11206,12 @@ bool ui_doc_view_for_suffix(const char* suffix, orcsdr::p25::View* view) {
     }
     draw_sdr_screen(entry.band, entry.frequency, rtl_ui_volume);
     if (demo) {
+      // These bands render through show_home(), so the staged spectrum has to
+      // use the home dashboard's plot geometry. main.cpp's old painter drew at
+      // the generic radio screen's coordinates instead, smearing the waterfall
+      // across the sidebar and controls in every *.radio demo capture.
       if (tool == OrcTool::Capture) draw_capture_tool_panel();
-      else draw_documentation_spectrum();
+      else orcsdr::home::draw_demo_spectrum();
     }
     return true;
   }

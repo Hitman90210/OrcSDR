@@ -431,8 +431,11 @@ void draw_signal() {
   text(line, 400, y, kGreen, 1, middle_right);
   y += 36;
   text("CORRECTED", 44, y, kMuted, 1, middle_left);
-  snprintf(line, sizeof(line), "%lu bits=%lu", static_cast<unsigned long>(stats.codewords_corrected),
-           static_cast<unsigned long>(stats.corrected_bit_count));
+  snprintf(line, sizeof(line), "%lu", static_cast<unsigned long>(stats.codewords_corrected));
+  text(line, 400, y, kYellow, 1, middle_right);
+  y += 36;
+  text("CORRECTED BITS", 44, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu", static_cast<unsigned long>(stats.corrected_bit_count));
   text(line, 400, y, kYellow, 1, middle_right);
   y += 36;
   text("UNCORRECTABLE", 44, y, kMuted, 1, middle_left);
@@ -651,6 +654,10 @@ void draw_archive() {
   const size_t count = std::min(snapshot.message_count, kRecentMessageCapacity);
   if (!count) {
     text("No messages received yet", 390, 340, kMuted, 1);
+    // The details panel used to sit blank here while its sibling explained
+    // itself, which reads as a half-drawn screen rather than an empty inbox.
+    text("Select a message to see", 1018, 326, kMuted, 1);
+    text("its CAPCODE and content", 1018, 352, kMuted, 1);
     return;
   }
   g_selected_message = std::min(g_selected_message, count - 1);

@@ -74,6 +74,10 @@ void draw();
 void update(const Snapshot& snapshot);
 void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
                    float floor, bool audio_stressed = false);
+// Staged spectrum + waterfall for documentation captures. Lives here because
+// the plot geometry does: main.cpp's own demo painter drew at the generic
+// radio screen's coordinates, which is not the layout these bands render.
+void draw_demo_spectrum();
 Action handle_touch(int32_t x, int32_t y, bool pressed);
 bool active();
 bool browser_active();

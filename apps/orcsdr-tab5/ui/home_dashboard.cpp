@@ -745,6 +745,66 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
   M5.Display.endWrite();
 }
 
+void draw_demo_spectrum() {
+  if (!shown || browser) return;
+  // Synthesised trace: a centre carrier, one offset carrier and a little
+  // ripple, so a staged capture looks like a receiver rather than a blank box.
+  const size_t samples = std::min<size_t>(256, static_cast<size_t>(kPlotW - 2));
+  for (size_t i = 0; i < samples; ++i) {
+    const float centre = static_cast<float>(i) - samples / 2.0f;
+    const float side = static_cast<float>(i) - samples * 0.75f;
+    // Amplitudes sized against the 24 dB the trace normalises over and the
+    // waterfall's contrast range, so the carriers sit high without clipping
+    // flat or saturating the waterfall to solid colour.
+    spectrum_levels[i] = -96.0f + 19.0f * expf(-(centre * centre) / 90.0f) +
+                         13.0f * expf(-(side * side) / 28.0f) +
+                         1.6f * sinf(static_cast<float>(i) * 0.17f);
+  }
+  const float floor = -96.0f;
+
+  M5.Display.startWrite();
+  M5.Display.setClipRect(kPlotX + 1, kSpectrumY + 1, kPlotW - 2, kSpectrumH - 2);
+  M5.Display.fillRect(kPlotX + 1, kSpectrumY + 1, kPlotW - 2, kSpectrumH - 2, TFT_BLACK);
+  for (int i = 1; i < 5; ++i) {
+    M5.Display.drawFastHLine(kPlotX, kSpectrumY + i * kSpectrumH / 5, kPlotW, kDim);
+    M5.Display.drawFastVLine(kPlotX + i * kPlotW / 5, kSpectrumY, kSpectrumH, kDim);
+  }
+  int px = kPlotX, py = kSpectrumY + kSpectrumH - 2;
+  for (size_t i = 0; i < samples; ++i) {
+    const float normalized = std::clamp((spectrum_levels[i] - floor) / 24.0f, 0.0f, 1.0f);
+    const int x = kPlotX + static_cast<int>(i * (kPlotW - 1) / (samples - 1));
+    const int y = kSpectrumY + kSpectrumH - 2 - static_cast<int>(normalized * (kSpectrumH - 4));
+    if (i) M5.Display.drawLine(px, py, x, y, kGreen);
+    px = x; py = y;
+  }
+  M5.Display.drawFastVLine(kPlotX + kPlotW / 2, kSpectrumY, kSpectrumH, kGreen);
+  M5.Display.clearClipRect();
+  draw_spectrum_axis();
+
+  // Fill the whole ring so the waterfall reads as history, with a slow drift
+  // across rows rather than a flat block.
+  const int rows = kWaterfallH - 2;
+  for (int row = 0; row < rows; ++row) {
+    uint16_t* line = waterfall.next_row();
+    if (line == nullptr) break;
+    const int drift = (row / 9) % 7 - 3;
+    for (size_t i = 0; i < samples; ++i) {
+      const int source = std::clamp(static_cast<int>(i) + drift, 0,
+                                    static_cast<int>(samples) - 1);
+      const float normalized = std::clamp(
+          (spectrum_levels[source] - floor) / waterfall_range_db(waterfall_contrast),
+          0.0f, 1.0f);
+      const int x0 = static_cast<int>(i * (kPlotW - 2) / samples);
+      const int x1 = std::min(kPlotW - 2,
+                              std::max(x0 + 1, static_cast<int>((i + 1) * (kPlotW - 2) / samples)));
+      const uint16_t colour = waterfall_color(normalized);
+      for (int p = x0; p < x1; ++p) line[p] = colour;
+    }
+  }
+  waterfall.push();
+  M5.Display.endWrite();
+}
+
 Action handle_touch(int32_t x, int32_t y, bool pressed) {
   if (!shown) return {};
   if (pressed && !gesture.down) {
