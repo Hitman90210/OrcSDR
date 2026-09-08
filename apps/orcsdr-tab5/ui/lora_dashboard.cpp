@@ -3,6 +3,7 @@
 #include "dashboard_audio_control.hpp"
 #include "offline_map.hpp"
 #include "orc_badge.hpp"
+#include "lora_channel_control.hpp"
 
 #include <M5Unified.h>
 
@@ -36,6 +37,7 @@ constexpr uint32_t kSpectrumRefreshIntervalMs = 250;
 Snapshot g_snapshot{};
 View g_view = View::overview;
 bool g_active = false;
+bool g_channels_open = false;
 bool g_follow_node = false;
 bool g_map_center_set = false;
 int32_t g_map_center_lat_e7 = INT32_MAX;
@@ -399,7 +401,7 @@ void draw_map_dynamic() {
   } else text("NO NODE SELECTED", 1095, 320, kMuted, 2);
   text(g_follow_node ? "FOLLOWING" : "CENTERED", 970, 350,
        g_follow_node ? kGreen : kCyan, 2, middle_left);
-  text("OFFLINE LANE COUNTY", 970, 390, kMuted, 1, middle_left);
+  text("OFFLINE MAP", 970, 390, kMuted, 1, middle_left);
   text(offline_map::available() ? "SD VECTOR MAP" : "MAP PACK NOT INSTALLED", 970, 420, kMuted, 1, middle_left);
 }
 
@@ -407,7 +409,7 @@ void draw_health_dynamic() {
   char value[48];
   snprintf(value, sizeof(value), "%.3f MHz", g_snapshot.frequency_hz / 1000000.0);
   text(value, 139, 196, TFT_WHITE, 2);
-  text(g_snapshot.region[0] ? g_snapshot.region : "US 902-928", 358, 196, TFT_WHITE, 2);
+  text(g_snapshot.region[0] ? g_snapshot.region : "US", 358, 196, TFT_WHITE, 2);
   text(g_snapshot.running ? "PASSIVE RX" : "STOPPED", 596, 196,
        g_snapshot.running ? kGreen : kMuted, 2);
   snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(g_snapshot.encrypted_frames));
@@ -435,6 +437,33 @@ void draw_dynamic() {
   else draw_health_dynamic();
 }
 
+void draw_channels_overlay() {
+  constexpr int x = 220, y = 170, w = 840, h = 360;
+  M5.Display.fillRoundRect(x, y, w, h, 14, kBg);
+  M5.Display.drawRoundRect(x, y, w, h, 14, kCyan);
+  text("MESHTASTIC LONGFAST", x + 28, y + 34, kCyan, 2, middle_left);
+  text("CLOSE", x + w - 70, y + 34, kYellow, 2);
+
+  char value[64];
+  text("REGION", x + 100, y + 116, kMuted, 1);
+  text("<", x + 220, y + 116, kCyan, 4);
+  text(g_snapshot.region[0] ? g_snapshot.region : "US", x + w / 2, y + 116,
+       kGreen, 3);
+  text(">", x + w - 220, y + 116, kCyan, 4);
+
+  text("SLOT", x + 100, y + 220, kMuted, 1);
+  text("<", x + 220, y + 220, kCyan, 4);
+  snprintf(value, sizeof(value), "%u / %u", g_snapshot.channel_slot,
+           g_snapshot.channel_count);
+  text(value, x + w / 2, y + 220, TFT_WHITE, 3);
+  text(">", x + w - 220, y + 220, kCyan, 4);
+
+  snprintf(value, sizeof(value), "%.3f MHz   DEFAULT SLOT %u",
+           g_snapshot.frequency_hz / 1000000.0, g_snapshot.default_slot);
+  text(value, x + w / 2, y + 300,
+       g_snapshot.channel_slot == g_snapshot.default_slot ? kGreen : kMuted, 2);
+}
+
 void draw_static() {
   M5.Display.fillScreen(kBg);
   draw_header();
@@ -445,6 +474,7 @@ void draw_static() {
   else draw_health_static();
   draw_tabs();
   draw_dynamic();
+  if (g_channels_open && g_view == View::overview) draw_channels_overlay();
 }
 
 }  // namespace
@@ -452,6 +482,7 @@ void draw_static() {
 void enter(const Snapshot& snapshot) {
   g_snapshot = snapshot;
   g_active = true;
+  g_channels_open = false;
   g_map_center_set = false;
   g_last_dynamic_ms = 0;
   g_last_spectrum_ms = 0;
@@ -459,6 +490,7 @@ void enter(const Snapshot& snapshot) {
 }
 
 void leave() {
+  g_channels_open = false;
   if (!g_active) return;
   M5.Display.clearScrollRect();
   g_active = false;
@@ -478,6 +510,7 @@ void update(const Snapshot& snapshot) {
   g_last_dynamic_ms = now;
   M5.Display.startWrite();
   draw_dynamic();
+  if (g_channels_open && g_view == View::overview) draw_channels_overlay();
   M5.Display.endWrite();
 }
 
@@ -524,6 +557,21 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
 
 Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return {};
+  if (g_channels_open && g_view == View::overview) {
+    if (hit(x, y, 940, 180, 110, 48)) {
+      g_channels_open = false;
+      draw_static();
+      return {};
+    }
+    if (hit(x, y, 380, 238, 120, 100)) return {ActionKind::region_previous};
+    if (hit(x, y, 780, 238, 120, 100)) return {ActionKind::region_next};
+    if (hit(x, y, 380, 342, 120, 100)) return {ActionKind::channel_previous};
+    if (hit(x, y, 780, 342, 120, 100)) return {ActionKind::channel_next};
+    if (hit(x, y, 220, 170, 840, 360)) return {};
+    g_channels_open = false;
+    draw_static();
+    return {};
+  }
   if (audio_header::home_hit(x, y)) return {ActionKind::exit_home};
   if (audio_header::settings_hit(x, y)) return {ActionKind::open_settings};
   if (hit(x, y, 0, kTabsY, 1280, 80))
@@ -556,8 +604,18 @@ Action handle_touch(int32_t x, int32_t y) {
 }
 
 bool active() { return g_active; }
-bool spectrum_active() { return g_active && (g_view == View::overview || g_view == View::rf_health); }
+bool spectrum_active() {
+  return !g_channels_open && g_active &&
+         (g_view == View::overview || g_view == View::rf_health);
+}
 View view() { return g_view; }
+
+void open_channel_picker() {
+  if (!g_active) return;
+  g_view = View::overview;
+  g_channels_open = true;
+  draw_static();
+}
 
 void show_documentation_view(View view_value, const Snapshot& snapshot) {
   g_view = view_value;
@@ -597,7 +655,7 @@ bool self_check() {
   char value[16];
   format_id(value, sizeof(value), snapshot.nodes[0].id);
   if (strcmp(value, "!A1B2C3D4") != 0) return false;
-  return audio_header::self_check();
+  return audio_header::self_check() && lora_channel::self_check();
 }
 
 }  // namespace orcsdr::lora

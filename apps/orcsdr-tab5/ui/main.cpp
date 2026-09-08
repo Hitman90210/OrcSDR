@@ -58,6 +58,7 @@
 #include "home_dashboard.hpp"
 #include "lora_dashboard.hpp"
 #include "lora_native_decoder.hpp"
+#include "lora_channel_control.hpp"
 #include "location_estimate.hpp"
 #include "navigation_service.hpp"
 #include "offline_map.hpp"
@@ -593,8 +594,8 @@ constexpr uint32_t kRtlWxHz = 162400000;
 constexpr uint32_t kRtlBrowseMinHz = ESP_RTL_SDR_FREQ_MIN_HZ;
 constexpr uint32_t kRtlBrowseMaxHz = ESP_RTL_SDR_FREQ_MAX_HZ;
 constexpr uint32_t kRtlBrowseDefaultHz = 146520000;
-constexpr uint32_t kLoraMinHz = 902000000;
-constexpr uint32_t kLoraMaxHz = 928000000;
+constexpr uint32_t kLoraMinHz = kRtlBrowseMinHz;
+constexpr uint32_t kLoraMaxHz = kRtlBrowseMaxHz;
 constexpr uint32_t kLoraDefaultHz = 906875000;  // Meshtastic US LongFast default slot
 constexpr uint32_t kAdsbDefaultHz = 1090000000;
 // Frequency, baud, and polarity are a user-edited profile, not a hardcoded
@@ -1240,12 +1241,8 @@ static bool lora_config_loaded = false;
 static bool lora_authorized_key_loaded = false;
 static uint8_t lora_authorized_key[32]{};
 static size_t lora_authorized_key_bytes = 0;
-static char lora_profile_name[24] = "US LONGFAST";
-static char lora_region_name[24] = "US 902-928";
-static bool lora_survey_active = false;
-static uint8_t lora_survey_span = 0;
-static uint32_t lora_survey_next_ms = 0;
-static uint32_t lora_survey_restore_hz = 0;
+static char lora_profile_name[24] = "LONGFAST";
+static char lora_region_name[24] = "US";
 static portMUX_TYPE lora_message_mux = portMUX_INITIALIZER_UNLOCKED;
 struct LoraDisplayPacket {
   char text[112]{};
@@ -1375,7 +1372,9 @@ static uint32_t g_rds_capture_file_seq = 0;
 static char g_rds_capture_last_path[96] = "";
 
 /* ---- Raw CU8 IQ capture and adaptive LoRa energy trigger ---- */
-constexpr size_t kIqRecSeconds = 3;
+// LongFast maximum-size packets can exceed 3.2 seconds. Four seconds retains
+// the 250 ms pre-roll and the complete packet after an energy trigger.
+constexpr size_t kIqRecSeconds = 4;
 constexpr size_t kIqRecMaxBytes = kRtlSampleRateSps * 2u * kIqRecSeconds;
 constexpr size_t kOrciqHeaderBytes = 36;
 constexpr size_t kP25IqRecMaxBytes = 1024u * 1024u - kOrciqHeaderBytes;
@@ -2170,6 +2169,7 @@ bool rds_replay(const char* path);
 void rds_capture_status_print();
 bool ensure_tab5_sd();
 void load_lora_config();
+void lora_iq_reset_detector();
 void lora_store_packet(const LoraDisplayPacket& packet);
 bool lora_native_decoder_start();
 uint64_t sd_total_bytes();
@@ -3145,10 +3145,41 @@ void load_lora_config() {
     }
   }
   file.close();
+  if (lora_sf.load(std::memory_order_relaxed) == 11 &&
+      lora_bandwidth_hz.load(std::memory_order_relaxed) ==
+          orcsdr::lora_channel::kLongFastBandwidthHz)
+    (void)orcsdr::lora_channel::adopt(lora_region_name, lora_config_frequency_hz);
   Serial.printf("RTL_LORA_CONFIG path=%s frequency_hz=%u sf=%u bw=%u key=%d\n", kPath,
                 lora_config_frequency_hz, lora_sf.load(std::memory_order_relaxed),
                 lora_bandwidth_hz.load(std::memory_order_relaxed),
                 lora_authorized_key_loaded ? 1 : 0);
+}
+
+void apply_lora_channel_selection() {
+  const auto& selected = orcsdr::lora_channel::selection();
+  lora_config_frequency_hz = selected.frequency_hz;
+  lora_sf.store(11, std::memory_order_relaxed);
+  lora_bandwidth_hz.store(orcsdr::lora_channel::kLongFastBandwidthHz,
+                          std::memory_order_relaxed);
+  strlcpy(lora_profile_name, "LONGFAST", sizeof(lora_profile_name));
+  strlcpy(lora_region_name, orcsdr::lora_channel::region(selected.region_index).code,
+          sizeof(lora_region_name));
+}
+
+void select_lora_channel(size_t region_index, uint16_t slot) {
+  if (!orcsdr::lora_channel::choose(region_index, slot, preferences)) return;
+  apply_lora_channel_selection();
+  const auto& selected = orcsdr::lora_channel::selection();
+  Serial.printf("RTL_LORA_PLAN_SAVE region=%s slot=%u frequency_hz=%u persisted=%s\n",
+                lora_region_name, selected.slot, selected.frequency_hz,
+                selected.persisted ? "true" : "false");
+  if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running &&
+      rtl_ui_band == RtlBand::lora) {
+    lora_iq_reset_detector();
+    request_hot_retune(selected.frequency_hz);
+  } else {
+    queue_local_rtl_listen(RtlBand::lora, selected.frequency_hz);
+  }
 }
 
 void refresh_adsb_atc_preset() {
@@ -8461,9 +8492,16 @@ void handle_fm_dashboard_action(const orcsdr::fm::Action& action) {
 
 orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   orcsdr::lora::Snapshot snapshot{};
+  const auto& channel = orcsdr::lora_channel::selection();
   snapshot.frequency_hz = rtl_ui_frequency_hz;
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.sf = lora_sf.load(std::memory_order_relaxed);
+  snapshot.region_index = channel.region_index;
+  snapshot.region_count = static_cast<uint8_t>(orcsdr::lora_channel::region_count());
+  snapshot.channel_slot = orcsdr::lora_channel::slot_for_frequency(
+      channel.region_index, snapshot.frequency_hz);
+  snapshot.channel_count = orcsdr::lora_channel::slot_count(channel.region_index);
+  snapshot.default_slot = orcsdr::lora_channel::default_slot(channel.region_index);
   snapshot.bandwidth_hz = lora_bandwidth_hz.load(std::memory_order_relaxed);
   snapshot.noise_dbfs = lora_noise_dbfs.load(std::memory_order_relaxed);
   snapshot.trigger_dbfs = lora_trigger_dbfs.load(std::memory_order_relaxed);
@@ -8483,8 +8521,8 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.wifi_connected = orcsdr::wifi::connected();
   snapshot.sound_enabled = rtl_audio_user_enabled.load(std::memory_order_relaxed);
   snapshot.sd_logging = lora_log_ready.load(std::memory_order_relaxed);
-  snapshot.survey_active = lora_survey_active;
-  snapshot.survey_progress = lora_survey_span;
+  snapshot.survey_active = orcsdr::lora_channel::survey_active();
+  snapshot.survey_progress = orcsdr::lora_channel::survey_progress();
   snapshot.battery_percent = M5.Power.getBatteryLevel();
   snapshot.native_decoder_ready =
       lora_native_decoder_ready.load(std::memory_order_acquire) &&
@@ -8845,21 +8883,18 @@ void handle_p25_dashboard_action(const orcsdr::p25::Action& action) {
 }
 
 void service_lora_survey(uint32_t now) {
-  if (!lora_survey_active || g_stream_band != RtlBand::lora || now < lora_survey_next_ms)
-    return;
-  if (lora_survey_span >= 14) {
-    lora_survey_active = false;
-    request_hot_retune(lora_survey_restore_hz);
-    Serial.printf("RTL_LORA_SURVEY restored_hz=%u\n", lora_survey_restore_hz);
+  const auto step = orcsdr::lora_channel::service_survey(
+      now, g_stream_band == RtlBand::lora);
+  if (step.frequency_hz == 0) return;
+  if (step.restore) {
+    request_hot_retune(step.frequency_hz);
+    Serial.printf("RTL_LORA_SURVEY restored_hz=%u\n", step.frequency_hz);
     return;
   }
-  const uint32_t center_hz = 903000000u + static_cast<uint32_t>(lora_survey_span) * 2000000u;
   Serial.printf("RTL_LORA_SURVEY span=%u center_hz=%u level_dbfs=%.1f\n",
-                lora_survey_span + 1, center_hz,
+                step.span, step.frequency_hz,
                 static_cast<double>(rtl_signal_dbfs.load(std::memory_order_relaxed)));
-  request_hot_retune(center_hz);
-  ++lora_survey_span;
-  lora_survey_next_ms = now + 750;
+  request_hot_retune(step.frequency_hz);
 }
 
 void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
@@ -8891,15 +8926,13 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
       orcsdr::lora::toggle_follow_node();
       break;
     case ActionKind::scan_toggle:
-      if (lora_survey_active) {
-        lora_survey_active = false;
-        request_hot_retune(lora_survey_restore_hz);
+      if (orcsdr::lora_channel::survey_active()) {
+        request_hot_retune(orcsdr::lora_channel::cancel_survey());
       } else if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running) {
-        lora_survey_restore_hz = rtl_ui_frequency_hz;
-        lora_survey_span = 0;
-        lora_survey_next_ms = millis();
-        lora_survey_active = true;
-        Serial.println("RTL_LORA_SURVEY start spans=14 dwell_ms=750");
+        orcsdr::lora_channel::start_survey(rtl_ui_frequency_hz, millis());
+        Serial.printf("RTL_LORA_SURVEY start region=%s spans=%u dwell_ms=750\n",
+                      lora_region_name,
+                      static_cast<unsigned>(orcsdr::lora_channel::survey_span_count()));
       }
       break;
     case ActionKind::record_iq_toggle:
@@ -8919,6 +8952,44 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
                     lora_log_ready.load(std::memory_order_relaxed) ? 1 : 0);
       break;
     case ActionKind::open_channels:
+      orcsdr::lora::open_channel_picker();
+      break;
+    case ActionKind::region_previous:
+      select_lora_channel(
+          (orcsdr::lora_channel::selection().region_index +
+           orcsdr::lora_channel::region_count() - 1) %
+              orcsdr::lora_channel::region_count(),
+          0);
+      break;
+    case ActionKind::region_next:
+      select_lora_channel((orcsdr::lora_channel::selection().region_index + 1) %
+                              orcsdr::lora_channel::region_count(),
+                          0);
+      break;
+    case ActionKind::region_select:
+      if (action.value >= 1 && action.value <= orcsdr::lora_channel::region_count())
+        select_lora_channel(action.value - 1, 0);
+      break;
+    case ActionKind::channel_previous: {
+      const auto& selected = orcsdr::lora_channel::selection();
+      select_lora_channel(selected.region_index,
+                          selected.slot <= 1
+                              ? orcsdr::lora_channel::slot_count(selected.region_index)
+                              : selected.slot - 1);
+      break;
+    }
+    case ActionKind::channel_next: {
+      const auto& selected = orcsdr::lora_channel::selection();
+      select_lora_channel(selected.region_index,
+                          selected.slot >= orcsdr::lora_channel::slot_count(selected.region_index)
+                              ? 1
+                              : selected.slot + 1);
+      break;
+    }
+    case ActionKind::channel_select:
+      select_lora_channel(orcsdr::lora_channel::selection().region_index,
+                          static_cast<uint16_t>(action.value));
+      break;
     case ActionKind::open_settings:
       open_global_settings(orcsdr::settings::Section::radio_defaults);
       break;
@@ -10297,6 +10368,13 @@ void load_state() {
   rtl_ui_frequency_hz = rtl_saved_fm_hz;
   rtl_requested_frequency_hz.store(rtl_saved_fm_hz, std::memory_order_release);
   Serial.printf("RTL_FM_LOAD frequency_hz=%u\n", rtl_saved_fm_hz);
+  orcsdr::lora_channel::load(preferences);
+  if (orcsdr::lora_channel::selection().persisted) {
+    apply_lora_channel_selection();
+    const auto& selected = orcsdr::lora_channel::selection();
+    Serial.printf("RTL_LORA_PLAN_LOAD region=%s slot=%u frequency_hz=%u\n",
+                  lora_region_name, selected.slot, selected.frequency_hz);
+  }
   adsb_settings.location_configured = preferences.getBool("adsb_loc_set", false);
   adsb_settings.latitude_e7 = preferences.getInt("adsb_lat_e7", 0);
   adsb_settings.longitude_e7 = preferences.getInt("adsb_lon_e7", 0);
@@ -10321,6 +10399,11 @@ void load_state() {
       if (stored_band == RtlBand::p25) {
         rtl_ui_frequency_hz = p25_control_frequency_hz;
         rtl_requested_frequency_hz.store(p25_control_frequency_hz,
+                                         std::memory_order_release);
+      } else if (stored_band == RtlBand::lora &&
+                 orcsdr::lora_channel::selection().persisted) {
+        rtl_ui_frequency_hz = lora_config_frequency_hz;
+        rtl_requested_frequency_hz.store(lora_config_frequency_hz,
                                          std::memory_order_release);
       }
       Serial.printf("RTL_BAND_RESTORE band=%s\n", rtl_band_name(stored_band));
@@ -10427,6 +10510,7 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
 #endif
   if (band == RtlBand::lora) {
     load_lora_config();
+    if (orcsdr::lora_channel::selection().persisted) apply_lora_channel_selection();
     if (!lora_native_decoder_start()) {
       Serial.println("RTL_LORA_START_ERROR native_decoder_unavailable");
       return;
@@ -10464,7 +10548,7 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   cancel_scan_for_takeover.store(true, std::memory_order_release);
   rtl_fm_preset_scan_requested.store(false, std::memory_order_release);
   p25_survey_requested.store(false, std::memory_order_release);
-  if (lora_survey_active) lora_survey_active = false;
+  if (orcsdr::lora_channel::survey_active()) (void)orcsdr::lora_channel::cancel_survey();
   const auto session_token = radio_session.acquire(
       orcsdr::radio::owner_for_band(band), band, frequency_hz,
       kRtlSampleRateSps);
@@ -12134,7 +12218,19 @@ void process_command(char* command) {
       else if (!strcmp(action, "LOG")) kind=K::logging_toggle; else if (!strcmp(action, "CLEAR")) kind=K::clear_events;
       else if (!strcmp(action, "EXPORT")) kind=K::export_log; else if (!strcmp(action, "FOLLOW")) kind=K::follow_node;
       else if (!strcmp(action, "CHANNELS")) kind=K::open_channels; else if (!strcmp(action, "SETTINGS")) kind=K::open_settings;
+      else if (!strcmp(action, "REGION_PREV")) kind=K::region_previous; else if (!strcmp(action, "REGION_NEXT")) kind=K::region_next;
+      else if (!strcmp(action, "REGION")) kind=K::region_select; else if (!strcmp(action, "SLOT_PREV")) kind=K::channel_previous;
+      else if (!strcmp(action, "SLOT_NEXT")) kind=K::channel_next; else if (!strcmp(action, "SLOT")) kind=K::channel_select;
       else if (!strcmp(action, "HOME")) kind=K::exit_home;
+      if ((kind == K::region_select &&
+           (fields != 3 || value < 1 || value > orcsdr::lora_channel::region_count())) ||
+          (kind == K::channel_select &&
+           (fields != 3 || value < 1 ||
+            value > orcsdr::lora_channel::slot_count(
+                        orcsdr::lora_channel::selection().region_index)))) {
+        Serial.println("RTL_UI_ACTION_INVALID lora_region_or_slot_out_of_range");
+        return;
+      }
       if (kind != K::none) { handle_lora_dashboard_action({kind, static_cast<uint32_t>(value)}); Serial.println("RTL_UI_ACTION_OK"); return; }
     } else if (strcmp(domain, "SETTINGS") == 0) {
       using K = orcsdr::settings::ActionKind; K kind = K::none;
@@ -12502,6 +12598,25 @@ void process_command(char* command) {
                   static_cast<unsigned long>(lora_native_last_crc_failures.load(std::memory_order_relaxed)),
                   static_cast<double>(lora_native_last_raw_cfo_tenths_hz.load(std::memory_order_relaxed)) / 10.0,
                   static_cast<double>(lora_native_last_cfo_tenths_hz.load(std::memory_order_relaxed)) / 10.0);
+    return;
+  }
+  if (strcmp(command, "RTL_LORA_PLAN_STATUS") == 0) {
+    const auto& selected = orcsdr::lora_channel::selection();
+    Serial.printf("RTL_LORA_PLAN_STATUS region_index=%u region=%s slot=%u slots=%u "
+                  "default_slot=%u frequency_hz=%u profile=LONGFAST persisted=%s\n",
+                  static_cast<unsigned>(selected.region_index + 1), lora_region_name,
+                  static_cast<unsigned>(selected.slot),
+                  static_cast<unsigned>(orcsdr::lora_channel::slot_count(selected.region_index)),
+                  static_cast<unsigned>(orcsdr::lora_channel::default_slot(selected.region_index)),
+                  selected.frequency_hz, selected.persisted ? "true" : "false");
+    return;
+  }
+  if (strcmp(command, "RTL_LORA_REGION_LIST") == 0) {
+    for (size_t i = 0; i < orcsdr::lora_channel::region_count(); ++i)
+      Serial.printf("RTL_LORA_REGION index=%u code=%s slots=%u default_slot=%u\n",
+                    static_cast<unsigned>(i + 1), orcsdr::lora_channel::region(i).code,
+                    static_cast<unsigned>(orcsdr::lora_channel::slot_count(i)),
+                    static_cast<unsigned>(orcsdr::lora_channel::default_slot(i)));
     return;
   }
   if ((strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
