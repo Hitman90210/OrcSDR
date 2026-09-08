@@ -5,7 +5,7 @@ Everything this fork (`Hitman90210/OrcSDR`) has changed on top of
 cold: if you are new to this tree, read §1 and §2, then jump to whatever you
 are touching.
 
-Last updated: 2026-09-08. Head at time of writing: `d972d4a`, 31 non-merge
+Last updated: 2026-09-08. Head at time of writing: `d321a8a`+, 33 non-merge
 commits ahead of upstream, last upstream merge `b941f6f` (POCSAG feature).
 
 ---
@@ -219,7 +219,34 @@ resets defensively. There is a regression check (`home_font_ok`) for it.
   band edges (`fm_seek_wrap` folds the uint32 arithmetic back into the band).
   Early-stop is signalled out of the measure callback and acted on *after*
   `service()` returns, so the engine is never re-entered.
-  **Not yet confirmed against live RF** — no antenna on the bench.
+
+  **Confirmed on air**, and getting there exposed three real defects that a
+  clean compile could never have caught:
+
+  1. *The measurement was stale.* `rtl_scope_peak_level` is computed inside
+     `draw_spectrum()`, which returns early when the current tab shows no
+     spectrum. On the FM LISTEN tab every window of a sweep therefore read an
+     identical frozen value. `spectrum_measurement_wanted()` now lets the DSP
+     run while a scan or seek is active. **This affected the pre-existing FM
+     preset scan too** — it reads the same value.
+  2. *The threshold was absolute.* `kFmPresetMinDbfs` (-70 dBFS) cannot
+     separate a station from a noise floor that moves with gain and antenna,
+     so on a real antenna every window passed and the seek stopped on the
+     first one it looked at — including 76.8 MHz. Replaced with an in-window
+     SNR (peak minus the mean of the visible bins, `rtl_scope_peak_snr_db`)
+     and a threshold measured from a full 40-window sweep of 76.5–107.7 MHz:
+     the empty Japanese sub-band read **6.2–9.8 dB**, occupied US channels
+     **16.3–33.2 dB**. `kFmSeekMinSnrDb = 15.0f`.
+  3. *The start frequency clamped instead of wrapping*, and the first window
+     is an AGC transient. Seeking up from 107.9 started at the clamped band
+     edge and "found" 107.7 — behind where it started. `first` now wraps, and
+     window 0 is discarded (windows are 2.048 MHz wide and step 800 kHz, so
+     window 1 still covers from origin+176 kHz — no reachable station is
+     lost).
+
+  Verified across the band in both directions: 88.1↑89.3, 94.1↑95.5,
+  101.3↑102.3, 107.9↑89.3 (wraps past the empty sub-band), 98.5↓96.3,
+  88.1↓106.9. All are valid US channels.
 - **NOAA weather was pinned to 162.400.** `rtl_clamp_frequency` returned
   `kRtlWxHz` for the whole band, STEP was a no-op, and
   `request_hot_retune_for` refused the `wx` band outright — six of the seven
@@ -384,12 +411,11 @@ county. Full instructions are in **`docs/LOCAL_SETUP.md`**; the short version:
 1. **SDIO transport wedge** — upstream `esp_hosted` defect, reproduces on
    unmodified upstream. Mitigated, not fixed. Restart is the reliable recovery.
 2. **RTL-SDR contention A/B** — not done; retest on the v0.7.14 driver.
-3. **FM SEEK not confirmed against live RF.**
-4. **`noaa_weather` / `fcc_broadcast` packs** cannot be published from this
+3. **`noaa_weather` / `fcc_broadcast` packs** cannot be published from this
    fork — the catalog is signed with the upstream author's P-256 key and the
    firmware embeds only the matching public key.
-5. **Demo-mode spectrum geometry mismatch** — §7.
-6. **POCSAG polish** — `MESSAGE DETAILS` has no empty-state placeholder while
+4. **Demo-mode spectrum geometry mismatch** — §7.
+5. **POCSAG polish** — `MESSAGE DETAILS` has no empty-state placeholder while
    its sibling panel does; the SIGNAL tab's "CORRECTED 0 bits=0" breaks the
    right-aligned value column every other row keeps.
 
