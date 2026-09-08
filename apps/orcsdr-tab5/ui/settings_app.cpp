@@ -104,7 +104,12 @@ void draw_header() {
   // text and the mute button, not the 116px CLOSE needs. Settings doesn't use
   // the visualizer/settings-gear slots the header reserves past the mute
   // button, so put CLOSE there instead of fighting for the same space.
-  button("CLOSE", 1158, 13, 116, 46, TFT_MAROON);
+  // y/height used to be 13/46 -- 1px higher and 8px shorter than the mute
+  // button beside it (y=12, h=54, matching the other header icons across
+  // every dashboard), so the two looked visibly mismatched next to each
+  // other on every Settings section (this header is shared across all of
+  // them). Matched to the mute button's exact bounds.
+  button("CLOSE", 1158, 12, 116, 54, TFT_MAROON);
   audio_header::draw_mute_button(g_state.sound_default);
 }
 
@@ -744,7 +749,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (g_edit != EditField::none) return handle_keypad(x, y);
   if (audio_header::mute_hit(x, y))
     return {ActionKind::sound_changed, g_state.sound_default ? 0 : 1};
-  if (hit(x, y, 1158, 13, 116, 46)) {
+  if (hit(x, y, 1158, 12, 116, 54)) {
     g_active = false;
     return {ActionKind::close, 0};
   }
