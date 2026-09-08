@@ -14,6 +14,7 @@ constexpr Descriptor kEntries[] = {
     {Id::weather, "WEATHER", "NOAA weather radio", Category::audio, true},
     {Id::cb, "CB RADIO", "40-channel AM/SSB receiver", Category::audio, true},
     {Id::lora, "LORA", "LoRa and Meshtastic receive tools", Category::digital, true},
+    {Id::pocsag, "POCSAG", "Pager receive, CAPCODE IDs, and message archive", Category::digital, true},
     {Id::airband, "AIRBAND", "VHF aviation voice", Category::aviation, true},
     {Id::marine, "MARINE", "VHF marine receiver", Category::audio, true},
     {Id::satellite, "SATELLITE", "Satellite receive workspace", Category::digital, true},
@@ -100,8 +101,8 @@ bool self_check() {
                      g_recent[1] == Id::fm && !record_open(Id::p25);
   g_recent = saved;
   g_recent_count = saved_count;
-  return loaded && moved && std::size(kEntries) == 13 && find(Id::rf_lab) != nullptr &&
-         find(Id::wifi_analysis) != nullptr;
+  return loaded && moved && std::size(kEntries) == 14 && find(Id::rf_lab) != nullptr &&
+         find(Id::wifi_analysis) != nullptr && find(Id::pocsag) != nullptr;
 }
 
 }  // namespace orcsdr::dashboards

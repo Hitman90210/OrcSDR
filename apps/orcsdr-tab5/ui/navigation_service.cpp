@@ -9,6 +9,7 @@
 #include "fm_dashboard.hpp"
 #include "lora_dashboard.hpp"
 #include "p25_dashboard.hpp"
+#include "pocsag_dashboard.hpp"
 #include "rf24_dashboard.hpp"
 
 namespace orcsdr::navigation {
@@ -32,6 +33,7 @@ void show_home(bool demo) {
   if (settings::active()) g_hooks.restore_graphics(g_restore_graphics);
   fm::leave();
   p25::leave();
+  pocsag::leave();
   adsb::leave();
   lora::leave();
   rf24::leave();

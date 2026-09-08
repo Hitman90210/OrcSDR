@@ -723,6 +723,173 @@ recorded-IQ and hardware acceptance; it does not schedule the decoder anew.
 Exit: native receive-only LongFast data is replay- and hardware-validated.
 MeshCore remains a separate later profile.
 
+## Phase 10 — POCSAG pager dashboard and native decoder
+
+Goal: a real receive-only POCSAG pager monitor, not a mock dashboard —
+native FSK/BCH decode feeding an in-memory CAPCODE identity system, a RAM-only
+session list, and a five-view M5GFX UI (LIVE/IDS/SIGNAL/ACTIVITY/SESSION),
+matching the architectural rigor P25 established: a pure protocol/DSP core
+with no FreeRTOS/display/USB/SD dependency, a thin runtime adapter, and a
+`ScreenController`-routed dashboard that only ever renders a bounded
+snapshot. POCSAG rides the existing hardware-verified 960 kS/s RTL front end
+rather than adding a second high-rate IQ path.
+
+### 10.1 — decoder core (host-tested)
+
+- [x] Add `pocsag_decoder_core.{hpp,cpp}`: DC-reject + two-stage decimate-by-5
+      CIC (960 kS/s to 38.4 kS/s, an exact ratio giving integer
+      samples/symbol at all three baud rates) + quadrature FM/FSK
+      discriminator computed once per decimated sample, not per raw IQ
+      sample.
+- [x] Run 512/1200/2400 baud x normal/inverted polarity as six parallel
+      search candidates; AUTO detects both from sync-word correlation
+      evidence, gated by a decaying (not hard-reset) preamble-alternation
+      confidence counter so the sync word's own non-alternating bit runs
+      don't defeat the false-positive gate mid-word.
+- [x] Implement BCH(31,21) via the public generator polynomial
+      (`x^10+x^9+x^8+x^6+x^5+x^3+1`) as a bounded, precomputed
+      syndrome-to-correction table (weight-1 and weight-2 patterns only,
+      matching the code's true 2-bit correction radius); cross-check with
+      the codeword's even-parity bit; 3+ bit errors are rejected, never
+      silently accepted.
+- [x] Assemble address (18-bit field + 3-bit frame-number-derived low bits =
+      21-bit capcode) and message codewords (numeric BCD-style 4-bit
+      table, alphanumeric 7-bit-ASCII, both bit-reversed per the
+      documented POCSAG convention) into bounded `Message` records, with
+      tone-only detection (address followed by no message codewords),
+      truncation bounds, and per-message corrected/uncorrectable counters.
+      No dynamic allocation anywhere in the decode path.
+- [x] `Decoder::self_check()` and `tests/pocsag_core_tests.cpp`
+      (`tools/test-pocsag-core.ps1`/`.sh`, matching the existing
+      `test-p25-core` optimized + ASan/UBSan pattern) verify: BCH 0/1/2-bit
+      correction and 3-bit rejection deterministically, and a full
+      synthetic-IQ-free (discriminator-sample) round trip of an
+      alphanumeric page and an inverted-polarity numeric page, exactly
+      reconstructing capcode, baud, polarity, and text from nothing but
+      the encoded bit stream.
+- [ ] Numeric/alphanumeric character-set bit-order is implemented per
+      public documentation and is internally self-consistent (this
+      module's own encoder and decoder round-trip exactly), but has not
+      been cross-checked against a live signal or an external oracle —
+      do not claim it is correct for real-world traffic until that check
+      exists.
+- [ ] Synthetic-IQ tests with frequency offset, AWGN, and varying SNR
+      through the full `process_cu8` front end (not just the
+      discriminator-sample seam) remain open; the current self-check
+      exercises exact, noise-free synthetic samples only.
+
+### 10.2 — runtime integration
+
+- [x] Extend `radio::Band`/`radio::Owner`, `screens::Id`, and
+      `dashboards::Id` with `pocsag`; every module's existing self-check
+      (`radio::Session::self_check`, `screens::self_check`,
+      `dashboards::self_check`) covers the new identifiers.
+- [x] Wire a bounded IQ path from the RTL consumer loop into the decoder,
+      reusing the existing shared 960 kS/s FM-band stream and
+      `radio_session` acquire pattern inline in `rtl_dsp_task` — no second
+      high-rate queue/task, unlike ADS-B. `enter/leave/draw/update/
+      handle_touch` call sites route through `screens::Id::pocsag`, decoded
+      messages publish through a mutex-protected ring into a `Snapshot`, and
+      a `RTL_POCSAG_STATUS` serial diagnostic reports lock/baud/FEC counters
+      (never message text, matching this repo's privacy discipline).
+      Reachable from Home's dashboard catalog and the RF band guide's quick
+      launch. Native ESP-IDF 5.5.4 build compiles and links
+      (`orcsdr_tab5.bin`, 46% flash free) — no hardware run yet.
+- [x] `RTL_POCSAG_STATUS` documented in `docs/API_SERIAL_CLI.md`.
+- [ ] `/orcsdr/pocsag_scan.cfg` (frequency candidates) —
+      a user-edited SD profile, not a hardcoded default frequency; POCSAG
+      channels vary too much by country/carrier for one default to be
+      correct. The current build seeds a single in-RAM default
+      (`kPocsagFallbackHz`) with no save/load or in-app editor yet.
+- [x] "FIND PAGERS" discovery scan: reuses the existing shared `scan_engine`
+      (same one FM presets/P25 survey use), dwelling 4s per channel from a
+      **user-editable** `/orcsdr/pocsag_scan.cfg` (falls back to a small
+      built-in nationwide-US default only if that file doesn't exist —
+      deliberately not a region-specific list, since OrcSDR is used
+      worldwide; a user's own local-paging research belongs in that file,
+      documented in `docs/RADIO_CONFIGURATION.md` with a worked example, not
+      compiled into firmware). Winner selection requires at least one
+      genuinely BCH-valid codeword (not merely corrected) before calling a
+      channel a real hit, directly targeting the false-positive-lock-on-
+      noise pattern found during initial hardware testing (0 valid, 14/16
+      uncorrectable, immediate sync loss on an untested frequency). SCAN
+      button + live "SCANNING n/N" header progress on the dashboard;
+      `RTL_POCSAG_SCAN`/`RTL_POCSAG_SCAN_STOP` for serial-CLI parity. Native
+      build compiles/links/boots clean; the scan itself has not yet been
+      run against a real signal on hardware.
+
+### 10.3 — CAPCODE identity and message archive
+
+- [x] `pocsag_store::Table`: host-testable, no FreeRTOS/SD dependency,
+      bounded 32-entry CAPCODE record set (alias, group, watch/mute, notes,
+      first/last seen, hit count) with LRU eviction that never drops a
+      watched record. `tools/test-pocsag-store.ps1`/`.sh` pass an optimized
+      and an ASan/UBSan build covering hit tracking, field edits against
+      unknown capcodes (must fail cleanly, not create a record), bounded
+      truncation, and full-table eviction. Wired live: every decoded
+      message records a hit via the same critical section already guarding
+      the message ring.
+- [ ] No SD persistence yet (`/orcsdr/pocsag/identities.cfg`, atomic
+      `.part`/`.bak` write matching the P25 profile pattern) — the table is
+      in-RAM only and resets on reboot.
+- [ ] No alias/group/watch/mute/notes editing UI (IDS tab still a
+      placeholder) and no duplicate-message collapse or async-queued SD
+      message log yet.
+- [ ] Bounded recent-message RAM cache plus an async SD archive
+      search/export path.
+
+### 10.4 — five-view M5GFX dashboard
+
+- [x] `pocsag_dashboard`: five tabs (LIVE/IDS/SIGNAL/ACTIVITY/SESSION) built
+      natively in M5GFX matching this repo's existing dashboard conventions
+      (dark instrument theme, header/settings-gear/battery contract from
+      `architecture.md`, static-chrome-once + bounded dynamic repaint, tab
+      touch routing across all five). **LIVE** (recent-message list with
+      per-message FEC-quality indicator, decode lock/baud/message-count
+      header), **IDS** (read-only CAPCODE directory: capcode, alias or
+      `UNKNOWN`, group, hit count, watched/muted indicators), and **SIGNAL**
+      (decode-status readout, a real 2-FSK soft-decision symbol plot, and a
+      per-codeword FEC-quality strip, all sourced directly from the decoder
+      core's own tracked `Stats`), and **ACTIVITY** (KPI cards for total
+      messages/active IDs/valid-codeword percentage/uncorrectable count, a
+      message-type distribution bar chart backed by new `Stats::
+      messages_alpha/numeric/tone_only` counters, and a top-CAPCODEs-by-
+      hit-count leaderboard sorted client-side from the bounded identity
+      snapshot) render real content; SESSION explicitly reports that its
+      bounded recent-message list clears on reboot, not faked persistence.
+- [ ] IDS has no alias/group/watch/mute/notes editing (needs a keypad-style
+      touch UI) and shows identities in table-insertion order, not sorted
+      by recency/hit count.
+- [ ] SIGNAL does not yet reuse `rf_analysis` for spectrum/waterfall/SNR
+      (the DSP-instrument diagnostics it does show are real, not
+      placeholders); FSK deviation/frequency-offset readouts are not yet
+      cross-checked on real air, and `RECORD IQ` is not yet wired to the
+      existing IQ recorder.
+- [ ] ACTIVITY has no messages-per-hour graph or day/hour activity heatmap
+      (both need wall-clock time; no RTC dependency has been introduced or
+      verified yet) or baud-rate distribution (the decoder locks to one
+      baud at a time and does not yet track a historical per-baud count).
+- [ ] ARCHIVE (searchable log) depends on 10.3's SD-backed message log and
+      is not yet implemented.
+
+### 10.5 — hardware and RF acceptance
+
+- [ ] Compare live decoded pages against a known pager/paging transmitter
+      or an independent decoder at the same site.
+- [ ] Flash-and-smoke-test on the physical Tab5 (tune, lock, decode, exit)
+      — the build compiles and links but has not been run on hardware in
+      this session.
+- [ ] Cross-check the numeric/alphanumeric character-set bit order (see
+      10.1) against real traffic before claiming decoded text is correct,
+      not just structurally well-formed.
+
+Exit: the feature may be labeled Hardware-verified only after a live
+receive comparison and full on-device visual/touch acceptance are
+recorded, per this repo's own evidence-label discipline. As of this
+phase's initial landing, 10.1 is host-tested (not hardware-verified) and
+10.2's identifier extensions are build/self-check-verified; 10.2's IQ
+wiring, 10.3, 10.4, and 10.5 remain open.
+
 ## Explicitly out of scope for this phasing pass
 
 - Gap 2 (dual USB paths) and Gap 4 (performance gates) are already tracked
