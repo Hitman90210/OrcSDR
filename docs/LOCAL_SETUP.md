@@ -199,5 +199,11 @@ see `docs/DATA_SOURCE_LEDGER.md`.
 - **LoRa** — the Meshtastic US band is 104 frequency slots of 250 kHz starting
   at 902.125 MHz, and **slot 20 (906.875 MHz) is the LongFast default**. The
   LoRa dashboard's CHANNELS button opens a picker for stepping slots or jumping
-  to a quick slot, so you can watch whichever one your local mesh actually
-  uses. It is a receive-only monitor, not a participant in the mesh.
+  to a quick slot, and the chosen slot is remembered across reboots — regional
+  meshes often move off the default, e.g. **NoVA Mesh runs slot 9
+  (904.125 MHz)** with LONG_FAST and hop limit 7. It is a receive-only monitor,
+  not a participant in the mesh.
+
+  If you see no traffic, check `RTL_LORA_NATIVE_STATUS` over serial:
+  `preambles=0` means nothing was even detected (antenna or an idle mesh),
+  whereas `crc_failures` climbing means bursts are arriving but not decoding.

@@ -1645,6 +1645,11 @@ RtlBand rtl_ui_band = RtlBand::fm;
 uint32_t rtl_ui_frequency_hz = kRtlFmDefaultHz;
 // Last good FM LO; seeded from NVS (or kRtlFmDefaultHz) and rewritten on retune.
 uint32_t rtl_saved_fm_hz = kRtlFmDefaultHz;
+// Meshtastic slot the LoRa monitor returns to. Regional meshes run their own
+// slot -- NoVA Mesh uses 9 (904.125 MHz) rather than the LongFast default 20
+// -- so a monitor that resets to 20 every boot watches the wrong frequency
+// for its owner. Persisted like the FM dial above.
+uint32_t rtl_saved_lora_hz = kLoraDefaultHz;
 uint8_t rtl_ui_volume = kRtlVolumeDefault;
 std::atomic<bool> p25_survey_active{false};
 std::atomic<bool> p25_hold{false};
@@ -2395,7 +2400,7 @@ uint32_t rtl_band_default_frequency(RtlBand band) {
     case RtlBand::am: return kRtlAmDefaultHz;
     case RtlBand::wx: return kRtlWxHz;
     case RtlBand::cb: return kCbDefaultHz;
-    case RtlBand::lora: return kLoraDefaultHz;
+    case RtlBand::lora: return rtl_saved_lora_hz;
     case RtlBand::browse: return kRtlBrowseDefaultHz;
     case RtlBand::adsb: return kAdsbDefaultHz;
     case RtlBand::p25: return p25_control_frequency_hz;
@@ -8437,6 +8442,10 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
       slot = std::clamp(slot, 1, kLoraSlotCount);
       const uint32_t hz = kLoraSlotBaseHz + static_cast<uint32_t>(slot - 1) * kLoraSlotStepHz;
       rtl_ui_frequency_hz = hz;
+      if (hz != rtl_saved_lora_hz) {
+        rtl_saved_lora_hz = hz;
+        preferences.put_u32("sdr_lora_hz", hz);
+      }
       const RtlCaptureState state = rtl_capture_state.load(std::memory_order_acquire);
       if (state == RtlCaptureState::running) request_hot_retune(hz);
       else queue_local_rtl_listen(RtlBand::lora, hz);
@@ -9345,7 +9354,7 @@ void open_dashboard(orcsdr::dashboards::Id id) {
     case Id::shortwave: band = RtlBand::browse; frequency = 7100000; break;
     case Id::weather: band = RtlBand::wx; frequency = kRtlWxHz; break;
     case Id::cb: band = RtlBand::cb; frequency = kCbDefaultHz; break;
-    case Id::lora: band = RtlBand::lora; frequency = kLoraDefaultHz; break;
+    case Id::lora: band = RtlBand::lora; frequency = rtl_saved_lora_hz; break;
     case Id::airband: band = RtlBand::browse; frequency = 121500000; break;
     case Id::marine: band = RtlBand::browse; frequency = 156800000; break;
     case Id::satellite: band = RtlBand::browse; frequency = 137500000; break;
@@ -9967,6 +9976,13 @@ void load_state() {
     Serial.printf("RTL_PRESETS_LOAD count=%d\n", fm_preset_count);
   }
   load_fm_config();
+  // Restore the Meshtastic slot the user left the monitor on. Validated
+  // against the slot grid so a corrupt or off-grid value falls back to the
+  // LongFast default rather than parking the receiver somewhere useless.
+  if (preferences.isKey("sdr_lora_hz")) {
+    const uint32_t stored_lora = preferences.getUInt("sdr_lora_hz", kLoraDefaultHz);
+    if (lora_slot_for(stored_lora) != 0) rtl_saved_lora_hz = stored_lora;
+  }
   if (preferences.isKey("sdr_fm_hz")) {
     const uint32_t raw_fm = preferences.getUInt("sdr_fm_hz", kRtlFmDefaultHz);
     const uint32_t stored_fm = rtl_fm_sanitize_display_hz(raw_fm);
