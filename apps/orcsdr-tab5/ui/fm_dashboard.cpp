@@ -295,10 +295,12 @@ void draw_station_dynamic() {
     const int h = 20 + static_cast<int>(wave * 100 * std::clamp((g_snapshot.left_dbfs + 40) / 40, 0.0f, 1.0f));
     M5.Display.fillRect(58 + i * 19, 475 - h, 12, h, i < 8 ? kGreen : kGrid);
   }
-  // Centred in a 280px card (24..304); see the RadioText note above.
+  // Clipped to the 280px card (24..304); see the RadioText note above. Drawn
+  // left-aligned rather than centred so that when it does overflow only the
+  // tail is cut -- centring clipped both ends and lost the first word.
   M5.Display.setClipRect(34, 538, 260, 34);
   text(g_snapshot.radio_text[0] ? g_snapshot.radio_text : "Waiting for RadioText",
-       164, 555, TFT_WHITE, 2);
+       34, 555, TFT_WHITE, 2, middle_left);
   M5.Display.clearClipRect();
 
   const char* values[] = {
