@@ -5178,6 +5178,16 @@ void draw_pocsag_dashboard(bool static_panel) {
 
 void draw_lora_dashboard(bool static_panel) {
   if (rtl_ui_band != RtlBand::lora || rtl_nav_open) return;
+  // The energy detector captures a burst and hands it to the native decoder,
+  // but lora_native_decoder_start() was only ever called from the manual
+  // RTL_IQ path -- so on the dashboard the decoder stayed unready and
+  // iq_rec_append()'s else-branch discarded every auto-triggered capture,
+  // counting it in lora_native_failures. Measured on hardware: 18 captures
+  // discarded in five minutes with preambles=0 and ready=false throughout.
+  // Start it here (UI task, same context as the manual path) so a passive
+  // monitor actually decodes what it captures.
+  if (!lora_native_decoder_ready.load(std::memory_order_acquire))
+    (void)lora_native_decoder_start();
   if (!static_panel && !orcsdr::screens::may_draw(orcsdr::screens::Id::lora)) return;
   if (!static_panel) orcsdr::screens::note_visible_update(orcsdr::screens::Id::lora);
   const auto snapshot = lora_dashboard_snapshot();
