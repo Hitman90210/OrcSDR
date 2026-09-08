@@ -5,8 +5,9 @@ Everything this fork (`Hitman90210/OrcSDR`) has changed on top of
 cold: if you are new to this tree, read §1 and §2, then jump to whatever you
 are touching.
 
-Last updated: 2026-09-08. Head at time of writing: `d321a8a`+, 33 non-merge
-commits ahead of upstream, last upstream merge `b941f6f` (POCSAG feature).
+Last updated: 2026-09-08. Head at time of writing: `a001531`, 48 non-merge
+commits ahead of upstream, last upstream merge `9215c9e` (ESP-Hosted
+vTaskDeleteWithCaps battery-boot fix).
 
 ---
 
@@ -32,7 +33,7 @@ python -m esptool --chip esp32p4 -p COM3 -b 460800 --before default_reset \
   0x2000 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin \
   0x10000 orcsdr_tab5.bin
 
-# verify: 20 boot self-checks must all print _OK, no panic, memory sane
+# verify: 21 boot self-checks must all print _OK, no panic, memory sane
 ```
 
 For UI work there is a second loop: the device renders any of its 46
@@ -77,7 +78,7 @@ The `settings.*` screens and `fm.settings` are `demo`-only; asking for them in
 ## 2. Current state
 
 - **Builds clean**, 45% of the app partition free.
-- **20/20 boot self-checks pass**, no panics.
+- **21/21 boot self-checks pass**, no panics.
 - Memory at `stage=ready`: ~82 KB internal free, ~42 KB DMA-capable,
   ~26.7 MB PSRAM. Watch the first number — see §7.
 - Upstream's POCSAG pager decoder is merged and its self-check passes.
@@ -412,6 +413,63 @@ Cases where the UI stated something untrue:
   ~100 nmi, with longitude weighted by cos(latitude).
 - The ADS-B card claimed "LANE COUNTY READY" for whatever map was loaded.
 
+### 5.7a GMRS/FRS band and the channel scanner
+
+Added a 30-channel GMRS/FRS band (1–22 plus the R15–R22 repeater inputs) and
+gave all three channelised bands — CB, GMRS, weather — a SCAN button that walks
+the channel list, stops on a busy channel, and resumes ~2.5 s after it goes
+quiet. Receive-only; the channel names are identification help, not authority
+to transmit.
+
+**Deciding "busy" is the whole problem, and the obvious test is wrong.** The
+tuner hears 960 kHz at once, which on GMRS is 38 channels of spectrum. Measured
+with one NOAA transmitter on 162.550: *all seven* weather channels read 54–58 dB
+SNR, so a level- or SNR-only detector stops on every one of them. A channel is
+busy only when the strongest visible bin sits within half a channel of the dial
+(that is what separated 162.550 from its six neighbours, whose peaks were
+26–150 kHz off centre), the reading clears the squelch, and it stands
+`min_snr_db` above the mean of the visible bins.
+
+Thresholds are measured, not guessed, and the measurements are worth keeping:
+
+| Band | Noise/artefact ceiling | Floor set | Why |
+|---|---|---|---|
+| GMRS 462/467 MHz | 11.6 dB over 153 samples | 20 dB | Largest of 256 noise bins, by chance alone |
+| CB 27 MHz | 17.0 dB over 25 samples | 25 dB | LO-leakage skirts at the bottom of the R820T's range |
+| Live NOAA signal | 60 dB | — | Scale reference: real signals have room to spare |
+
+Four traps found in the process, all of which would bite anything else built on
+this scan engine:
+
+- **`Engine::service()` calls `measure()` and then `finish(completed)` in the
+  same call on the last index**, so a hit on a pass's final channel arrived as
+  "completed" and was discarded — and since a sweep starts just after the dial,
+  that is the channel the user was already listening to.
+- **The tuner's LO leakage sits permanently in the centre bin**, looking like a
+  carrier exactly on the dial on every channel; it stopped a CB scan on channels
+  18–22 alike. The DC bin is now interpolated from its neighbours. Note the
+  leakage is *wider* than one bin — after notching, CB still reads 13–17 dB with
+  the peak at ±1 bin, which is why CB's floor is raised rather than the notch
+  widened; widening it would remove the bins a real on-channel signal lives in.
+- **`rtl_scope_peak_level` is not dBFS.** `draw_spectrum` leaves it as raw
+  `10*log10` of bin power, so it reads about +55 where the squelch default is
+  −75. Comparing the two is a test that can never fail; the FM seek still does
+  this. Only its ratio to the mean (the SNR) is meaningful. Use `rtl_signal_dbfs`
+  where a real dBFS level is wanted.
+- **The spectrum refreshes 9.4–9.8 times a second**, so two windows take ~210 ms.
+  A 250 ms dwell left 40 ms of margin and really did read one channel late — it
+  stopped a NOAA sweep on 162.400 for a signal on 162.550. Dwell is 400 ms now,
+  and readings are freshness-checked against `rtl_scope_measurement_seq` rather
+  than trusted to arrive in time; `stale_skips` counts any that are not.
+
+`RTL_CHANNEL_PROBE` prints the detector's own reading for the channel on the
+dial — level, SNR, threshold, peak offset, tolerance — which is how all of the
+above was measured and how a user calibrates against their own noise floor.
+
+`Id::gmrs` is appended to the dashboard enum rather than inserted next to
+`Id::cb`, because those values are persisted to NVS; grid position comes from
+`kEntries` order instead.
+
 ### 5.8 Dead code and build
 
 - 705 lines of `RTL_USE_LEGACY_USB` blocks removed. The resulting binary was
@@ -455,6 +513,16 @@ county. Full instructions are in **`docs/LOCAL_SETUP.md`**; the short version:
   `rtl_fm_preset_scan_active`, `p25_survey_active`).
 - **Serial resets the device.** Every connection. Budget ~12 s before the
   device is ready.
+- **Patch files must stay LF on Windows.** `build-tab5-idf.ps1` applies fixes to
+  `managed_components/` from `tools/patches/*.patch` at build time. Git for
+  Windows defaults to `core.autocrlf=true`, which rewrites those files to CRLF
+  on checkout; the empty context line in a hunk becomes a lone CR that
+  `git apply` cannot classify, and the build dies with `corrupt patch at
+  ...:29` before compiling anything — so upstream's ESP-Hosted battery-boot fix
+  silently was not in any Windows build. This fork pins `*.patch`/`*.diff` to
+  LF in `.gitattributes`; **upstream does not carry that entry**, so a plain
+  `hardcoreerik/OrcSDR` clone still hits it on Windows. Deliberately kept local
+  rather than sent upstream as a PR.
 - **Settings' `text()` floors size at 2** (`kSettingsMinTextSize`), so a size-1
   request still renders at 12 px per character. A footer written for size 1
   overflowed the screen by ~240 px because of this.
@@ -518,6 +586,20 @@ on their own timer and will draw straight through a panel unless
    firmware trusts `local_map.idx`, `local_atc.idx` and `p25/*/profile.cfg`
    from there with no signature. Closing it means adding `PAIR`/`AUTH` to the
    three `copy_*_tab5_sd.ps1` tools; see `docs/API_SERIAL_CLI.md`.
+5. **The channel scanner's GMRS threshold has not met a real GMRS signal.**
+   Both halves were verified, but on different bands: "stops on a real signal"
+   was proved on weather (a live NOAA transmitter, 60 dB, held and resumed
+   correctly), and "does not stop on noise" was proved on GMRS and CB (93 and
+   104 samples, zero false stops). Nothing was transmitting on GMRS or CB while
+   this was built, so the 20 dB GMRS floor is known to reject noise but has
+   never been confirmed to *accept* a handheld a few streets away. If a scan
+   walks past traffic you can hear, that number is the one to lower — check it
+   with `RTL_CHANNEL_PROBE` while the signal is up, and see §5.7a for what the
+   three tests mean.
+6. **`rtl_scope_peak_level` is compared against a dBFS threshold in the FM
+   seek** (`kFmPresetMinDbfs`), which can never fail because that value is not
+   dBFS — see §5.7a. Harmless today, since the SNR test carries the decision,
+   but it is a dead test that reads like a live one.
 
 Audited clean: buffer handling (every `memcpy`/`strcat` bounds-checked, no
 `strcpy`/`sprintf`/`gets`), path traversal (`..` rejected on both the SD and

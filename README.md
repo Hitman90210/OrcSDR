@@ -586,6 +586,30 @@ substitute for the documented manual C6 recovery procedure.
 For a source build, use the explicit native steps in
 [the Tab5 ESP-Hosted migration record](docs/user-guide/tab5-esp-hosted-3-migration.md).
 
+> **Windows source builds: patch files must stay LF.** `build-tab5-idf.ps1`
+> applies two fixes to `managed_components/` as patch files at build time, one of
+> which is upstream's fix for the ESP-Hosted battery boot loop. Git for Windows
+> defaults to `core.autocrlf=true`, which rewrites those `.patch` files to CRLF on
+> checkout and corrupts them — the empty context line in a hunk becomes a lone CR
+> that `git apply` cannot classify, and the build stops with:
+>
+> ```text
+> error: corrupt patch at .../esp-hosted-trampoline-null-delete.patch:29
+> The installed ESP-Hosted component does not match the trampoline null-delete patch.
+> ```
+>
+> This fork pins `*.patch` and `*.diff` to LF in `.gitattributes`, so a fresh
+> clone builds. If you are working from a clone made *before* that entry existed,
+> the already-checked-out file still has CRLF — re-checkout it once:
+>
+> ```powershell
+> git rm --cached -r . ; git reset --hard
+> ```
+>
+> Upstream does not carry this `.gitattributes` entry yet, so the same failure
+> will appear in a plain `hardcoreerik/OrcSDR` clone on Windows. The build works
+> there on Linux and macOS, where checkout does not rewrite line endings.
+
 Saved NVS settings are preserved. PlatformIO is not a supported OrcSDR build or flash path.
 
 A matching boot line looks like:
