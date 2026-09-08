@@ -182,6 +182,7 @@ void Decoder::reset() {
   discriminator_prev_i_ = 1.0f;
   discriminator_prev_q_ = 0.0f;
   discriminator_primed_ = false;
+  discriminator_center_ = 0.0f;
   mark_mean_ = 0.5f;
   space_mean_ = -0.5f;
 
@@ -375,24 +376,14 @@ void Decoder::on_codeword(uint32_t codeword32, MessageCallback callback, void* c
 void Decoder::nudge_symbol_phase(Channel& ch, float signed_sample) {
   const bool raw_bit = signed_sample >= 0.0f;
   if (ch.has_raw_bit && raw_bit != ch.last_raw_bit) {
-    // multimon-ng's demod_poc12.c: on a detected raw transition, nudge the
-    // sample-boundary counter by a small fixed step toward whichever half
-    // of the current window the transition landed in, rather than forcing
-    // the window to restart at the transition. A transition in the first
-    // half means our assumed boundary is running late relative to the real
-    // signal (advance the counter so the next boundary arrives sooner); a
-    // transition in the second half means it's running early (retard it).
-    // The step is a fraction of a symbol, so one noisy transition can only
-    // move the phase a little -- it converges over the many transitions in
-    // the preamble and keeps tracking small clock-rate differences for the
-    // rest of the frame, without the noise-sensitivity of snapping outright.
-    const uint16_t half = static_cast<uint16_t>(ch.samples_per_symbol / 2);
-    const uint16_t nudge =
-        static_cast<uint16_t>(std::max<uint16_t>(1, ch.samples_per_symbol / 8));
+    // Integrate-and-dump decisions belong at symbol boundaries, not centers.
+    // Move the boundary toward each transition by at most one sample. The
+    // old center-seeking nudge mixed adjacent symbols in each integration.
+    const uint16_t half = ch.samples_per_symbol / 2;
     if (ch.sample_counter < half) {
-      ch.sample_counter = static_cast<uint16_t>(ch.sample_counter + nudge);
-    } else if (ch.sample_counter >= nudge) {
-      ch.sample_counter = static_cast<uint16_t>(ch.sample_counter - nudge);
+      if (ch.sample_counter) --ch.sample_counter;
+    } else {
+      ++ch.sample_counter;
     }
   }
   ch.last_raw_bit = raw_bit;
@@ -539,29 +530,16 @@ void Decoder::process_cu8(const uint8_t* iq, size_t bytes, MessageCallback callb
     dc_prev_y_i_ = y_i;
     dc_prev_y_q_ = y_q;
 
-    // Two-stage decimate-by-5 CIC (960 kS/s -> 192 kS/s -> 38.4 kS/s). Each
-    // stage is a running integrator differenced every 5 inputs, i.e. a
-    // boxcar average -- the simplest anti-aliased decimator, adequate for
-    // POCSAG's narrow channel; a sharper multi-tap FIR is a measured-later
-    // refinement, not required to prove the chain end-to-end.
+    // Bounded sums implement the same boxcar without software double
+    // arithmetic at 960 kS/s or unbounded integrator precision loss.
     cic_stage1_.integrator_i += y_i;
     cic_stage1_.integrator_q += y_q;
     if (++cic_stage1_.phase < 5) continue;
     cic_stage1_.phase = 0;
-    const double s1_i = (cic_stage1_.integrator_i - cic_stage1_.previous_i) / 5.0;
-    const double s1_q = (cic_stage1_.integrator_q - cic_stage1_.previous_q) / 5.0;
-    cic_stage1_.previous_i = cic_stage1_.integrator_i;
-    cic_stage1_.previous_q = cic_stage1_.integrator_q;
-
-    cic_stage2_.integrator_i += s1_i;
-    cic_stage2_.integrator_q += s1_q;
-    if (++cic_stage2_.phase < 5) continue;
-    cic_stage2_.phase = 0;
-    const float s2_i = static_cast<float>((cic_stage2_.integrator_i - cic_stage2_.previous_i) / 5.0);
-    const float s2_q = static_cast<float>((cic_stage2_.integrator_q - cic_stage2_.previous_q) / 5.0);
-    cic_stage2_.previous_i = cic_stage2_.integrator_i;
-    cic_stage2_.previous_q = cic_stage2_.integrator_q;
-
+    const float s2_i = cic_stage1_.integrator_i * 0.2f;
+    const float s2_q = cic_stage1_.integrator_q * 0.2f;
+    cic_stage1_.integrator_i = 0.0f;
+    cic_stage1_.integrator_q = 0.0f;
     if (!discriminator_primed_) {
       discriminator_prev_i_ = s2_i;
       discriminator_prev_q_ = s2_q;
@@ -572,8 +550,20 @@ void Decoder::process_cu8(const uint8_t* iq, size_t bytes, MessageCallback callb
     const float dot = discriminator_prev_i_ * s2_i + discriminator_prev_q_ * s2_q;
     discriminator_prev_i_ = s2_i;
     discriminator_prev_q_ = s2_q;
-    const float sample = atan2f(cross, dot) / kPi;
-    process_discriminator_sample(sample, callback, context);
+    // Discriminate at 192 kS/s before the final decimation: a displaced
+    // FSK tone near +/-19.2 kHz must not wrap at the old 38.4 kS/s rate.
+    cic_stage2_.integrator_i += atan2f(cross, dot) * (5.0f / kPi);
+    if (++cic_stage2_.phase < 5) continue;
+    cic_stage2_.phase = 0;
+    const float sample = cic_stage2_.integrator_i * 0.2f;
+    cic_stage2_.integrator_i = 0.0f;
+    // Carrier error is DC after FM discrimination. Without centering, an
+    // offset greater than the deviation puts both FSK tones on one side of
+    // zero and the slicer cannot see any preamble transitions. Track slowly
+    // compared with 512 baud so message runs are not mistaken for tuning.
+    discriminator_center_ += 0.001f * (sample - discriminator_center_);
+    stats_.frequency_offset_hz = discriminator_center_ * (kInternalSampleRateHz * 0.5f);
+    process_discriminator_sample(sample - discriminator_center_, callback, context);
   }
 }
 

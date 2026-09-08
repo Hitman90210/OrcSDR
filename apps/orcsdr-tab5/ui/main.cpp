@@ -1391,7 +1391,7 @@ static std::atomic<bool> g_iq_rec_export_pending{false};
 static std::atomic<bool> g_iq_rec_export_busy{false};
 static std::atomic<bool> g_iq_rec_auto_triggered{false};
 static std::atomic<bool> g_iq_retrieve_resume{false};
-enum class IqCaptureKind : uint8_t { none, lora, p25 };
+enum class IqCaptureKind : uint8_t { none, lora, p25, pocsag };
 static std::atomic<IqCaptureKind> g_iq_rec_kind{IqCaptureKind::none};
 static uint32_t g_iq_rec_frequency_hz = 0;
 static uint8_t g_iq_rec_sf = 11;
@@ -3545,6 +3545,7 @@ size_t lora_copy_pre_roll() {
 }
 
 const char* iq_capture_kind_name(IqCaptureKind kind) {
+  if (kind == IqCaptureKind::pocsag) return "pocsag";
   return kind == IqCaptureKind::lora ? "lora" : kind == IqCaptureKind::p25 ? "p25" : "none";
 }
 
@@ -3577,6 +3578,21 @@ void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
 }
 
 bool iq_rec_start() {
+  if (rtl_ui_band == RtlBand::pocsag) {
+    if (rtl_capture_state.load(std::memory_order_acquire) != RtlCaptureState::running ||
+        g_iq_rec_active.load(std::memory_order_acquire) ||
+        g_iq_rec_ready.load(std::memory_order_acquire) ||
+        lora_native_decode_busy.load(std::memory_order_acquire)) {
+      Serial.println("RTL_IQ_ERROR receiver_or_capture_busy");
+      return false;
+    }
+    if (!iq_rec_ensure_buffer()) {
+      Serial.println("RTL_IQ_ERROR no_psram_buffer");
+      return false;
+    }
+    iq_rec_begin(IqCaptureKind::pocsag, false, 0);
+    return true;
+  }
   if (rtl_ui_band != RtlBand::lora) {
     Serial.println("RTL_IQ_ERROR lora_mode_required");
     return false;
@@ -7317,6 +7333,8 @@ static void rtl_dsp_task(void *) {
         pocsag_decoder_instance->configure(baud, polarity);
       }
       pocsag_decoder_instance->process_cu8(block.data, block.bytes, on_pocsag_message, nullptr);
+      if (g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::pocsag)
+        iq_rec_append(block.data, block.bytes);
     }
     if (!block.lab_custom_rate && block.band == RtlBand::p25)
       orcsdr::p25decoder::process_cu8(block.data, block.bytes);

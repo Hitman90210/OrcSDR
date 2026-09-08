@@ -12,7 +12,7 @@ namespace orcsdr::pocsag {
 
 // Input sample rate the built-in decimator/discriminator front end expects.
 // Matches the existing hardware-verified RTL front end (960 kS/s CU8);
-// 960000 / kInternalSampleRateHz == 25, an exact two-stage (5x5) CIC
+// 960000 / kInternalSampleRateHz == 25, an exact two-stage (5x5)
 // decimation ratio with no fractional residue.
 constexpr uint32_t kInputSampleRateHz = 960000;
 // Post-decimation discriminator rate. Chosen so all three standard POCSAG
@@ -198,13 +198,11 @@ class Decoder {
   uint32_t alpha_bit_accum_ = 0;
   uint8_t alpha_bit_count_ = 0;
 
-  // CIC decimator state (I/Q, two cascaded integrate-and-dump stages,
-  // decimate-by-5 each == decimate-by-25 total: 960000/25 == 38400).
+  // Bounded boxcar sums: I/Q before discrimination, then soft samples.
+  // Decimate-by-5 each == decimate-by-25 total: 960000/25 == 38400.
   struct CicStage {
-    double integrator_i = 0.0;
-    double integrator_q = 0.0;
-    double previous_i = 0.0;
-    double previous_q = 0.0;
+    float integrator_i = 0.0f;
+    float integrator_q = 0.0f;
     uint32_t phase = 0;
   };
   CicStage cic_stage1_{};
@@ -216,6 +214,7 @@ class Decoder {
   float discriminator_prev_i_ = 1.0f;
   float discriminator_prev_q_ = 0.0f;
   bool discriminator_primed_ = false;
+  float discriminator_center_ = 0.0f;
 
   // Running mark/space cluster means for FSK deviation estimation, updated
   // once a channel is locked.
