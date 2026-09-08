@@ -43,6 +43,22 @@ The user confirmed capcode 1234560 and TEST in the Tab5 message list.
 Multiple tests were sent; this is not a controlled three-of-three delivery-rate
 measurement. No live 512/2400-baud or weak-signal acceptance claim is made.
 
+## Dashboard integration after the verified decode
+
+The POCSAG dashboard was then checked as a complete receiver surface. The live
+view exposes the newest page, a bounded recent-message inbox, lock state, and
+decode counters. Signal view exposes soft decisions and FEC history, with
+touch controls for the existing baud and polarity settings plus scan stop.
+The CAPCODE directory and Session views are selectable detail views built from
+the bounded in-memory identity/message tables; Session is explicitly labelled
+as RAM-only and clears on restart.
+
+The boot self-check no longer enters or draws POCSAG before the splash. Home
+navigation deactivates the pager dashboard, Settings restores it correctly,
+and the UI regression workflow recognizes POCSAG. An authenticated-host toast
+is suppressed while a radio dashboard owns the display so it cannot obscure a
+received message.
+
 Local evidence is preserved under `artifacts/pocsag-validation/`, including
 build/flash logs and the original 5,760,036-byte ORCIQ recording
 `pager-20260907-183241.orciq` (SHA-256

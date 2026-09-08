@@ -85,6 +85,7 @@ enum class Action : uint8_t {
   none,
   settings_changed,
   scan_requested,
+  scan_cancelled,
   exit,
 };
 
@@ -98,5 +99,6 @@ const Settings& settings();
 uint8_t view();
 bool active();
 bool self_check();
+bool interaction_check();  // Explicit UI regression only; never called at boot.
 
 }  // namespace orcsdr::pocsag

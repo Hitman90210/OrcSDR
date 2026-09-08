@@ -16,7 +16,7 @@ namespace {
 
 constexpr uint16_t kBg = TFT_BLACK;
 constexpr uint16_t kPanel = 0x0861;
-constexpr uint16_t kBorder = 0x2945;
+constexpr uint16_t kBorder = 0x2350;
 constexpr uint16_t kCyan = 0x04ff;
 constexpr uint16_t kGreen = 0x6fe8;
 constexpr uint16_t kYellow = 0xffe0;
@@ -34,6 +34,8 @@ View g_view = View::live;
 bool g_active = false;
 bool g_live = false;
 uint32_t g_drawn_revision = 0;
+size_t g_selected_id = 0;
+size_t g_selected_message = 0;
 
 // Lazily PSRAM-allocated rather than a plain internal-DRAM global: this
 // Snapshot (message/identity arrays plus the decoder Stats) is a few KB,
@@ -78,6 +80,21 @@ void text(const char* value, int x, int y, uint16_t color = TFT_WHITE, int size 
 void card(int x, int y, int w, int h) {
   M5.Display.fillRoundRect(x, y, w, h, 12, kPanel);
   M5.Display.drawRoundRect(x, y, w, h, 12, kBorder);
+}
+
+void preview(const char* value, int x, int y, int width, uint16_t color = TFT_WHITE,
+             int size = 1) {
+  char line[kMaxMessageChars];
+  snprintf(line, sizeof(line), "%s", value);
+  for (char* p = line; *p; ++p) if (*p < ' ') *p = ' ';
+  M5.Display.setFont(size == 1 ? &fonts::DejaVu18 : &fonts::DejaVu24);
+  size_t length = std::strlen(line);
+  if (M5.Display.textWidth(line) > width) {
+    while (length && M5.Display.textWidth(line) + M5.Display.textWidth("...") > width)
+      line[--length] = '\0';
+    if (length + 3 < sizeof(line)) std::strcat(line, "...");
+  }
+  text(line, x, y, color, size, middle_left);
 }
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
@@ -145,13 +162,11 @@ void draw_header_live_values() {
   M5.Display.fillRect(750, 12, 200, 52, kBg);
   const Snapshot& snapshot = live_snapshot();
   char freq[24];
-  const uint32_t display_hz = snapshot.frequency_hz ? snapshot.frequency_hz : g_settings.frequency_hz;
+  const uint32_t display_hz = snapshot.scanning ? snapshot.scan_frequency_hz :
+      snapshot.frequency_hz ? snapshot.frequency_hz : g_settings.frequency_hz;
   snprintf(freq, sizeof(freq), "%.4f MHz", display_hz / 1000000.0);
   text(freq, 360, 36, TFT_WHITE, 2, middle_left);
   if (snapshot.scanning) {
-    char scan_freq[24];
-    snprintf(scan_freq, sizeof(scan_freq), "%.4f MHz", snapshot.scan_frequency_hz / 1000000.0);
-    text(scan_freq, 360, 36, kYellow, 2, middle_left);
     M5.Display.fillRoundRect(580, 18, 150, 40, 8, TFT_DARKGREY);
     char scan_label[16];
     snprintf(scan_label, sizeof(scan_label), "%u/%u", static_cast<unsigned>(snapshot.scan_index + 1),
@@ -188,7 +203,7 @@ void draw_header() {
 }
 
 void draw_tabs() {
-  static constexpr const char* labels[] = {"LIVE", "IDS", "SIGNAL", "ACTIVITY", "ARCHIVE"};
+  static constexpr const char* labels[] = {"LIVE", "IDS", "SIGNAL", "ACTIVITY", "SESSION"};
   M5.Display.fillRect(0, kTabsY, 1280, 74, kBg);
   M5.Display.drawFastHLine(0, kTabsY, 1280, kBorder);
   for (int i = 0; i < 5; ++i) {
@@ -259,8 +274,12 @@ void draw_hero(const Snapshot& snapshot) {
     snprintf(meta, sizeof(meta), "CAPCODE %lu  *  %s",
              static_cast<unsigned long>(m.capcode), message_type_label(m.type));
     text(meta, kHeroX + 30, kHeroY + 54, TFT_LIGHTGREY, 1, middle_left);
-    text(m.text_length ? m.text : "(no text)", kHeroX + 30, kHeroY + 100, TFT_WHITE, 2,
-         middle_left);
+    preview(m.text_length ? m.text : "(no text)", kHeroX + 30, kHeroY + 100,
+            kHeroW - 60, TFT_WHITE, 2);
+    char age[64];
+    snprintf(age, sizeof(age), "%u bps  /  FUNCTION %u  /  %lu s AGO", m.baud, m.function,
+             static_cast<unsigned long>((millis() - static_cast<uint32_t>(m.timestamp_ms)) / 1000));
+    text(age, kHeroX + 30, kHeroY + 151, kMuted, 1, middle_left);
     const char* quality = m.uncorrectable_words ? "UNCORRECTABLE"
                            : m.corrected_bits    ? "FEC CORRECTED"
                                                   : "CLEAN DECODE";
@@ -334,8 +353,7 @@ void draw_live() {
                             scanning ? TFT_DARKGREY : TFT_DARKCYAN);
   if (scanning) {
     char label[24];
-    snprintf(label, sizeof(label), "SCANNING %u/%u", static_cast<unsigned>(snapshot.scan_index + 1),
-             static_cast<unsigned>(snapshot.scan_count));
+    snprintf(label, sizeof(label), "STOP SCAN");
     text(label, kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2, TFT_WHITE, 1);
   } else {
     text("FIND PAGERS", kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2,
@@ -352,13 +370,15 @@ void draw_live() {
   for (size_t i = 0; i < visible; ++i) {
     const DisplayMessage& m = snapshot.messages[i];
     const int y = kInboxY + 64 + static_cast<int>(i) * row_h;
+    if (i == 0) M5.Display.fillRoundRect(kInboxX + 10, y - 15, kInboxW - 20, 31, 5, 0x0928);
+    else M5.Display.drawFastHLine(kInboxX + 14, y + 17, kInboxW - 28, kBorder);
     char capcode[16];
     snprintf(capcode, sizeof(capcode), "%lu", static_cast<unsigned long>(m.capcode));
     text(capcode, kInboxX + 24, y, TFT_WHITE, 1, middle_left);
     text(message_type_label(m.type), kInboxX + 170, y,
          m.type == MessageType::alpha ? kGreen : m.type == MessageType::numeric ? kCyan : kMuted,
          1, middle_left);
-    text(m.text_length ? m.text : "(no text)", kInboxX + 310, y, TFT_LIGHTGREY, 1, middle_left);
+    preview(m.text_length ? m.text : "(no text)", kInboxX + 310, y, kInboxW - 360, TFT_LIGHTGREY);
     const int dot_x = kInboxX + kInboxW - 20;
     if (m.uncorrectable_words) M5.Display.fillCircle(dot_x, y, 6, kRed);
     else if (m.corrected_bits) M5.Display.fillCircle(dot_x, y, 6, kYellow);
@@ -446,7 +466,7 @@ void draw_signal() {
   card(strip_x, strip_y, strip_w, strip_h);
   text("FEC QUALITY (RECENT CODEWORDS)", strip_x + 20, strip_y + 24, kCyan, 1, middle_left);
   const int bars_x0 = strip_x + 20, bars_y0 = strip_y + 50;
-  const int bars_w = strip_w - 40, bars_h = strip_h - 70;
+  const int bars_w = strip_w - 40, bars_h = strip_h - 130;
   if (stats.fec_history_count > 0) {
     const size_t count = std::min(stats.fec_history_count, Stats::kFecHistoryCapacity);
     const int bar_w = std::max(1, bars_w / static_cast<int>(Stats::kFecHistoryCapacity));
@@ -460,6 +480,16 @@ void draw_signal() {
   } else {
     text("NO CODEWORDS YET", bars_x0 + bars_w / 2, bars_y0 + bars_h / 2, kMuted, 1);
   }
+  M5.Display.fillRoundRect(560, 578, 325, 42, 7, 0x0928);
+  M5.Display.drawRoundRect(560, 578, 325, 42, 7, kCyan);
+  snprintf(line, sizeof(line), "BAUD: %s", g_settings.baud_bps == 0 ? "AUTO" :
+           g_settings.baud_bps == 512 ? "512" : g_settings.baud_bps == 1200 ? "1200" : "2400");
+  text(line, 722, 599, kCyan, 1);
+  M5.Display.fillRoundRect(905, 578, 335, 42, 7, 0x0928);
+  M5.Display.drawRoundRect(905, 578, 335, 42, 7, kCyan);
+  text(g_settings.polarity_mode == 0 ? "POLARITY: AUTO" :
+       g_settings.polarity_mode == 1 ? "POLARITY: NORMAL" : "POLARITY: INVERTED",
+       1072, 599, kCyan, 1);
 }
 
 void kpi_card(int x, int y, int w, int h, const char* label, const char* value,
@@ -553,39 +583,113 @@ void draw_activity() {
   }
 }
 
-void draw_placeholder(const char* label) {
-  card(20, kHeaderH + 12, 1240, kContentH);
-  text(label, 640, kHeaderH + 290, kMuted, 2);
-  text("Not yet implemented in this build", 640, kHeaderH + 330, kMuted, 1);
-}
-
 void draw_ids() {
-  card(20, kHeaderH + 12, 1240, kContentH);
-  if (live_snapshot().identity_count == 0) {
-    text("NO CAPCODES OBSERVED YET", 640, kHeaderH + 300, kMuted, 2);
+  const auto& snapshot = live_snapshot();
+  card(20, 88, 570, kContentH);
+  card(606, 88, 654, kContentH);
+  text("CAPCODE DIRECTORY", 40, 115, kCyan, 1, middle_left);
+  text("ID DETAILS", 628, 115, kCyan, 1, middle_left);
+  const size_t count = std::min(snapshot.identity_count, kIdentityCapacity);
+  if (!count) {
+    text("No pager IDs received yet", 305, 340, kMuted, 1);
+    text("Details appear after a decoded message", 933, 340, kMuted, 1);
     return;
   }
-  text("CAPCODE DIRECTORY", 44, kHeaderH + 34, kCyan, 1, middle_left);
-  text("(read-only -- alias/group/watch/mute editing not yet implemented)",
-       44, kHeaderH + 12 + kContentH - 24, kMuted, 1, middle_left);
-  const size_t visible = std::min<size_t>(live_snapshot().identity_count, 12);
-  for (size_t i = 0; i < visible; ++i) {
-    const IdentitySummary& id = live_snapshot().identities[i];
-    const int y = kHeaderH + 66 + static_cast<int>(i) * 44;
-    if (id.watched) M5.Display.fillCircle(44, y, 5, kYellow);
-    char capcode[16];
-    snprintf(capcode, sizeof(capcode), "%lu", static_cast<unsigned long>(id.capcode));
-    text(capcode, 64, y, TFT_WHITE, 1, middle_left);
-    text(id.alias[0] ? id.alias : "UNKNOWN", 230, y,
-         id.alias[0] ? TFT_LIGHTGREY : kMuted, 1, middle_left);
-    text(id.group[0] ? id.group : "-", 480, y, kMuted, 1, middle_left);
-    char hits[16];
-    snprintf(hits, sizeof(hits), "%lu HITS", static_cast<unsigned long>(id.hit_count));
-    text(hits, 640, y, kGreen, 1, middle_left);
-    if (id.muted) text("MUTED", 900, y, kRed, 1, middle_left);
+  g_selected_id = std::min(g_selected_id, count - 1);
+  text("CAPCODE", 42, 151, kMuted, 1, middle_left);
+  text("ALIAS", 200, 151, kMuted, 1, middle_left);
+  text("HITS", 558, 151, kMuted, 1, middle_right);
+  for (size_t i = 0; i < count; ++i) {
+    const auto& id = snapshot.identities[i];
+    const int y = 184 + static_cast<int>(i) * 36;
+    if (i == g_selected_id) {
+      M5.Display.fillRoundRect(30, y - 16, 550, 33, 5, 0x0928);
+      M5.Display.drawRoundRect(30, y - 16, 550, 33, 5, kCyan);
+    }
+    char value[24];
+    snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(id.capcode));
+    text(value, 42, y, TFT_WHITE, 1, middle_left);
+    preview(id.alias[0] ? id.alias : "Unassigned", 200, y, 245, id.alias[0] ? kCyan : kMuted);
+    snprintf(value, sizeof(value), "%lu", static_cast<unsigned long>(id.hit_count));
+    text(value, 558, y, kGreen, 1, middle_right);
   }
+  const auto& id = snapshot.identities[g_selected_id];
+  preview(id.alias[0] ? id.alias : "Unassigned pager", 630, 166, 600, kCyan, 2);
+  char value[80];
+  snprintf(value, sizeof(value), "CAPCODE   %lu", static_cast<unsigned long>(id.capcode));
+  text(value, 630, 212, TFT_WHITE, 1, middle_left);
+  snprintf(value, sizeof(value), "GROUP     %s", id.group[0] ? id.group : "Unassigned");
+  text(value, 630, 250, kMuted, 1, middle_left);
+  snprintf(value, sizeof(value), "TOTAL HITS   %lu", static_cast<unsigned long>(id.hit_count));
+  text(value, 630, 288, kGreen, 1, middle_left);
+  snprintf(value, sizeof(value), "LAST SEEN   %lu s ago",
+           static_cast<unsigned long>((millis() - static_cast<uint32_t>(id.last_seen_ms)) / 1000));
+  text(value, 630, 326, kMuted, 1, middle_left);
+  text("LATEST MESSAGE IN SESSION", 630, 380, kCyan, 1, middle_left);
+  for (size_t i = 0; i < snapshot.message_count; ++i) {
+    if (snapshot.messages[i].capcode == id.capcode) {
+      preview(snapshot.messages[i].text, 630, 420, 596);
+      return;
+    }
+  }
+  text("No message retained in recent history", 630, 420, kMuted, 1, middle_left);
 }
 
+void draw_archive() {
+  const auto& snapshot = live_snapshot();
+  card(20, 88, 740, kContentH);
+  card(776, 88, 484, kContentH);
+  text("SESSION MESSAGES", 42, 115, kCyan, 1, middle_left);
+  text("Recent messages in RAM / cleared on restart", 42, 145, kMuted, 1, middle_left);
+  text("MESSAGE DETAILS", 798, 115, kCyan, 1, middle_left);
+  const size_t count = std::min(snapshot.message_count, kRecentMessageCapacity);
+  if (!count) {
+    text("No messages received yet", 390, 340, kMuted, 1);
+    return;
+  }
+  g_selected_message = std::min(g_selected_message, count - 1);
+  for (size_t i = 0; i < count; ++i) {
+    const auto& m = snapshot.messages[i];
+    const int y = 186 + static_cast<int>(i) * 36;
+    if (i == g_selected_message) {
+      M5.Display.fillRoundRect(30, y - 16, 720, 33, 5, 0x0928);
+      M5.Display.drawRoundRect(30, y - 16, 720, 33, 5, kCyan);
+    }
+    char code[24];
+    snprintf(code, sizeof(code), "%lu", static_cast<unsigned long>(m.capcode));
+    text(code, 42, y, kCyan, 1, middle_left);
+    preview(m.text_length ? m.text : "(no text)", 196, y, 530);
+  }
+  const auto& m = snapshot.messages[g_selected_message];
+  char value[64];
+  snprintf(value, sizeof(value), "CAPCODE %lu", static_cast<unsigned long>(m.capcode));
+  text(value, 800, 166, TFT_WHITE, 1, middle_left);
+  snprintf(value, sizeof(value), "%u bps / %s / FUNC %u", m.baud, message_type_label(m.type), m.function);
+  text(value, 800, 204, kMuted, 1, middle_left);
+  snprintf(value, sizeof(value), "Corrected bits %u / bad words %u", m.corrected_bits, m.uncorrectable_words);
+  text(value, 800, 242, m.uncorrectable_words ? kRed : kGreen, 1, middle_left);
+  text("MESSAGE TEXT", 800, 292, kCyan, 1, middle_left);
+  // Fixed-width chunks fit the bounded detail card; all stored text is short.
+  M5.Display.setFont(&fonts::DejaVu18);
+  const char* cursor = m.text;
+  int y = 330;
+  while (*cursor && y < 610) {
+    char line[kMaxMessageChars]{};
+    size_t n = 0;
+    while (cursor[n] && cursor[n] != '\n' && n + 1 < sizeof(line)) {
+      line[n] = cursor[n] < ' ' ? ' ' : cursor[n];
+      line[n + 1] = '\0';
+      if (M5.Display.textWidth(line) > 430) { line[n] = '\0'; break; }
+      ++n;
+    }
+    if (!n && *cursor != '\n') break;
+    text(line, 800, y, TFT_WHITE, 1, middle_left);
+    cursor += n;
+    if (*cursor == '\n') ++cursor;
+    y += 26;
+  }
+  if (*cursor) text("...", 800, 612, kMuted, 1, middle_left);
+}
 void redraw_content() {
   M5.Display.fillRect(0, kHeaderH, 1280, kTabsY - kHeaderH, kBg);
   switch (g_view) {
@@ -593,7 +697,7 @@ void redraw_content() {
     case View::ids: draw_ids(); break;
     case View::signal: draw_signal(); break;
     case View::activity: draw_activity(); break;
-    case View::archive: draw_placeholder("ARCHIVE - SAVED MESSAGE LOG"); break;
+    case View::archive: draw_archive(); break;
     default: break;
   }
 }
@@ -642,6 +746,8 @@ void update() {
     draw_signal();
   } else if (g_view == View::activity) {
     draw_activity();
+  } else if (g_view == View::archive) {
+    draw_archive();
   }
 }
 
@@ -654,10 +760,31 @@ Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return Action::none;
   if (audio_header::home_hit(x, y)) return Action::exit;
   if (audio_header::settings_hit(x, y)) return Action::none;
-  if (g_view == View::live && !live_snapshot().scanning &&
+  if (g_view == View::live &&
       hit(x, y, kScanButtonX, kScanButtonY, kScanButtonW, kScanButtonH))
-    return Action::scan_requested;
-  if (y >= kTabsY) {
+    return live_snapshot().scanning ? Action::scan_cancelled : Action::scan_requested;
+  if (g_view == View::signal && hit(x, y, 560, 578, 325, 42)) {
+    g_settings.baud_bps = g_settings.baud_bps == 0 ? 512 :
+        g_settings.baud_bps == 512 ? 1200 : g_settings.baud_bps == 1200 ? 2400 : 0;
+    draw_signal();
+    return Action::settings_changed;
+  }
+  if (g_view == View::signal && hit(x, y, 905, 578, 335, 42)) {
+    g_settings.polarity_mode = (g_settings.polarity_mode + 1) % 3;
+    draw_signal();
+    return Action::settings_changed;
+  }
+  if (g_view == View::ids && x >= 30 && x < 580 && y >= 168 && y < 600) {
+    const size_t index = (y - 168) / 36;
+    if (index < live_snapshot().identity_count) { g_selected_id = index; redraw_content(); }
+    return Action::none;
+  }
+  if (g_view == View::archive && x >= 30 && x < 750 && y >= 170 && y < 602) {
+    const size_t index = (y - 170) / 36;
+    if (index < live_snapshot().message_count) { g_selected_message = index; redraw_content(); }
+    return Action::none;
+  }
+  if (y >= kTabsY && y < 720 && x >= 0 && x < 1280) {
     g_view = static_cast<View>(constrain(x / kTabW, 0, 4));
     redraw();
     return Action::none;
@@ -672,24 +799,36 @@ uint8_t view() { return static_cast<uint8_t>(g_view); }
 bool active() { return g_active; }
 
 bool self_check() {
-  Settings settings_value;
-  settings_value.frequency_hz = 152007500;
-  enter(settings_value);
-  const bool entered = active() && view() == static_cast<uint8_t>(View::live);
-  Snapshot snapshot;
-  snapshot.revision = 1;
-  snapshot.receiving = true;
-  snapshot.message_count = 1;
-  snapshot.messages[0].capcode = 1234567;
-  snapshot.messages[0].type = MessageType::alpha;
-  std::strncpy(snapshot.messages[0].text, "TEST", sizeof(snapshot.messages[0].text) - 1);
-  snapshot.messages[0].text_length = 4;
-  set_live_snapshot(snapshot);
-  const bool touch_selects_tab = handle_touch(2 * kTabW + 10, kTabsY + 10) == Action::none &&
-                                  view() == static_cast<uint8_t>(View::signal);
-  const bool exits = handle_touch(1050, 18) == Action::exit;
-  leave();
-  return entered && touch_selects_tab && exits && !active();
+  // Runs before the splash: validate layout without drawing or seeding
+  // the live dashboard with synthetic messages.
+  return static_cast<uint8_t>(View::count) == 5 && kTabW * 5 == 1280 &&
+         kHeaderH < kTabsY && kTabsY < 720 && kContentH > 0 &&
+         audio_header::self_check();
+}
+
+bool interaction_check() {
+  if (!g_active) return false;
+  const Settings saved = g_settings;
+  const View saved_view = g_view;
+  bool ok = self_check() && g_active && g_view == saved_view;
+  for (int i = 0; i < 5; ++i) {
+    ok = handle_touch(i * kTabW + 128, 680) == Action::none &&
+         static_cast<int>(g_view) == i && ok;
+  }
+  (void)handle_touch(640, 680);
+  for (int i = 0; i < 4; ++i)
+    ok = handle_touch(700, 599) == Action::settings_changed && ok;
+  for (int i = 0; i < 3; ++i)
+    ok = handle_touch(1050, 599) == Action::settings_changed && ok;
+  ok = g_settings.baud_bps == saved.baud_bps &&
+       g_settings.polarity_mode == saved.polarity_mode && ok;
+  (void)handle_touch(128, 680);
+  ok = handle_touch(kScanButtonX + 10, kScanButtonY + 10) ==
+       (live_snapshot().scanning ? Action::scan_cancelled : Action::scan_requested) && ok;
+  g_settings = saved;
+  g_view = saved_view;
+  redraw();
+  return ok;
 }
 
 }  // namespace orcsdr::pocsag

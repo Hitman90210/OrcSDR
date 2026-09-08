@@ -1837,6 +1837,7 @@ orcsdr::pocsag_store::Table* pocsag_identity_table = nullptr;
 constexpr size_t kPocsagMessageCount = 12;
 struct PocsagStoredMessage {
   bool used = false;
+  uint32_t timestamp_ms = 0;
   uint32_t capcode = 0;
   uint8_t function = 0;
   orcsdr::pocsag::MessageType type = orcsdr::pocsag::MessageType::unknown;
@@ -1891,6 +1892,7 @@ void on_pocsag_message(const orcsdr::pocsag::Message& msg, void*) {
   pocsag_identity_table->record_hit(msg.capcode, millis());
   PocsagStoredMessage& slot = pocsag_messages[pocsag_message_write];
   slot.used = true;
+  slot.timestamp_ms = millis();
   slot.capcode = msg.capcode;
   slot.function = msg.function;
   slot.type = msg.type;
@@ -1965,7 +1967,7 @@ void publish_pocsag_snapshot(uint32_t now) {
     const PocsagStoredMessage& stored = pocsag_messages[slot_index];
     if (!stored.used) continue;
     auto& out = snapshot.messages[snapshot.message_count++];
-    out.timestamp_ms = now;
+    out.timestamp_ms = stored.timestamp_ms;
     out.capcode = stored.capcode;
     out.function = stored.function;
     out.type = stored.type;
@@ -2221,7 +2223,10 @@ static bool g_suppress_home_paint = false;
 EXT_RAM_BSS_ATTR orcsdr::settings::State g_settings_snapshot;
 
 void draw_session_state(const char* message, uint32_t color) {
-  if (g_suppress_home_paint || orcsdr::settings::active() || orcsdr::home::active()) return;
+  // Session notices are useful on the landing surface, but must never paint
+  // over an active radio dashboard (notably a received pager message).
+  if (g_suppress_home_paint || rtl_ui_active.load(std::memory_order_acquire) ||
+      orcsdr::settings::active() || orcsdr::home::active()) return;
   M5.Display.fillRect(250, 210, 780, 55, TFT_BLACK);
   M5.Display.setTextColor(color, TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
@@ -9586,6 +9591,8 @@ void navigation_restore_screen(orcsdr::screens::Id restore) {
     bump_rtl_ui();
   } else if (restore == orcsdr::screens::Id::lora) {
     orcsdr::lora::draw();
+  } else if (restore == orcsdr::screens::Id::pocsag) {
+    orcsdr::pocsag::draw();
   } else if (restore == orcsdr::screens::Id::wifi_analysis) {
     draw_rf24_dashboard(true);
   } else {
@@ -10896,6 +10903,13 @@ void handle_sdr_touch(int32_t x, int32_t y) {
       show_home();
     } else if (action == orcsdr::pocsag::Action::scan_requested) {
       pocsag_scan_requested.store(true, std::memory_order_release);
+    } else if (action == orcsdr::pocsag::Action::scan_cancelled) {
+      pocsag_scan_cancel_requested.store(true, std::memory_order_release);
+    } else if (action == orcsdr::pocsag::Action::settings_changed) {
+      const auto& settings = orcsdr::pocsag::settings();
+      pocsag_baud_bps.store(settings.baud_bps, std::memory_order_relaxed);
+      pocsag_polarity_mode.store(settings.polarity_mode, std::memory_order_relaxed);
+      pocsag_config_apply_pending.store(true, std::memory_order_release);
     }
     return;
   }
@@ -11120,6 +11134,11 @@ struct UiDocScreen {
 };
 
 constexpr UiDocScreen kUiDocScreens[] = {
+    {"pocsag.live", "live"},
+    {"pocsag.ids", "live"},
+    {"pocsag.signal", "live"},
+    {"pocsag.activity", "live"},
+    {"pocsag.session", "live"},
     {"home", "live,demo"},
     {"nav", "demo"},
     {"settings.connectivity", "demo"},
@@ -11406,7 +11425,19 @@ bool ui_doc_render(const char* screen_id, bool demo) {
   rtl_nav_open = false;
   rtl_frequency_keypad_open = false;
 
-  if (strcmp(screen_id, "home") == 0) {
+  if (strncmp(screen_id, "pocsag.", 7) == 0) {
+    rtl_ui_active.store(true, std::memory_order_release);
+    rtl_ui_band = RtlBand::pocsag;
+    pocsag_dashboard_settings.frequency_hz = pocsag_config_frequency_hz;
+    pocsag_dashboard_settings.baud_bps = pocsag_baud_bps.load(std::memory_order_relaxed);
+    pocsag_dashboard_settings.polarity_mode = pocsag_polarity_mode.load(std::memory_order_relaxed);
+    publish_pocsag_snapshot(millis());
+    orcsdr::pocsag::enter(pocsag_dashboard_settings);
+    static constexpr const char* names[] = {"live", "ids", "signal", "activity", "session"};
+    for (size_t i = 0; i < std::size(names); ++i)
+      if (strcmp(screen_id + 7, names[i]) == 0)
+        (void)orcsdr::pocsag::handle_touch(i * 256 + 128, 680);
+  } else if (strcmp(screen_id, "home") == 0) {
     rtl_ui_active.store(false, std::memory_order_release);
     show_home(demo);
   } else if (strcmp(screen_id, "nav") == 0 ||
@@ -11541,6 +11572,9 @@ bool ui_doc_render(const char* screen_id, bool demo) {
 }
 
 bool ui_doc_live_band(const char* screen_id, RtlBand* band, uint32_t* frequency_hz) {
+  if (strncmp(screen_id, "pocsag.", 7) == 0) {
+    *band = RtlBand::pocsag; *frequency_hz = pocsag_config_frequency_hz; return true;
+  }
   if (strncmp(screen_id, "fm.", 3) == 0) {
     *band = RtlBand::fm; *frequency_hz = rtl_saved_fm_hz; return true;
   }
@@ -11714,6 +11748,7 @@ bool ui_regression_restore_screen(const UiRegressionSnapshot& before) {
     case orcsdr::screens::Id::p25:
     case orcsdr::screens::Id::adsb:
     case orcsdr::screens::Id::lora:
+    case orcsdr::screens::Id::pocsag:
       draw_sdr_screen(before.band, before.frequency_hz, before.volume);
       return true;
     default:
@@ -11736,7 +11771,8 @@ void run_ui_regression(bool workflow) {
                                   before.screen == orcsdr::screens::Id::fm ||
                                   before.screen == orcsdr::screens::Id::p25 ||
                                   before.screen == orcsdr::screens::Id::adsb ||
-                                  before.screen == orcsdr::screens::Id::lora;
+                                  before.screen == orcsdr::screens::Id::lora ||
+                                  before.screen == orcsdr::screens::Id::pocsag;
     if (ui_documentation_mode || orcsdr::settings::active() || before.nav_open ||
         before.keypad_open || !supported_screen) {
       Serial.printf("RTL_UI_REGRESSION_RESULT mode=RUN pass=0 reason=unsafe_overlay active=%s\n",
@@ -11748,7 +11784,8 @@ void run_ui_regression(bool workflow) {
     home_font_ok = M5.Display.getFont() == &fonts::Font0;
     draw_home_dashboard();
     const bool dashboard_band = before.band == RtlBand::fm || before.band == RtlBand::p25 ||
-                                before.band == RtlBand::adsb || before.band == RtlBand::lora;
+                                before.band == RtlBand::adsb || before.band == RtlBand::lora ||
+                                before.band == RtlBand::pocsag;
     if (before.screen == orcsdr::screens::Id::home && dashboard_band) {
       draw_sdr_screen(before.band, before.frequency_hz, before.volume);
       workflow_ok = orcsdr::screens::status().active == screen_for_band(before.band);
@@ -11757,6 +11794,13 @@ void run_ui_regression(bool workflow) {
     } else {
       workflow_ok = ui_regression_restore_screen(before);
       transitioned = workflow_ok;
+    }
+    if (before.screen == orcsdr::screens::Id::pocsag) {
+      workflow_ok = orcsdr::pocsag::interaction_check() && workflow_ok;
+      open_global_settings(orcsdr::settings::Section::connectivity);
+      close_global_settings();
+      workflow_ok = orcsdr::pocsag::active() &&
+          orcsdr::screens::owns(orcsdr::screens::Id::pocsag) && workflow_ok;
     }
   }
   const bool restored = ui_regression_restored(before);
@@ -14029,6 +14073,7 @@ void setup() {
   if (!settings_wifi_power_enabled) stop_wifi();
   if (ensure_tab5_sd()) {
     (void)orcsdr::rf_lab::initialize(g_sd_fs);
+    load_pocsag_scan_list();
     orcsdr::catalog::begin(g_sd_fs, sd_total_bytes() - orcsdr::storage::used_bytes());
     (void)orcsdr::offline_map::load(g_sd_fs);
     refresh_adsb_atc_preset();
