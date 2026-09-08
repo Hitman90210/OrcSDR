@@ -10427,6 +10427,11 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
 #endif
   if (band == RtlBand::lora) {
     load_lora_config();
+    if (!lora_native_decoder_start()) {
+      Serial.println("RTL_LORA_START_ERROR native_decoder_unavailable");
+      return;
+    }
+    lora_iq_reset_detector();
     if (frequency_hz == kLoraDefaultHz) frequency_hz = lora_config_frequency_hz;
     rtl_filter_bandwidth_hz.store(lora_bandwidth_hz.load(std::memory_order_relaxed),
                                   std::memory_order_relaxed);
