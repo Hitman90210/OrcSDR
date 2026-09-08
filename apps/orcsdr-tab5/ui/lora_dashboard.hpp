@@ -75,6 +75,9 @@ struct Snapshot {
   uint8_t node_count = 0;
   uint8_t event_count = 0;
   uint8_t selected_node = 0;
+  // Meshtastic frequency slot, 1-104 for the US 902-928 MHz band at 250 kHz.
+  // 0 means the tuned frequency is not on a slot boundary.
+  uint8_t channel_slot = 0;
 };
 
 enum class ActionKind : uint8_t {
@@ -93,6 +96,10 @@ enum class ActionKind : uint8_t {
   mark_point,
   save_snapshot,
   open_channels,
+  channel_prev,
+  channel_next,
+  channel_select,   // value = slot number (1-104)
+  close_channels,
   open_settings,
   exit_home,
 };
@@ -101,6 +108,9 @@ struct Action {
   ActionKind kind = ActionKind::none;
   uint32_t value = 0;
 };
+
+// Opens the Meshtastic frequency-slot picker over the overview.
+void open_channel_picker();
 
 void enter(const Snapshot& snapshot);
 void leave();

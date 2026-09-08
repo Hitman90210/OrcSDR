@@ -6,6 +6,13 @@
 
 namespace orcsdr::atc {
 
+// The published faa_aviation pack carries 40,000+ FAA frequency records but
+// no coordinates, and none of the optional "ATC" preset lines below -- so the
+// nearest() lookup has nothing to measure against and Listen to ATC never
+// resolves. A user file built by tools/build_atc_presets.py (from the
+// public-domain OurAirports data, which does have coordinates) is loaded in
+// preference to it.
+constexpr const char kUserPath[] = "/orcsdr/data/local_atc.idx";
 constexpr const char kRuntimePath[] = "/orcsdr/data/faa_aviation.idx";
 
 struct Preset {

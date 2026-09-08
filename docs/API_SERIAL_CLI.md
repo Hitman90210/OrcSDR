@@ -380,7 +380,10 @@ RTL_UI ACTION FM TUNE 101900000
   `FOLLOW`, `ENCRYPT_SKIP`, `RELOAD`, `SPAN_DOWN`, `SPAN_UP`, `SOUND`,
   `VOL_DOWN`, `VOL_UP`, `SETTINGS`, `HOME`.
 - `LORA`: `VIEW <0-5>`, `NODE <index>`, `FAVORITE`, `FILTER`, `SCAN`, `IQ`,
-  `LOG`, `CLEAR`, `EXPORT`, `FOLLOW`, `CHANNELS`, `SETTINGS`, `HOME`.
+  `LOG`, `CLEAR`, `EXPORT`, `FOLLOW`, `CHANNELS`, `SLOT <1-104>`,
+  `SLOT_PREV`, `SLOT_NEXT`, `SETTINGS`, `HOME`. The slot actions retune to
+  the Meshtastic US channel plan: 902.125 MHz + (slot-1) x 250 kHz, so
+  slot 20 is the 906.875 MHz LongFast default.
 - `SETTINGS`: `WIFI_POWER <0|1>`, `WIFI_BOOT <0|1>`, `ANTENNA <0|1>`, `SCAN`,
   `CONNECT_SAVED <index>`, `FORGET <index>`, `MOVE_UP <index>`,
   `MOVE_DOWN <index>`, `RANGE <nm>`, `BRIGHTNESS <0-255>`, `ROTATION <1|3>`,

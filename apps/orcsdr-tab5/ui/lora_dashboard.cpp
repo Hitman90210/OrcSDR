@@ -459,6 +459,50 @@ void draw_dynamic() {
   else draw_health_dynamic();
 }
 
+// Meshtastic frequency-slot picker. The band is 902-928 MHz in 250 kHz steps,
+// so slot n (1-based) sits at 902.125 + (n-1) * 0.25 MHz; slot 20 is the
+// LongFast default this firmware boots on. Without this the LoRa monitor could
+// only ever watch that one slot, which is useless if the local mesh sits
+// somewhere else.
+bool g_channels_open = false;
+constexpr int kSlotCount = 104;
+constexpr int kQuick[] = {20, 1, 9, 31, 48, 62, 78, 104};
+
+uint32_t slot_frequency_hz(int slot) {
+  return 902125000u + static_cast<uint32_t>(slot - 1) * 250000u;
+}
+
+void draw_channels_overlay() {
+  constexpr int kX = 214, kY = 150, kW = 852, kH = 420;
+  M5.Display.fillRoundRect(kX, kY, kW, kH, 14, kBg);
+  M5.Display.drawRoundRect(kX, kY, kW, kH, 14, kCyan);
+  text("MESHTASTIC FREQUENCY SLOT", kX + 28, kY + 34, kCyan, 2, middle_left);
+  text("CLOSE", kX + kW - 74, kY + 34, kYellow, 2, middle_center);
+
+  char value[40];
+  const int slot = g_snapshot.channel_slot;
+  if (slot) snprintf(value, sizeof(value), "SLOT %d", slot);
+  else snprintf(value, sizeof(value), "OFF-SLOT");
+  text(value, kX + kW / 2, kY + 104, kGreen, 4, middle_center);
+  snprintf(value, sizeof(value), "%.3f MHz", g_snapshot.frequency_hz / 1000000.0);
+  text(value, kX + kW / 2, kY + 152, TFT_WHITE, 3, middle_center);
+  text(slot == 20 ? "LONGFAST DEFAULT" : "", kX + kW / 2, kY + 186, kMuted, 1,
+       middle_center);
+
+  button(kX + 40, kY + 82, 96, 76, "<", kCyan);
+  button(kX + kW - 136, kY + 82, 96, 76, ">", kCyan);
+
+  text("QUICK SLOTS", kX + 28, kY + 224, kCyan, 1, middle_left);
+  for (size_t i = 0; i < std::size(kQuick); ++i) {
+    const int col = static_cast<int>(i) % 4, row = static_cast<int>(i) / 4;
+    const int bx = kX + 28 + col * 204, by = kY + 244 + row * 78;
+    const bool active = kQuick[i] == slot;
+    snprintf(value, sizeof(value), "%d  %.3f", kQuick[i],
+             slot_frequency_hz(kQuick[i]) / 1000000.0);
+    button(bx, by, 190, 64, value, active ? kGreen : kCyan, active);
+  }
+}
+
 void draw_static() {
   M5.Display.fillScreen(kBg);
   draw_header();
@@ -469,13 +513,22 @@ void draw_static() {
   else draw_health_static();
   draw_tabs();
   draw_dynamic();
+  if (g_channels_open && g_view == View::overview) draw_channels_overlay();
 }
 
 }  // namespace
 
+void open_channel_picker() {
+  if (!g_active) return;
+  g_view = View::overview;
+  g_channels_open = true;
+  draw_static();
+}
+
 void enter(const Snapshot& snapshot) {
   g_snapshot = snapshot;
   g_active = true;
+  g_channels_open = false;
   g_map_center_set = false;
   g_last_dynamic_ms = 0;
   g_last_spectrum_ms = 0;
@@ -483,6 +536,7 @@ void enter(const Snapshot& snapshot) {
 }
 
 void leave() {
+  g_channels_open = false;
   if (!g_active) return;
   M5.Display.clearScrollRect();
   g_active = false;
@@ -506,6 +560,7 @@ void update(const Snapshot& snapshot) {
   g_last_dynamic_ms = now;
   M5.Display.startWrite();
   draw_dynamic();
+  if (g_channels_open && g_view == View::overview) draw_channels_overlay();
   M5.Display.endWrite();
 }
 
@@ -558,6 +613,27 @@ Action handle_touch(int32_t x, int32_t y) {
   if (audio_header::settings_hit(x, y)) return {ActionKind::open_settings};
   if (hit(x, y, 0, kTabsY, 1280, 80))
     return {ActionKind::select_view, static_cast<uint32_t>(x / kTabW)};
+  if (g_channels_open && g_view == View::overview) {
+    constexpr int kX = 214, kY = 150, kW = 852, kH = 420;
+    if (hit(x, y, kX + kW - 130, kY + 12, 112, 44)) {
+      g_channels_open = false;
+      draw_static();
+      return {};
+    }
+    if (hit(x, y, kX + 40, kY + 82, 96, 76)) return {ActionKind::channel_prev};
+    if (hit(x, y, kX + kW - 136, kY + 82, 96, 76)) return {ActionKind::channel_next};
+    for (size_t i = 0; i < std::size(kQuick); ++i) {
+      const int col = static_cast<int>(i) % 4, row = static_cast<int>(i) / 4;
+      if (hit(x, y, kX + 28 + col * 204, kY + 244 + row * 78, 190, 64))
+        return {ActionKind::channel_select, static_cast<uint32_t>(kQuick[i])};
+    }
+    // Anything else inside the panel is swallowed so it cannot reach the
+    // controls underneath it.
+    if (hit(x, y, kX, kY, kW, kH)) return {};
+    g_channels_open = false;
+    draw_static();
+    return {};
+  }
   if (g_view == View::overview) {
     if (hit(x, y, 34, 578, 250, 48)) return {ActionKind::scan_toggle};
     if (hit(x, y, 300, 578, 250, 48)) return {ActionKind::record_iq_toggle};
@@ -586,7 +662,12 @@ Action handle_touch(int32_t x, int32_t y) {
 }
 
 bool active() { return g_active; }
-bool spectrum_active() { return g_active && (g_view == View::overview || g_view == View::rf_health); }
+bool spectrum_active() {
+  // Not while the slot picker covers the plot: the spectrum and waterfall
+  // repaint on their own timer and drew straight through the panel.
+  if (g_channels_open) return false;
+  return g_active && (g_view == View::overview || g_view == View::rf_health);
+}
 View view() { return g_view; }
 
 void show_documentation_view(View view_value, const Snapshot& snapshot) {

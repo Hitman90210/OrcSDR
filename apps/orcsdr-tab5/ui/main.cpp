@@ -581,6 +581,20 @@ constexpr uint32_t kRtlBrowseDefaultHz = 146520000;
 constexpr uint32_t kLoraMinHz = 902000000;
 constexpr uint32_t kLoraMaxHz = 928000000;
 constexpr uint32_t kLoraDefaultHz = 906875000;  // Meshtastic US LongFast default slot
+// Meshtastic US_915 channel plan: 104 slots of 250 kHz across 902-928 MHz.
+// Slot 1 centres on 902.125 MHz, so kLoraDefaultHz above is slot 20.
+constexpr int kLoraSlotCount = 104;
+constexpr uint32_t kLoraSlotBaseHz = 902125000;
+constexpr uint32_t kLoraSlotStepHz = 250000;
+
+// Current tuned slot, or 0 when the dial is not on a slot boundary.
+int lora_slot_for(uint32_t hz) {
+  if (hz < kLoraSlotBaseHz) return 0;
+  const uint32_t offset = hz - kLoraSlotBaseHz;
+  if (offset % kLoraSlotStepHz != 0) return 0;
+  const int slot = static_cast<int>(offset / kLoraSlotStepHz) + 1;
+  return slot >= 1 && slot <= kLoraSlotCount ? slot : 0;
+}
 constexpr uint32_t kAdsbDefaultHz = 1090000000;
 // Frequency, baud, and polarity are a user-edited profile, not a hardcoded
 // default -- POCSAG channels vary too much by country/carrier for one
@@ -7943,6 +7957,7 @@ void handle_fm_dashboard_action(const orcsdr::fm::Action& action) {
 orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   orcsdr::lora::Snapshot snapshot{};
   snapshot.frequency_hz = rtl_ui_frequency_hz;
+  snapshot.channel_slot = static_cast<uint8_t>(lora_slot_for(rtl_ui_frequency_hz));
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.sf = lora_sf.load(std::memory_order_relaxed);
   snapshot.bandwidth_hz = lora_bandwidth_hz.load(std::memory_order_relaxed);
@@ -8389,10 +8404,36 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
       Serial.printf("RTL_LORA_LOG path=%s enabled=%d\n", kLoraLogPath,
                     lora_log_ready.load(std::memory_order_relaxed) ? 1 : 0);
       break;
+    // CHANNELS used to open the global Settings screen, which had nothing to
+    // do with channels. It opens the frequency-slot picker now.
     case ActionKind::open_channels:
+      orcsdr::lora::open_channel_picker();
+      break;
     case ActionKind::open_settings:
       open_global_settings(orcsdr::settings::Section::radio_defaults);
       break;
+    // Meshtastic frequency slots: 902.125 MHz + (slot-1) * 250 kHz across the
+    // US 902-928 MHz band, so slot 20 is the 906.875 MHz LongFast default.
+    // Before this the LoRa monitor could only ever watch that one slot.
+    case ActionKind::channel_prev:
+    case ActionKind::channel_next:
+    case ActionKind::channel_select: {
+      int slot = lora_slot_for(rtl_ui_frequency_hz);
+      if (slot == 0) slot = lora_slot_for(kLoraDefaultHz);
+      if (action.kind == ActionKind::channel_select)
+        slot = static_cast<int>(action.value);
+      else
+        slot += (action.kind == ActionKind::channel_next) ? 1 : -1;
+      slot = std::clamp(slot, 1, kLoraSlotCount);
+      const uint32_t hz = kLoraSlotBaseHz + static_cast<uint32_t>(slot - 1) * kLoraSlotStepHz;
+      rtl_ui_frequency_hz = hz;
+      const RtlCaptureState state = rtl_capture_state.load(std::memory_order_acquire);
+      if (state == RtlCaptureState::running) request_hot_retune(hz);
+      else queue_local_rtl_listen(RtlBand::lora, hz);
+      Serial.printf("RTL_LORA_SLOT slot=%d frequency_hz=%lu\n", slot,
+                    static_cast<unsigned long>(hz));
+      break;
+    }
     case ActionKind::exit_home:
       orcsdr::lora::leave();
       show_home();
@@ -11838,6 +11879,10 @@ void process_command(char* command) {
       else if (!strcmp(action, "EXPORT")) kind=K::export_log; else if (!strcmp(action, "FOLLOW")) kind=K::follow_node;
       else if (!strcmp(action, "CHANNELS")) kind=K::open_channels; else if (!strcmp(action, "SETTINGS")) kind=K::open_settings;
       else if (!strcmp(action, "HOME")) kind=K::exit_home;
+      // Meshtastic frequency slot, 1-104. SLOT takes the number; PREV/NEXT step.
+      else if (!strcmp(action, "SLOT_PREV")) kind=K::channel_prev;
+      else if (!strcmp(action, "SLOT_NEXT")) kind=K::channel_next;
+      else if (!strcmp(action, "SLOT")) kind=K::channel_select;
       if (kind != K::none) { handle_lora_dashboard_action({kind, static_cast<uint32_t>(value)}); Serial.println("RTL_UI_ACTION_OK"); return; }
     } else if (strcmp(domain, "SETTINGS") == 0) {
       using K = orcsdr::settings::ActionKind; K kind = K::none;

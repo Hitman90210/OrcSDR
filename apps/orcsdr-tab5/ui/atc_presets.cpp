@@ -23,12 +23,19 @@ bool valid(const Preset& preset) {
 bool load(orcsdr::storage::FileSystem* filesystem) {
   g_count = 0;
   if (!filesystem) return false;
-  orcsdr::storage::File file = filesystem->open(kRuntimePath);
+  // Prefer the user's own presets; see atc_presets.hpp.
+  const bool user_file = filesystem->exists(kUserPath);
+  orcsdr::storage::File file =
+      user_file ? filesystem->open(kUserPath) : filesystem->open(kRuntimePath);
   if (!file) return false;
   char line[112]{};
   const size_t header_size = file.readBytesUntil('\n', line, sizeof(line) - 1);
   line[header_size] = '\0';
-  if (strcmp(line, "ORCCAT1") != 0) { file.close(); return false; }
+  // ORCATC1 is the user preset file; ORCCAT1 the packaged record index.
+  if (strcmp(line, user_file ? "ORCATC1" : "ORCCAT1") != 0) {
+    file.close();
+    return false;
+  }
   while (g_count < kCapacity) {
     const size_t size = file.readBytesUntil('\n', line, sizeof(line) - 1);
     if (size == 0) break;
