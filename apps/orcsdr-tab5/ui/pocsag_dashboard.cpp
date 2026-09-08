@@ -356,8 +356,10 @@ void draw_live() {
     snprintf(label, sizeof(label), "STOP SCAN");
     text(label, kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2, TFT_WHITE, 1);
   } else {
-    text("FIND PAGERS", kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2,
-         TFT_WHITE, 1);
+    char label[24];
+    snprintf(label, sizeof(label), "SCAN %u FREQS",
+             static_cast<unsigned>(snapshot.candidate_count));
+    text(label, kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2, TFT_WHITE, 1);
   }
 
   if (snapshot.message_count == 0) {

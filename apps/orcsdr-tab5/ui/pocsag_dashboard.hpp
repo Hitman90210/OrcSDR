@@ -74,6 +74,9 @@ struct Snapshot {
   // lock badge; scan_frequency_hz is whichever candidate is currently being
   // dwelled on.
   bool scanning = false;
+  // Total configured candidates, including while idle. This makes it clear
+  // which frequency profile FIND PAGERS will use before a scan starts.
+  size_t candidate_count = 0;
   size_t scan_index = 0;
   size_t scan_count = 0;
   uint32_t scan_frequency_hz = 0;

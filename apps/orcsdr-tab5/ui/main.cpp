@@ -1997,6 +1997,7 @@ void publish_pocsag_snapshot(uint32_t now) {
   snapshot.decoder_stats = pocsag_decoder_instance->stats();
   snapshot.receiving = receiving;
   snapshot.frequency_hz = pocsag_config_frequency_hz;
+  snapshot.candidate_count = pocsag_discovery_channel_count;
   if (active_scan == ActiveScan::pocsag_discovery) {
     const auto scan_progress = scan_engine.progress();
     snapshot.scanning = scan_progress.active;

@@ -85,6 +85,11 @@ default; a partially-invalid file keeps whatever lines did parse. There is
 no in-app editor for this file yet — edit it on the SD card from a computer,
 the same way P25 system profiles and FM presets are edited today.
 
+The Live tab shows `SCAN n FREQS` before discovery starts, then shows the
+current frequency, channel number, and progress bar during the scan. See
+[POCSAG frequency profiles](POCSAG_FREQUENCY_PROFILES.md) for the portable
+profile-database workflow and provenance rules.
+
 ## `/orcsdr/FM.cfg`
 
 ```ini
