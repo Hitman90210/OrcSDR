@@ -302,16 +302,21 @@ void draw_data_maps() {
     text(detail, 350, y + 47, TFT_WHITE, 1);
     text(pack.status[0] ? pack.status : "CHECK CATALOG", 350, y + 70,
          pack.installed ? kGreen : kMuted, 1);
-    const char* install = !pack.available ? "UNAVAILABLE"
-                          : pack.installed ? (pack.update_available ? "UPDATE" : "REINSTALL")
-                                           : "INSTALL";
+    const char* install =
+        g_state.catalog_ready && !pack.available ? "UNAVAILABLE"
+        : pack.installed ? (pack.update_available ? "UPDATE" : "REINSTALL")
+                         : "INSTALL";
     const bool can_install =
         pack.available && g_state.catalog_ready && !g_state.catalog_busy;
     button(install, 930, y + 14, 132, 42, can_install ? TFT_DARKCYAN : TFT_DARKGREY);
     button(g_catalog_remove_armed == i ? "CONFIRM" : "REMOVE", 1072, y + 14, 126, 42,
            pack.installed && !g_state.catalog_busy ? TFT_MAROON : TFT_DARKGREY);
   }
-  text("Manual only. Downloads keep reception active.", 330, 688, TFT_LIGHTGREY, 1);
+  // Downloading 34 MB over the C6 link is the least reliable way to get
+  // these; point at the SD-card route from the screen itself.
+  text("Manual only. Downloads keep reception active.", 330, 668, TFT_LIGHTGREY, 1);
+  text("Faster: copy .idx to SD - github.com/hardcoreerik/OrcSDR/releases", 330, 694,
+       TFT_LIGHTGREY, 1);
 }
 
 // Each row pairs a label/value line with a control button underneath it.

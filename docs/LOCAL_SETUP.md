@@ -34,23 +34,44 @@ artifacts exist. Their INSTALL button reads UNAVAILABLE and does nothing;
 that is accurate, not a bug. (You do not need the NOAA pack to *listen* to
 weather radio — the seven NWR channels are built into the Weather screen.)
 
-### Sideloading instead of downloading
+### Sideloading: direct download links
 
 The 34 MB FAA aircraft download over the Tab5's Wi-Fi co-processor is the
 slowest and least reliable path there is, and it is the one most likely to hit
 the SDIO transport stall described in `docs/API_SERIAL_CLI.md`. **Copying the
 files to the SD card from a PC is faster and cannot fail halfway.**
 
-1. Download the runtime artifact from the
-   [data-catalog-v1 release](https://github.com/hardcoreerik/OrcSDR/releases/tag/data-catalog-v1)
-   (the `*-runtime.idx` assets).
-2. Put the SD card in your PC and copy each file to the path in the table
-   above, creating `/orcsdr/data/` if needed.
-3. Put the card back. The dashboards pick the packs up on the next boot and
-   Data & Maps shows them as installed.
+Download the file you want, then copy it to the SD card at the path shown. The
+device only reads the `.idx` runtime files — the `.zip` archives are
+provenance copies of the original sources and are never opened by the
+firmware, so skip them unless you want the raw data for yourself.
 
-The source `.zip` archives are provenance copies. The device never reads them,
-so skip them unless you want the originals.
+| What you get | Download | Copy to SD card as | Size |
+| --- | --- | --- | --- |
+| Aircraft registration lookup (ADS-B) | [faa_aircraft-runtime.idx](https://github.com/hardcoreerik/OrcSDR/releases/download/data-catalog-v1/faa_aircraft-runtime.idx) | `/orcsdr/data/adsb_aircraft.idx` | 34.0 MB |
+| Airport / ATC frequencies | [faa_aviation-runtime.idx](https://github.com/hardcoreerik/OrcSDR/releases/download/data-catalog-v1/faa_aviation-runtime.idx) | `/orcsdr/data/faa_aviation.idx` | 3.0 MB |
+| Lane County, Oregon map | [lane_county_map-runtime.idx](https://github.com/hardcoreerik/OrcSDR/releases/download/data-catalog-v1/lane_county_map-runtime.idx) | `/orcsdr/data/lane_county_map.idx` | 29 KB |
+
+**Note the rename.** The aircraft pack downloads as `faa_aircraft-runtime.idx`
+but the firmware looks for `adsb_aircraft.idx`; the aviation pack downloads as
+`faa_aviation-runtime.idx` and the firmware looks for `faa_aviation.idx`. Get
+the destination name wrong and the dashboard will keep saying NOT INSTALLED.
+
+Steps:
+
+1. Download the `.idx` file(s) above on a PC.
+2. Put the Tab5's SD card in the PC. Create the folder `orcsdr\data` at the
+   root of the card if it is not already there.
+3. Copy each file in, renaming it to the destination name in the table.
+4. Eject the card, put it back in the Tab5, and reboot. The ADS-B dashboard
+   shows INSTALLED and Data & Maps agrees.
+
+All eight assets, including the source archives and the signed manifest, are
+on the
+[data-catalog-v1 release page](https://github.com/hardcoreerik/OrcSDR/releases/tag/data-catalog-v1).
+
+The Windows helper `tools/copy_to_tab5_sd.ps1` can do the copy if the card is
+already mounted.
 
 ## 3. An offline map for your own area
 

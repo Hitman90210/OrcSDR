@@ -1098,6 +1098,9 @@ std::atomic<bool> p25_survey_requested{false};
 // first station past it, the same measurement the preset scan already uses.
 std::atomic<int8_t> fm_seek_requested{0};   // -1 down, +1 up, 0 idle
 std::atomic<bool> fm_seek_cancel{false};
+// active_scan is streaming-task-only; the touch and serial handlers need to
+// know a seek is running without reading it across tasks.
+std::atomic<bool> fm_seek_active{false};
 int8_t fm_seek_direction = 0;               // Streaming task only.
 uint32_t fm_seek_origin_hz = 0;             // Streaming task only.
 uint32_t fm_seek_hit_hz = 0;                // Streaming task only.
@@ -1322,7 +1325,6 @@ uint16_t rtl_waterfall_row[kSpectrumWidth];
 // scrolling against whichever dashboard touched the rect last.
 orcsdr::WaterfallView rtl_waterfall(kSpectrumX + 1, kWaterfallY + 1,
                                     kSpectrumWidth - 2, kWaterfallHeight - 2);
-int rtl_waterfall_width = 0;
 bool rtl_spectrum_window_ready = false;
 bool rtl_spectrum_trace_valid = false;
 uint32_t rtl_spectrum_last_ms = 0;
@@ -5876,13 +5878,10 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     draw_spectrum_grid();
   }
 
-  const int waterfall_width = std::min(draw_width - 2, rtl_waterfall.width());
-  if (waterfall_width != rtl_waterfall_width) {
-    // Opening the nav panel narrows the plot; stale history would be at the
-    // wrong scale, so start the ring over at the new width.
-    rtl_waterfall_width = waterfall_width;
-    rtl_waterfall.clear();
-  }
+  // CB and LoRa use a narrower plot permanently, and the nav panel narrows it
+  // transiently; set_width keeps rows packed so each push stays one blit.
+  rtl_waterfall.set_width(draw_width - 2);
+  const int waterfall_width = rtl_waterfall.width();
   uint16_t* waterfall_row =
       tool == OrcTool::Capture ? nullptr : rtl_waterfall.next_row();
   int previous_x = kSpectrumX;
@@ -5926,7 +5925,7 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     }
   }
   /* Capture tool owns waterfall panel — skip scrolling paint there. */
-  if (waterfall_row != nullptr) rtl_waterfall.push(waterfall_width);
+  if (waterfall_row != nullptr) rtl_waterfall.push();
   if (redraw_trace) {
     M5.Display.drawFastVLine(kSpectrumX + draw_width / 2, kSpectrumY + 1,
                              kSpectrumHeight - 2, TFT_GREEN);
@@ -7777,7 +7776,7 @@ void handle_fm_dashboard_action(const orcsdr::fm::Action& action) {
     case ActionKind::seek_down:
     case ActionKind::seek_up: {
       const int8_t direction = action.kind == ActionKind::seek_down ? -1 : 1;
-      if (active_scan == ActiveScan::fm_seek) {
+      if (fm_seek_active.load(std::memory_order_acquire)) {
         // Pressing SEEK again while one is running stops it where it is.
         fm_seek_cancel.store(true, std::memory_order_release);
         break;
@@ -8436,6 +8435,7 @@ void scan_finished(orcsdr::scan::Finish reason, void*) {
                   static_cast<unsigned long>(target));
     fm_seek_hit_hz = 0;
     fm_seek_direction = 0;
+    fm_seek_active.store(false, std::memory_order_release);
     return;
   }
   if (finished == ActiveScan::pocsag_discovery) {
@@ -8589,6 +8589,7 @@ void service_shared_scan(uint32_t now) {
         kRtlFmAutoSettleMs, false};
     if (scan_engine.start(plan, origin, now)) {
       active_scan = ActiveScan::fm_seek;
+      fm_seek_active.store(true, std::memory_order_release);
       fm_seek_direction = direction;
       fm_seek_origin_hz = origin;
       fm_seek_hit_hz = 0;
@@ -8965,8 +8966,20 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
       : rtl_ui_band == RtlBand::wx
           ? static_cast<uint8_t>(wx_channel_index(rtl_ui_frequency_hz) + 1)
           : 0;
+  snapshot.channel_count =
+      demo ? 0
+      : rtl_ui_band == RtlBand::cb ? static_cast<uint8_t>(std::size(kCbChannelsHz))
+      : rtl_ui_band == RtlBand::wx ? static_cast<uint8_t>(std::size(kRtlWxChannelsHz))
+                                   : 0;
   snapshot.active_dashboard = demo ? orcsdr::dashboards::Id::home
                                     : dashboard_for_band(rtl_ui_band, rtl_ui_frequency_hz);
+  // Id::utilities has no registry entry, so a frequency in no named band (say
+  // 146.520 MHz) left the header title falling back to "HOME" while the rest
+  // of the screen showed a tuner. Give it the band name to use instead.
+  if (!demo && orcsdr::dashboards::find(snapshot.active_dashboard) == nullptr)
+    strlcpy(snapshot.band_label, rtl_band_name(rtl_ui_band), sizeof(snapshot.band_label));
+  else
+    snapshot.band_label[0] = ' ';
   snapshot.battery_percent = demo ? 76 : device.battery_percent;
   snapshot.vbus_mv = demo ? 5000 : device.vbus_mv;
   snapshot.volume = demo ? 128 : rtl_live_volume.load(std::memory_order_acquire);
@@ -10792,12 +10805,19 @@ void ui_doc_leave_surfaces() {
 }
 
 void ui_doc_badge() {
-  M5.Display.fillRoundRect(572, 8, 136, 42, 10, TFT_MAROON);
-  M5.Display.drawRoundRect(572, 8, 136, 42, 10, TFT_YELLOW);
+  // Was a 136x42 box at (572, 8), which landed squarely on the home header's
+  // status panel (x starts at 595) and covered the Wi-Fi cell and IP in every
+  // staged capture -- the screens these captures exist to review. A strip
+  // along the very bottom edge is just as unmistakable and sits below every
+  // dashboard's content.
+  constexpr int kStripY = 710, kStripH = 10;
+  M5.Display.fillRect(0, kStripY, 1280, kStripH, TFT_MAROON);
+  M5.Display.drawFastHLine(0, kStripY, 1280, TFT_YELLOW);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
-  M5.Display.setTextColor(TFT_WHITE, TFT_MAROON);
-  M5.Display.drawString("DEMO", 640, 29);
+  M5.Display.setTextSize(1);
+  M5.Display.setTextColor(TFT_YELLOW, TFT_MAROON);
+  M5.Display.drawString("DEMO - STAGED CONTENT, NOT LIVE RECEPTION", 640,
+                        kStripY + kStripH / 2);
 }
 
 orcsdr::fm::Snapshot ui_doc_fm_snapshot(bool demo) {

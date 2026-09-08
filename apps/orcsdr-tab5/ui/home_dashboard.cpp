@@ -186,7 +186,10 @@ void draw_header_title() {
   const auto* active_entry = dashboards::find(current.active_dashboard);
   // Size 4 (not the old fixed size 5) so the longest real title ("SHORTWAVE")
   // still fits before the Wi-Fi/RTL-SDR status panel at kHeaderStatusX.
-  text(active_entry ? active_entry->title : "HOME", 338, 59, TFT_WHITE, 4);
+  const char* title = active_entry            ? active_entry->title
+                      : current.band_label[0] ? current.band_label
+                                              : "HOME";
+  text(title, 338, 59, TFT_WHITE, 4);
 }
 
 void draw_header() {
@@ -480,35 +483,34 @@ void draw_receiver_chrome() {
   text(current.mode[0] ? current.mode : "--", 816, 516, kGreen, 2, middle_center);
   panel(874, 468, 112, 72, kCyan, 8);
   char value[24];
+  // Both of this card's old contents were already on the row below it --
+  // "STEP 12.5 kHz" and "CHANNEL CH 19" each appeared twice, which read as a
+  // rendering fault. Channelized bands get their position in the band (which
+  // the stepper does not carry); everything else gets FILTER, which then
+  // leaves the bottom row's FILTER slot free for a wider SIGNAL.
   if (current.channel != 0) {
     text("CHANNEL", 930, 484, kCyan, 2, middle_center);
-    snprintf(value, sizeof(value), weather_view() ? "WX%u" : "CH %u", current.channel);
+    if (current.channel_count)
+      snprintf(value, sizeof(value), "%u / %u", current.channel, current.channel_count);
+    else
+      snprintf(value, sizeof(value), weather_view() ? "WX%u" : "CH %u", current.channel);
   } else {
-    text("STEP", 930, 484, kCyan, 2, middle_center);
-    snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
+    text("FILTER", 930, 484, kCyan, 2, middle_center);
+    if (current.filter_bandwidth_hz)
+      snprintf(value, sizeof(value), "%lu kHz",
+               static_cast<unsigned long>(current.filter_bandwidth_hz / 1000u));
+    else
+      snprintf(value, sizeof(value), "AUTO");
   }
   text(value, 930, 516, kGreen, 2, middle_center);
   draw_audio_controls();
   draw_tuning_controls();
-  // Weather is fixed-bandwidth NFM, so the FILTER card has nothing to say
-  // there; SIGNAL takes the whole width instead of repeating the channel.
-  const bool weather = weather_view();
-  if (!weather) {
-    panel(950, 564, 128, 62, kCyan, 7);
-    text("FILTER", 1014, 582, kCyan, 2, middle_center);
-    snprintf(value, sizeof(value), "%lu kHz",
-             static_cast<unsigned long>(current.filter_bandwidth_hz / 1000u));
-    text(current.filter_bandwidth_hz ? value : "AUTO", 1014, 608, kGreen, 2,
-         middle_center);
-  } else {
-    M5.Display.fillRect(950, 564, 128, 62, TFT_BLACK);
-  }
-  const int signal_x = weather ? 950 : 1090;
-  const int signal_w = weather ? 284 : 144;
-  panel(signal_x, 564, signal_w, 62, kCyan, 7);
-  text("SIGNAL", signal_x + signal_w / 2, 582, kCyan, 2, middle_center);
+  // FILTER moved up into the card at (930, 484); SIGNAL takes the whole row.
+  M5.Display.fillRect(950, 564, 128, 62, TFT_BLACK);
+  panel(950, 564, 284, 62, kCyan, 7);
+  text("SIGNAL", 1092, 582, kCyan, 2, middle_center);
   snprintf(value, sizeof(value), "%.1f dBFS", static_cast<double>(current.relative_dbfs));
-  text(value, signal_x + signal_w / 2, 608, kGreen, 2, middle_center);
+  text(value, 1092, 608, kGreen, 2, middle_center);
 }
 
 // 4 columns keep every row (including the trailing partial row) inside the

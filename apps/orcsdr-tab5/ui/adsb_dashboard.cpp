@@ -125,10 +125,15 @@ void draw_radar_base() {
   g_radar_base.setTextDatum(middle_center);
   g_radar_base.setTextSize(2);
   g_radar_base.setTextColor(TFT_WHITE);
-  g_radar_base.drawString("N", cx, cy - radius - 17);
-  g_radar_base.drawString("S", cx, cy + radius + 17);
-  g_radar_base.drawString("W", cx - radius - 20, cy);
-  g_radar_base.drawString("E", cx + radius + 20, cy);
+  // Outside the outer ring these do not fit: with cy = H/2 + 4 and radius 180
+  // the ring already reaches within 11px of a 390px-tall sprite, so "N" landed
+  // at y=2 (clipped by the panel border) and "S" at y=396 (off the sprite
+  // entirely). Inside the ring is both a normal radar convention and safe.
+  constexpr int kCompassInset = 15;
+  g_radar_base.drawString("N", cx, cy - radius + kCompassInset);
+  g_radar_base.drawString("S", cx, cy + radius - kCompassInset);
+  g_radar_base.drawString("W", cx - radius + kCompassInset, cy);
+  g_radar_base.drawString("E", cx + radius - kCompassInset, cy);
   g_radar_cache_latitude_e7 = g_settings.latitude_e7;
   g_radar_cache_longitude_e7 = g_settings.longitude_e7;
   g_radar_cache_range_nm = g_settings.radar_range_nm;

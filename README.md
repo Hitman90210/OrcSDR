@@ -94,6 +94,26 @@ That is also why the interface is split into dashboards. FM listening, P25 trunk
 
 ---
 
+## Making it local to you
+
+Several features need data about where *you* are — the ADS-B radar, the
+"Listen to ATC" preset, offline maps and P25 trunking. None of it is baked in,
+and the one published map pack covers Lane County, Oregon.
+
+**[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md)** walks through all of it:
+
+- **Data packs** — Settings → Data & Maps downloads them over Wi-Fi, but the
+  34 MB aircraft pack is far more reliable copied to the SD card from a PC.
+  Direct download links and the exact destination filenames are in that doc;
+  everything lives on the
+  [data-catalog-v1 release](https://github.com/hardcoreerik/OrcSDR/releases/tag/data-catalog-v1).
+- **Your own offline map** — `apps/orcsdr-tab5/tools/build_orcmap.py` builds
+  the device's map format for any bounding box straight from OpenStreetMap.
+- **Your own P25 system** — control channels are local to you, so nothing ships
+  preconfigured. Write a profile, drop it on the SD card, and import it.
+
+---
+
 ## The dashboards
 
 These are the completed dashboards in the current Tab5 firmware. Each section below is what you actually do on that screen, with a live capture of that screen. AM, weather radio, CB, and the shared “browse the whole tuner” shell are still in progress and are not shown here.

@@ -22,6 +22,10 @@ struct Snapshot {
   int32_t vbus_mv = 0;
   uint8_t volume = 0;
   uint8_t channel = 0;  // 1-40 on CB, 1-7 on NOAA weather; 0 = not channelized
+  uint8_t channel_count = 0;  // How many channels the band has; 0 if unchannelized
+  // Shown as the header title when active_dashboard has no registry entry
+  // (e.g. browsing 146.520 MHz, which is in no named band). Empty otherwise.
+  char band_label[16]{};
   float relative_dbfs = -90.0f;
   bool wifi_connected = false;
   bool usb_connected = false;
