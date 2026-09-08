@@ -7583,6 +7583,14 @@ void service_wifi_auto_reconnect() {
     wifi_retry_backoff_s = wifi_retry_backoff_s == 0 ? 15
                            : wifi_retry_backoff_s >= 60 ? 60
                                                         : static_cast<uint16_t>(wifi_retry_backoff_s * 2);
+    // Every attempt against a wedged SDIO transport costs a ~5 s main-loop
+    // stall (RTL_MAIN_STALL stage=wifi_poll), so retrying on the normal
+    // schedule makes an already-broken device far less responsive -- measured
+    // on hardware: 5 retries, 5 stalls, inside one wedged run. Back well off
+    // while the transport is known bad, but keep trying so it can recover on
+    // its own once the link comes back.
+    if (!orcsdr::wifi::transport_healthy())
+      wifi_retry_backoff_s = std::max<uint16_t>(wifi_retry_backoff_s, 120);
     wifi_retry_at_ms = now + wifi_retry_backoff_s * 1000u;
     return;
   }
