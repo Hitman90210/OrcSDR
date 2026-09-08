@@ -47,11 +47,19 @@ bool nearest(int32_t latitude_e7, int32_t longitude_e7, Preset* output) {
   size_t best = 0;
   double best_distance = INFINITY;
   for (size_t i = 0; i < g_count; ++i) {
-    const double lat = static_cast<double>(g_presets[i].latitude_e7) - latitude_e7;
-    const double lon = static_cast<double>(g_presets[i].longitude_e7) - longitude_e7;
-    const double distance = lat * lat + lon * lon;
+    // Longitude degrees shrink with latitude; without the cosine weighting a
+    // field due east looks closer than it is at 45 degrees north.
+    const double lat_deg = (static_cast<double>(g_presets[i].latitude_e7) - latitude_e7) / 1e7;
+    const double lon_deg = (static_cast<double>(g_presets[i].longitude_e7) - longitude_e7) / 1e7;
+    const double scale = cos(latitude_e7 / 1e7 * M_PI / 180.0);
+    const double lon_scaled = lon_deg * scale;
+    const double distance = lat_deg * lat_deg + lon_scaled * lon_scaled;
     if (distance < best_distance) { best_distance = distance; best = i; }
   }
+  // "Nearest" was unbounded, so with a national index a receiver in Oregon was
+  // offered a Florida tower and told it was a nearby preset. Roughly 100 nmi.
+  constexpr double kMaxDegrees = 1.7;
+  if (best_distance > kMaxDegrees * kMaxDegrees) return false;
   *output = g_presets[best];
   return true;
 }

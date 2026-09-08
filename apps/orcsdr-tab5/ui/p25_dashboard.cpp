@@ -371,9 +371,13 @@ void draw_program_dynamic() {
     g_profile_cursor = g_snapshot.profiles.count - 1;
   M5.Display.fillRect(42, 195, 564, 302, kPanel);
   if (g_snapshot.profiles.count == 0) {
-    text("NO P25 SYSTEMS INSTALLED", 54, 232, kYellow, 2, middle_left);
-    text("Import /orcsdr/p25-import.cfg", 54, 276, kMuted, 2, middle_left);
-    text("or install a signed local pack.", 54, 310, kMuted, 2, middle_left);
+    // P25 control channels are entirely local, so there is nothing sensible to
+    // ship as a default. Say how to add one rather than just that none exists.
+    text("NO P25 SYSTEM CONFIGURED", 54, 226, kYellow, 2, middle_left);
+    text("P25 control channels are local to you.", 54, 266, kMuted, 2, middle_left);
+    text("Put your system's profile on the SD card", 54, 300, kMuted, 2, middle_left);
+    text("as /orcsdr/p25-import.cfg, then IMPORT.", 54, 334, kMuted, 2, middle_left);
+    text("Format: docs/LOCAL_SETUP.md", 54, 380, kCyan, 2, middle_left);
   } else {
     const size_t first = (g_profile_cursor / kProfilesPerPage) * kProfilesPerPage;
     snprintf(value, sizeof(value), "%u-%u OF %u",

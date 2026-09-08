@@ -769,16 +769,31 @@ void draw_stats() {
   }
 
   struct DataCard { const char* title; const char* line1; const char* line2; bool ready; };
+  // This card used to read "NO NEARBY PRESET / MANUAL START / UNAVAILABLE",
+  // three strings that never said which of the three preconditions was
+  // actually missing. Report the first unmet one instead, as an instruction.
   char atc_line[36];
-  if (g_settings.atc_frequency_hz)
+  const char* atc_hint;
+  const bool atc_ready = g_settings.atc_frequency_hz != 0;
+  if (atc_ready) {
     snprintf(atc_line, sizeof(atc_line), "%.24s %lu.%03lu", g_settings.atc_label,
              static_cast<unsigned long>(g_settings.atc_frequency_hz / 1000000),
              static_cast<unsigned long>((g_settings.atc_frequency_hz % 1000000) / 1000));
-  else strlcpy(atc_line, "NO NEARBY PRESET", sizeof(atc_line));
+    atc_hint = g_atc_listening ? "ADS-B PAUSED WHILE LISTENING" : "TAP TO LISTEN";
+  } else if (!g_live_snapshot.faa_aviation_installed) {
+    strlcpy(atc_line, "NEEDS FAA AVIATION DB", sizeof(atc_line));
+    atc_hint = "SETTINGS > DATA & MAPS";
+  } else if (!g_settings.location_configured) {
+    strlcpy(atc_line, "NEEDS YOUR LOCATION", sizeof(atc_line));
+    atc_hint = "SET IT ON THE SETUP TAB";
+  } else {
+    strlcpy(atc_line, "NO ATC WITHIN RANGE", sizeof(atc_line));
+    atc_hint = "NEAREST FIELD IS TOO FAR";
+  }
   const DataCard data[] = {{"FAA AIRCRAFT DB", g_live_snapshot.faa_aircraft_installed ? "INSTALLED" : "NOT INSTALLED", "REGISTRATION LOOKUP", g_live_snapshot.faa_aircraft_installed},
                            {"FAA AVIATION DB", g_live_snapshot.faa_aviation_installed ? "INSTALLED" : "NOT INSTALLED", "AIRPORT / ATC DATA", g_live_snapshot.faa_aviation_installed},
-                           {"OFFLINE MAP", offline_map::available() ? "LANE COUNTY READY" : "NOT INSTALLED", "SD VECTOR PACK", offline_map::available()},
-                           {"LISTEN TO ATC", atc_line, g_atc_listening ? "ADS-B PAUSED" : "MANUAL START", g_settings.atc_frequency_hz != 0}};
+                           {"OFFLINE MAP", offline_map::available() ? "PACK LOADED" : "NOT INSTALLED", "SD VECTOR PACK", offline_map::available()},
+                           {"LISTEN TO ATC", atc_line, atc_hint, atc_ready}};
   for (int i = 0; i < 4; ++i) {
     const int x = 14 + i * 313;
     card(x, 458, 301, 166);

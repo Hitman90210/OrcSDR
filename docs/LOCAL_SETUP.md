@@ -1,0 +1,140 @@
+# Making OrcSDR local to you
+
+Several OrcSDR features need data about *where you are*: the ADS-B radar map,
+the "Listen to ATC" preset, and P25 trunking. Out of the box the device ships
+with none of that, and the one published map pack covers Lane County, Oregon.
+This is how to replace each piece with your own.
+
+Everything here is done from a PC with the SD card, or over Wi-Fi. Nothing
+needs a rebuild of the firmware.
+
+## 1. Set your receiver location
+
+**ADS-B dashboard → SETUP tab → latitude / longitude.**
+
+This is the origin of the radar plot and the anchor for the nearest-ATC
+lookup. Without it the radar has nothing to centre on and the ATC card reads
+`NEEDS YOUR LOCATION`. Use decimal degrees, negative for west/south.
+
+## 2. Data packs (FAA aircraft, FAA aviation)
+
+**Settings → Data & Maps → CHECK FOR UPDATES**, then INSTALL a pack.
+
+The published catalog currently carries three packs:
+
+| Pack | Runtime file on SD | Runtime size |
+| --- | --- | --- |
+| FAA AIRCRAFT | `/orcsdr/data/adsb_aircraft.idx` | 34 MB |
+| FAA AVIATION | `/orcsdr/data/faa_aviation.idx` | 3 MB |
+| LANE COUNTY MAP | `/orcsdr/data/lane_county_map.idx` | 29 KB |
+
+`NOAA WEATHER` and `FCC FM / AM` show **NOT PUBLISHED** because the signed
+catalog genuinely does not contain them yet — the ids are reserved, but no
+artifacts exist. Their INSTALL button reads UNAVAILABLE and does nothing;
+that is accurate, not a bug. (You do not need the NOAA pack to *listen* to
+weather radio — the seven NWR channels are built into the Weather screen.)
+
+### Sideloading instead of downloading
+
+The 34 MB FAA aircraft download over the Tab5's Wi-Fi co-processor is the
+slowest and least reliable path there is, and it is the one most likely to hit
+the SDIO transport stall described in `docs/API_SERIAL_CLI.md`. **Copying the
+files to the SD card from a PC is faster and cannot fail halfway.**
+
+1. Download the runtime artifact from the
+   [data-catalog-v1 release](https://github.com/hardcoreerik/OrcSDR/releases/tag/data-catalog-v1)
+   (the `*-runtime.idx` assets).
+2. Put the SD card in your PC and copy each file to the path in the table
+   above, creating `/orcsdr/data/` if needed.
+3. Put the card back. The dashboards pick the packs up on the next boot and
+   Data & Maps shows them as installed.
+
+The source `.zip` archives are provenance copies. The device never reads them,
+so skip them unless you want the originals.
+
+## 3. An offline map for your own area
+
+`tools/build_orcmap.py` builds the device's map format for any bounding box
+from OpenStreetMap, so you are not stuck with Lane County:
+
+```bash
+python apps/orcsdr-tab5/tools/build_orcmap.py \
+  --bbox 47.50 -122.45 47.75 -122.20 --out local_map.idx
+```
+
+Arguments are `SOUTH WEST NORTH EAST` in decimal degrees. Copy the result to
+the SD card as **`/orcsdr/data/local_map.idx`** — the firmware loads that in
+preference to any packaged map.
+
+The device holds 640 line segments and 32 labels so the map fits in RAM beside
+the DSP, which is roughly one metro area at useful detail. The builder reports
+what it kept:
+
+```
+Wrote local_map.idx: 640/640 segments (437 road, 200 water, 3 airport), 4/32 labels.
+```
+
+If it says the budget was reached, either shrink `--bbox` or raise
+`--tolerance` (degrees, default `0.002` ≈ 200 m) so the coverage spreads
+evenly across the whole box instead of running out in one corner.
+
+Data © OpenStreetMap contributors, ODbL.
+
+## 4. Your local P25 system
+
+P25 trunking is **not** preconfigured for any region — a fresh device reports
+`No P25 system configured`, and it should, because control channels are
+entirely local. The device stores as many named system profiles as you like on
+the SD card and lets you switch between them.
+
+Write a profile like this, using your system's data from
+[RadioReference](https://www.radioreference.com/) or your own survey:
+
+```ini
+version = 2
+system_name = King County EPSCA
+nac = 755
+wacn = 781824
+system_id = 499
+control_channel_hz = 851012500
+control_channel_hz = 852537500
+control_channel_hz = 853762500
+auto_follow = true
+encryption_skip = true
+talkgroup = 1101, Seattle PD Dispatch
+talkgroup = 1210, Seattle Fire Dispatch
+```
+
+Format notes — the parser is strict, and a bad line is rejected with its line
+number rather than silently ignored:
+
+- **Every number is decimal.** RadioReference prints NAC, WACN and System ID in
+  hex (`0x2F3`, `0xBEE00`, `0x1F3`); convert them first. The three above are
+  those same values in decimal.
+- **Control channels are in Hz**, not MHz: 851.0125 MHz is `851012500`.
+  Up to 8 of them, one `control_channel_hz` line each.
+- **Talkgroups are `id, alias`** — the comma is required. Up to 8.
+- `#` and `;` start a comment; blank lines are fine.
+- `nac` ≤ 4095, `wacn` ≤ 1048575, alias ≤ 31 characters.
+
+1. Save it to the SD card as `/orcsdr/p25-import.cfg`.
+2. On the device: **P25 dashboard → SETUP tab → IMPORT**.
+3. Select the imported profile to make it active.
+
+Imported profiles live under `/orcsdr/p25/<id>/profile.cfg` and can be
+exported, renamed and deleted from the same tab. The SURVEY button then sweeps
+your control channels and picks whichever one is actually decoding, so you do
+not have to know which of them your site is using.
+
+Only publish or share talkgroup aliases you have the right to redistribute —
+see `docs/DATA_SOURCE_LEDGER.md`.
+
+## 5. What is still fixed
+
+- **NOAA Weather** — the seven NWR channels (162.400–162.550 MHz) are the same
+  everywhere in the US, so the Weather screen's channel picker needs no local
+  data at all. Which transmitter you hear depends only on where you are.
+- **CB** — the 40 channels are fixed by regulation.
+- **LoRa** — defaults to the Meshtastic US LongFast slot (906.875 MHz). Change
+  the frequency on the LoRa dashboard for other regions; it is a receive-only
+  monitor for Meshtastic mesh traffic, not a participant in the mesh.

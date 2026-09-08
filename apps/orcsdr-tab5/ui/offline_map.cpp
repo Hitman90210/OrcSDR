@@ -98,7 +98,10 @@ bool load(orcsdr::storage::FileSystem* filesystem) {
   g_label_count = 0;
   g_available = false;
   if (!filesystem) return false;
-  orcsdr::storage::File file = filesystem->open(kRuntimePath);
+  // A user-built map wins over the packaged one; see offline_map.hpp.
+  orcsdr::storage::File file = filesystem->exists(kUserPath)
+                                   ? filesystem->open(kUserPath)
+                                   : filesystem->open(kRuntimePath);
   if (!file) return false;
   char header[9]{};
   const bool header_ok = file.readBytesUntil('\n', header, sizeof(header)) == 7 &&
