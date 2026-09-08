@@ -314,8 +314,11 @@ void draw_data_maps() {
   }
   // Downloading 34 MB over the C6 link is the least reliable way to get
   // these; point at the SD-card route from the screen itself.
-  text("Manual only. Downloads keep reception active.", 330, 668, TFT_LIGHTGREY, 1);
-  text("Faster: copy .idx to SD - github.com/hardcoreerik/OrcSDR/releases", 330, 694,
+  // "Downloads keep reception active" was actively wrong advice: measured on
+  // hardware, an attached RTL-SDR takes Wi-Fi association from 14/15 to 0/15.
+  text("Unplug the RTL-SDR before downloading - it stalls Wi-Fi.", 330, 668,
+       TFT_ORANGE, 1);
+  text("Or copy .idx to SD - github.com/hardcoreerik/OrcSDR/releases", 330, 694,
        TFT_LIGHTGREY, 1);
 }
 

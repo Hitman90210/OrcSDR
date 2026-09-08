@@ -93,7 +93,7 @@ SDIO aggr: no slave credits (32 consecutive)
 | Hypothesis | Test | Result |
 | --- | --- | --- |
 | Wi-Fi power save | `esp_wifi_set_ps(WIFI_PS_NONE)` | **Not the cause.** Flood reproduced identically. Call kept (harmless, standard). |
-| RTL-SDR / USB bus contention | Stop RTL streaming, then run a catalog check | **Not the cause of the wedge.** First test was invalid — a manual `RTL_STOP` fired before the device's own boot auto-start, and separately the 5 s session timeout dropped auth. Fixed the script; fault still reproduced. |
+| RTL-SDR / USB bus contention | See §3a — this turned out to be **the cause**. Two earlier attempts to test it were both invalid. | **CONFIRMED CAUSE.** |
 | SDIO clock too fast | Dropped `CONFIG_ESP_HOSTED_HOST_SDIO_CLK_KHZ` 10000 → 5000 | **Not the cause.** Identical ~30 s flood. Reverted to 10 MHz. |
 | Our fork broke it | Built and flashed **unmodified upstream** in a worktree | **Reproduces identically on upstream.** `SDIO aggr: no slave credits (32-35 consecutive)` at boot, 8164 flood lines, catalog check never queued. |
 
@@ -120,13 +120,44 @@ turning it on risks a reboot loop.
   *"Wi-Fi link reset failed"*.
 - **Sideloading as the real answer for big data packs** — see §6.
 
-### Open lead, not yet chased
+### 3a. The RTL-SDR is the trigger — confirmed by A/B
 
-The user observed that unplugging the RTL-SDR made a download succeed. The
-contention test above ruled USB out as the cause of *the wedge itself*, but not
-as an aggravating factor. Worth a proper A/B. Note that the recent upstream
-merge also bumped `esp_rtl_sdr` **v0.7.9 → v0.7.14**, which may change this
-picture — retest on the current build before drawing conclusions.
+The user's own observation ("I unplugged the sdr thing and it worked") was
+right, and two earlier attempts of mine to test it were both invalid: the
+first because a manual `RTL_STOP` fired before the device's own boot
+auto-start, the second because every catalog check in it returned
+`auth_required` — the 5 s session had expired during the read loop, so the
+check never ran at all. Neither measured anything.
+
+The valid experiment uses **Wi-Fi association** as the probe (~25 s per trial
+instead of 90) with a keepalive every 2 s, rebooting between trials:
+
+| Condition | Same power-on session | Trials | Connected | SDIO errors |
+| --- | --- | --- | --- | --- |
+| Dongle unplugged | yes | 15 | **14** | **0** |
+| Dongle plugged back in | yes | 15 | **0** | 19,963 |
+
+No power cycle between those two runs — the only change was the dongle. 18 of
+20 attempts in the plugged run failed at `connect_start_failed`: the connect
+could not even begin. Timing shows the same effect at a smaller scale even
+when it works: 3076–3088 ms plugged vs 3025–3031 ms unplugged.
+
+**Likely mechanism, not yet proven:** both DMA paths sit in PSRAM —
+`CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM` and
+`CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM` are both on (the boot log prints
+`hosted_dma_psram=1 usb_dma_psram=1`). An RTL-SDR at 2.048 MSPS is ~4 MB/s of
+USB DMA into PSRAM competing with the SDIO transport's own PSRAM DMA, which
+would explain `sdmmc_send_cmd returned 0x107` (bus timeout).
+
+The obvious experiment is moving the hosted SDIO DMA to internal RAM
+(`CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=n`). **Do not do this casually** —
+internal RAM is the scarce resource here (§4) and this is exactly the class of
+change that caused the boot loop.
+
+An earlier confound worth remembering: the plugged runs were originally done
+*before* a full power cycle and the unplugged ones after, so "power cycle"
+looked like it might be the real variable. Re-plugging the dongle in the same
+session with no power cycle is what settled it.
 
 ---
 
@@ -408,9 +439,12 @@ county. Full instructions are in **`docs/LOCAL_SETUP.md`**; the short version:
 
 ## 8. Still open
 
-1. **SDIO transport wedge** — upstream `esp_hosted` defect, reproduces on
-   unmodified upstream. Mitigated, not fixed. Restart is the reliable recovery.
-2. **RTL-SDR contention A/B** — not done; retest on the v0.7.14 driver.
+1. **SDIO transport wedge** — reproduces on unmodified upstream, and §3a shows
+   an attached RTL-SDR is what triggers it. Mitigated and documented, not
+   fixed. Unplug the dongle to download; restart to recover.
+2. **The PSRAM DMA hypothesis in §3a is untested.** Moving the hosted SDIO DMA
+   to internal RAM is the obvious experiment and the obvious way to break the
+   boot again — read §4 first.
 3. **`noaa_weather` / `fcc_broadcast` packs** cannot be published from this
    fork — the catalog is signed with the upstream author's P-256 key and the
    firmware embeds only the matching public key.
