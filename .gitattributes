@@ -1,1 +1,8 @@
 *.sh text eol=lf
+# Patch files must keep LF. With core.autocrlf=true -- the Git for Windows
+# default -- checkout rewrote tools/patches/*.patch to CRLF, which turns the
+# empty context line in a hunk into a lone CR that `git apply` cannot classify:
+# "corrupt patch at ...:29". That made apply-esp-hosted-trampoline-fix.ps1 throw
+# and the whole Windows build fail before compiling anything.
+*.patch text eol=lf
+*.diff text eol=lf
