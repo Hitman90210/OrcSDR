@@ -6,10 +6,10 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <new>
 
 #if defined(ESP_PLATFORM)
 #include <esp_heap_caps.h>
-#include <new>
 #endif
 
 namespace orcsdr::pocsag {
@@ -90,7 +90,7 @@ struct CorrectionTable {
   }
 };
 
-const CorrectionTable& correction_table() {
+const CorrectionTable* correction_table() {
 #if defined(ESP_PLATFORM)
   // PSRAM-allocated on target: this 4 KB table is a function-local static
   // independent of any Decoder instance (shared across all decoders), so
@@ -107,10 +107,10 @@ const CorrectionTable& correction_table() {
     if (!memory) memory = heap_caps_malloc(sizeof(CorrectionTable), MALLOC_CAP_8BIT);
     if (memory) table = new (memory) CorrectionTable();
   }
-  return *table;
+  return table;
 #else
   static const CorrectionTable table;
-  return table;
+  return &table;
 #endif
 }
 
@@ -122,7 +122,13 @@ int decode_bch31(uint32_t received31, uint32_t* corrected31, int* error_bits) {
     *error_bits = 0;
     return 0;
   }
-  const int32_t pattern = correction_table().pattern[syndrome];
+  const CorrectionTable* table = correction_table();
+  if (!table) {
+    *corrected31 = received31;
+    *error_bits = -1;
+    return 2;
+  }
+  const int32_t pattern = table->pattern[syndrome];
   if (pattern < 0) {
     *corrected31 = received31;
     *error_bits = -1;
@@ -456,14 +462,13 @@ bool Decoder::slice_active_channel(float sample, bool* bit) {
   else
     space_mean_ += kTrackGain * (soft - space_mean_);
   stats_.fsk_deviation_hz =
-      (mark_mean_ - space_mean_) * 0.5f * (static_cast<float>(kInternalSampleRateHz) / kPi);
+      (mark_mean_ - space_mean_) * (static_cast<float>(kInternalSampleRateHz) * 0.5f / kPi);
+  record_soft_sample(soft);
   return true;
 }
 
 void Decoder::process_discriminator_sample(float sample, MessageCallback callback,
                                             void* context) {
-  record_soft_sample(sample);
-
   if (active_channel_ < 0) {
     size_t winner = 0;
     if (search_channels(sample, &winner)) {
@@ -657,7 +662,8 @@ bool Decoder::self_check() {
     // this permanently in BSS for the life of the program merely to run a
     // one-time boot self-check, which is what overflowed this firmware's
     // already-tight RAM budget the first time this was written that way.
-    std::unique_ptr<float[]> samples(new float[21000]);
+    std::unique_ptr<float[]> samples(new (std::nothrow) float[21000]);
+    if (!samples) return false;
     TestVectorBuilder builder{samples.get(), 21000, 0, 32 /* 1200 baud */, false};
     builder.push_preamble(64);
     builder.push_word(kSyncWord);
@@ -716,7 +722,8 @@ bool Decoder::self_check() {
     const uint32_t message_word = pocsag_encode_codeword((1u << 20) | data20);
 
     // (64 + 32*18) * 16 = 10240 samples at 2400 baud.
-    std::unique_ptr<float[]> samples(new float[11000]);
+    std::unique_ptr<float[]> samples(new (std::nothrow) float[11000]);
+    if (!samples) return false;
     TestVectorBuilder builder{samples.get(), 11000, 0, 16 /* 2400 baud */, true /* inverted */};
     builder.push_preamble(64);
     builder.push_word(kSyncWord);
@@ -792,7 +799,8 @@ bool Decoder::self_check() {
     }
 
     constexpr uint16_t kSamplesPerSymbol = 32;  // 1200 baud
-    std::unique_ptr<float[]> samples(new float[21100]);
+    std::unique_ptr<float[]> samples(new (std::nothrow) float[21100]);
+    if (!samples) return false;
     TestVectorBuilder builder{samples.get(), 21100, 0, kSamplesPerSymbol, false};
     // Exactly half a symbol period of raw samples (NOT push_bit(), which
     // pushes a full symbol period per call and would add a whole number of

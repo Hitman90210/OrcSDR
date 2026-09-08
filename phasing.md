@@ -726,8 +726,8 @@ MeshCore remains a separate later profile.
 ## Phase 10 — POCSAG pager dashboard and native decoder
 
 Goal: a real receive-only POCSAG pager monitor, not a mock dashboard —
-native FSK/BCH decode feeding a persistent CAPCODE identity system, a local
-message archive, and a five-view M5GFX UI (LIVE/IDS/SIGNAL/ACTIVITY/ARCHIVE),
+native FSK/BCH decode feeding an in-memory CAPCODE identity system, a RAM-only
+session list, and a five-view M5GFX UI (LIVE/IDS/SIGNAL/ACTIVITY/SESSION),
 matching the architectural rigor P25 established: a pure protocol/DSP core
 with no FreeRTOS/display/USB/SD dependency, a thin runtime adapter, and a
 `ScreenController`-routed dashboard that only ever renders a bounded
@@ -796,7 +796,7 @@ rather than adding a second high-rate IQ path.
       launch. Native ESP-IDF 5.5.4 build compiles and links
       (`orcsdr_tab5.bin`, 46% flash free) — no hardware run yet.
 - [x] `RTL_POCSAG_STATUS` documented in `docs/API_SERIAL_CLI.md`.
-- [ ] `/orcsdr/pocsag.cfg` (frequency, baud override, polarity override) —
+- [ ] `/orcsdr/pocsag_scan.cfg` (frequency candidates) —
       a user-edited SD profile, not a hardcoded default frequency; POCSAG
       channels vary too much by country/carrier for one default to be
       correct. The current build seeds a single in-RAM default
@@ -840,7 +840,7 @@ rather than adding a second high-rate IQ path.
 
 ### 10.4 — five-view M5GFX dashboard
 
-- [x] `pocsag_dashboard`: five tabs (LIVE/IDS/SIGNAL/ACTIVITY/ARCHIVE) built
+- [x] `pocsag_dashboard`: five tabs (LIVE/IDS/SIGNAL/ACTIVITY/SESSION) built
       natively in M5GFX matching this repo's existing dashboard conventions
       (dark instrument theme, header/settings-gear/battery contract from
       `architecture.md`, static-chrome-once + bounded dynamic repaint, tab
@@ -855,8 +855,8 @@ rather than adding a second high-rate IQ path.
       message-type distribution bar chart backed by new `Stats::
       messages_alpha/numeric/tone_only` counters, and a top-CAPCODEs-by-
       hit-count leaderboard sorted client-side from the bounded identity
-      snapshot) render real content; only ARCHIVE remains an explicitly
-      labeled "Not yet implemented" placeholder, not faked data.
+      snapshot) render real content; SESSION explicitly reports that its
+      bounded recent-message list clears on reboot, not faked persistence.
 - [ ] IDS has no alias/group/watch/mute/notes editing (needs a keypad-style
       touch UI) and shows identities in table-insertion order, not sorted
       by recency/hit count.

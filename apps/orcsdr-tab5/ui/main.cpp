@@ -1193,8 +1193,8 @@ void load_pocsag_scan_list() {
     if (file) {
       char line[32];
       size_t read_len;
-      while (pocsag_discovery_channel_count < kPocsagDiscoveryMaxChannels &&
-             (read_len = file.readBytesUntil('\n', line, sizeof(line) - 1)) > 0) {
+      while (pocsag_discovery_channel_count < kPocsagDiscoveryMaxChannels && file.available()) {
+        read_len = file.readBytesUntil('\n', line, sizeof(line) - 1);
         // readBytesUntil() does not null-terminate; do it at the returned
         // length, which is the only reliable end-of-content marker (a line
         // shorter than the previous one would otherwise leave stale bytes

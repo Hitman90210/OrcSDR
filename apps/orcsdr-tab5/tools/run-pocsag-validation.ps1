@@ -301,6 +301,13 @@ try {
   $results | Format-Table -AutoSize | Out-String | ForEach-Object { Write-Log $_ }
 } finally {
   if ($null -ne $script:serial -and $script:serial.IsOpen) {
+    try {
+      $script:serial.WriteLine('RTL_POCSAG_SCAN_STOP')
+      [void](Read-LineUntil { param($v) $v -match '^RTL_POCSAG_SCAN_STOP_' } 3)
+      Send-PocsagTune $RestoreFrequencyHz
+    } catch {
+      Write-Log "POCSAG_VALIDATION_CLEANUP warning=$($_.Exception.Message)"
+    }
     $script:serial.Close()
   }
   if ($null -ne $script:key) {

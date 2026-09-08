@@ -36,6 +36,7 @@ bool g_live = false;
 uint32_t g_drawn_revision = 0;
 size_t g_selected_id = 0;
 size_t g_selected_message = 0;
+Snapshot* g_snapshot = nullptr;
 
 // Lazily PSRAM-allocated rather than a plain internal-DRAM global: this
 // Snapshot (message/identity arrays plus the decoder Stats) is a few KB,
@@ -54,14 +55,17 @@ size_t g_selected_message = 0;
 // allocation (still dynamic, so it costs nothing unless actually used) is
 // the only fallback that doesn't have this defect; PSRAM is abundant
 // enough (32 MB) that neither allocation should realistically fail.
-Snapshot& live_snapshot() {
-  static Snapshot* storage = nullptr;
-  if (!storage) {
+bool ensure_live_snapshot() {
+  if (!g_snapshot) {
     void* memory = heap_caps_malloc(sizeof(Snapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!memory) memory = heap_caps_malloc(sizeof(Snapshot), MALLOC_CAP_8BIT);
-    if (memory) storage = new (memory) Snapshot();
+    if (memory) g_snapshot = new (memory) Snapshot();
   }
-  return *storage;
+  return g_snapshot != nullptr;
+}
+
+Snapshot& live_snapshot() {
+  return *g_snapshot;
 }
 
 void text(const char* value, int x, int y, uint16_t color = TFT_WHITE, int size = 2,
@@ -716,6 +720,11 @@ void redraw() {
 void enter(const Settings& settings_value) {
   g_settings = settings_value;
   g_view = View::live;
+  if (!ensure_live_snapshot()) {
+    g_active = false;
+    g_live = false;
+    return;
+  }
   g_active = true;
   redraw();
 }
@@ -754,6 +763,7 @@ void update() {
 }
 
 void set_live_snapshot(const Snapshot& snapshot) {
+  if (!ensure_live_snapshot()) return;
   live_snapshot() = snapshot;
   g_live = true;
 }

@@ -178,21 +178,22 @@ is not the native decoding implementation.
 
 ## Product initiative — POCSAG pager dashboard
 
-A receive-only POCSAG pager monitor: native FSK/BCH decode, a persistent
-CAPCODE identity/alias system, a local message archive, and a five-view
-M5GFX dashboard (LIVE/IDS/SIGNAL/ACTIVITY/ARCHIVE), architected like P25 —
+A receive-only POCSAG pager monitor: native FSK/BCH decode, an in-memory
+CAPCODE identity table, a RAM-only session list, and a five-view
+M5GFX dashboard (LIVE/IDS/SIGNAL/ACTIVITY/SESSION), architected like P25 —
 a pure host-testable protocol/DSP core, a thin runtime adapter, and a
 `ScreenController`-routed dashboard that only ever renders a snapshot.
 POCSAG rides the existing hardware-verified 960 kS/s RTL front end rather
 than adding a second high-rate IQ path. Frequency and baud are a
-user-edited SD profile (`/orcsdr/pocsag.cfg`), not a hardcoded default —
+user-edited SD scan profile (`/orcsdr/pocsag_scan.cfg`), not a hardcoded default —
 POCSAG channels vary by country and carrier.
 
-**Status: Build-verified.** Decoder core host-tested; wired live into a
-five-tab M5GFX dashboard reachable from Home (only LIVE renders real
-content); native ESP-IDF 5.5.4 build compiles and links. No CAPCODE
-identity store, message archive, or hardware/RF run yet. See `phasing.md`
-Phase 10.
+**Status: Hardware-verified at 1200 baud.** The Tab5 decoded an in-house
+433.920 MHz `TEST` transmission on CAPCODE 1234560; the same transmission was
+independently decoded by a Flipper Zero. LIVE, IDS, SIGNAL, ACTIVITY, and
+SESSION render bounded live data. SD persistence, editing UI, searchable
+archive, profile editor, and broader RF acceptance remain open. See
+`phasing.md` Phase 10.
 
 ## Summary table
 
