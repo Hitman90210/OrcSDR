@@ -132,15 +132,32 @@ check never ran at all. Neither measured anything.
 The valid experiment uses **Wi-Fi association** as the probe (~25 s per trial
 instead of 90) with a keepalive every 2 s, rebooting between trials:
 
-| Condition | Same power-on session | Trials | Connected | SDIO errors |
-| --- | --- | --- | --- | --- |
-| Dongle unplugged | yes | 15 | **14** | **0** |
-| Dongle plugged back in | yes | 15 | **0** | 19,963 |
+| Condition | Trials | Connected | SDIO errors |
+| --- | --- | --- | --- |
+| Dongle unplugged | 15 | **14** | **0** |
+| Dongle plugged back in, streaming | 15 | **0** | 19,963 |
+| Dongle plugged in, **stream stopped** | 15 | **15** | **0** |
+| Dongle streaming, **after the fix below** | 10 | **10** | **0** |
 
-No power cycle between those two runs — the only change was the dongle. 18 of
-20 attempts in the plugged run failed at `connect_start_failed`: the connect
-could not even begin. Timing shows the same effect at a smaller scale even
-when it works: 3076–3088 ms plugged vs 3025–3031 ms unplugged.
+The first two ran in one power-on session with no power cycle between them, so
+the only change was the dongle. 18 of 20 attempts in the plugged run failed at
+`connect_start_failed`: the connect could not even begin.
+
+The third row is the one that matters. **It is the USB DMA traffic, not the
+dongle's presence** — leaving the dongle physically attached but stopping the
+stream restores association completely. That means a safe software fix exists
+and the risky DMA-placement config change is unnecessary.
+
+**The fix:** `start_wifi_connection(bool pause_radio = true)`. The pause
+machinery (`pause_radio_for_io` / `resume_radio_after_io`) already existed and
+the catalog paths already used it; the parameter simply defaulted to `false`,
+so every Wi-Fi connect ran against a streaming dongle. It stops the stream and
+speaker, waits for the stream to actually stop (5 s deadline), and restores
+both on every exit path including the 15 s connect timeout in `poll_wifi()`.
+Cost is a ~3 s audio gap on connect.
+
+Timing shows the contention even when it works: 3076–3088 ms with the stream
+running vs 3025–3031 ms without.
 
 **Likely mechanism, not yet proven:** both DMA paths sit in PSRAM —
 `CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM` and
@@ -149,10 +166,12 @@ when it works: 3076–3088 ms plugged vs 3025–3031 ms unplugged.
 USB DMA into PSRAM competing with the SDIO transport's own PSRAM DMA, which
 would explain `sdmmc_send_cmd returned 0x107` (bus timeout).
 
-The obvious experiment is moving the hosted SDIO DMA to internal RAM
-(`CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=n`). **Do not do this casually** —
-internal RAM is the scarce resource here (§4) and this is exactly the class of
-change that caused the boot loop.
+Moving the hosted SDIO DMA to internal RAM
+(`CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=n`) would attack this directly and
+might let reception continue during downloads. It is **not** needed for
+correctness now that the pause is in place, and it is the exact class of change
+that boot-looped this device before — internal RAM is the scarce resource (§4).
+Only worth attempting with the DRAM budget measured first.
 
 An earlier confound worth remembering: the plugged runs were originally done
 *before* a full power cycle and the unplugged ones after, so "power cycle"
@@ -439,12 +458,14 @@ county. Full instructions are in **`docs/LOCAL_SETUP.md`**; the short version:
 
 ## 8. Still open
 
-1. **SDIO transport wedge** — reproduces on unmodified upstream, and §3a shows
-   an attached RTL-SDR is what triggers it. Mitigated and documented, not
-   fixed. Unplug the dongle to download; restart to recover.
-2. **The PSRAM DMA hypothesis in §3a is untested.** Moving the hosted SDIO DMA
-   to internal RAM is the obvious experiment and the obvious way to break the
-   boot again — read §4 first.
+1. **SDIO transport wedge** — root cause found (§3a): USB DMA from a streaming
+   RTL-SDR contending with the Wi-Fi transport's PSRAM DMA. Worked around by
+   pausing reception around Wi-Fi work, verified 10/10. Still worth knowing
+   that a wedged link needs a restart, and that a **full power cycle** clears
+   states a P4 reset does not.
+2. **Reception cannot run during a download.** Removing that limitation means
+   `CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=n` and a careful internal-RAM
+   budget — see §3a.
 3. **`noaa_weather` / `fcc_broadcast` packs** cannot be published from this
    fork — the catalog is signed with the upstream author's P-256 key and the
    firmware embeds only the matching public key.

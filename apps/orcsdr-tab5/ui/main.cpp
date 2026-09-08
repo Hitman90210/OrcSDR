@@ -7422,7 +7422,16 @@ void start_wifi_inventory() {
   if (orcsdr::rf24::active()) draw_rf24_dashboard(false);
 }
 
-void start_wifi_connection(bool pause_radio = false) {
+// Pausing defaults to ON. Measured on hardware: with the RTL-SDR streaming,
+// Wi-Fi association succeeded 0/15 with 19,963 SDIO timeouts; with the dongle
+// still plugged but the stream stopped, 15/15 with zero errors. It is the USB
+// DMA traffic, not the dongle's presence -- both it and the ESP-Hosted SDIO
+// transport DMA out of PSRAM (hosted_dma_psram=1 usb_dma_psram=1), and a
+// 2.048 MSPS stream is ~4 MB/s of contention. Every caller that skipped the
+// pause was therefore starting a connect that would usually fail.
+// The stream and speaker are restored on every exit path, including the 15 s
+// connect timeout in poll_wifi().
+void start_wifi_connection(bool pause_radio = true) {
   if (!settings_wifi_power_enabled) return;
   if (!wifi_station_ready) initialize_wifi();
   if (!wifi_station_ready || !wifi_ssid[0]) return;

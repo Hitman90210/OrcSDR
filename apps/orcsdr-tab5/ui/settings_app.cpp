@@ -314,10 +314,11 @@ void draw_data_maps() {
   }
   // Downloading 34 MB over the C6 link is the least reliable way to get
   // these; point at the SD-card route from the screen itself.
-  // "Downloads keep reception active" was actively wrong advice: measured on
-  // hardware, an attached RTL-SDR takes Wi-Fi association from 14/15 to 0/15.
-  text("Unplug the RTL-SDR before downloading - it stalls Wi-Fi.", 330, 668,
-       TFT_ORANGE, 1);
+  // Reception has to stop for this: a streaming RTL-SDR puts ~4 MB/s of USB
+  // DMA against the Wi-Fi transport's own PSRAM DMA and takes association from
+  // 15/15 to 0/15. Both the catalog paths and Wi-Fi connect now pause it.
+  text("Reception pauses automatically while downloading.", 330, 668,
+       TFT_LIGHTGREY, 1);
   text("Or copy .idx to SD - github.com/hardcoreerik/OrcSDR/releases", 330, 694,
        TFT_LIGHTGREY, 1);
 }

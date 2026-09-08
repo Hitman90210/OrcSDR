@@ -36,17 +36,17 @@ weather radio — the seven NWR channels are built into the Weather screen.)
 
 ### Sideloading: direct download links
 
-> **Unplug the RTL-SDR before downloading anything over Wi-Fi.** Measured on
-> hardware, with the dongle attached Wi-Fi association succeeded **0 out of 15**
-> attempts and the SDIO link to the Wi-Fi co-processor threw ~20,000 timeouts;
-> with it unplugged, in the same power-on session, **14 out of 15** succeeded
-> with zero errors. This is not a marginal effect — downloads simply will not
-> work reliably with the dongle in.
+> **Reception stops while you download, and that is deliberate.** A streaming
+> RTL-SDR and the Wi-Fi co-processor link both DMA out of PSRAM, and the
+> contention is severe: measured on hardware, Wi-Fi association succeeded
+> **0 out of 15** times while the dongle was streaming, and **15 out of 15**
+> with the stream stopped (dongle still plugged in). The firmware now pauses
+> reception automatically for catalog checks, downloads and Wi-Fi connects, and
+> restores it afterwards. You do not need to unplug anything.
 
-The 34 MB FAA aircraft download over the Tab5's Wi-Fi co-processor is the
-slowest and least reliable path there is even without the dongle attached.
-**Copying the files to the SD card from a PC is faster and cannot fail
-halfway.**
+The 34 MB FAA aircraft download over the Tab5's Wi-Fi co-processor is still the
+slowest path there is. **Copying the files to the SD card from a PC is faster
+and cannot fail halfway.**
 
 Download the file you want, then copy it to the SD card at the path shown. The
 device only reads the `.idx` runtime files — the `.zip` archives are
