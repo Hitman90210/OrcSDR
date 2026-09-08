@@ -10400,8 +10400,9 @@ void load_state() {
         rtl_ui_frequency_hz = p25_control_frequency_hz;
         rtl_requested_frequency_hz.store(p25_control_frequency_hz,
                                          std::memory_order_release);
-      } else if (stored_band == RtlBand::lora &&
-                 orcsdr::lora_channel::selection().persisted) {
+      } else if (stored_band == RtlBand::lora) {
+        load_lora_config();
+        if (orcsdr::lora_channel::selection().persisted) apply_lora_channel_selection();
         rtl_ui_frequency_hz = lora_config_frequency_hz;
         rtl_requested_frequency_hz.store(lora_config_frequency_hz,
                                          std::memory_order_release);
