@@ -329,6 +329,22 @@ All SD writes are refused with `..._ERROR radio_busy` while a capture/
 stream is active — stop the radio (`RTL_STOP`, needs auth) or wait for it
 to be idle first.
 
+> **Auth tier — known gap.** `SD_LIST`, `SD_GET_*`, `SD_PUT_*` and `SD_REMOVE`
+> are all **unauthenticated**. Reads are consistent with the rest of the
+> query tier, but *writes and deletes are not*: an unpaired host can create or
+> remove any file under `/orcsdr/`, while `RTL_VOLUME <n>` requires the HMAC
+> handshake. That matters because several files the firmware trusts are read
+> from there without any signature — `local_map.idx`, `local_atc.idx` and
+> `p25/<id>/profile.cfg` — so an unauthenticated write is effectively
+> unsigned config injection.
+>
+> Under the stated threat model (a remote or untrusted host, §Auth model) this
+> should be gated. It is left open deliberately for now because closing it
+> means adding the `PAIR`/`AUTH` handshake to `copy_to_tab5_sd.ps1`,
+> `copy_from_tab5_sd.ps1` and `get_from_tab5_sd.ps1`, and a half-done job there
+> breaks the only supported way to get files onto the card. Over a
+> physically-attached USB cable the boundary is arguably already crossed.
+
 ## Data Catalog
 
 These commands invoke the exact same manual Data & Maps actions as the

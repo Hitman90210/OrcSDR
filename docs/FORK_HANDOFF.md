@@ -512,10 +512,19 @@ on their own timer and will draw straight through a panel unless
 3. **`noaa_weather` / `fcc_broadcast` packs** cannot be published from this
    fork — the catalog is signed with the upstream author's P-256 key and the
    firmware embeds only the matching public key.
-4. **Demo-mode spectrum geometry mismatch** — §7.
-5. **POCSAG polish** — `MESSAGE DETAILS` has no empty-state placeholder while
-   its sibling panel does; the SIGNAL tab's "CORRECTED 0 bits=0" breaks the
-   right-aligned value column every other row keeps.
+4. **`SD_PUT_*` and `SD_REMOVE` are unauthenticated** — the one finding from
+   the security audit. An unpaired host can write or delete any file under
+   `/orcsdr/`, while `RTL_VOLUME <n>` requires the HMAC handshake, and the
+   firmware trusts `local_map.idx`, `local_atc.idx` and `p25/*/profile.cfg`
+   from there with no signature. Closing it means adding `PAIR`/`AUTH` to the
+   three `copy_*_tab5_sd.ps1` tools; see `docs/API_SERIAL_CLI.md`.
+
+Audited clean: buffer handling (every `memcpy`/`strcat` bounds-checked, no
+`strcpy`/`sprintf`/`gets`), path traversal (`..` rejected on both the SD and
+catalog paths), the catalog chain (signature verified *before* the manifest is
+parsed, SHA-256 before activation, `https://` enforced, destinations pinned
+under `/orcsdr/data/`), the `AUTH` proof comparison (constant-time XOR
+accumulate, no early exit), and no secrets on the serial console.
 
 ---
 

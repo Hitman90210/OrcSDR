@@ -109,8 +109,15 @@ and the one published map pack covers Lane County, Oregon.
   [data-catalog-v1 release](https://github.com/hardcoreerik/OrcSDR/releases/tag/data-catalog-v1).
 - **Your own offline map** — `apps/orcsdr-tab5/tools/build_orcmap.py` builds
   the device's map format for any bounding box straight from OpenStreetMap.
+- **ATC presets that resolve** — the published aviation pack has 40,937
+  frequency records but no coordinates, so "Listen to ATC" can never find a
+  nearest field from it. `apps/orcsdr-tab5/tools/build_atc_presets.py` builds
+  working presets for your area from OurAirports (public domain).
 - **Your own P25 system** — control channels are local to you, so nothing ships
   preconfigured. Write a profile, drop it on the SD card, and import it.
+- **Your local Meshtastic slot** — the LoRa monitor defaults to the US LongFast
+  slot 20 (906.875 MHz), but regional meshes move off it. The CHANNELS button
+  picks any of the 104 slots and the choice survives reboots.
 
 Working on the firmware itself? **[docs/FORK_HANDOFF.md](docs/FORK_HANDOFF.md)**
 is the engineering handoff for this fork: what changed and why, the hardware
@@ -120,7 +127,9 @@ verification loop, the known traps, and what is still open.
 
 ## The dashboards
 
-These are the completed dashboards in the current Tab5 firmware. Each section below is what you actually do on that screen, with a live capture of that screen. AM, weather radio, CB, and the shared “browse the whole tuner” shell are still in progress and are not shown here.
+These are the completed dashboards in the current Tab5 firmware. Each section below is what you actually do on that screen, with a live capture of that screen.
+
+Weather radio and CB are finished and channelised — weather has a WX1–WX7 picker over the seven NOAA channels, CB the standard 40. POCSAG pager receive is also present. AM and the shared “browse the whole tuner” shell run on the same Home workspace and are not given their own section below.
 
 Quick map:
 
