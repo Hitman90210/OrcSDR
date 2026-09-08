@@ -143,6 +143,10 @@ class Decoder {
     uint8_t transition_run = 0;
     bool last_bit = false;
     bool has_last_bit = false;
+    // Raw (pre-integration) sign tracker for symbol-timing recovery -- see
+    // search_channels()'s zero-crossing realignment.
+    bool last_raw_bit = false;
+    bool has_raw_bit = false;
   };
   static constexpr size_t kChannelCount = 6;  // 3 bauds x 2 polarities
 
@@ -152,6 +156,13 @@ class Decoder {
   // Feeds one discriminator sample to the active (locked) channel's bit
   // slicer; returns true and sets *bit when a new symbol decision lands.
   bool slice_active_channel(float sample, bool* bit);
+  // Gardner-style early/late symbol-timing correction, applied on every
+  // detected raw sign transition (same technique multimon-ng's POCSAG
+  // demodulators use on raw discriminator samples): a small proportional
+  // nudge, not a hard phase reset, so a single noisy transition can't swing
+  // the sampling instant -- it converges over the many transitions in the
+  // preamble and keeps tracking small clock-rate differences afterward.
+  void nudge_symbol_phase(Channel& ch, float signed_sample);
 
   void on_codeword(uint32_t codeword32, MessageCallback callback, void* ctx);
   void finalize_message(MessageCallback callback, void* ctx);

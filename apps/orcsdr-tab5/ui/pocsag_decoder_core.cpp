@@ -1,5 +1,6 @@
 #include "pocsag_decoder_core.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
@@ -334,6 +335,15 @@ void Decoder::on_codeword(uint32_t codeword32, MessageCallback callback, void* c
       return;
     }
     if (message_active_) finalize_message(callback, ctx);
+    // Only a genuinely valid (syndrome-zero) address codeword is trusted to
+    // start a message. BCH(31,21) has a 10-bit syndrome space, so roughly
+    // half of pure-noise codewords will superficially pass as "corrected"
+    // (status 1) by chance -- accepting those here is exactly the mechanism
+    // that turns a spurious sync-word lock on noise into a fabricated
+    // capcode and message text. A merely-corrected codeword in address
+    // position is treated the same as uncorrectable for message-formation
+    // purposes; it still counts toward the general codeword/FEC stats above.
+    if (status != 0) return;
     const uint32_t address18 = (data20 >> 2) & 0x3FFFFu;
     const uint8_t function = static_cast<uint8_t>(data20 & 0x3u);
     const uint8_t frame_number = static_cast<uint8_t>((codeword_index_in_batch_ / 2) & 0x7u);
@@ -362,11 +372,40 @@ void Decoder::on_codeword(uint32_t codeword32, MessageCallback callback, void* c
   }
 }
 
+void Decoder::nudge_symbol_phase(Channel& ch, float signed_sample) {
+  const bool raw_bit = signed_sample >= 0.0f;
+  if (ch.has_raw_bit && raw_bit != ch.last_raw_bit) {
+    // multimon-ng's demod_poc12.c: on a detected raw transition, nudge the
+    // sample-boundary counter by a small fixed step toward whichever half
+    // of the current window the transition landed in, rather than forcing
+    // the window to restart at the transition. A transition in the first
+    // half means our assumed boundary is running late relative to the real
+    // signal (advance the counter so the next boundary arrives sooner); a
+    // transition in the second half means it's running early (retard it).
+    // The step is a fraction of a symbol, so one noisy transition can only
+    // move the phase a little -- it converges over the many transitions in
+    // the preamble and keeps tracking small clock-rate differences for the
+    // rest of the frame, without the noise-sensitivity of snapping outright.
+    const uint16_t half = static_cast<uint16_t>(ch.samples_per_symbol / 2);
+    const uint16_t nudge =
+        static_cast<uint16_t>(std::max<uint16_t>(1, ch.samples_per_symbol / 8));
+    if (ch.sample_counter < half) {
+      ch.sample_counter = static_cast<uint16_t>(ch.sample_counter + nudge);
+    } else if (ch.sample_counter >= nudge) {
+      ch.sample_counter = static_cast<uint16_t>(ch.sample_counter - nudge);
+    }
+  }
+  ch.last_raw_bit = raw_bit;
+  ch.has_raw_bit = true;
+}
+
 bool Decoder::search_channels(float sample, size_t* winner) {
   for (size_t i = 0; i < kChannelCount; ++i) {
     Channel& ch = channels_[i];
     if (ch.samples_per_symbol == 0) continue;
     const float signed_sample = ch.inverted ? -sample : sample;
+    nudge_symbol_phase(ch, signed_sample);
+
     ch.symbol_accum += signed_sample;
     ++ch.symbol_accum_count;
     if (++ch.sample_counter < ch.samples_per_symbol) continue;
@@ -408,6 +447,7 @@ bool Decoder::search_channels(float sample, size_t* winner) {
 bool Decoder::slice_active_channel(float sample, bool* bit) {
   Channel& ch = channels_[static_cast<size_t>(active_channel_)];
   const float signed_sample = ch.inverted ? -sample : sample;
+  nudge_symbol_phase(ch, signed_sample);
   ch.symbol_accum += signed_sample;
   ++ch.symbol_accum_count;
   if (++ch.sample_counter < ch.samples_per_symbol) return false;
@@ -722,6 +762,86 @@ bool Decoder::self_check() {
     if (captured.msg.baud != 2400) return false;
     if (!captured.msg.inverted) return false;
     if (std::strncmp(captured.msg.text, "123-U", 5) != 0) return false;
+  }
+
+  // Phase-offset round-trip: a real transmitter's bit clock has no fixed
+  // relationship to when this decoder started sampling, unlike the vectors
+  // above, which are implicitly phase-aligned from sample 0. Prepending
+  // exactly half a symbol period before the preamble starts forces every
+  // subsequent integration window to straddle two different bits by 50/50
+  // -- the worst case, where a fixed-phase integrate-and-dump slicer never
+  // recovers a clean alternating bitstream and sync-word correlation never
+  // fires (this reproduces the real on-air failure this decoder had before
+  // nudge_symbol_phase() existed). A working timing-recovery loop must
+  // converge off the preamble's transitions despite that and still decode.
+  {
+    constexpr uint32_t kCapcode = 1234560u;
+    constexpr uint16_t kFrameNumber = kCapcode & 0x7u;
+    const uint32_t address18 = kCapcode >> 3;
+    const uint32_t address_info = (0u << 20) | (address18 << 2) | 0x3u;  // alpha
+    const uint32_t address_word = pocsag_encode_codeword(address_info);
+    const char text[] = "TEST";
+    uint64_t bitstream = 0;
+    int bitstream_len = 0;
+    for (char c : text) {
+      if (c == '\0') break;
+      const uint8_t reversed = reverse_bits(static_cast<uint8_t>(c) & 0x7Fu, 7);
+      bitstream = (bitstream << 7) | reversed;
+      bitstream_len += 7;
+    }
+    while (bitstream_len % 20 != 0) {
+      bitstream <<= 1;
+      ++bitstream_len;
+    }
+    uint32_t message_words[4];
+    const int message_word_count = bitstream_len / 20;
+    for (int w = 0; w < message_word_count; ++w) {
+      const int shift = bitstream_len - 20 * (w + 1);
+      const uint32_t data20 = static_cast<uint32_t>((bitstream >> shift) & 0xFFFFFu);
+      message_words[w] = pocsag_encode_codeword((1u << 20) | data20);
+    }
+
+    constexpr uint16_t kSamplesPerSymbol = 32;  // 1200 baud
+    std::unique_ptr<float[]> samples(new float[21100]);
+    TestVectorBuilder builder{samples.get(), 21100, 0, kSamplesPerSymbol, false};
+    // Exactly half a symbol period of raw samples (NOT push_bit(), which
+    // pushes a full symbol period per call and would add a whole number of
+    // bits -- zero net phase shift). This is what actually forces every
+    // later integration window to straddle two different bits 50/50.
+    for (int i = 0; i < kSamplesPerSymbol / 2; ++i) samples[builder.count++] = 0.8f;
+    builder.push_preamble(64);
+    builder.push_word(kSyncWord);
+    for (uint16_t slot = 0; slot < kBatchCodewords; ++slot) {
+      if (slot == kFrameNumber * 2) {
+        builder.push_word(address_word);
+      } else if (slot > kFrameNumber * 2 &&
+                 slot <= kFrameNumber * 2 + message_word_count) {
+        builder.push_word(message_words[slot - kFrameNumber * 2 - 1]);
+      } else {
+        builder.push_word(kIdleWord);
+      }
+    }
+    builder.push_word(kSyncWord);
+
+    Decoder decoder;
+    decoder.configure(Baud::auto_detect, Polarity::auto_detect);
+    struct Captured {
+      bool got = false;
+      Message msg{};
+    } captured;
+    for (size_t i = 0; i < builder.count; ++i) {
+      decoder.process_discriminator_sample(
+          samples[i],
+          [](const Message& m, void* ctx) {
+            auto* c = static_cast<Captured*>(ctx);
+            c->got = true;
+            c->msg = m;
+          },
+          &captured);
+    }
+    if (!captured.got) return false;
+    if (captured.msg.capcode != kCapcode) return false;
+    if (std::strncmp(captured.msg.text, "TEST", 4) != 0) return false;
   }
 
   return true;

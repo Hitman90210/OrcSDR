@@ -1164,6 +1164,11 @@ void fm_preset_offer(uint32_t freq_hz, float level_dbfs) {
 static uint32_t pocsag_config_frequency_hz = kPocsagFallbackHz;
 static std::atomic<uint16_t> pocsag_baud_bps{0};  // 0 = AUTO
 static std::atomic<uint8_t> pocsag_polarity_mode{0};  // 0=AUTO,1=NORMAL,2=INVERTED
+// Set whenever RTL_POCSAG_SET_BAUD/_SET_POLARITY changes either atomic above;
+// consumed once by the DSP task (which owns pocsag_decoder_instance) so the
+// actual Decoder::configure() call -- and the reset() it performs -- only
+// ever happens from the one task that also calls process_cu8() on it.
+static std::atomic<bool> pocsag_config_apply_pending{false};
 static bool pocsag_config_loaded = false;
 
 // "FIND PAGERS" discovery scan (Streaming task only, same ownership
@@ -1902,6 +1907,35 @@ void on_pocsag_message(const orcsdr::pocsag::Message& msg, void*) {
   pocsag_message_revision.fetch_add(1, std::memory_order_release);
 }
 
+// Shared by the periodic debug-verbosity auto-print and the unauthenticated
+// on-demand "RTL_POCSAG STATUS" query below -- one format, two callers.
+// Never includes decoded message text, only lock/baud/FEC counters (see
+// docs/API_SERIAL_CLI.md's POCSAG privacy note).
+void print_pocsag_status() {
+  if (!pocsag_decoder_instance) {
+    Serial.println("RTL_POCSAG_STATUS_ERROR not_initialized");
+    return;
+  }
+  const auto& stats = pocsag_decoder_instance->stats();
+  Serial.printf(
+      "RTL_POCSAG_STATUS lock=%u baud=%u inverted=%u frequency_hz=%lu scanning=%u "
+      "batches=%lu sync_losses=%lu codewords=%lu valid=%lu corrected=%lu corrected_bits=%lu "
+      "uncorrectable=%lu parity_failures=%lu messages=%lu truncated=%lu\n",
+      static_cast<unsigned>(stats.lock), static_cast<unsigned>(stats.detected_baud),
+      stats.inverted ? 1u : 0u, static_cast<unsigned long>(pocsag_config_frequency_hz),
+      active_scan == ActiveScan::pocsag_discovery ? 1u : 0u,
+      static_cast<unsigned long>(stats.batches_synced),
+      static_cast<unsigned long>(stats.sync_losses),
+      static_cast<unsigned long>(stats.codewords_total),
+      static_cast<unsigned long>(stats.codewords_valid),
+      static_cast<unsigned long>(stats.codewords_corrected),
+      static_cast<unsigned long>(stats.corrected_bit_count),
+      static_cast<unsigned long>(stats.codewords_uncorrectable),
+      static_cast<unsigned long>(stats.parity_failures),
+      static_cast<unsigned long>(stats.messages_decoded),
+      static_cast<unsigned long>(stats.messages_truncated));
+}
+
 void publish_pocsag_snapshot(uint32_t now) {
   if (!pocsag_decoder_instance || !pocsag_identity_table || !pocsag_messages) return;
   static uint32_t last_sample_ms = 0;
@@ -1913,7 +1947,13 @@ void publish_pocsag_snapshot(uint32_t now) {
   const bool receiving = rtl_ui_band == RtlBand::pocsag &&
                           rtl_capture_state.load(std::memory_order_acquire) ==
                               RtlCaptureState::running;
-  if (revision == last_revision && !receiving) return;
+  // A discovery scan never decodes a message on most dwells by design (it's
+  // hunting), so gating solely on message revision + "receiving" starves the
+  // header's scan-progress readout of any update for the whole scan -- the
+  // user sees no sign it's doing anything. Publish on every sample while a
+  // scan is in flight regardless of revision/receiving.
+  const bool scan_in_progress = active_scan == ActiveScan::pocsag_discovery;
+  if (revision == last_revision && !receiving && !scan_in_progress) return;
   last_revision = revision;
 
   orcsdr::pocsag::Snapshot snapshot{};
@@ -1954,6 +1994,7 @@ void publish_pocsag_snapshot(uint32_t now) {
   portEXIT_CRITICAL(&pocsag_messages_mux);
   snapshot.decoder_stats = pocsag_decoder_instance->stats();
   snapshot.receiving = receiving;
+  snapshot.frequency_hz = pocsag_config_frequency_hz;
   if (active_scan == ActiveScan::pocsag_discovery) {
     const auto scan_progress = scan_engine.progress();
     snapshot.scanning = scan_progress.active;
@@ -7262,8 +7303,21 @@ static void rtl_dsp_task(void *) {
     // high-rate queue like ADS-B) -- cheap enough per raw-IQ sample (no
     // transcendental math above its internal 38.4 kS/s decimated rate) to
     // run inline in this same DSP task.
-    if (!block.lab_custom_rate && block.band == RtlBand::pocsag && pocsag_decoder_instance)
+    if (!block.lab_custom_rate && block.band == RtlBand::pocsag && pocsag_decoder_instance) {
+      if (pocsag_config_apply_pending.exchange(false, std::memory_order_acq_rel)) {
+        const uint16_t baud_bps = pocsag_baud_bps.load(std::memory_order_relaxed);
+        const uint8_t polarity_mode = pocsag_polarity_mode.load(std::memory_order_relaxed);
+        const auto baud = baud_bps == 512    ? orcsdr::pocsag::Baud::b512
+                           : baud_bps == 1200 ? orcsdr::pocsag::Baud::b1200
+                           : baud_bps == 2400 ? orcsdr::pocsag::Baud::b2400
+                                              : orcsdr::pocsag::Baud::auto_detect;
+        const auto polarity = polarity_mode == 1   ? orcsdr::pocsag::Polarity::normal
+                              : polarity_mode == 2 ? orcsdr::pocsag::Polarity::inverted
+                                                    : orcsdr::pocsag::Polarity::auto_detect;
+        pocsag_decoder_instance->configure(baud, polarity);
+      }
       pocsag_decoder_instance->process_cu8(block.data, block.bytes, on_pocsag_message, nullptr);
+    }
     if (!block.lab_custom_rate && block.band == RtlBand::p25)
       orcsdr::p25decoder::process_cu8(block.data, block.bytes);
     if (!block.lab_custom_rate && block.band == RtlBand::p25 &&
@@ -7599,25 +7653,8 @@ static void rtl_driver_app_task(void *) {
           }
           if (g_stream_band == RtlBand::pocsag && now - pocsag_metrics_last_ms >= 5000) {
             pocsag_metrics_last_ms = now;
-            if (serial_verbosity_at(SerialVerbosity::debug) && pocsag_decoder_instance) {
-              const auto& stats = pocsag_decoder_instance->stats();
-              Serial.printf(
-                  "RTL_POCSAG_STATUS lock=%u baud=%u inverted=%u batches=%lu sync_losses=%lu "
-                  "codewords=%lu valid=%lu corrected=%lu corrected_bits=%lu uncorrectable=%lu "
-                  "parity_failures=%lu messages=%lu truncated=%lu\n",
-                  static_cast<unsigned>(stats.lock), static_cast<unsigned>(stats.detected_baud),
-                  stats.inverted ? 1u : 0u,
-                  static_cast<unsigned long>(stats.batches_synced),
-                  static_cast<unsigned long>(stats.sync_losses),
-                  static_cast<unsigned long>(stats.codewords_total),
-                  static_cast<unsigned long>(stats.codewords_valid),
-                  static_cast<unsigned long>(stats.codewords_corrected),
-                  static_cast<unsigned long>(stats.corrected_bit_count),
-                  static_cast<unsigned long>(stats.codewords_uncorrectable),
-                  static_cast<unsigned long>(stats.parity_failures),
-                  static_cast<unsigned long>(stats.messages_decoded),
-                  static_cast<unsigned long>(stats.messages_truncated));
-            }
+            if (serial_verbosity_at(SerialVerbosity::debug) && pocsag_decoder_instance)
+              print_pocsag_status();
           }
           // One active owner receives the bounded periodic status repaint.
           // Home already updates from loop(); a full paint here stalls IQ
@@ -12399,14 +12436,15 @@ void process_command(char* command) {
                   static_cast<double>(lora_native_last_cfo_tenths_hz.load(std::memory_order_relaxed)) / 10.0);
     return;
   }
-  if (strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
-      strcmp(command, "RTL_LORA_AUTO OFF") == 0) {
+  if ((strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
+       strcmp(command, "RTL_LORA_AUTO OFF") == 0) &&
+      authenticated) {
     const bool enabled = command[14] == 'O' && command[15] == 'N';
     lora_detector_enabled.store(enabled, std::memory_order_release);
     Serial.printf("RTL_LORA_AUTO %s\n", enabled ? "ON" : "OFF");
     return;
   }
-  if (strncmp(command, "RTL_LORA_TUNE ", 14) == 0) {
+  if (strncmp(command, "RTL_LORA_TUNE ", 14) == 0 && authenticated) {
     char* end = nullptr;
     const unsigned long requested = strtoul(command + 14, &end, 10);
     if (end == command + 14 || *end != '\0' || requested < kLoraMinHz ||
@@ -13252,6 +13290,10 @@ void process_command(char* command) {
     Serial.println("RTL_PRESET_SCAN_QUEUED");
     return;
   }
+  if (strcmp(command, "RTL_POCSAG STATUS") == 0) {
+    print_pocsag_status();
+    return;
+  }
   if (strcmp(command, "RTL_POCSAG_SCAN") == 0 && authenticated) {
     if (rtl_ui_band != RtlBand::pocsag) {
       Serial.println("RTL_POCSAG_SCAN_INVALID POCSAG band only");
@@ -13264,6 +13306,57 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_POCSAG_SCAN_STOP") == 0 && authenticated) {
     pocsag_scan_cancel_requested.store(true, std::memory_order_release);
     Serial.println("RTL_POCSAG_SCAN_STOP_QUEUED");
+    return;
+  }
+  if (strncmp(command, "RTL_POCSAG_SET_BAUD ", 20) == 0 && authenticated) {
+    const char* arg = command + 20;
+    uint16_t baud_bps;
+    if (strcasecmp(arg, "AUTO") == 0) baud_bps = 0;
+    else if (strcmp(arg, "512") == 0) baud_bps = 512;
+    else if (strcmp(arg, "1200") == 0) baud_bps = 1200;
+    else if (strcmp(arg, "2400") == 0) baud_bps = 2400;
+    else {
+      Serial.println("RTL_POCSAG_SET_BAUD_INVALID use AUTO|512|1200|2400");
+      return;
+    }
+    pocsag_baud_bps.store(baud_bps, std::memory_order_relaxed);
+    pocsag_config_apply_pending.store(true, std::memory_order_release);
+    Serial.printf("RTL_POCSAG_SET_BAUD_OK baud=%s\n", baud_bps == 0 ? "AUTO" : arg);
+    return;
+  }
+  if (strncmp(command, "RTL_POCSAG_SET_POLARITY ", 24) == 0 && authenticated) {
+    const char* arg = command + 24;
+    uint8_t mode;
+    if (strcasecmp(arg, "AUTO") == 0) mode = 0;
+    else if (strcasecmp(arg, "NORMAL") == 0) mode = 1;
+    else if (strcasecmp(arg, "INVERTED") == 0) mode = 2;
+    else {
+      Serial.println("RTL_POCSAG_SET_POLARITY_INVALID use AUTO|NORMAL|INVERTED");
+      return;
+    }
+    pocsag_polarity_mode.store(mode, std::memory_order_relaxed);
+    pocsag_config_apply_pending.store(true, std::memory_order_release);
+    Serial.printf("RTL_POCSAG_SET_POLARITY_OK polarity=%s\n",
+                  mode == 0 ? "AUTO" : mode == 1 ? "NORMAL" : "INVERTED");
+    return;
+  }
+  if (strncmp(command, "RTL_POCSAG_TUNE ", 16) == 0 && authenticated) {
+    char* end = nullptr;
+    const unsigned long parsed = strtoul(command + 16, &end, 10);
+    if (end == command + 16 || parsed == 0) {
+      Serial.println("RTL_POCSAG_TUNE_INVALID usage: RTL_POCSAG_TUNE <HZ>");
+      return;
+    }
+    const uint32_t clamped = rtl_clamp_frequency(RtlBand::pocsag, static_cast<uint32_t>(parsed));
+    pocsag_config_frequency_hz = clamped;
+    // Reuses the same band-switch path RTL_TUNE uses for every other band --
+    // this also handles entering POCSAG fresh if it wasn't already active --
+    // but queue_local_rtl_listen() never touches pocsag_config_frequency_hz
+    // itself (that variable is POCSAG's own config-of-record, read by the
+    // dashboard header and the discovery scan's restore target), so it's set
+    // explicitly above rather than left to go stale like a plain retune would.
+    queue_local_rtl_listen(RtlBand::pocsag, clamped);
+    Serial.printf("RTL_POCSAG_TUNE_OK frequency_hz=%lu\n", static_cast<unsigned long>(clamped));
     return;
   }
   if (strcmp(command, "RTL_PRESET_LIST") == 0) {

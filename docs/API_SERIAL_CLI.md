@@ -188,20 +188,22 @@ actually broadcasts RDS.
 
 ## POCSAG (pager receive)
 
-Debug-verbosity only (see [Serial verbosity](#serial-verbosity-and-crash-evidence)).
 Never includes decoded message text — only lock/baud/FEC counters.
 
 | Command | Auth | Reply |
 |---|---|---|
-| (periodic, debug verbosity, ~5 s) | no | `RTL_POCSAG_STATUS lock=... baud=... inverted=0\|1 batches=... sync_losses=... codewords=... valid=... corrected=... corrected_bits=... uncorrectable=... parity_failures=... messages=... truncated=...` — emitted only while POCSAG is the active band. |
+| (periodic, debug verbosity, ~5 s) | no | Same line as `RTL_POCSAG STATUS` below, emitted only while POCSAG is the active band. |
+| `RTL_POCSAG STATUS` | no | `RTL_POCSAG_STATUS lock=... baud=... inverted=0\|1 frequency_hz=... scanning=0\|1 batches=... sync_losses=... codewords=... valid=... corrected=... corrected_bits=... uncorrectable=... parity_failures=... messages=... truncated=...` on demand, at any verbosity, whether or not POCSAG is the active band (`RTL_POCSAG_STATUS_ERROR not_initialized` if the decoder hasn't been allocated yet). |
 | `RTL_POCSAG_SCAN` | yes | `RTL_POCSAG_SCAN_QUEUED` or `RTL_POCSAG_SCAN_INVALID` (not on POCSAG). Dwells 4 s per channel in `/orcsdr/pocsag_scan.cfg` (or the built-in nationwide-US default if that file doesn't exist), looking for a real BCH-valid decode. Serial diagnostics: `RTL_POCSAG_DISCOVERY start candidates=...`, one `RTL_POCSAG_DISCOVERY_SAMPLE index=... frequency_hz=... relative_dbfs=... valid=... corrected=... uncorrectable=... messages=...` per channel, then `RTL_POCSAG_DISCOVERY_DONE found=0\|1 confidence=clean\|weak\|none best_index=... frequency_hz=... valid=... corrected=... messages=...`. `confidence=clean` means at least one genuinely BCH-valid codeword (syndrome 0, not merely corrected) was seen — a much stronger signal than `weak` (corrected-only, the same pattern a false sync lock on noise produces). Retunes to the winner only if `found=1`. |
 | `RTL_POCSAG_SCAN_STOP` | yes | `RTL_POCSAG_SCAN_STOP_QUEUED`. Cancels an in-progress scan and restores the frequency the scan started from. |
+| `RTL_POCSAG_TUNE <HZ>` | yes | `RTL_POCSAG_TUNE_OK frequency_hz=...` or `RTL_POCSAG_TUNE_INVALID usage: RTL_POCSAG_TUNE <HZ>`. Clamped to the RTL-SDR's general receive range (same clamp BROWSE uses — POCSAG has no fixed band). Switches into POCSAG if it wasn't already active, and updates the frequency the dashboard header and a future discovery scan will treat as current — unlike the generic `RTL_TUNE POCSAG <HZ>`, which retunes the radio but does not update POCSAG's own frequency-of-record. |
+| `RTL_POCSAG_SET_BAUD <AUTO\|512\|1200\|2400>` | yes | `RTL_POCSAG_SET_BAUD_OK baud=...` or `RTL_POCSAG_SET_BAUD_INVALID use AUTO\|512\|1200\|2400`. Restricts the decoder's parallel search to the given baud only (`AUTO` re-enables all three). Applied on the next IQ block, and resets decoder state exactly as changing baud always does — expect a brief resync. Not persisted across reboot; power-cycling returns to AUTO. |
+| `RTL_POCSAG_SET_POLARITY <AUTO\|NORMAL\|INVERTED>` | yes | `RTL_POCSAG_SET_POLARITY_OK polarity=...` or `RTL_POCSAG_SET_POLARITY_INVALID use AUTO\|NORMAL\|INVERTED`. Same mechanics as baud above. |
 
 `lock` is `orcsdr::pocsag::LockState` (0=no_signal, 1=searching, 2=locked,
-3=lost). There is no dedicated tune/status *command* for POCSAG yet — tuning
-happens through the Home dashboard catalog or the RF band guide's POCSAG
-quick launch, and frequency/baud/polarity are not yet independently
-settable over serial.
+3=lost). Per-dashboard verbosity control and full command coverage for
+every dashboard's functions beyond POCSAG is tracked as follow-up work,
+not yet built.
 
 ## FM presets
 
@@ -515,12 +517,18 @@ from documentation capture because it contains the receiver's saved location.
 ## IQ / LoRa capture
 
 `RTL_IQ_START`/`_STOP`/`_SAVE`/`_STATUS`, `RTL_IQ_RETRIEVE_BEGIN`/`_END`,
-`RTL_IQ_GET_BEGIN`/`_CHUNK`/`_ABORT`, `RTL_LORA_AUTO ON|OFF`,
-`LORA_SD_LOG ON|OFF|STATUS`, `LORA_MESSAGE_CLEAR` — raw IQ capture and the
-LoRa/Meshtastic energy-triggered decode pipeline. See
+`RTL_IQ_GET_BEGIN`/`_CHUNK`/`_ABORT`, `RTL_LORA_AUTO ON|OFF` (auth),
+`RTL_LORA_TUNE <HZ>` (auth; `RTL_LORA_TUNE_OK frequency_hz=...` or
+`RTL_LORA_TUNE_ERROR range=<min>-<max>`; hot-retunes if LoRa is already
+streaming, otherwise switches into it), `LORA_SD_LOG ON|OFF|STATUS`,
+`LORA_MESSAGE_CLEAR` — raw IQ capture and the LoRa/Meshtastic
+energy-triggered decode pipeline. See
 [docs/lora/README.md](lora/README.md) for the intended workflow (these are
 oriented around the LoRa energy-trigger + host-decode round trip, not
-general-purpose IQ dumping).
+general-purpose IQ dumping). There is no live serial override for spreading
+factor or bandwidth yet — those load once from `/orcsdr/lora.cfg` at boot;
+tracked as follow-up work alongside POCSAG's `SET_BAUD`/`SET_POLARITY`
+precedent.
 
 ## P25 validation and replay
 

@@ -143,10 +143,11 @@ void tab_icon(int index, int x, int y, uint16_t color) {
 void draw_header_live_values() {
   M5.Display.fillRect(340, 12, 460, 52, kBg);
   M5.Display.fillRect(750, 12, 200, 52, kBg);
-  char freq[24];
-  snprintf(freq, sizeof(freq), "%.4f MHz", g_settings.frequency_hz / 1000000.0);
-  text(freq, 360, 36, TFT_WHITE, 2, middle_left);
   const Snapshot& snapshot = live_snapshot();
+  char freq[24];
+  const uint32_t display_hz = snapshot.frequency_hz ? snapshot.frequency_hz : g_settings.frequency_hz;
+  snprintf(freq, sizeof(freq), "%.4f MHz", display_hz / 1000000.0);
+  text(freq, 360, 36, TFT_WHITE, 2, middle_left);
   if (snapshot.scanning) {
     char scan_freq[24];
     snprintf(scan_freq, sizeof(scan_freq), "%.4f MHz", snapshot.scan_frequency_hz / 1000000.0);
@@ -206,44 +207,162 @@ void draw_tabs() {
 // Owned by this dashboard's content area, not the shared header row --
 // architecture.md reserves the header for Home/Settings/Battery/Volume and
 // requires new controls to extend dashboard_audio_control rather than add
-// independent header geometry. This sits inside the LIVE card itself.
-constexpr int kScanButtonX = 1080, kScanButtonY = kHeaderH + 18, kScanButtonW = 160,
-              kScanButtonH = 36;
+// independent header geometry. FIND PAGERS sits inside the message-inbox
+// card below, not the header.
+constexpr int kHeroX = 20, kHeroY = kHeaderH + 12, kHeroW = 740, kHeroH = 180;
+constexpr int kStatusX = kHeroX + kHeroW + 16, kStatusY = kHeroY;
+constexpr int kStatusW = 20 + 1240 - kHeroW - 16 - kHeroX, kStatusH = kHeroH;
+constexpr int kInboxX = 20, kInboxY = kHeroY + kHeroH + 16, kInboxW = 1240;
+constexpr int kInboxH = kContentH - kHeroH - 16;
+constexpr int kScanButtonW = 170, kScanButtonH = 36;
+constexpr int kScanButtonX = kInboxX + kInboxW - 20 - kScanButtonW;
+constexpr int kScanButtonY = kInboxY + 14;
 
-void draw_live() {
-  card(20, kHeaderH + 12, 1240, kContentH);
-  text("RECENT MESSAGES", 44, kHeaderH + 34, kCyan, 1, middle_left);
-  const bool scanning = live_snapshot().scanning;
-  M5.Display.fillRoundRect(kScanButtonX, kScanButtonY, kScanButtonW, kScanButtonH, 8,
-                            scanning ? TFT_DARKGREY : TFT_DARKCYAN);
-  text(scanning ? "SCANNING" : "FIND PAGERS", kScanButtonX + kScanButtonW / 2,
-       kScanButtonY + kScanButtonH / 2, TFT_WHITE, 1);
-  const Stats& stats = live_snapshot().decoder_stats;
-  if (live_snapshot().message_count == 0) {
-    text(g_live ? "WAITING FOR TRAFFIC..." : "NOT RECEIVING", 640, kHeaderH + 300, kMuted, 2);
-    char status[80];
-    snprintf(status, sizeof(status), "batches=%u codewords=%u corrected=%u uncorrectable=%u",
-             static_cast<unsigned>(stats.batches_synced),
-             static_cast<unsigned>(stats.codewords_total),
-             static_cast<unsigned>(stats.codewords_corrected),
-             static_cast<unsigned>(stats.codewords_uncorrectable));
-    text(status, 640, kHeaderH + 340, kMuted, 1);
+// Hero: the newest decoded page, big and legible -- or, absent one yet, a
+// live "still listening" readout (lock state + a ticking batch/codeword
+// count) so the tab visibly proves the receiver is doing something rather
+// than sitting on dead text. Never fabricates a page that wasn't decoded.
+void draw_hero(const Snapshot& snapshot) {
+  card(kHeroX, kHeroY, kHeroW, kHeroH);
+  if (snapshot.scanning) {
+    M5.Display.fillRoundRect(kHeroX + 8, kHeroY + 10, 6, kHeroH - 20, 3, kYellow);
+    text("SCANNING POCSAG FREQUENCIES", kHeroX + 30, kHeroY + 24, kYellow, 1, middle_left);
+    char freq[24];
+    snprintf(freq, sizeof(freq), "%.4f MHz", snapshot.scan_frequency_hz / 1000000.0);
+    text(freq, kHeroX + 30, kHeroY + 70, TFT_WHITE, 3, middle_left);
+    char label[32];
+    snprintf(label, sizeof(label), "CHANNEL %u OF %u",
+             static_cast<unsigned>(snapshot.scan_index + 1),
+             static_cast<unsigned>(snapshot.scan_count));
+    text(label, kHeroX + kHeroW - 24, kHeroY + 24, kMuted, 1, middle_right);
+    // Progress bar across the candidate list, not decoration -- the fill
+    // fraction is the actual scan_index/scan_count position.
+    const int bar_x = kHeroX + 30, bar_y = kHeroY + 132, bar_w = kHeroW - 60, bar_h = 16;
+    M5.Display.drawRoundRect(bar_x, bar_y, bar_w, bar_h, 4, kBorder);
+    const int fill_w = snapshot.scan_count
+                           ? static_cast<int>(static_cast<uint64_t>(snapshot.scan_index + 1) *
+                                               (bar_w - 4) / snapshot.scan_count)
+                           : 0;
+    if (fill_w > 0) M5.Display.fillRoundRect(bar_x + 2, bar_y + 2, fill_w, bar_h - 4, 2, kYellow);
+    text("HUNTING FOR AN ACTIVE PAGING CHANNEL...", kHeroX + 30, kHeroY + 160, kMuted, 1,
+         middle_left);
     return;
   }
-  const size_t visible = std::min<size_t>(live_snapshot().message_count, 12);
+  if (snapshot.message_count > 0) {
+    const DisplayMessage& m = snapshot.messages[0];
+    const uint16_t accent = m.type == MessageType::alpha
+                                 ? kGreen
+                                 : m.type == MessageType::numeric ? kCyan : kMuted;
+    M5.Display.fillRoundRect(kHeroX + 8, kHeroY + 10, 6, kHeroH - 20, 3, accent);
+    text("NEWEST MESSAGE", kHeroX + 30, kHeroY + 24, kCyan, 1, middle_left);
+    char meta[64];
+    snprintf(meta, sizeof(meta), "CAPCODE %lu  *  %s",
+             static_cast<unsigned long>(m.capcode), message_type_label(m.type));
+    text(meta, kHeroX + 30, kHeroY + 54, TFT_LIGHTGREY, 1, middle_left);
+    text(m.text_length ? m.text : "(no text)", kHeroX + 30, kHeroY + 100, TFT_WHITE, 2,
+         middle_left);
+    const char* quality = m.uncorrectable_words ? "UNCORRECTABLE"
+                           : m.corrected_bits    ? "FEC CORRECTED"
+                                                  : "CLEAN DECODE";
+    const uint16_t quality_color =
+        m.uncorrectable_words ? kRed : m.corrected_bits ? kYellow : kGreen;
+    text(quality, kHeroX + kHeroW - 24, kHeroY + 24, quality_color, 1, middle_right);
+    return;
+  }
+  const Stats& stats = snapshot.decoder_stats;
+  M5.Display.fillRoundRect(kHeroX + 8, kHeroY + 10, 6, kHeroH - 20, 3,
+                            lock_state_color(stats.lock));
+  text("MONITORING", kHeroX + 30, kHeroY + 24, kCyan, 1, middle_left);
+  text(lock_state_label(stats.lock), kHeroX + 30, kHeroY + 68, lock_state_color(stats.lock), 3,
+       middle_left);
+  char detail[96];
+  snprintf(detail, sizeof(detail), "%lu BATCHES SYNCED  *  %lu CODEWORDS SEEN",
+           static_cast<unsigned long>(stats.batches_synced),
+           static_cast<unsigned long>(stats.codewords_total));
+  text(detail, kHeroX + 30, kHeroY + 124, kMuted, 1, middle_left);
+  text(snapshot.receiving ? "RECEIVER ACTIVE -- WAITING FOR THE NEXT PAGE" : "NOT RECEIVING",
+       kHeroX + 30, kHeroY + 154, kMuted, 1, middle_left);
+}
+
+// Always-visible decode-health readout plus a live soft-symbol sparkline --
+// a second proof-of-life signal (actual measured FSK samples, not a
+// decoration) even while the hero card above is still waiting for a page.
+void draw_decode_status_card(const Stats& stats) {
+  card(kStatusX, kStatusY, kStatusW, kStatusH);
+  text("DECODE STATUS", kStatusX + 20, kStatusY + 24, kCyan, 1, middle_left);
+  int y = kStatusY + 54;
+  char line[48];
+  text("BAUD", kStatusX + 20, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%u bps", stats.detected_baud);
+  text(line, kStatusX + kStatusW - 20, y, TFT_WHITE, 1, middle_right);
+  y += 28;
+  text("VALID / CORR / BAD", kStatusX + 20, y, kMuted, 1, middle_left);
+  snprintf(line, sizeof(line), "%lu / %lu / %lu",
+           static_cast<unsigned long>(stats.codewords_valid),
+           static_cast<unsigned long>(stats.codewords_corrected),
+           static_cast<unsigned long>(stats.codewords_uncorrectable));
+  text(line, kStatusX + kStatusW - 20, y, TFT_WHITE, 1, middle_right);
+
+  const int plot_y0 = y + 30;
+  const int plot_x0 = kStatusX + 20, plot_w = kStatusW - 40;
+  const int plot_h = kStatusY + kStatusH - 16 - plot_y0;
+  M5.Display.drawFastHLine(plot_x0, plot_y0 + plot_h / 2, plot_w, kBorder);
+  if (stats.soft_symbol_count > 0) {
+    const size_t count = std::min(stats.soft_symbol_count, Stats::kSoftSymbolCapacity);
+    for (size_t i = 0; i < count; ++i) {
+      const size_t index = (stats.soft_symbol_write + Stats::kSoftSymbolCapacity - count + i) %
+                            Stats::kSoftSymbolCapacity;
+      const float sample = std::clamp(stats.soft_symbols[index], -1.0f, 1.0f);
+      const int px = plot_x0 + static_cast<int>(i * plot_w / Stats::kSoftSymbolCapacity);
+      const int py = plot_y0 + plot_h / 2 - static_cast<int>(sample * (plot_h / 2 - 4));
+      M5.Display.fillCircle(px, py, 2, sample >= 0.0f ? kGreen : kCyan);
+    }
+  } else {
+    text("NO SAMPLES YET", plot_x0 + plot_w / 2, plot_y0 + plot_h / 2, kMuted, 1);
+  }
+}
+
+void draw_live() {
+  const Snapshot& snapshot = live_snapshot();
+  draw_hero(snapshot);
+  draw_decode_status_card(snapshot.decoder_stats);
+
+  card(kInboxX, kInboxY, kInboxW, kInboxH);
+  text("MESSAGE INBOX", kInboxX + 24, kInboxY + 24, kCyan, 1, middle_left);
+  const bool scanning = snapshot.scanning;
+  M5.Display.fillRoundRect(kScanButtonX, kScanButtonY, kScanButtonW, kScanButtonH, 8,
+                            scanning ? TFT_DARKGREY : TFT_DARKCYAN);
+  if (scanning) {
+    char label[24];
+    snprintf(label, sizeof(label), "SCANNING %u/%u", static_cast<unsigned>(snapshot.scan_index + 1),
+             static_cast<unsigned>(snapshot.scan_count));
+    text(label, kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2, TFT_WHITE, 1);
+  } else {
+    text("FIND PAGERS", kScanButtonX + kScanButtonW / 2, kScanButtonY + kScanButtonH / 2,
+         TFT_WHITE, 1);
+  }
+
+  if (snapshot.message_count == 0) {
+    text("NO MESSAGES DECODED YET", kInboxX + kInboxW / 2, kInboxY + kInboxH / 2 + 10, kMuted, 1);
+    return;
+  }
+  const int row_h = 34;
+  const size_t max_rows = std::max<int>(0, (kInboxH - 64) / row_h);
+  const size_t visible = std::min<size_t>(snapshot.message_count, max_rows);
   for (size_t i = 0; i < visible; ++i) {
-    const DisplayMessage& m = live_snapshot().messages[i];
-    const int y = kHeaderH + 66 + static_cast<int>(i) * 44;
+    const DisplayMessage& m = snapshot.messages[i];
+    const int y = kInboxY + 64 + static_cast<int>(i) * row_h;
     char capcode[16];
     snprintf(capcode, sizeof(capcode), "%lu", static_cast<unsigned long>(m.capcode));
-    text(capcode, 44, y, TFT_WHITE, 1, middle_left);
-    text(message_type_label(m.type), 190, y,
+    text(capcode, kInboxX + 24, y, TFT_WHITE, 1, middle_left);
+    text(message_type_label(m.type), kInboxX + 170, y,
          m.type == MessageType::alpha ? kGreen : m.type == MessageType::numeric ? kCyan : kMuted,
          1, middle_left);
-    text(m.text_length ? m.text : "(no text)", 330, y, TFT_LIGHTGREY, 1, middle_left);
-    if (m.uncorrectable_words) M5.Display.fillCircle(1230, y, 6, kRed);
-    else if (m.corrected_bits) M5.Display.fillCircle(1230, y, 6, kYellow);
-    else M5.Display.fillCircle(1230, y, 6, kGreen);
+    text(m.text_length ? m.text : "(no text)", kInboxX + 310, y, TFT_LIGHTGREY, 1, middle_left);
+    const int dot_x = kInboxX + kInboxW - 20;
+    if (m.uncorrectable_words) M5.Display.fillCircle(dot_x, y, 6, kRed);
+    else if (m.corrected_bits) M5.Display.fillCircle(dot_x, y, 6, kYellow);
+    else M5.Display.fillCircle(dot_x, y, 6, kGreen);
   }
 }
 
@@ -511,17 +630,17 @@ void update() {
   last_draw_ms = millis();
   g_drawn_revision = live_snapshot().revision;
   draw_header_live_values();
+  // Each view's own card(s) already fill their entire content rect before
+  // drawing on top of it, so a blanket background wipe here just doubles
+  // the paint work and produces a visible full-area flash on every update
+  // tick -- pure regression, not needed for correctness.
   if (g_view == View::live) {
-    M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
     draw_live();
   } else if (g_view == View::ids) {
-    M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
     draw_ids();
   } else if (g_view == View::signal) {
-    M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
     draw_signal();
   } else if (g_view == View::activity) {
-    M5.Display.fillRect(20, kHeaderH + 12, 1240, kContentH, kBg);
     draw_activity();
   }
 }

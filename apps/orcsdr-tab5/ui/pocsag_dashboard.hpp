@@ -64,6 +64,11 @@ struct Snapshot {
   uint32_t revision = 0;
   bool receiving = false;
 
+  // Authoritative current tuned frequency, refreshed on every publish --
+  // NOT the Settings passed to enter(), which is only captured once and
+  // goes stale the moment a scan (or any other retune) moves the radio.
+  uint32_t frequency_hz = 0;
+
   // Channel-discovery scan progress (Phase 10.2 "FIND PAGERS"). While
   // scanning is true, the header shows scan progress instead of the normal
   // lock badge; scan_frequency_hz is whichever candidate is currently being
