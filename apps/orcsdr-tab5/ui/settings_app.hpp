@@ -50,6 +50,7 @@ struct State {
   bool wifi_scanning = false;
   bool wifi_connected = false;
   bool wifi_connecting = false;
+  bool wifi_resetting_link = false;
   bool wifi_hosted_update_required = false;
   bool wifi_hosted_transport_ready = false;
   bool wifi_c6_image_embedded = false;
@@ -119,6 +120,7 @@ enum class ActionKind : uint8_t {
   wifi_power_changed,
   wifi_start_at_boot_changed,
   wifi_antenna_changed,
+  wifi_reset_link,
   c6_update_confirm,
   scan_wifi,
   connect_wifi,

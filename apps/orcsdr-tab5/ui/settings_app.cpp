@@ -158,6 +158,13 @@ void draw_connectivity() {
   button("ADD HIDDEN", 520, 180, 210, 46, TFT_NAVY);
   button(g_state.wifi_power_enabled ? "POWER OFF" : "POWER ON", 750, 180, 170, 46,
          g_state.wifi_power_enabled ? TFT_MAROON : TFT_DARKGREEN);
+  // Manual recovery for the SDIO transport to the C6 co-processor wedging
+  // under sustained traffic (hardware-confirmed; see wifi_service.hpp's
+  // reset_link() comment) -- Wi-Fi can stay "connected" while it's stuck,
+  // so this is separate from POWER OFF/ON, which don't touch that layer.
+  if (g_state.wifi_power_enabled)
+    button(g_state.wifi_resetting_link ? "RESETTING..." : "RESET LINK", 960, 180, 258, 46,
+           g_state.wifi_resetting_link ? TFT_DARKGREY : TFT_DARKCYAN);
   text("CONNECT ON BOOT", 330, 251, kMuted, 2);
   button(g_state.wifi_start_at_boot ? "ON" : "OFF", 820, 228, 398, 46,
          g_state.wifi_start_at_boot ? TFT_DARKGREEN : TFT_DARKGREY);
@@ -759,6 +766,8 @@ Action handle_touch(int32_t x, int32_t y) {
     if (hit(x, y, 820, 278, 398, 54))
       return {ActionKind::wifi_antenna_changed, g_state.wifi_external_antenna ? 0 : 1};
     if (!g_state.wifi_power_enabled) return {};
+    if (hit(x, y, 960, 180, 258, 46) && !g_state.wifi_resetting_link)
+      return {ActionKind::wifi_reset_link, 0};
     if (hit(x, y, 330, 180, 170, 46) && !g_state.wifi_scanning)
       return {ActionKind::scan_wifi, 0};
     if (hit(x, y, 520, 180, 210, 46)) {

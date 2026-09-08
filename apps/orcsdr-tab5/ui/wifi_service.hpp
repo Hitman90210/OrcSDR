@@ -44,6 +44,18 @@ uint32_t transport_failure_count();
 // itself never re-fires TRANSPORT_UP for a mid-session recovery, only for
 // initial bring-up. See wifi_service.cpp's definition for detail.
 void note_transport_recovered();
+// Manual recovery for a wedged SDIO transport (see transport_healthy()):
+// tears down and rebuilds the esp_hosted link (deinit/init/reconnect) and
+// the Wi-Fi driver on top of it, without touching the deliberately-disabled
+// CONFIG_ESP_HOSTED_HOST_TRANSPORT_RESTART_ON_FAILURE path or rebooting the
+// P4. Only meaningful while start() has already succeeded once. Blocks the
+// caller for the duration (same bring-up work boot already does, plus up to
+// 3s waiting for the Wi-Fi driver to confirm it actually stopped before
+// touching the transport -- see wifi_service.cpp's definition for why),
+// so call it from a context that can afford a brief pause, not a tight
+// loop. Does not reconnect to a station itself -- the caller re-associates
+// afterward.
+bool reset_link();
 const char* ssid();
 const char* ip();
 int16_t rssi();

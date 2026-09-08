@@ -1374,6 +1374,7 @@ bool settings_wifi_start_at_boot = false;
 bool settings_wifi_external_antenna = false;
 bool wifi_connected = false;
 bool wifi_connecting = false;
+bool wifi_resetting_link = false;
 // Power Off remains a separate, conservative path until its freeze is isolated.
 bool wifi_poweroff_radio_paused = false;
 bool wifi_connect_radio_paused = false;
@@ -8170,6 +8171,7 @@ const orcsdr::settings::State& global_settings_state() {
   state.wifi_scanning = wifi_scan_running;
   state.wifi_connected = device.wifi_connected;
   state.wifi_connecting = wifi_connecting;
+  state.wifi_resetting_link = wifi_resetting_link;
   strlcpy(state.wifi_ssid, device.wifi_ssid, sizeof(state.wifi_ssid));
   strlcpy(state.wifi_ip, device.wifi_ip, sizeof(state.wifi_ip));
   strlcpy(state.wifi_message, wifi_status_message, sizeof(state.wifi_message));
@@ -8625,6 +8627,29 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
               settings_wifi_external_antenna ? "External MMCX antenna selected"
                                              : "Internal antenna selected",
               sizeof(wifi_status_message));
+      update_global_settings();
+      break;
+    case orcsdr::settings::ActionKind::wifi_reset_link:
+      if (!wifi_resetting_link) {
+        wifi_resetting_link = true;
+        update_global_settings();
+        strlcpy(wifi_status_message, "Resetting Wi-Fi link...", sizeof(wifi_status_message));
+        // Manual escape hatch for the hardware-confirmed SDIO transport
+        // wedge (see wifi_service.hpp's reset_link()): rebuilds the
+        // esp_hosted link and Wi-Fi driver without touching the
+        // deliberately-disabled auto-restart path or rebooting the P4.
+        const bool ok = orcsdr::wifi::reset_link();
+        wifi_connected = false;
+        wifi_hosted_versions_match = ok && orcsdr::wifi::hosted_versions_match();
+        if (ok && wifi_ssid[0]) {
+          start_wifi_connection();
+        } else {
+          strlcpy(wifi_status_message,
+                  ok ? "Wi-Fi link reset; reconnect a network" : "Wi-Fi link reset failed",
+                  sizeof(wifi_status_message));
+        }
+        wifi_resetting_link = false;
+      }
       update_global_settings();
       break;
     case orcsdr::settings::ActionKind::scan_wifi:
@@ -10986,6 +11011,7 @@ void process_command(char* command) {
       else if (!strcmp(action, "GRAPHICS")) kind=K::graphics_changed; else if (!strcmp(action, "WEB")) kind=K::web_console_changed;
       else if (!strcmp(action, "CATALOG_CHECK")) kind=K::catalog_check; else if (!strcmp(action, "CATALOG_INSTALL")) kind=K::catalog_install;
       else if (!strcmp(action, "CATALOG_REMOVE")) kind=K::catalog_remove; else if (!strcmp(action, "CLOSE")) kind=K::close;
+      else if (!strcmp(action, "RESET_WIFI_LINK")) kind=K::wifi_reset_link;
       if ((kind == K::wifi_power_changed || kind == K::wifi_start_at_boot_changed ||
            kind == K::wifi_antenna_changed) && value > 1) {
         Serial.println("RTL_UI_ACTION_INVALID value_must_be_0_or_1");
@@ -11069,6 +11095,21 @@ void process_command(char* command) {
     }
     Serial.println(disconnect_wifi() ? "RTL_WIFI_DISCONNECT_OK"
                                      : "RTL_WIFI_DISCONNECT_ERROR radio_pause_failed");
+    return;
+  }
+  if (strcmp(command, "RTL_WIFI_RESET_LINK") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_WIFI_RESET_LINK_ERROR auth_required");
+      return;
+    }
+    if (!wifi_station_ready) {
+      Serial.println("RTL_WIFI_RESET_LINK_ERROR not_started");
+      return;
+    }
+    handle_global_settings_action({orcsdr::settings::ActionKind::wifi_reset_link, 0});
+    Serial.printf("RTL_WIFI_RESET_LINK_%s hosted_match=%d\n",
+                  wifi_hosted_versions_match ? "OK" : "ERROR",
+                  wifi_hosted_versions_match ? 1 : 0);
     return;
   }
   if (strcmp(command, "RTL_WIFI_STATUS") == 0) {

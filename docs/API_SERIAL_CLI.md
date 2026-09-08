@@ -367,7 +367,7 @@ RTL_UI ACTION FM TUNE 101900000
   `MOVE_DOWN <index>`, `RANGE <nm>`, `BRIGHTNESS <0-255>`, `ROTATION <1|3>`,
   `TIMEOUT <seconds>`, `VOLUME <0-255>`, `SOUND <0|1>`, `AUTO_START <0|1>`,
   `GRAPHICS <0|1>`, `WEB <0|1>`, `CATALOG_CHECK`, `CATALOG_INSTALL <index>`,
-  `CATALOG_REMOVE <index>`, `CLOSE`.
+  `CATALOG_REMOVE <index>`, `RESET_WIFI_LINK`, `CLOSE`.
 
 Each succeeds with `RTL_UI_ACTION_OK`. Inputs are intentionally routed through
 the existing dashboard handlers rather than duplicating touch-only state.
@@ -392,6 +392,7 @@ cannot forge serial records. Passwords are never returned.
 | `RTL_WIFI_PROFILES` | no | Priority-ordered SSID-only profile list; never returns passwords. |
 | `RTL_WIFI_CONNECT_SAVED` | no | Compatibility shortcut for saved profile 0. Indexed connection uses `RTL_UI ACTION SETTINGS CONNECT_SAVED <index>`. |
 | `RTL_WIFI_DISCONNECT` | yes | Disconnects Wi-Fi and restores the paused radio/audio path. |
+| `RTL_WIFI_RESET_LINK` | yes | Manual recovery for a wedged SDIO transport to the C6 (see `RTL_WIFI_STATUS`'s `transport_healthy`): rebuilds the esp_hosted link and Wi-Fi driver, then reconnects to the current network if one was configured. Requires Wi-Fi already started (`RTL_WIFI_RESET_LINK_ERROR not_started` otherwise). Blocks for the duration of the rebuild, the same bring-up work boot already does. |
 | `SET_WIFI <ssid_hex> <pass_hex> <hmac>` | yes + signed payload | Provisions slot 0 and attempts connection without echoing credentials. |
 
 Power, auto-connect, antenna selection, scan, indexed connection, forget, and

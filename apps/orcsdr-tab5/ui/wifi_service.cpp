@@ -44,6 +44,11 @@ std::atomic<uint32_t> g_ip_addr{0};
 // diagnosis. This does not attempt recovery, only makes the state visible.
 std::atomic<bool> g_transport_healthy{true};
 std::atomic<uint32_t> g_transport_failure_count{0};
+// Set by on_wifi_event() when WIFI_EVENT_STA_STOP actually arrives, cleared
+// before each esp_wifi_stop() call. See reset_link()'s comment: esp_wifi_stop()
+// over the hosted RPC transport is a fire-and-forget request to the C6, not a
+// guarantee the stop has taken effect by the time the call returns.
+std::atomic<bool> g_sta_stopped{false};
 
 #if ORCSDR_HAS_EMBEDDED_C6_FIRMWARE
 extern const uint8_t esp_hosted_tab5_c6_bin_start[]
@@ -160,6 +165,10 @@ void on_wifi_event(void*, esp_event_base_t base, int32_t id, void* data) {
     g_scan_done.store(true, std::memory_order_release);
     ESP_LOGI("orcsdr_wifi", "scan done event");
   }
+  if (base == WIFI_EVENT && id == WIFI_EVENT_STA_STOP) {
+    g_sta_stopped.store(true, std::memory_order_release);
+    ESP_LOGI("orcsdr_wifi", "station stop confirmed");
+  }
 }
 
 void on_ip_event(void*, esp_event_base_t, int32_t, void* data) {
@@ -272,6 +281,90 @@ bool start() {
 }
 
 void stop() { if (g_started) { esp_wifi_disconnect(); esp_wifi_stop(); } g_started = false; g_connected.store(false, std::memory_order_release); }
+
+// Manual recovery for a wedged SDIO transport (see transport_healthy()).
+// Deliberately does NOT call stop()/start(): those toggle g_started, and
+// start() unconditionally calls esp_event_handler_register() for
+// WIFI_EVENT/IP_EVENT/EH_HOST_EVENT -- fine once at boot, but calling it a
+// second time here would register the same handlers again, so every event
+// would fire the app's handlers twice for the rest of the session. This
+// cycles only the layers that actually need a fresh start (Wi-Fi driver +
+// esp_hosted transport), reusing the handlers already registered once.
+//
+// A first version of this function called esp_wifi_stop() and immediately
+// followed it with esp_hosted_deinit(). esp_wifi_stop() over the hosted RPC
+// transport is a fire-and-forget request to the C6 -- it returns once the
+// request is sent, not once the C6 has actually applied it and reported
+// WIFI_EVENT_STA_STOP back. Tearing down the transport (and the RPC
+// event-handler registration that would deliver that confirmation) right
+// after meant the C6's WiFi never actually stopped: hardware-confirmed, this
+// crashed with "assert failed: netif_add (netif already added)", because the
+// still-running station reported a fresh WIFI_EVENT_STA_START once the
+// transport reconnected, and the explicit esp_wifi_start() below produced a
+// second one -- two STA_START events with no STA_STOP between them.
+// esp_netif's default STA_START handler calls netif_add() unconditionally
+// (confirmed in ESP-IDF's esp_netif_lwip.c: esp_netif_start_api() has no
+// guard against an already-registered netif), so the second one crashed.
+// Waiting here for the real STA_STOP before touching the transport is the
+// fix. If it doesn't arrive -- plausible if the transport is wedged badly
+// enough that even a stop request can't complete -- bail out without
+// touching esp_hosted at all rather than risk the same crash again.
+bool reset_link() {
+  if (!g_started) return false;
+  ESP_LOGW("orcsdr_wifi", "RTL_WIFI_RESET_LINK requested");
+  g_sta_stopped.store(false, std::memory_order_release);
+  esp_wifi_disconnect();
+  g_connected.store(false, std::memory_order_release);
+  esp_err_t err = esp_wifi_stop();
+  if (err != ESP_OK) {
+    ESP_LOGE("orcsdr_wifi", "reset_link: esp_wifi_stop failed: 0x%x", static_cast<unsigned>(err));
+    return false;
+  }
+  constexpr uint32_t kStopTimeoutMs = 3000;
+  constexpr uint32_t kPollMs = 50;
+  uint32_t waited_ms = 0;
+  while (!g_sta_stopped.load(std::memory_order_acquire) && waited_ms < kStopTimeoutMs) {
+    vTaskDelay(pdMS_TO_TICKS(kPollMs));
+    waited_ms += kPollMs;
+  }
+  if (!g_sta_stopped.load(std::memory_order_acquire)) {
+    ESP_LOGE("orcsdr_wifi",
+             "reset_link: STA_STOP not confirmed after %ums, aborting without touching "
+             "the transport",
+             static_cast<unsigned>(kStopTimeoutMs));
+    return false;
+  }
+  g_hosted_transport_ready = false;
+  err = esp_hosted_deinit();
+  if (err != ESP_OK) {
+    ESP_LOGE("orcsdr_wifi", "reset_link: esp_hosted_deinit failed: 0x%x", static_cast<unsigned>(err));
+    return false;
+  }
+  err = esp_hosted_init();
+  if (err != ESP_OK) {
+    ESP_LOGE("orcsdr_wifi", "reset_link: esp_hosted_init failed: 0x%x", static_cast<unsigned>(err));
+    return false;
+  }
+  err = esp_hosted_connect_to_slave();
+  if (err != ESP_OK) {
+    ESP_LOGE("orcsdr_wifi", "reset_link: esp_hosted_connect_to_slave failed: 0x%x",
+             static_cast<unsigned>(err));
+    return false;
+  }
+  g_hosted_transport_ready = true;
+  err = esp_wifi_set_mode(WIFI_MODE_STA);
+  if (err != ESP_OK)
+    ESP_LOGW("orcsdr_wifi", "reset_link: esp_wifi_set_mode: 0x%x", static_cast<unsigned>(err));
+  err = esp_wifi_start();
+  if (err != ESP_OK) {
+    ESP_LOGE("orcsdr_wifi", "reset_link: esp_wifi_start failed: 0x%x", static_cast<unsigned>(err));
+    return false;
+  }
+  esp_wifi_set_ps(WIFI_PS_NONE);
+  ESP_LOGW("orcsdr_wifi", "RTL_WIFI_RESET_LINK succeeded");
+  return true;
+}
+
 bool begin_scan() {
   if (!g_started) return false;
   g_scan_done.store(false, std::memory_order_release);
