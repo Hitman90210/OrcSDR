@@ -329,7 +329,50 @@ void draw_spectrum_axis() {
        middle_right);
 }
 
+// NOAA Weather Radio is seven fixed 25 kHz NFM channels, so span/step/filter
+// are meaningless there -- the whole control strip becomes a channel picker.
+constexpr uint32_t kWxChannelsHz[7] = {162400000, 162425000, 162450000,
+                                       162475000, 162500000, 162525000,
+                                       162550000};
+constexpr int kWxButtonY = 570, kWxButtonW = 82, kWxButtonH = 54,
+              kWxButtonPitch = 86, kWxButtonX = kPlotX + 6;
+
+bool weather_view() {
+  return current.active_dashboard == dashboards::Id::weather;
+}
+
+int weather_channel_at(int32_t x, int32_t y) {
+  if (y < kWxButtonY || y >= kWxButtonY + kWxButtonH) return -1;
+  const int offset = static_cast<int>(x) - kWxButtonX;
+  if (offset < 0) return -1;
+  const int index = offset / kWxButtonPitch;
+  if (index >= static_cast<int>(std::size(kWxChannelsHz))) return -1;
+  return offset - index * kWxButtonPitch < kWxButtonW ? index : -1;
+}
+
+void draw_weather_channels() {
+  M5.Display.fillRect(kPlotX, 564, 610, 62, TFT_BLACK);
+  panel(kPlotX, 564, 610, 62, kCyan, 9);
+  char value[16];
+  for (size_t i = 0; i < std::size(kWxChannelsHz); ++i) {
+    const int x = kWxButtonX + static_cast<int>(i) * kWxButtonPitch;
+    const bool selected = current.channel == i + 1;
+    if (selected) M5.Display.fillRoundRect(x, kWxButtonY, kWxButtonW, kWxButtonH, 7, 0x0320);
+    panel(x, kWxButtonY, kWxButtonW, kWxButtonH, selected ? kGreen : kCyan, 7);
+    snprintf(value, sizeof(value), "WX%u", static_cast<unsigned>(i + 1));
+    text(value, x + kWxButtonW / 2, kWxButtonY + 17, selected ? kGreen : kCyan, 2,
+         middle_center);
+    snprintf(value, sizeof(value), "%.3f", kWxChannelsHz[i] / 1000000.0);
+    text(value, x + kWxButtonW / 2, kWxButtonY + 39, selected ? TFT_WHITE : TFT_LIGHTGREY,
+         1, middle_center);
+  }
+}
+
 void draw_tuning_controls() {
+  if (weather_view()) {
+    draw_weather_channels();
+    return;
+  }
   M5.Display.fillRect(kPlotX, 564, 610, 62, TFT_BLACK);
   panel(kPlotX, 564, 610, 62, kCyan, 9);
   panel(338, 571, 60, 48, kCyan, 7); text("<", 368, 595, kGreen, 3, middle_center);
@@ -439,7 +482,7 @@ void draw_receiver_chrome() {
   char value[24];
   if (current.channel != 0) {
     text("CHANNEL", 930, 484, kCyan, 2, middle_center);
-    snprintf(value, sizeof(value), "CH %u", current.channel);
+    snprintf(value, sizeof(value), weather_view() ? "WX%u" : "CH %u", current.channel);
   } else {
     text("STEP", 930, 484, kCyan, 2, middle_center);
     snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
@@ -447,14 +490,25 @@ void draw_receiver_chrome() {
   text(value, 930, 516, kGreen, 2, middle_center);
   draw_audio_controls();
   draw_tuning_controls();
-  panel(950, 564, 128, 62, kCyan, 7);
-  text("FILTER", 1014, 582, kCyan, 2, middle_center);
-  snprintf(value, sizeof(value), "%lu kHz", static_cast<unsigned long>(current.filter_bandwidth_hz / 1000u));
-  text(current.filter_bandwidth_hz ? value : "AUTO", 1014, 608, kGreen, 2, middle_center);
-  panel(1090, 564, 144, 62, kCyan, 7);
-  text("SIGNAL", 1162, 582, kCyan, 2, middle_center);
+  // Weather is fixed-bandwidth NFM, so the FILTER card has nothing to say
+  // there; SIGNAL takes the whole width instead of repeating the channel.
+  const bool weather = weather_view();
+  if (!weather) {
+    panel(950, 564, 128, 62, kCyan, 7);
+    text("FILTER", 1014, 582, kCyan, 2, middle_center);
+    snprintf(value, sizeof(value), "%lu kHz",
+             static_cast<unsigned long>(current.filter_bandwidth_hz / 1000u));
+    text(current.filter_bandwidth_hz ? value : "AUTO", 1014, 608, kGreen, 2,
+         middle_center);
+  } else {
+    M5.Display.fillRect(950, 564, 128, 62, TFT_BLACK);
+  }
+  const int signal_x = weather ? 950 : 1090;
+  const int signal_w = weather ? 284 : 144;
+  panel(signal_x, 564, signal_w, 62, kCyan, 7);
+  text("SIGNAL", signal_x + signal_w / 2, 582, kCyan, 2, middle_center);
   snprintf(value, sizeof(value), "%.1f dBFS", static_cast<double>(current.relative_dbfs));
-  text(value, 1162, 608, kGreen, 2, middle_center);
+  text(value, signal_x + signal_w / 2, 608, kGreen, 2, middle_center);
 }
 
 // 4 columns keep every row (including the trailing partial row) inside the
@@ -541,6 +595,14 @@ Action tap_action(int32_t x, int32_t y) {
     const int64_t requested = static_cast<int64_t>(current.frequency_hz) + offset;
     return {ActionKind::tune_frequency, dashboards::Id::count,
             requested > 0 ? static_cast<uint32_t>(requested) : 0};
+  }
+  // The channel picker replaces the span/step strip, so it has to swallow the
+  // whole panel -- a tap in a gap must not fall through to span_down.
+  if (weather_view() && inside(x, y, kPlotX, 564, 610, 62)) {
+    const int channel = weather_channel_at(x, y);
+    if (channel < 0) return {};
+    return {ActionKind::tune_frequency, dashboards::Id::count,
+            kWxChannelsHz[channel]};
   }
   if (inside(x, y, 338, 571, 60, 48)) return {ActionKind::span_down};
   if (inside(x, y, 548, 571, 60, 48)) return {ActionKind::span_up};

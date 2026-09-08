@@ -316,12 +316,19 @@ void draw_station_dynamic() {
   for (int i = 0; i < 4; ++i) text(values[i], 425, ys[i], TFT_WHITE, i == 1 ? 2 : 3, middle_left);
   M5.Display.clearClipRect();
 
-  M5.Display.fillRect(975, 330, 260, 260, kPanel);
-  text(g_snapshot.stereo ? "Stereo" : "Mono", 1100, 348,
+  // These three values live in three separate cards (280/390/500). Clearing
+  // them with one 975,330 260x260 rectangle covered the gaps between the cards
+  // as well, wiping the PILOT STATUS and DECODER STATUS captions and the card
+  // borders on every refresh -- which is what made the column look like it was
+  // hiding something. Clear each card's own value area instead.
+  M5.Display.fillRect(966, 314, 280, 56, kPanel);
+  text(g_snapshot.stereo ? "Stereo" : "Mono", 1106, 342,
        g_snapshot.stereo ? kGreen : kMuted, 4);
-  text(g_snapshot.rds_carrier ? "Present" : "Searching", 1100, 458,
+  M5.Display.fillRect(966, 424, 280, 56, kPanel);
+  text(g_snapshot.rds_carrier ? "Present" : "Searching", 1106, 452,
        g_snapshot.rds_carrier ? kGreen : kMuted, 3);
-  text(g_snapshot.rds_locked ? "Locked" : "Searching", 1100, 567,
+  M5.Display.fillRect(966, 534, 280, 66, kPanel);
+  text(g_snapshot.rds_locked ? "Locked" : "Searching", 1106, 567,
        g_snapshot.rds_locked ? kGreen : kMuted, 3);
 }
 

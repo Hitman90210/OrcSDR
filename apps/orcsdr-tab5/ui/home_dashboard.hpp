@@ -21,7 +21,7 @@ struct Snapshot {
   int32_t battery_percent = -1;
   int32_t vbus_mv = 0;
   uint8_t volume = 0;
-  uint8_t channel = 0;  // 1-40 on CB (see cb_channel_index); 0 = not channelized
+  uint8_t channel = 0;  // 1-40 on CB, 1-7 on NOAA weather; 0 = not channelized
   float relative_dbfs = -90.0f;
   bool wifi_connected = false;
   bool usb_connected = false;

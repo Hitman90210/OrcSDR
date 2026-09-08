@@ -27,6 +27,11 @@ struct C6UpdateStatus {
 
 bool start();
 void stop();
+// Reason code from the most recent WIFI_EVENT_STA_DISCONNECTED (0 if none),
+// and a short human-readable form ("" when the code has no friendly name).
+uint8_t last_disconnect_reason();
+const char* disconnect_reason_text(uint8_t reason);
+
 bool begin_scan();
 int scan_results(ScanResult* results, size_t capacity);
 bool connect(const char* ssid, const char* password);

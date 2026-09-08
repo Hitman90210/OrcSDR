@@ -554,6 +554,12 @@ constexpr uint32_t kRtlAmMaxHz = 1710000;
 constexpr uint32_t kRtlAmStepHz = 10000;
 constexpr uint32_t kRtlAmDefaultHz = 1000000;
 constexpr uint32_t kRtlWxHz = 162400000;
+// The seven NOAA Weather Radio channels. The band used to be pinned to WX1:
+// clamp always returned kRtlWxHz and STEP was a no-op, so the other six were
+// unreachable. They are selectable channels now, like CB.
+constexpr uint32_t kRtlWxChannelsHz[] = {162400000, 162425000, 162450000,
+                                         162475000, 162500000, 162525000,
+                                         162550000};
 constexpr uint32_t kRtlBrowseMinHz = ESP_RTL_SDR_FREQ_MIN_HZ;
 constexpr uint32_t kRtlBrowseMaxHz = ESP_RTL_SDR_FREQ_MAX_HZ;
 constexpr uint32_t kRtlBrowseDefaultHz = 146520000;
@@ -1398,6 +1404,11 @@ bool wifi_resetting_link = false;
 uint32_t wifi_retry_at_ms = 0;
 uint16_t wifi_retry_backoff_s = 0;
 bool wifi_auto_reconnect_suppressed = false;
+// Auto-reconnect used to require settings_wifi_start_at_boot, so a link the
+// user brought up by hand simply stayed down after a drop -- which is what
+// "it just disconnects" looks like from the outside. A hand-made connection
+// now counts as wanting to stay connected for the rest of the session.
+bool wifi_session_wants_connection = false;
 // Power Off remains a separate, conservative path until its freeze is isolated.
 bool wifi_poweroff_radio_paused = false;
 bool wifi_connect_radio_paused = false;
@@ -2096,8 +2107,16 @@ uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
       if (frequency_hz < kRtlAmMinHz) return kRtlAmMinHz;
       if (frequency_hz > kRtlAmMaxHz) return kRtlAmMaxHz;
       return frequency_hz;
-    case RtlBand::wx:
-      return kRtlWxHz;
+    case RtlBand::wx: {
+      uint32_t nearest = kRtlWxChannelsHz[0];
+      uint32_t best = UINT32_MAX;
+      for (const uint32_t channel : kRtlWxChannelsHz) {
+        const uint32_t distance = channel > frequency_hz ? channel - frequency_hz
+                                                         : frequency_hz - channel;
+        if (distance < best) { best = distance; nearest = channel; }
+      }
+      return nearest;
+    }
     case RtlBand::adsb:
       return kAdsbDefaultHz;
     case RtlBand::p25:
@@ -2142,7 +2161,14 @@ void persist_fm_presets() {
 }
 
 uint32_t rtl_step_frequency(RtlBand band, uint32_t frequency_hz, int direction) {
-  if (band == RtlBand::wx) return kRtlWxHz;
+  if (band == RtlBand::wx) {
+    const uint32_t current = rtl_clamp_frequency(band, frequency_hz);
+    constexpr int count = static_cast<int>(std::size(kRtlWxChannelsHz));
+    int channel = 0;
+    while (channel + 1 < count && kRtlWxChannelsHz[channel] != current) ++channel;
+    channel = direction < 0 ? (channel + count - 1) % count : (channel + 1) % count;
+    return kRtlWxChannelsHz[channel];
+  }
   if (band == RtlBand::cb) {
     const uint32_t current = rtl_clamp_frequency(band, frequency_hz);
     size_t channel = 0;
@@ -2171,6 +2197,13 @@ uint32_t rtl_step_frequency(RtlBand band, uint32_t frequency_hz, int direction) 
     return rtl_clamp_frequency(band, frequency_hz - step);
   }
   return rtl_clamp_frequency(band, frequency_hz + step);
+}
+
+size_t wx_channel_index(uint32_t frequency_hz) {
+  const uint32_t snapped = rtl_clamp_frequency(RtlBand::wx, frequency_hz);
+  for (size_t channel = 0; channel < std::size(kRtlWxChannelsHz); ++channel)
+    if (kRtlWxChannelsHz[channel] == snapped) return channel;
+  return 0;
 }
 
 size_t cb_channel_index(uint32_t frequency_hz) {
@@ -6986,6 +7019,7 @@ void start_wifi_connection(bool pause_radio = false) {
   if (!wifi_station_ready) initialize_wifi();
   if (!wifi_station_ready || !wifi_ssid[0]) return;
   wifi_auto_reconnect_suppressed = false;
+  wifi_session_wants_connection = true;
   if (pause_radio && !pause_radio_for_io(wifi_connect_radio_paused)) {
     strlcpy(wifi_status_message, "Radio pause failed", sizeof(wifi_status_message));
     Serial.println("RTL_WIFI_CONNECT_ERROR radio_pause_failed");
@@ -7044,6 +7078,7 @@ bool disconnect_wifi() {
   // An explicit disconnect is a user decision; don't let the auto-retry below
   // undo it. Any later explicit connect clears this again.
   wifi_auto_reconnect_suppressed = true;
+  wifi_session_wants_connection = false;
   wifi_retry_at_ms = 0;
   wifi_retry_backoff_s = 0;
   if (wifi_connected) {
@@ -7132,7 +7167,8 @@ void service_wifi_auto_reconnect() {
     wifi_retry_backoff_s = 0;
     return;
   }
-  if (!settings_wifi_start_at_boot || wifi_auto_reconnect_suppressed) return;
+  if (wifi_auto_reconnect_suppressed) return;
+  if (!settings_wifi_start_at_boot && !wifi_session_wants_connection) return;
   if (!wifi_profile_count || !wifi_ssid[0]) return;
   const uint32_t now = millis();
   if (wifi_retry_at_ms == 0) {
@@ -7253,7 +7289,17 @@ void poll_wifi() {
         memset(wifi_password, 0, sizeof(wifi_password));
       }
     }
-    strlcpy(wifi_status_message, "Connection failed", sizeof(wifi_status_message));
+    // Name the reason where the driver gives one; "Connection failed" alone
+    // cannot distinguish a wrong password from an AP that went out of range.
+    const uint8_t reason = orcsdr::wifi::last_disconnect_reason();
+    const char* why = orcsdr::wifi::disconnect_reason_text(reason);
+    if (why[0])
+      snprintf(wifi_status_message, sizeof(wifi_status_message), "Failed: %s", why);
+    else if (reason)
+      snprintf(wifi_status_message, sizeof(wifi_status_message), "Failed (reason %u)",
+               static_cast<unsigned>(reason));
+    else
+      strlcpy(wifi_status_message, "Connection failed", sizeof(wifi_status_message));
     log_wifi_coexistence("connect_failed", millis() - wifi_connect_started_ms);
     resume_radio_after_io(wifi_connect_radio_paused);
     state_changed = true;
@@ -8444,9 +8490,13 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
                                                        : 12500;
   strlcpy(snapshot.mode, demo ? "FM" : rtl_band_name(rtl_ui_band),
           sizeof(snapshot.mode));
-  snapshot.channel = (!demo && rtl_ui_band == RtlBand::cb)
-      ? static_cast<uint8_t>(cb_channel_index(rtl_ui_frequency_hz) + 1)
-      : 0;
+  snapshot.channel =
+      demo ? 0
+      : rtl_ui_band == RtlBand::cb
+          ? static_cast<uint8_t>(cb_channel_index(rtl_ui_frequency_hz) + 1)
+      : rtl_ui_band == RtlBand::wx
+          ? static_cast<uint8_t>(wx_channel_index(rtl_ui_frequency_hz) + 1)
+          : 0;
   snapshot.active_dashboard = demo ? orcsdr::dashboards::Id::home
                                     : dashboard_for_band(rtl_ui_band, rtl_ui_frequency_hz);
   snapshot.battery_percent = demo ? 76 : device.battery_percent;
@@ -8796,7 +8846,8 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
           start_wifi_connection();
         } else {
           strlcpy(wifi_status_message,
-                  ok ? "Wi-Fi link reset; reconnect a network" : "Wi-Fi link reset failed",
+                  ok ? "Wi-Fi link reset; reconnect a network"
+                     : "Link wedged - restart the device to recover",
                   sizeof(wifi_status_message));
         }
         wifi_resetting_link = false;
@@ -9594,9 +9645,7 @@ uint32_t rtl_fm_command_lo_hz(uint32_t display_hz) {
 }
 
 bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
-  if (!radio_session.owns(token) || rtl_ui_band == RtlBand::wx ||
-      rtl_ui_band == RtlBand::adsb)
-    return false;
+  if (!radio_session.owns(token) || rtl_ui_band == RtlBand::adsb) return false;
   frequency_hz = rtl_clamp_frequency(rtl_ui_band, frequency_hz);
   if (frequency_hz == 0) return false;
   /* UI: 1 kHz display quantize. */
@@ -9999,7 +10048,6 @@ void handle_sdr_touch(int32_t x, int32_t y) {
   if (action == orcsdr::radio_ui::ControlAction::none) return;
   if (action == orcsdr::radio_ui::ControlAction::frequency_down ||
       action == orcsdr::radio_ui::ControlAction::frequency_up) {
-    if (rtl_ui_band == RtlBand::wx) return;
     const uint32_t next = rtl_step_frequency(rtl_ui_band, rtl_ui_frequency_hz,
                                              action == orcsdr::radio_ui::ControlAction::frequency_down ? -1 : 1);
     const RtlCaptureState st = rtl_capture_state.load(std::memory_order_acquire);

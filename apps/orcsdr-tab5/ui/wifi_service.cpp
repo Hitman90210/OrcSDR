@@ -154,10 +154,17 @@ void format_phy(const wifi_ap_record_t& record, char* out, size_t size) {
   if (cursor == out) strlcpy(out, "unknown", size);
 }
 
+std::atomic<uint8_t> g_disconnect_reason{0};
+
 void on_wifi_event(void*, esp_event_base_t base, int32_t id, void* data) {
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
     const auto* event = static_cast<const wifi_event_sta_disconnected_t*>(data);
-    ESP_LOGW("orcsdr_wifi", "station disconnected reason=%u", event ? event->reason : 0u);
+    const uint8_t reason = event ? event->reason : 0u;
+    ESP_LOGW("orcsdr_wifi", "station disconnected reason=%u", reason);
+    // Kept so the UI can say *why* the link dropped: "it just disconnects" is
+    // a very different problem for reason 15 (bad key) than for 200/201
+    // (beacon timeout / no AP found), and the user cannot tell them apart.
+    g_disconnect_reason.store(reason, std::memory_order_release);
     g_connected.store(false, std::memory_order_release);
     g_failed.store(true, std::memory_order_release);
   }
@@ -363,6 +370,29 @@ bool reset_link() {
   esp_wifi_set_ps(WIFI_PS_NONE);
   ESP_LOGW("orcsdr_wifi", "RTL_WIFI_RESET_LINK succeeded");
   return true;
+}
+
+uint8_t last_disconnect_reason() {
+  return g_disconnect_reason.load(std::memory_order_acquire);
+}
+
+const char* disconnect_reason_text(uint8_t reason) {
+  switch (reason) {
+    case 1: return "unspecified";
+    case 2: return "auth expired";
+    case 4: return "inactivity timeout";
+    case 5: return "AP is full";
+    case 8: return "deauth by AP";
+    case 15: return "wrong password";
+    case 39: return "timeout";
+    case 200: return "beacon timeout";
+    case 201: return "network not found";
+    case 202: return "auth failed";
+    case 203: return "handshake failed";
+    case 204: return "handshake timeout";
+    case 205: return "connection lost";
+    default: return "";
+  }
 }
 
 bool begin_scan() {
