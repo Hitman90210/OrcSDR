@@ -112,6 +112,10 @@ and the one published map pack covers Lane County, Oregon.
 - **Your own P25 system** — control channels are local to you, so nothing ships
   preconfigured. Write a profile, drop it on the SD card, and import it.
 
+Working on the firmware itself? **[docs/FORK_HANDOFF.md](docs/FORK_HANDOFF.md)**
+is the engineering handoff for this fork: what changed and why, the hardware
+verification loop, the known traps, and what is still open.
+
 ---
 
 ## The dashboards
