@@ -30,6 +30,10 @@ struct View {
 // Normal UI-code only. This bounded cache is never touched by SDR/audio callbacks.
 bool load(orcsdr::storage::FileSystem* filesystem);
 bool available();
+// True when the loaded map came from kUserPath (the user's own area) rather
+// than the packaged Lane County sample, so the UI can say which one it is
+// instead of hardcoding "Lane County" for everybody.
+bool is_user_map();
 void draw_base(const View& view, uint16_t water_color, uint16_t road_color,
                uint16_t airport_color, uint16_t border_color);
 void draw_base(lgfx::v1::LovyanGFX& display, const View& view, uint16_t water_color,

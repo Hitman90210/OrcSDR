@@ -19,6 +19,7 @@ EXT_RAM_BSS_ATTR Label g_labels[kLabelCapacity]{};
 size_t g_count = 0;
 size_t g_label_count = 0;
 bool g_available = false;
+bool g_user_map = false;
 
 bool parse_line(const char* line, Segment* output) {
   if (!line || !output) return false;
@@ -97,11 +98,12 @@ bool load(orcsdr::storage::FileSystem* filesystem) {
   g_count = 0;
   g_label_count = 0;
   g_available = false;
+  g_user_map = false;
   if (!filesystem) return false;
   // A user-built map wins over the packaged one; see offline_map.hpp.
-  orcsdr::storage::File file = filesystem->exists(kUserPath)
-                                   ? filesystem->open(kUserPath)
-                                   : filesystem->open(kRuntimePath);
+  g_user_map = filesystem->exists(kUserPath);
+  orcsdr::storage::File file =
+      g_user_map ? filesystem->open(kUserPath) : filesystem->open(kRuntimePath);
   if (!file) return false;
   char header[9]{};
   const bool header_ok = file.readBytesUntil('\n', header, sizeof(header)) == 7 &&
@@ -125,6 +127,7 @@ bool load(orcsdr::storage::FileSystem* filesystem) {
 }
 
 bool available() { return g_available; }
+bool is_user_map() { return g_available && g_user_map; }
 
 void draw_base(lgfx::v1::LovyanGFX& display, const View& view, uint16_t water_color,
                uint16_t road_color, uint16_t airport_color, uint16_t border_color) {

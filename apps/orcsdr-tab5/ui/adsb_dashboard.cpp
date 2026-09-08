@@ -873,7 +873,10 @@ void draw_settings() {
 
     card(496, 340, 360, 264);
     text("OFFLINE MAP", 516, 370, kBlue, 2, middle_left);
-    text(offline_map::available() ? "Lane County vector map" : "Map pack not installed",
+    text(offline_map::available()
+             ? (offline_map::is_user_map() ? "Your local vector map"
+                                           : "Sample map: Lane County, OR")
+             : "Map pack not installed",
          516, 414, TFT_WHITE, 1, middle_left);
     text("SD-backed roads, water and labels", 516, 448, kMuted, 1, middle_left);
     button("MANAGE OFFLINE MAP", 516, 516, 320, 54, TFT_NAVY);

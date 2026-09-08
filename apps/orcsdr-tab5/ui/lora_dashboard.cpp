@@ -422,7 +422,8 @@ void draw_map_dynamic() {
   } else text("NO NODE SELECTED", 1095, 320, kMuted, 2);
   text(g_follow_node ? "FOLLOWING" : "CENTERED", 970, 350,
        g_follow_node ? kGreen : kCyan, 2, middle_left);
-  text("OFFLINE LANE COUNTY", 970, 390, kMuted, 1, middle_left);
+  text(offline_map::is_user_map() ? "OFFLINE LOCAL MAP" : "OFFLINE SAMPLE MAP",
+       970, 390, kMuted, 1, middle_left);
   text(offline_map::available() ? "SD VECTOR MAP" : "MAP PACK NOT INSTALLED", 970, 420, kMuted, 1, middle_left);
 }
 
