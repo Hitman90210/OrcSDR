@@ -778,6 +778,80 @@ bool decode_mesh(const uint8_t* data, size_t size, const Config& config, Packet*
   return true;
 }
 
+// --- FEC coverage ------------------------------------------------------------
+// FORK_HANDOFF 3d item 4 flagged coding rate 4/8 as unexercised, because Long
+// Turbo uses it and only 4/5 had ever been seen on air. That overstates it: the
+// LoRa PHY header is always sent at CR 4/8 whatever the payload uses, so
+// hamming_decode()'s correcting branch has run on every packet ever decoded.
+// What was genuinely untouched is narrower -- deinterleave() over 8 rows
+// instead of 5, and symbol_count() at coding_rate 4. Covered here so the claim
+// is a passing test rather than an argument.
+
+uint8_t hamming_syndrome(uint16_t codeword) {
+  return static_cast<uint8_t>((parity(codeword & 0b01001011) << 2) |
+                              (parity(codeword & 0b00010111) << 1) |
+                              parity(codeword & 0b00101110));
+}
+
+// Exact inverse of deinterleave(): codewords[column] bit `row` is
+// rotate_left(symbols[row], row % ppm, ppm) bit `column`.
+void interleave(const uint16_t* codewords, size_t symbol_count, uint8_t ppm,
+                uint16_t* symbols) {
+  for (size_t row = 0; row < symbol_count; ++row) {
+    uint16_t rotated = 0;
+    for (uint8_t column = 0; column < ppm; ++column)
+      if ((codewords[column] >> row) & 1u) rotated |= static_cast<uint16_t>(1u << column);
+    const uint8_t amount = static_cast<uint8_t>(row % ppm);
+    symbols[row] = rotate_left(rotated, static_cast<uint8_t>((ppm - amount) % ppm), ppm);
+  }
+}
+
+bool fec_self_check() {
+  // Hamming(8,4), the CR 4/8 code. Every nibble has a zero-syndrome codeword,
+  // decodes clean, and survives a flip in any of the eight bit positions --
+  // data bits get corrected, parity bits leave the nibble already right.
+  for (uint8_t nibble = 0; nibble < 16; ++nibble) {
+    uint16_t codeword = 0x100;
+    for (uint16_t candidate = 0; candidate < 256; ++candidate) {
+      if ((candidate & 0x0fu) == nibble && hamming_syndrome(candidate) == 0) {
+        codeword = candidate;
+        break;
+      }
+    }
+    if (codeword > 0xff || hamming_decode(codeword, 8) != nibble) return false;
+    for (uint8_t bit = 0; bit < 8; ++bit)
+      if (hamming_decode(static_cast<uint16_t>(codeword ^ (1u << bit)), 8) != nibble)
+        return false;
+  }
+  // CR 4/5 and 4/6 are parity-only: they detect and never correct, so the nibble
+  // must pass through untouched. A corrector firing here would silently rewrite
+  // good data, which is worse than the error it thought it was fixing.
+  for (uint16_t codeword = 0; codeword < 256; ++codeword)
+    if (hamming_decode(codeword, 5) != (codeword & 0x0fu)) return false;
+  // deinterleave() over 8 rows is the CR 4/8 shape it has never been given.
+  static constexpr uint8_t kFecSf[] = {7, 11};
+  static constexpr size_t kFecRows[] = {5, 8};
+  for (const uint8_t sf : kFecSf) {
+    for (const size_t rows : kFecRows) {
+      uint16_t codewords[16]{};
+      uint16_t symbols[16]{};
+      uint16_t recovered[16]{};
+      const uint16_t mask = static_cast<uint16_t>((1u << rows) - 1u);
+      for (uint8_t i = 0; i < sf; ++i)
+        codewords[i] = static_cast<uint16_t>((0xb5u * (i + 3u) + i) & mask);
+      interleave(codewords, rows, sf, symbols);
+      if (deinterleave(symbols, rows, sf, recovered, std::size(recovered)) != sf)
+        return false;
+      for (uint8_t i = 0; i < sf; ++i)
+        if (recovered[i] != codewords[i]) return false;
+    }
+  }
+  // symbol_count() at coding_rate 4: 8 header symbols plus 8 per payload group.
+  if (symbol_count(32, 1, true, 11) != 38 || symbol_count(32, 4, true, 11) != 56)
+    return false;
+  return true;
+}
+
 // --- DSP regression vector ---------------------------------------------------
 // self_check() below covers decryption, telemetry and node info -- the protocol
 // layer -- and none of the signal path. Nothing guards the chirp maths, the
@@ -1240,7 +1314,7 @@ static bool protocol_self_check() {
       std::strcmp(node.long_name, "hardcore_Tbeam") != 0 ||
       std::strcmp(node.short_name, "HcMe") != 0)
     return false;
-  return true;
+  return fec_self_check();
 }
 
 bool self_check() {

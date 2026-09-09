@@ -26,8 +26,8 @@ regression vector this work is checked against).
 | 2. Extend the DSP vector to 500 kHz | **done** |
 | 3. Verify on hardware | **done** -- 10/10 cases pass |
 | 4. Try a real 500 kHz node | not started |
-| 5. Optional: a 500 kHz channel filter | not started |
-| 6. Coding rate 4/8 | not started |
+| 5. Optional: a 500 kHz channel filter | **designed and verified, not shipped** |
+| 6. Coding rate 4/8 | **done -- needed no new code** |
 
 ---
 
@@ -193,6 +193,134 @@ perfectly aligned and noise-free. What is proved is that chirp generation,
 resampling, dechirping and symbol mapping are correct at 500 kHz -- which is
 exactly what was broken. Preamble detection, header parsing, FEC and CRC on a
 real off-air burst are stage 4.
+
+---
+
+## Stage 6 -- coding rate 4/8 needed no new code
+
+`FORK_HANDOFF.md` 3d item 4 said the decoder "has only been exercised on 4/5;
+worth confirming that path". That overstates the risk. **The LoRa PHY header is
+always sent at CR 4/8**, whatever coding rate the payload uses:
+
+```c
+for (size_t i = 0; i < codeword_count; ++i)
+  nibbles[i] = hamming_decode(codewords[i], 8);   // parse_header(), always 8
+```
+
+So `hamming_decode()`'s correcting branch has run on every packet the decoder
+has ever produced. The payload path calls the identical function with
+`redundant_bits = coding_rate + 4`, which is the same 8 for CR 4/8.
+
+What was genuinely untouched is narrower: `deinterleave()` over **8 rows**
+instead of 5, and `symbol_count()` at `coding_rate = 4`. Both now have
+assertions rather than an argument, in `fec_self_check()`:
+
+| Assertion | Result |
+| --- | --- |
+| Hamming(8,4): every nibble has a zero-syndrome codeword | 16/16 |
+| ... decodes clean | 16/16 |
+| ... survives a flip in any of the 8 bit positions | **128/128** |
+| CR 4/5 is parity-only and passes the nibble through untouched | 256/256 |
+| `deinterleave()` round trip, SF 7 and 11, 5 and 8 rows | 4/4 |
+| `symbol_count()` at CR 4/5 and 4/8 | 38 and 56 symbols |
+
+The CR 4/5 assertion is the one worth keeping: 4/5 and 4/6 are parity-only,
+they detect and never correct. A corrector firing there would silently rewrite
+good data, which is worse than the error it thought it was fixing.
+
+The round-trip test needs an interleaver, which the decoder does not have, so
+`interleave()` is written in the module as the exact inverse of
+`deinterleave()`: `codewords[column]` bit `row` is
+`rotate_left(symbols[row], row % ppm, ppm)` bit `column`.
+
+---
+
+## Stage 5 -- a channel filter for the 500 kHz path (designed, not shipped)
+
+### Why it is not just a noise-floor question
+
+`dechirp_peak()` folds the spectrum in half:
+
+```c
+magnitude = |X[bin]| + |X[bin + bin_count]|
+```
+
+At a 1 MHz decode rate that pairs frequencies **500 kHz apart**, so a component
+at +400 kHz -- well outside a +/- 250 kHz channel -- lands on the bin for
+-100 kHz, which is inside it. Out-of-channel energy is not merely background;
+the fold puts it directly onto the peak search. On 915 MHz ISM that is not
+academic -- 3c exists because of interferers.
+
+Measured over the 460 kHz that folds inward against a 500 kHz channel:
+
+| | Noise raised by folding |
+| --- | --- |
+| Unfiltered | +2.83 dB |
+| Filtered | +0.09 dB |
+| **Recovered** | **2.74 dB** |
+
+Plus adjacent-channel rejection: an interferer 300 kHz out goes from 0 dB to
+-27.8 dB.
+
+### What kLoraLowpass actually is
+
+Reproduced exactly from a design script -- worst relative coefficient
+difference **4.5e-09**:
+
+> 10th-order Butterworth, fc = 125 kHz at fs = 960 kHz, five biquads ordered by
+> **ascending pole radius**, overall gain folded into section 0's numerator,
+> `{b0, b1, b2, a1, a2}` in transposed direct form II.
+
+Worth writing down: it means new coefficients can be generated for this code
+with confidence that they match its conventions, rather than guessed at. The
+section ordering is the part that is easy to get backwards.
+
+### Where the filter goes, and the number that falls out
+
+Not before the resampler. Filtering **after** it, at the decode rate, is better
+for three reasons:
+
+1. A filter is inherently safe in place -- one sample in, one sample out -- so
+   it needs no second buffer and cannot hit the upsampling aliasing hazard.
+2. It leaves the existing 250 kHz anti-alias path completely untouched.
+3. The normalised cutoff is then **the same number for every bandwidth**:
+
+```
+cutoff / decode_rate = (bandwidth / 2) / (2 x bandwidth) = 0.25   always
+```
+
+One coefficient set covers 125, 250 and 500 kHz. And at exactly a quarter of
+the sample rate the bilinear transform gives `K = tan(pi/4) = 1`, so every
+`a1` term is **exactly zero** -- an unusually well-conditioned filter:
+
+```c
+// 10th-order Butterworth, fc = 0.25 x fs. a1 is zero by construction.
+{0.0028964459f, 0.0057928918f, 0.0028964459f, 0.0f, 0.00619395866f},
+{1.0f, 2.0f, 1.0f, 0.0f, 0.0576378106f},
+{1.0f, 2.0f, 1.0f, 0.0f, 0.171572875f},
+{1.0f, 2.0f, 1.0f, 0.0f, 0.375524806f},
+{1.0f, 2.0f, 1.0f, 0.0f, 0.729453817f},
+```
+
+| Frequency | Response | | Pole radii |
+| --- | --- | --- | --- |
+| 0.20 x fs | -0.01 dB | | 0.0787 |
+| 0.25 x fs (channel edge) | -3.01 dB | | 0.2401 |
+| 0.30 x fs | -27.76 dB | | 0.4142 |
+| 0.35 x fs | -58.57 dB | | 0.6128 |
+| 0.50 x fs (Nyquist) | -300 dB | | 0.8541 |
+
+All stable, -3 dB at the channel edge -- the same character as the existing
+filter has for its own channel.
+
+### Why it is not shipped yet
+
+Deliberately held until stage 4 reports. Adding a filter to a path whose basic
+decode has not yet been seen working would confound the diagnosis: a silent
+result would then have two possible causes instead of one. If stage 4 shows
+preambles but failing headers, 2.74 dB is exactly the kind of margin that
+decides it, and this goes in. The coefficients are derived and verified; what
+is left is ~15 lines and a run of the DSP vector.
 
 ---
 
