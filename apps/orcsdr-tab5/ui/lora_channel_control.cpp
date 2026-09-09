@@ -169,7 +169,7 @@ bool self_check() {
          frequency_hz(us, 20) == 906875000 && slot_for_frequency(us, 906875000) == 20 &&
          default_slot(eu433) == 4 && frequency_hz(eu433, 4) == 433875000 &&
          default_slot(eu868) == 1 && frequency_hz(eu868, 1) == 869525000 &&
-         slot_count(ph868) == 5 && default_slot(ph868) == 1 &&
+         ph868 >= 0 && slot_count(ph868) == 5 && default_slot(ph868) == 1 &&
          frequency_hz(ph868, 1) == 868125000 &&
          slot_for_frequency(us, 906800000) == 0;
 }

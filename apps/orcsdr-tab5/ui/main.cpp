@@ -3688,10 +3688,12 @@ bool queue_lora_auto_decode() {
   if (!lora_native_decode_busy.compare_exchange_strong(
           expected, true, std::memory_order_acq_rel)) return false;
   const size_t bytes = g_iq_rec_write.load(std::memory_order_acquire);
-  // Automatic captures belong to the decoder after this swap. Manual export and
-  // retrieval reject automatic buffers, so they can only read g_iq_rec_buf.
-  std::swap(g_iq_rec_buf, g_lora_decode_buf);
-  const LoraNativeDecodeWork work{g_lora_decode_buf, bytes, g_iq_rec_sf,
+  // Transfer the completed automatic buffer to the decoder and immediately give
+  // capture the released buffer. Manual readers reject automatic captures.
+  uint8_t* decode_iq = g_iq_rec_buf;
+  g_iq_rec_buf = g_lora_decode_buf;
+  g_lora_decode_buf = decode_iq;
+  const LoraNativeDecodeWork work{decode_iq, bytes, g_iq_rec_sf,
                                   g_iq_rec_bandwidth_hz, g_iq_rec_frequency_hz, true};
   g_iq_rec_ready.store(false, std::memory_order_release);
   g_iq_rec_auto_triggered.store(false, std::memory_order_release);
