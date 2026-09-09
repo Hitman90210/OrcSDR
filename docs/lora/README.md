@@ -39,7 +39,9 @@ recovered, or attributed.
 `/orcsdr/lora_packets.csv` is optional local SD evidence. The 32-record RAM
 queue and low-priority SD writer keep writes out of USB, IQ, and rendering
 paths. Clearing the Traffic screen clears only the RAM list; it does not delete
-the saved CSV. IQ capture remains explicit and is exported separately.
+the saved CSV. **Export Log** on Nodes writes only the bounded recent display
+list (at most eight decoded events) to a new `/orcsdr/lora_NNN.csv`; it does not
+enable continuous logging. IQ capture remains explicit and is exported separately.
 
 **Scan Band** samples up to fourteen evenly spaced LongFast slots in the selected
 region. It temporarily retunes the configured monitor, reports observed energy,

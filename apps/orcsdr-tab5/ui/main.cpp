@@ -57,6 +57,7 @@
 #include "fm_config.hpp"
 #include "home_dashboard.hpp"
 #include "lora_dashboard.hpp"
+#include "lora_packet_log.hpp"
 #include "lora_native_decoder.hpp"
 #include "lora_channel_control.hpp"
 #include "location_estimate.hpp"
@@ -1244,29 +1245,14 @@ static size_t lora_authorized_key_bytes = 0;
 static char lora_profile_name[24] = "LONGFAST";
 static char lora_region_name[24] = "US";
 static portMUX_TYPE lora_message_mux = portMUX_INITIALIZER_UNLOCKED;
-struct LoraDisplayPacket {
-  char text[112]{};
-  uint32_t sender = 0;
-  uint32_t destination = 0;
-  uint32_t packet_id = 0;
-  uint32_t received_ms = 0;
-  int32_t latitude_e7 = INT32_MAX;
-  int32_t longitude_e7 = INT32_MAX;
-  int16_t snr_tenths = INT16_MAX;
-  int16_t signal_tenths = INT16_MAX;
-  uint16_t port = 0;
-  bool encrypted = false;
-  char short_name[8]{};
-  char long_name[32]{};
-};
+using LoraDisplayPacket = orcsdr::lora_log::Record;
 constexpr size_t kLoraDisplayPacketCount = 8;
 static LoraDisplayPacket lora_display_packets[kLoraDisplayPacketCount]{};
-struct LoraLogRecord {
-  LoraDisplayPacket packet{};
-  uint32_t frequency_hz = 0;
-};
 constexpr size_t kLoraLogQueueDepth = 32;
 constexpr char kLoraLogPath[] = "/orcsdr/lora_packets.csv";
+static uint16_t lora_export_sequence = 0;
+static uint32_t lora_log_status_revision = 0;
+static char lora_log_status[48] = "EXPORTS RECENT EVENTS";
 static QueueHandle_t lora_log_queue = nullptr;
 static TaskHandle_t lora_log_task_handle = nullptr;
 static std::atomic<bool> lora_log_requested{false};
@@ -1300,6 +1286,8 @@ struct LoraNodePosition {
   uint32_t received_ms = 0;
   int32_t latitude_e7 = INT32_MAX;
   int32_t longitude_e7 = INT32_MAX;
+  int16_t signal_tenths = INT16_MAX;
+  int16_t snr_tenths = INT16_MAX;
   char name[32]{};
 };
 constexpr size_t kLoraNodePositionCount = 8;
@@ -3390,38 +3378,41 @@ void enrich_one_adsb_track() {
                   found ? metadata.registration : "-");
 }
 
-size_t format_lora_csv(char* output, size_t output_size,
-                       const LoraLogRecord& record) {
-  if (output == nullptr || output_size < 4) return 0;
-  const LoraDisplayPacket& packet = record.packet;
-  char destination[16];
-  if (packet.destination == UINT32_MAX) {
-    strlcpy(destination, "broadcast", sizeof(destination));
-  } else {
-    snprintf(destination, sizeof(destination), "!%08lx",
-             static_cast<unsigned long>(packet.destination));
+bool export_lora_log_snapshot() {
+  LoraDisplayPacket packets[kLoraDisplayPacketCount]{};
+  size_t count = 0;
+  portENTER_CRITICAL(&lora_message_mux);
+  for (const auto& packet : lora_display_packets)
+    if (packet.received_ms != 0) packets[count++] = packet;
+  portEXIT_CRITICAL(&lora_message_mux);
+  if (count == 0) {
+    strlcpy(lora_log_status, "NOTHING TO EXPORT", sizeof(lora_log_status));
+    ++lora_log_status_revision;
+    return false;
   }
-  int used = snprintf(
-      output, output_size,
-      "%lu,%lu,!%08lx,%s,%08lx,%u,%d,%d,%ld,%ld,\"",
-      static_cast<unsigned long>(packet.received_ms),
-      static_cast<unsigned long>(record.frequency_hz),
-      static_cast<unsigned long>(packet.sender),
-      destination,
-      static_cast<unsigned long>(packet.packet_id),
-      static_cast<unsigned>(packet.port), static_cast<int>(packet.snr_tenths),
-      static_cast<int>(packet.signal_tenths), static_cast<long>(packet.latitude_e7),
-      static_cast<long>(packet.longitude_e7));
-  if (used < 0 || static_cast<size_t>(used) >= output_size) return 0;
-  size_t position = static_cast<size_t>(used);
-  for (const char* text = packet.text; *text && position + 4 < output_size; ++text) {
-    if (*text == '"') output[position++] = '"';
-    output[position++] = *text;
+  if (lora_log_requested.load(std::memory_order_relaxed)) {
+    strlcpy(lora_log_status, "LIVE LOG: PACKETS.CSV", sizeof(lora_log_status));
+    ++lora_log_status_revision;
+    return true;
   }
-  output[position++] = '"';
-  output[position++] = '\n';
-  output[position] = '\0';
-  return position;
+  if (!ensure_tab5_sd()) {
+    strlcpy(lora_log_status, "SD CARD NOT READY", sizeof(lora_log_status));
+    ++lora_log_status_revision;
+    return false;
+  }
+  char path[48];
+  if (!orcsdr::lora_log::export_snapshot(*g_sd_fs, packets, count,
+                                         &lora_export_sequence, path, sizeof(path))) {
+    strlcpy(lora_log_status, "EXPORT FAILED", sizeof(lora_log_status));
+    ++lora_log_status_revision;
+    return false;
+  }
+  snprintf(lora_log_status, sizeof(lora_log_status), "SAVED LORA_%03u.CSV",
+           lora_export_sequence);
+  ++lora_log_status_revision;
+  Serial.printf("RTL_LORA_LOG_EXPORTED path=%s events=%u\n", path,
+                static_cast<unsigned>(count));
+  return true;
 }
 
 void lora_sd_log_task(void*) {
@@ -3431,9 +3422,9 @@ void lora_sd_log_task(void*) {
   size_t batch_bytes = 0;
   uint32_t last_flush_ms = millis();
   for (;;) {
-    LoraLogRecord record;
+    LoraDisplayPacket record;
     if (xQueueReceive(lora_log_queue, &record, pdMS_TO_TICKS(200)) == pdTRUE) {
-      const size_t line_bytes = format_lora_csv(line, sizeof(line), record);
+      const size_t line_bytes = orcsdr::lora_log::format_csv(line, sizeof(line), record);
       if (line_bytes > 0 && batch_bytes + line_bytes <= sizeof(batch)) {
         memcpy(batch + batch_bytes, line, line_bytes);
         batch_bytes += line_bytes;
@@ -3491,7 +3482,7 @@ void lora_sd_log_task(void*) {
 void set_lora_sd_logging(bool enabled) {
   if (enabled) {
     if (lora_log_queue == nullptr) {
-      lora_log_queue = xQueueCreate(kLoraLogQueueDepth, sizeof(LoraLogRecord));
+      lora_log_queue = xQueueCreate(kLoraLogQueueDepth, sizeof(LoraDisplayPacket));
     }
     if (lora_log_queue == nullptr ||
         (lora_log_task_handle == nullptr &&
@@ -3512,9 +3503,8 @@ void set_lora_sd_logging(bool enabled) {
 void enqueue_lora_sd_log(const LoraDisplayPacket& packet) {
   if (!lora_log_requested.load(std::memory_order_relaxed) ||
       lora_log_queue == nullptr) return;
-  LoraLogRecord record{packet, rtl_ui_frequency_hz};
   lora_log_last_packet_ms.store(millis(), std::memory_order_relaxed);
-  if (xQueueSend(lora_log_queue, &record, 0) != pdTRUE) {
+  if (xQueueSend(lora_log_queue, &packet, 0) != pdTRUE) {
     lora_log_dropped.fetch_add(1, std::memory_order_relaxed);
   }
 }
@@ -8576,6 +8566,7 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.key_loaded = snapshot.native_decoder_ready && lora_authorized_key_loaded;
   strlcpy(snapshot.profile, lora_profile_name, sizeof(snapshot.profile));
   strlcpy(snapshot.region, lora_region_name, sizeof(snapshot.region));
+  strlcpy(snapshot.log_status, lora_log_status, sizeof(snapshot.log_status));
 #if !RTL_USE_LEGACY_USB
   if (g_rtl != nullptr) {
     esp_rtl_sdr_metrics_t metrics{};
@@ -8595,6 +8586,8 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
     node.seen_ms = position.received_ms;
     node.latitude_e7 = position.latitude_e7;
     node.longitude_e7 = position.longitude_e7;
+    node.signal_tenths = position.signal_tenths;
+    node.snr_tenths = position.snr_tenths;
     node.favorite = position.node == lora_favorite_node_id;
     strlcpy(node.name, position.name, sizeof(node.name));
   }
@@ -8624,6 +8617,8 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.revision ^= snapshot.survey_active ? 1u : 0u;
   snapshot.revision ^= snapshot.sd_logging ? 2u : 0u;
   snapshot.revision ^= snapshot.iq_recording ? 4u : 0u;
+  snapshot.revision ^= lora_favorite_node_id;
+  snapshot.revision ^= lora_log_status_revision << 4;
   return snapshot;
 }
 
@@ -8948,13 +8943,16 @@ void service_lora_survey(uint32_t now) {
 void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
   using orcsdr::lora::ActionKind;
   switch (action.kind) {
+    case ActionKind::refresh:
+      break;
     case ActionKind::select_view:
       if (action.value < static_cast<uint32_t>(orcsdr::lora::View::count))
         orcsdr::lora::show_documentation_view(
             static_cast<orcsdr::lora::View>(action.value), lora_dashboard_snapshot());
       break;
     case ActionKind::select_node:
-      lora_selected_node = static_cast<uint8_t>(action.value);
+      if (action.value < orcsdr::lora::kNodeCapacity)
+        lora_selected_node = static_cast<uint8_t>(action.value);
       break;
     case ActionKind::toggle_favorite: {
       const auto snapshot = lora_dashboard_snapshot();
@@ -8996,8 +8994,7 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
       portEXIT_CRITICAL(&lora_message_mux);
       break;
     case ActionKind::export_log:
-      Serial.printf("RTL_LORA_LOG path=%s enabled=%d\n", kLoraLogPath,
-                    lora_log_ready.load(std::memory_order_relaxed) ? 1 : 0);
+      (void)export_lora_log_snapshot();
       break;
     case ActionKind::open_channels:
       orcsdr::lora::open_channel_picker();
@@ -10177,6 +10174,7 @@ bool parse_hex_u32_exact(const char* value, uint32_t* output) {
 void lora_store_packet(const LoraDisplayPacket& input) {
   LoraDisplayPacket packet = input;
   if (packet.received_ms == 0) packet.received_ms = millis();
+  if (packet.frequency_hz == 0) packet.frequency_hz = rtl_ui_frequency_hz;
   portENTER_CRITICAL(&lora_message_mux);
   if (packet.packet_id != 0) {
     for (const auto& existing : lora_display_packets) {
@@ -10214,6 +10212,8 @@ void lora_store_packet(const LoraDisplayPacket& input) {
     LoraNodePosition node = known_node ? lora_node_positions[position_index] : LoraNodePosition{};
     node.node = packet.sender;
     node.received_ms = packet.received_ms;
+    if (packet.signal_tenths != INT16_MAX) node.signal_tenths = packet.signal_tenths;
+    if (packet.snr_tenths != INT16_MAX) node.snr_tenths = packet.snr_tenths;
     if (packet.latitude_e7 != INT32_MAX && packet.longitude_e7 != INT32_MAX) {
       node.latitude_e7 = packet.latitude_e7;
       node.longitude_e7 = packet.longitude_e7;
@@ -14171,7 +14171,7 @@ void setup() {
     Serial.println("RTL_WEB_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_WEB_SELF_CHECK_OK");
-  if (!orcsdr::lora::self_check()) {
+  if (!orcsdr::lora::self_check() || !orcsdr::lora_log::self_check()) {
     Serial.println("RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_LORA_DASHBOARD_SELF_CHECK_OK");

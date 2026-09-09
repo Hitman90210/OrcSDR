@@ -39,6 +39,7 @@ View g_view = View::overview;
 bool g_active = false;
 bool g_channels_open = false;
 bool g_follow_node = false;
+bool g_node_details = false;
 bool g_map_center_set = false;
 int32_t g_map_center_lat_e7 = INT32_MAX;
 int32_t g_map_center_lon_e7 = INT32_MAX;
@@ -53,6 +54,17 @@ bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
 
 bool has_position(const Node& node) {
   return node.latitude_e7 != INT32_MAX && node.longitude_e7 != INT32_MAX;
+}
+
+const Node* visible_node_at(size_t row, size_t* snapshot_index = nullptr) {
+  size_t visible = 0;
+  for (size_t i = 0; i < g_snapshot.node_count; ++i) {
+    if (g_filter != 0 && !g_snapshot.nodes[i].favorite) continue;
+    if (visible++ != row) continue;
+    if (snapshot_index) *snapshot_index = i;
+    return &g_snapshot.nodes[i];
+  }
+  return nullptr;
 }
 
 const Node* selected_positioned_node() {
@@ -101,6 +113,13 @@ void draw_radio_icon(int cx, int cy, uint16_t color) {
   M5.Display.drawLine(cx, cy, cx - 14, cy + 35, color);
   M5.Display.drawLine(cx, cy, cx + 14, cy + 35, color);
   M5.Display.drawFastHLine(cx - 19, cy + 35, 38, color);
+}
+
+void draw_star(int cx, int cy, uint16_t color) {
+  const int8_t x[] = {0, 7, -11, 11, -7, 0};
+  const int8_t y[] = {-11, 9, -3, -3, 9, -11};
+  for (size_t i = 1; i < std::size(x); ++i)
+    M5.Display.drawLine(cx + x[i - 1], cy + y[i - 1], cx + x[i], cy + y[i], color);
 }
 
 void draw_header() {
@@ -246,14 +265,8 @@ void draw_overview_static() { draw_plot_static(); }
 void draw_nodes_static() {
   text("RECENTLY SEEN NODES", 40, 154, kCyan, 2, middle_left);
   card(32, 175, 770, 414);
-  card(822, 175, 426, 190);
+  card(822, 175, 426, 414);
   text("SELECTED NODE", 844, 199, kCyan, 2, middle_left);
-  card(822, 382, 426, 207);
-  text("VERIFIED LINKS", 844, 406, kCyan, 2, middle_left);
-  button(32, 604, 228, 42, "FILTER", kCyan);
-  button(278, 604, 228, 42, "FAVORITE", kCyan);
-  button(524, 604, 228, 42, "VIEW DETAILS", kCyan);
-  button(770, 604, 228, 42, "EXPORT LOG", kCyan);
 }
 
 void draw_traffic_static() {
@@ -363,49 +376,100 @@ void draw_overview_dynamic() {
 
 void draw_nodes_dynamic() {
   M5.Display.fillRect(42, 195, 748, 380, kPanel);
-  text("NAME", 62, 210, kCyan, 1, middle_left);
-  text("HOPS", 380, 210, kCyan, 1, middle_left);
-  text("BATTERY", 480, 210, kCyan, 1, middle_left);
-  text("LAST HEARD", 600, 210, kCyan, 1, middle_left);
-  text("RSSI / SNR", 700, 210, kCyan, 1, middle_left);
-  for (size_t i = 0; i < g_snapshot.node_count && i < 6; ++i) {
-    const Node& node = g_snapshot.nodes[i];
-    const int y = 236 + static_cast<int>(i) * 54;
-    const bool selected = i == g_snapshot.selected_node;
+  text("NAME", 62, 210, kCyan, 2, middle_left);
+  text("HOPS", 356, 210, kCyan, 2, middle_left);
+  text("BATTERY", 438, 210, kCyan, 2, middle_left);
+  text("AGE", 568, 210, kCyan, 2, middle_left);
+  text("SIGNAL", 678, 210, kCyan, 2, middle_left);
+  size_t shown = 0;
+  for (; shown < 6; ++shown) {
+    size_t snapshot_index = 0;
+    const Node* node_ptr = visible_node_at(shown, &snapshot_index);
+    if (!node_ptr) break;
+    const Node& node = *node_ptr;
+    const int y = 236 + static_cast<int>(shown) * 54;
+    const bool selected = snapshot_index == g_snapshot.selected_node;
     M5.Display.fillRoundRect(48, y, 736, 46, 7, selected ? 0x1264 : kBg);
     M5.Display.drawRoundRect(48, y, 736, 46, 7, selected ? kGreen : kGrid);
-    char value[48];
-    node_name(node, value, sizeof(value));
-    text(value, 70, y + 23, selected ? kGreen : TFT_WHITE, 2, middle_left);
+    char value[32];
+    node_name(node, value, 22);
+    if (node.favorite) draw_star(63, y + 23, kYellow);
+    text(value, node.favorite ? 82 : 62, y + 23, selected ? kGreen : TFT_WHITE, 2,
+         middle_left);
     snprintf(value, sizeof(value), "%s", node.hops == UINT8_MAX ? "—" : "HOPS");
     if (node.hops != UINT8_MAX) snprintf(value, sizeof(value), "%u", node.hops);
-    text(value, 380, y + 23, TFT_WHITE, 2, middle_left);
+    text(value, 356, y + 23, TFT_WHITE, 2, middle_left);
     if (node.battery_percent == UINT8_MAX) strlcpy(value, "—", sizeof(value));
     else snprintf(value, sizeof(value), "%u%%", node.battery_percent);
-    text(value, 480, y + 23, node.battery_percent == UINT8_MAX ? kMuted : kGreen, 2, middle_left);
+    text(value, 450, y + 23, node.battery_percent == UINT8_MAX ? kMuted : kGreen, 2,
+         middle_left);
     snprintf(value, sizeof(value), "%lus", static_cast<unsigned long>(
         node.id == 0 ? 0 : (millis() - node.seen_ms) / 1000u));
-    text(value, 600, y + 23, kMuted, 1, middle_left);
+    text(value, 568, y + 23, kMuted, 2, middle_left);
     if (node.signal_tenths == INT16_MAX) strlcpy(value, "—", sizeof(value));
-    else snprintf(value, sizeof(value), "%.0f / %.1f", node.signal_tenths / 10.0,
-                  node.snr_tenths == INT16_MAX ? 0.0 : node.snr_tenths / 10.0);
-    text(value, 700, y + 23, TFT_WHITE, 1, middle_left);
+    else if (node.snr_tenths == INT16_MAX)
+      snprintf(value, sizeof(value), "%d", static_cast<int>(node.signal_tenths / 10));
+    else
+      snprintf(value, sizeof(value), "%d/%d", static_cast<int>(node.signal_tenths / 10),
+               static_cast<int>(node.snr_tenths / 10));
+    text(value, 678, y + 23, TFT_WHITE, 2, middle_left);
   }
-  if (g_snapshot.node_count == 0) text("NO VERIFIED NODES", 416, 400, kMuted, 2);
-  M5.Display.fillRect(842, 218, 388, 132, kPanel);
+  if (shown == 0)
+    text(g_filter == 0 ? "NO VERIFIED NODES" : "NO FAVORITE NODES", 416, 400,
+         kMuted, 2);
+  M5.Display.fillRect(842, 218, 388, 358, kPanel);
   const Node* node = g_snapshot.node_count ? &g_snapshot.nodes[
       std::min<size_t>(g_snapshot.selected_node, g_snapshot.node_count - 1)] : nullptr;
   char value[64];
-  if (node) node_name(*node, value, sizeof(value));
+  if (node) node_name(*node, value, node->favorite ? 29 : 31);
   else strlcpy(value, "—", sizeof(value));
-  text(value, 854, 236, node ? kGreen : kMuted, 3, middle_left);
+  if (node && node->favorite) draw_star(856, 236, kYellow);
+  text(value, node && node->favorite ? 876 : 854, 236, node ? kGreen : kMuted, 2,
+       middle_left);
   if (node) {
-    format_id(value, sizeof(value), node->id); text(value, 854, 268, TFT_WHITE, 1, middle_left);
-    format_coord(value, sizeof(value), node->latitude_e7); text(value, 854, 302, kCyan, 1, middle_left);
+    format_id(value, sizeof(value), node->id);
+    text(value, 854, 268, TFT_WHITE, 2, middle_left);
+    if (g_node_details) {
+      snprintf(value, sizeof(value), "LAST %lus", static_cast<unsigned long>(
+          node->id == 0 ? 0 : (millis() - node->seen_ms) / 1000u));
+      text(value, 854, 302, kCyan, 2, middle_left);
+      format_coord(value, sizeof(value), node->latitude_e7);
+      text(value, 854, 334, TFT_WHITE, 2, middle_left);
+      format_coord(value, sizeof(value), node->longitude_e7);
+      text(value, 854, 366, TFT_WHITE, 2, middle_left);
+      if (node->signal_tenths == INT16_MAX && node->snr_tenths == INT16_MAX)
+        strlcpy(value, "RSSI —   SNR —", sizeof(value));
+      else if (node->signal_tenths == INT16_MAX)
+        snprintf(value, sizeof(value), "RSSI —   SNR %.1f", node->snr_tenths / 10.0);
+      else if (node->snr_tenths == INT16_MAX)
+        snprintf(value, sizeof(value), "RSSI %d   SNR —", node->signal_tenths / 10);
+      else
+        snprintf(value, sizeof(value), "RSSI %d   SNR %.1f", node->signal_tenths / 10,
+                 node->snr_tenths / 10.0);
+      text(value, 854, 398, kCyan, 2, middle_left);
+      if (node->battery_percent == UINT8_MAX && node->hops == UINT8_MAX)
+        strlcpy(value, "BAT —   HOPS —", sizeof(value));
+      else if (node->battery_percent == UINT8_MAX)
+        snprintf(value, sizeof(value), "BAT —   HOPS %u", node->hops);
+      else if (node->hops == UINT8_MAX)
+        snprintf(value, sizeof(value), "BAT %u%%   HOPS —", node->battery_percent);
+      else
+        snprintf(value, sizeof(value), "BAT %u%%   HOPS %u", node->battery_percent,
+                 node->hops);
+      text(value, 854, 430, TFT_WHITE, 2, middle_left);
+    } else {
+      text("PRESS VIEW DETAILS", 854, 334, kMuted, 2, middle_left);
+    }
   }
-  M5.Display.fillRect(842, 426, 388, 146, kPanel);
-  text("NO INFERRED LINKS", 1036, 486, kMuted, 2);
-  text("Links appear only when verified", 1036, 518, kMuted, 1);
+  text(g_snapshot.log_status[0] ? g_snapshot.log_status : "EXPORTS RECENT EVENTS",
+       1036, 460, kMuted, 2);
+  button(840, 478, 190, 44, g_filter == 0 ? "FILTER: ALL" : "FAVORITES", kCyan,
+         g_filter != 0);
+  button(1040, 478, 190, 44, "FAVORITE", node && node->favorite ? kYellow : kCyan,
+         node && node->favorite);
+  button(840, 532, 190, 44, g_node_details ? "HIDE DETAILS" : "VIEW DETAILS", kCyan,
+         g_node_details);
+  button(1040, 532, 190, 44, "EXPORT LOG", kCyan);
 }
 
 void draw_traffic_dynamic() {
@@ -659,10 +723,19 @@ Action handle_touch(int32_t x, int32_t y) {
     if (hit(x, y, 832, 578, 294, 48)) return {ActionKind::logging_toggle};
   } else if (g_view == View::nodes) {
     if (hit(x, y, 48, 236, 736, 324)) return {ActionKind::select_node,
-        static_cast<uint32_t>((y - 236) / 54)};
-    if (hit(x, y, 32, 604, 228, 42)) return {ActionKind::filter_next};
-    if (hit(x, y, 278, 604, 228, 42)) return {ActionKind::toggle_favorite};
-    if (hit(x, y, 770, 604, 228, 42)) return {ActionKind::export_log};
+        [&]() {
+          size_t index = 0;
+          return visible_node_at(static_cast<size_t>((y - 236) / 54), &index)
+                     ? static_cast<uint32_t>(index)
+                     : UINT32_MAX;
+        }()};
+    if (hit(x, y, 840, 478, 190, 44)) return {ActionKind::filter_next};
+    if (hit(x, y, 1040, 478, 190, 44)) return {ActionKind::toggle_favorite};
+    if (hit(x, y, 840, 532, 190, 44)) {
+      g_node_details = !g_node_details;
+      return {ActionKind::refresh};
+    }
+    if (hit(x, y, 1040, 532, 190, 44)) return {ActionKind::export_log};
   } else if (g_view == View::traffic) {
     if (hit(x, y, 604, 616, 202, 42)) return {ActionKind::export_log};
     if (hit(x, y, 822, 616, 202, 42)) return {ActionKind::filter_next};
@@ -722,6 +795,7 @@ bool self_check() {
   snapshot.bandwidth_hz = 250000;
   snapshot.node_count = 1;
   snapshot.nodes[0].id = 0xA1B2C3D4;
+  snapshot.nodes[0].favorite = true;
   snapshot.nodes[0].latitude_e7 = 440500000;
   snapshot.nodes[0].longitude_e7 = -1230900000;
   snapshot.event_count = 1;
@@ -734,6 +808,31 @@ bool self_check() {
   char first[18]{}, second[18]{};
   split_message("GPS 44.05641, -123.02418", 17, first, second);
   if (strcmp(first, "GPS 44.05641,") != 0 || strcmp(second, "-123.02418") != 0) return false;
+  const Snapshot saved_snapshot = g_snapshot;
+  const uint8_t saved_filter = g_filter;
+  const View saved_view = g_view;
+  const bool saved_active = g_active;
+  const bool saved_details = g_node_details;
+  g_snapshot = snapshot;
+  g_filter = 1;
+  g_view = View::nodes;
+  g_active = true;
+  g_node_details = false;
+  size_t index = 99;
+  const bool filter_ok = visible_node_at(0, &index) == &g_snapshot.nodes[0] && index == 0 &&
+                         visible_node_at(1) == nullptr;
+  const bool controls_ok =
+      handle_touch(60, 240).kind == ActionKind::select_node &&
+      handle_touch(850, 490).kind == ActionKind::filter_next &&
+      handle_touch(1050, 490).kind == ActionKind::toggle_favorite &&
+      handle_touch(850, 540).kind == ActionKind::refresh && g_node_details &&
+      handle_touch(1050, 540).kind == ActionKind::export_log && 576 < kTabsY;
+  g_snapshot = saved_snapshot;
+  g_filter = saved_filter;
+  g_view = saved_view;
+  g_active = saved_active;
+  g_node_details = saved_details;
+  if (!filter_ok || !controls_ok) return false;
   return audio_header::self_check() && lora_channel::self_check();
 }
 

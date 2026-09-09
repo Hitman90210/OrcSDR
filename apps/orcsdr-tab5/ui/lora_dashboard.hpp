@@ -76,6 +76,7 @@ struct Snapshot {
   bool key_loaded = false;
   char profile[24]{};
   char region[24]{};
+  char log_status[48]{};
   Node nodes[kNodeCapacity]{};
   Event events[kEventCapacity]{};
   uint8_t node_count = 0;
@@ -85,6 +86,7 @@ struct Snapshot {
 
 enum class ActionKind : uint8_t {
   none,
+  refresh,
   select_view,
   select_node,
   toggle_favorite,
