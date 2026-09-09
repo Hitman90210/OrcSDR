@@ -23,6 +23,8 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
 CONFIG_ESP_HOSTED_HOST_SDIO_TX_Q_SIZE=4
 # Issue #66: RX_Q was 2; try deeper queue under no-PC Hosted timing
 CONFIG_ESP_HOSTED_HOST_SDIO_RX_Q_SIZE=8
+# Issue #66: staging depth was 1 (SLOTS=2); give SW_AGGR more headroom
+CONFIG_ESP_HOSTED_HOST_SDIO_RX_STAGING_SLOTS=4
 # Espressif requires proving the P4<->C6 transport at a conservative clock
 # before raising it for throughput. Sustained HTTPS receive is not stable at
 # 20 MHz on this P4/C6 pair, so qualify 10 MHz first.
