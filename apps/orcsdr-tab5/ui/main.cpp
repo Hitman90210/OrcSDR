@@ -210,10 +210,9 @@ OrcConsole orc_console;
 
 namespace {
  // Issue #66: never bring up ESP-Hosted from setup(). Settings lazy
- // Scan/Connect via poll_wifi is stable. Boot autoconnect under live
- // SDR is still intermittent (join / fail / panic) — leave disabled until
- // that Hosted coexistence race is fixed; toggle is ignored for bring-up.
- constexpr bool kWifiBootAutoconnectEnabled = false;
+ // Scan/Connect via poll_wifi is stable. Boot start-at-boot queues Settings
+ // saved-connect after settle; poll_wifi always pauses SDR for Hosted join.
+ constexpr bool kWifiBootAutoconnectEnabled = true;
  constexpr uint32_t kWifiBootDeferMs = 10000;
  bool wifi_boot_bringup_pending = false;
  uint32_t wifi_boot_defer_arm_ms = 0;
@@ -14348,8 +14347,9 @@ void loop() {
     if (settings_wifi_power_enabled && settings_wifi_start_at_boot && wifi_profile_count) {
       select_wifi_profile(0);
       wifi_save_after_connect = false;
+      wifi_connect_pause_requested.store(true, std::memory_order_release);
       wifi_connect_requested.store(true, std::memory_order_release);
-      Serial.println("RTL_WIFI_BOOT_CONNECT_QUEUED issue66");
+      Serial.println("RTL_WIFI_BOOT_CONNECT_QUEUED_PAUSE issue66");
     } else {
       Serial.println("RTL_WIFI_BOOT_SKIP_NO_AUTOCONNECT issue66");
     }
