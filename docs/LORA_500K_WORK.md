@@ -10,7 +10,13 @@ LongFast path that already works.
 | --- | --- | --- | --- | --- |
 | Long Fast (old US stock) | 250 kHz | 11 | 4/5 | works today, must not regress |
 | **Long Turbo** (US replacement) | **500 kHz** | 11 | 4/8 | target |
-| **Short Turbo** | **500 kHz** | 7 | 4/5 | target |
+| Short Turbo | 500 kHz | 7 | 4/5 | target |
+
+The bench node is on **Long Turbo**, read off its own LoRa config screen as
+"Long Range - Turbo". Worth recording because the two 500 kHz presets cannot be
+told apart by frequency -- both live on the same slot grid -- and an earlier note
+in this repo guessed Short Turbo from a half-remembered menu label. Read the
+preset off the device, not the frequency.
 
 Background: `FORK_HANDOFF.md` 3d (why it cannot decode today) and 5.7c (the DSP
 regression vector this work is checked against).
@@ -324,6 +330,50 @@ is left is ~15 lines and a run of the DSP vector.
 
 ---
 
+## The energy trigger: checked, and deliberately left alone
+
+Nothing decodes unless `lora_channel_excess_db()` first clears
+`kLoraChannelExcessMinDb = -4.0`. That metric sums 4 consecutive IQ samples --
+a boxcar whose first null is at 960/4 = **240 kHz**. It was designed against a
+250 kHz channel (+/- 125 kHz), which sits comfortably inside that. A 500 kHz
+channel spans +/- 250 kHz and runs *past* the null, so part of every sweep is
+attenuated by the very filter meant to be measuring it. If that pushed a real
+signal under the threshold, the trigger would go deaf and the entire 500 kHz
+effort would be moot regardless of the decoder.
+
+It does not. A strong chirp, by bandwidth:
+
+| Channel | Metric reads | Margin over the -4.0 dB threshold |
+| --- | --- | --- |
+| 125 kHz | +5.72 dB | 9.7 dB |
+| 250 kHz | +4.88 dB | 8.9 dB |
+| **500 kHz** | **+2.49 dB** | **6.5 dB** |
+
+2.39 dB worse off than 250 kHz, which is a smaller margin rather than a wall.
+
+**Widening the boxcar to suit the wider channel is the obvious fix and it is
+wrong.** A wider boxcar is a narrower filter in frequency, so it raises the
+noise floor of the metric faster than it raises the signal:
+
+| Taps | First null | Flat noise | 500 kHz chirp |
+| --- | --- | --- | --- |
+| 2 | 480 kHz | **-3.06 dB** | +2.07 dB |
+| 3 | 320 kHz | -4.78 dB | +2.52 dB |
+| **4 (current)** | 240 kHz | **-6.03 dB** | **+2.49 dB** |
+| 8 | 120 kHz | -9.01 dB | +2.66 dB |
+
+At 2 taps flat noise reads **above** the -4.0 threshold: noise alone would arm
+a capture continuously, which is the dead-detector failure of 3c in reverse. At
+3 taps it sits 0.78 dB under and would false-trigger on ordinary excursions.
+Four taps gives the best separation of any width, for 500 kHz as well as 250,
+and the modelled flat-noise figure (-6.03 dB) matches what 3c measured on air
+(-5.5 dB median of 172). **Left unchanged.**
+
+Confirmed independently on air before this work: a real 500 kHz node produced
+triggers at -0.8 to -1.5 dB against the -4.0 threshold.
+
+---
+
 ## What this does not address
 
 - **Out-of-channel noise on the 500 kHz path.** With no filter, the full
@@ -332,9 +382,7 @@ is left is ~15 lines and a run of the DSP vector.
   adjacent-channel interferer. On 915 MHz ISM that is not academic; 3c exists
   because of interferers. A 250 kHz-cutoff filter for this path is stage 5,
   deliberately separate so stage 1 lands working on its own.
-- **Coding rate 4/8.** Long Turbo uses it; only 4/5 has ever been exercised.
-  Stage 6.
-- **The energy trigger's boxcar-4 metric** (`lora_channel_excess_db`) is a
-  ~250 kHz-wide filter and under-weights the edges of a 500 kHz channel. It
-  measured -0.8 to -1.5 dB against a real 500 kHz node anyway -- the top of the
-  scale -- so it is not blocking. Noted, not changed.
+- ~~**Coding rate 4/8.**~~ Done -- see stage 6. It needed no new code.
+- **The energy trigger** was checked and left alone -- see the section above.
+  It reads 2.39 dB lower on a 500 kHz channel but keeps 6.5 dB of margin, and
+  every wider boxcar is worse.

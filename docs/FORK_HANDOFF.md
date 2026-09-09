@@ -384,6 +384,11 @@ wide, and this fork's native decoder can decode neither.
 | **Long Turbo** (US replacement) | **500 kHz** | 11 | 4/8 |
 | Short Turbo | **500 kHz** | 7 | 4/5 |
 
+The bench node here runs **Long Turbo**, read off the device's own LoRa config
+screen as "Long Range - Turbo". An earlier revision of this document guessed
+Short Turbo from a half-remembered menu label; the two are indistinguishable by
+frequency, so read the preset off the node rather than inferring it.
+
 Preset names are easy to confuse here -- Long Turbo and Short Turbo are both
 500 kHz and differ only in spreading factor, and the frequency alone cannot
 tell them apart. What the frequency *does* pin down is the bandwidth, which
