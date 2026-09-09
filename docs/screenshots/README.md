@@ -37,7 +37,7 @@ The full navigation grid.
 ### GMRS / FRS — 30 channels with scanner
 Channels 1–22 plus the R15–R22 repeater inputs. `SCAN` walks the channel list,
 stops on a busy channel, and resumes about 2.5 s after it goes quiet.
-Receive-only.
+Channels can be locked out so the sweep steps over them. Receive-only.
 
 ![GMRS and FRS 30-channel scanner](03-gmrs-frs-30-channel-scanner.png)
 
@@ -53,48 +53,55 @@ the frequencies are fixed by regulation, so there is nothing to sweep.
 
 ![NOAA weather WX1-WX7 picker](05-noaa-weather-wx1-wx7-picker.png)
 
+### Marine VHF — 40 US channels with scanner
+The US simplex working channels plus 16 (distress and calling), 13
+(bridge-to-bridge), 09 (boater calling) and 22A (Coast Guard liaison).
+Channel names keep their US "A" suffix, so 22A reads as 22A.
+
+![Marine VHF 40-channel scanner](06-marine-vhf-40-channel-scanner.png)
+
 ### FM broadcast — listen
 Broadcast FM with stereo decode and a working band seek.
 
-![FM broadcast listen](06-fm-broadcast-listen.png)
+![FM broadcast listen](07-fm-broadcast-listen.png)
 
 ### FM — station and RDS
 Station identity, RDS text, and the stereo/lock indicators.
 
-![FM station and RDS](07-fm-station-and-rds.png)
+![FM station and RDS](08-fm-station-and-rds.png)
 
 ### P25 trunking monitor
 Follows a programmed P25 system on a single tuner. Phase I voice decodes;
 Phase II calls are detected and reported but not yet decoded.
 
-![P25 trunking monitor](08-p25-trunking-monitor.png)
+![P25 trunking monitor](09-p25-trunking-monitor.png)
 
 ### LoRa / Meshtastic — overview
 Receive-only Meshtastic monitor with selectable regional channels.
 
-![LoRa Meshtastic overview](09-lora-meshtastic-overview.png)
+![LoRa Meshtastic overview](10-lora-meshtastic-overview.png)
 
 ### LoRa — packet traffic
 Decoded bursts as they arrive.
 
-![LoRa packet traffic](10-lora-packet-traffic.png)
+![LoRa packet traffic](11-lora-packet-traffic.png)
 
 ### LoRa — node map
 Heard nodes plotted against the configured location.
 
-![LoRa node map](11-lora-node-map.png)
+![LoRa node map](12-lora-node-map.png)
 
 ### Settings — data and maps
 Downloadable data packs: aviation and aircraft databases, offline maps, ATC
 presets.
 
-![Settings data and maps](12-settings-data-and-maps.png)
+![Settings data and maps](13-settings-data-and-maps.png)
 
 ### Settings — location and ADS-B
 Receiver location and ADS-B radar range. Location drives the offline map, the
 nearest-ATC lookup, and P25 profile selection.
 
-![Settings location and ADS-B](13-settings-location-and-adsb.png)
+![Settings location and ADS-B](14-settings-location-and-adsb.png)
 
 ---
 

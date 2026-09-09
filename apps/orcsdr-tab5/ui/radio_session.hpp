@@ -5,7 +5,10 @@
 
 namespace orcsdr::radio {
 
-enum class Band : uint8_t { fm, am, wx, cb, lora, browse, adsb, p25, pocsag, gmrs };
+// Values persist to NVS ("last_band"), so new bands are appended, never
+// inserted -- inserting one silently renumbers every band after it.
+enum class Band : uint8_t { fm, am, wx, cb, lora, browse, adsb, p25, pocsag, gmrs,
+                            marine };
 enum class Owner : uint8_t { none, fm, p25, adsb, lora, radio, rf_lab, rf_visualizer, pocsag };
 enum class ReceiverState : uint8_t { disconnected, ready, starting, running, stopping, failed };
 

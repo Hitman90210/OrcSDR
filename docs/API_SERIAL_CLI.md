@@ -140,7 +140,7 @@ from the untracked `.orclink/ui-doc.key`; do not hand-roll proofs in shell one-l
 
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
-| `RTL_TUNE <BAND> <HZ>` | yes | `RTL_TUNE_OK band=... frequency_hz=...` | `BAND` = `FM\|AM\|WX\|CB\|GMRS\|P25\|LORA\|BROWSE`. Full retune (stops/restarts the capture path as needed). On a channelised band (`WX`/`CB`/`GMRS`) the frequency snaps to the nearest published channel. |
+| `RTL_TUNE <BAND> <HZ>` | yes | `RTL_TUNE_OK band=... frequency_hz=...` | `BAND` = `FM\|AM\|WX\|CB\|GMRS\|MARINE\|P25\|LORA\|BROWSE`. Full retune (stops/restarts the capture path as needed). On a channelised band (`WX`/`CB`/`GMRS`) the frequency snaps to the nearest published channel. |
 | `RTL_FREQ` | no | `RTL_FREQ_STATUS band=... frequency_hz=... mode=...` | Query only. |
 | `RTL_FREQ <HZ>` | yes | `RTL_FREQ_OK band=... frequency_hz=...` | Hot retune *within* the current band — cheaper than `RTL_TUNE`, use for stepping/scanning. |
 | `RTL_CAPTURE` / `RTL_LISTEN <BAND>` | yes | `RTL_CAPTURE_QUEUED ...` or `RTL_CAPTURE_BUSY_OR_UNAVAILABLE` | Older, band-limited entry point (`FM`/`KZEL`/`NOAA`/`WX`/`AM`/`LORA` only, no `CB`/`BROWSE`, no arbitrary frequency). `RTL_LISTEN` is continuous, bare `RTL_CAPTURE` is one-shot. Prefer `RTL_TUNE` for new work — this exists for compatibility with older tooling. |
@@ -154,7 +154,7 @@ overrides this), AM/WX/CB/LoRa each have their own fixed default — see
 `rtl_band_default_frequency()` in `main.cpp` for exact values, they're
 band-plan specific and not usually worth hardcoding in a client.
 
-## Channel scan (CB, GMRS/FRS, NOAA weather)
+## Channel scan (CB, GMRS/FRS, NOAA weather, marine VHF)
 
 Steps the band's published channel list, stops on a channel that is busy, and
 resumes 2.5 s after it goes quiet. Only on channelised bands, and only while the
@@ -165,9 +165,20 @@ receiver is streaming — every hop is a hot retune.
 | `RTL_CHANNEL_SCAN` | yes | `RTL_CHANNEL_SCAN_QUEUED`, or `RTL_CHANNEL_SCAN_INVALID` | Toggle. Unhandled cases print `RTL_CHANNEL_SCAN_UNAVAILABLE band=... busy=... streaming=...`. |
 | `RTL_CHANNEL_SCAN_STOP` | yes | `RTL_CHANNEL_SCAN_STOP_QUEUED` | Also happens on any deliberate retune, band change, or channel step. |
 | `RTL_CHANNEL_SCAN_STATUS` | no | `RTL_CHANNEL_SCAN_STATUS active=.. holding=.. band=.. hits=.. stale_skips=.. squelch_dbfs=.. min_snr_db=.. dwell_ms=..` | `holding=1` means parked on a busy channel. |
+| `RTL_CHANNEL_LOCK <name>` | yes | `RTL_CHANNEL_LOCK_OK band=.. channel=.. locked=1 total_locked=..` | Lock a channel out of the sweep. Addressed by the name the dashboard shows (`19`, `R15`, `22A`, `WX3`), not an index. Locking the channel the scan is parked on releases the hold immediately. |
+| `RTL_CHANNEL_UNLOCK <name>` | yes | `RTL_CHANNEL_LOCK_OK ... locked=0 ...` | Put a channel back in the sweep. |
+| `RTL_CHANNEL_LOCK_LIST` | no | `RTL_CHANNEL_LOCK_LIST band=.. count=.. locked=..` then one `RTL_CHANNEL_LOCK_ENTRY` per channel, ending `RTL_CHANNEL_LOCK_LIST_END` | Every channel of the current band with its frequency and lock state. |
+| `RTL_CHANNEL_LOCK_CLEAR` | yes | `RTL_CHANNEL_LOCK_CLEAR_OK band=..` | Unlock everything on the current band. |
 | `RTL_CHANNEL_PROBE` | no | `RTL_CHANNEL_PROBE band=.. frequency_hz=.. level_dbfs=.. snr_db=.. min_snr_db=.. offset_hz=.. tolerance_hz=.. seq=.. busy=..` | The detector's own reading for the channel on the dial. Use it to calibrate the squelch against your own noise floor. |
 | `RTL_SQUELCH` | no | `RTL_SQUELCH_STATUS dbfs=.. open=..` | |
 | `RTL_SQUELCH <-90..0>` | yes | `RTL_SQUELCH_OK dbfs=..` | `-90` opens the squelch. Also gates CB and GMRS audio, and is what the CB panel's SQL-/SQL+ set. |
+
+**Lockout.** A scanner with no way to skip a channel is one you cannot leave
+running: a single permanently busy channel — a data burst, a stuck carrier, a
+repeater on a continuous tone — parks the sweep there forever. Locked channels
+are dropped from the pass before it starts, so the engine never dwells on one.
+The mask is per band and survives reboots. Locking every channel is refused
+with `reason=all_locked` rather than starting an empty sweep.
 
 Unfolding the scan's progress live needs `RTL_SERIAL VERBOSITY TRACE`, which adds
 one `RTL_CHANNEL_SCAN_SAMPLE ... windows=N busy=0|1` per channel visited.
