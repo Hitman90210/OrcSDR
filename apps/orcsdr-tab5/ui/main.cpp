@@ -544,14 +544,6 @@ constexpr int kLoraSlotCount = 104;
 constexpr uint32_t kLoraSlotBaseHz = 902125000;
 constexpr uint32_t kLoraSlotStepHz = 250000;
 
-// Current tuned slot, or 0 when the dial is not on a slot boundary.
-int lora_slot_for(uint32_t hz) {
-  if (hz < kLoraSlotBaseHz) return 0;
-  const uint32_t offset = hz - kLoraSlotBaseHz;
-  if (offset % kLoraSlotStepHz != 0) return 0;
-  const int slot = static_cast<int>(offset / kLoraSlotStepHz) + 1;
-  return slot >= 1 && slot <= kLoraSlotCount ? slot : 0;
-}
 constexpr uint32_t kAdsbDefaultHz = 1090000000;
 // Frequency, baud, and polarity are a user-edited profile, not a hardcoded
 // default -- POCSAG channels vary too much by country/carrier for one
@@ -10835,13 +10827,12 @@ void load_state() {
     Serial.printf("RTL_PRESETS_LOAD count=%d\n", fm_preset_count);
   }
   load_fm_config();
-  // Restore the Meshtastic slot the user left the monitor on. Validated
-  // against the slot grid so a corrupt or off-grid value falls back to the
-  // LongFast default rather than parking the receiver somewhere useless.
-  if (preferences.isKey("sdr_lora_hz")) {
-    const uint32_t stored_lora = preferences.getUInt("sdr_lora_hz", kLoraDefaultHz);
-    if (lora_slot_for(stored_lora) != 0) rtl_saved_lora_hz = stored_lora;
-  }
+  // The Meshtastic slot is restored further down by lora_channel::load(), which
+  // owns that setting now and persists it as lora_region/lora_slot. The old
+  // "sdr_lora_hz" key this used to read is written by nothing any more, so the
+  // read could only ever resurrect a slot left behind by an older firmware --
+  // silently overriding the LongFast default with a stale value. Removed; the
+  // orphaned key is inert.
   if (preferences.isKey("sdr_fm_hz")) {
     const uint32_t raw_fm = preferences.getUInt("sdr_fm_hz", kRtlFmDefaultHz);
     const uint32_t stored_fm = rtl_fm_sanitize_display_hz(raw_fm);
