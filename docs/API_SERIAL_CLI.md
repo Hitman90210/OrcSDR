@@ -520,7 +520,12 @@ from documentation capture because it contains the receiver's saved location.
 `RTL_IQ_GET_BEGIN`/`_CHUNK`/`_ABORT`, `RTL_LORA_AUTO ON|OFF` (auth),
 `RTL_LORA_TUNE <HZ>` (auth; `RTL_LORA_TUNE_OK frequency_hz=...` or
 `RTL_LORA_TUNE_ERROR range=<min>-<max>`; hot-retunes if LoRa is already
-streaming, otherwise switches into it), `LORA_SD_LOG ON|OFF|STATUS`,
+streaming, otherwise switches into it), `RTL_LORA_PLAN_STATUS`,
+`RTL_LORA_REGION_LIST`, `RTL_UI ACTION LORA REGION <1-based-index>`,
+`RTL_UI ACTION LORA REGION_PREV|REGION_NEXT`,
+`RTL_UI ACTION LORA SLOT <1-based-slot>`, and
+`RTL_UI ACTION LORA SLOT_PREV|SLOT_NEXT` (selection commands require auth and
+persist region/slot), `LORA_SD_LOG ON|OFF|STATUS`,
 `LORA_MESSAGE_CLEAR` — raw IQ capture and the LoRa/Meshtastic
 energy-triggered decode pipeline. See
 [docs/lora/README.md](lora/README.md) for the intended workflow (these are

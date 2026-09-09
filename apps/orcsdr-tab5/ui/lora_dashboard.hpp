@@ -55,6 +55,11 @@ struct Snapshot {
   uint32_t uptime_seconds = 0;
   uint32_t survey_progress = 0;
   uint8_t sf = 11;
+  uint8_t region_index = 0;
+  uint8_t region_count = 0;
+  uint16_t channel_slot = 0;
+  uint16_t channel_count = 0;
+  uint16_t default_slot = 0;
   uint32_t bandwidth_hz = 250000;
   int32_t battery_percent = -1;
   float noise_dbfs = -90.0f;
@@ -66,10 +71,12 @@ struct Snapshot {
   bool sound_enabled = true;
   bool sd_logging = false;
   bool survey_active = false;
+  bool iq_recording = false;
   bool native_decoder_ready = false;
   bool key_loaded = false;
   char profile[24]{};
   char region[24]{};
+  char log_status[48]{};
   Node nodes[kNodeCapacity]{};
   Event events[kEventCapacity]{};
   uint8_t node_count = 0;
@@ -79,6 +86,7 @@ struct Snapshot {
 
 enum class ActionKind : uint8_t {
   none,
+  refresh,
   select_view,
   select_node,
   toggle_favorite,
@@ -93,6 +101,12 @@ enum class ActionKind : uint8_t {
   mark_point,
   save_snapshot,
   open_channels,
+  region_previous,
+  region_next,
+  region_select,
+  channel_previous,
+  channel_next,
+  channel_select,
   open_settings,
   exit_home,
 };
@@ -110,6 +124,7 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
 Action handle_touch(int32_t x, int32_t y);
 bool active();
 bool spectrum_active();
+void open_channel_picker();
 View view();
 void show_documentation_view(View view, const Snapshot& snapshot);
 void toggle_filter();

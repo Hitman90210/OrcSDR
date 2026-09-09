@@ -18,6 +18,9 @@ namespace {
 constexpr size_t kIqBytes = 16384;
 constexpr size_t kAudioFrames = 2048;
 constexpr size_t kMaxFft = 8192;
+// The native LoRa decoder shares ESP-DSP's global FFT table and needs 32768
+// points for SF12. Keep analysis buffers capped at 8192; only the table grows.
+constexpr size_t kSharedFftTableSize = 32768;
 constexpr float kPi = 3.14159265358979323846f;
 
 SemaphoreHandle_t g_iq_mutex = nullptr;
@@ -363,7 +366,7 @@ void worker(void*) {
 bool initialize_fft() {
   if (g_fft_ready.load(std::memory_order_acquire)) return true;
   // ponytail: boot initialization is serialized; add a mutex only if callers become concurrent.
-  if (dsps_fft2r_init_fc32(nullptr, kMaxFft) != ESP_OK) return false;
+  if (dsps_fft2r_init_fc32(nullptr, kSharedFftTableSize) != ESP_OK) return false;
   g_fft_ready.store(true, std::memory_order_release);
   return true;
 }
