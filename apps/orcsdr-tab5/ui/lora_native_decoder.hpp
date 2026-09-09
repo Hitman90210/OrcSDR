@@ -52,6 +52,12 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
                       const Config& config, Packet* packets, size_t packet_capacity,
                       Stats* stats);
 
+// Protocol checks plus a DSP regression vector: synthesised symbols with known
+// cyclic shifts, asserted back through the chirp, resampler and symbol mapping.
 bool self_check();
+
+// As self_check(), every DSP case rather than the boot subset, naming the case
+// that failed in `detail` (e.g. "sf11_front_sym3_got701_want700").
+bool self_check_detail(char* detail, size_t detail_size);
 
 }  // namespace orcsdr::lora_native

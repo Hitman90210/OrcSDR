@@ -4060,9 +4060,22 @@ void lora_native_decode_task(void*) {
 
 bool lora_native_decoder_start() {
   if (lora_native_decoder_ready.load(std::memory_order_acquire)) return true;
-  if (!orcsdr::lora_native::self_check()) {
-    Serial.println("RTL_LORA_NATIVE_SELF_CHECK_FAIL");
-    return false;
+  {
+    // self_check() runs the DSP regression subset as well as the protocol
+    // checks, so this line is the one that says the signal path still recovers
+    // known symbols. Only re-run the full matrix to name a failure.
+    const uint32_t started = millis();
+    if (!orcsdr::lora_native::self_check()) {
+      char detail[64]{};
+      orcsdr::lora_native::self_check_detail(detail, sizeof(detail));
+      Serial.printf("RTL_LORA_NATIVE_SELF_CHECK_FAIL case=%s",
+                    detail[0] ? detail : "unknown");
+      Serial.println();
+      return false;
+    }
+    Serial.printf("RTL_LORA_NATIVE_SELF_CHECK_OK dsp_cases=boot elapsed_ms=%lu",
+                  static_cast<unsigned long>(millis() - started));
+    Serial.println();
   }
   if (!orcsdr::lora_native::initialize()) return false;
   lora_native_decode_queue = xQueueCreate(1, sizeof(LoraNativeDecodeWork));
@@ -13402,6 +13415,19 @@ void process_command(char* command) {
     Serial.println();
     return;
   }
+  // The boot check runs a subset; this runs every case and names the one that
+  // failed, which is the difference between a bisect and a single flash when the
+  // signal path is being changed.
+  if (strcmp(command, "RTL_LORA_SELFTEST") == 0) {
+    char detail[64]{};
+    const uint32_t started = millis();
+    const bool ok = orcsdr::lora_native::self_check_detail(detail, sizeof(detail));
+    Serial.printf("RTL_LORA_SELFTEST %s failed_case=%s elapsed_ms=%lu",
+                  ok ? "ok" : "fail", detail[0] ? detail : "none",
+                  static_cast<unsigned long>(millis() - started));
+    Serial.println();
+    return;
+  }
   if (strcmp(command, "RTL_LORA_MODEM") == 0) {
     Serial.printf("RTL_LORA_MODEM_STATUS sf=%u bandwidth_hz=%u frequency_hz=%lu",
                   static_cast<unsigned>(lora_sf.load(std::memory_order_relaxed)),
@@ -13791,6 +13817,7 @@ void process_command(char* command) {
     Serial.println("RTL_SAME_LAST                  - last decoded SAME alert, areas and raw header");
     Serial.println("RTL_LORA_MODEM                 - query LoRa spreading factor and bandwidth");
     Serial.println("RTL_LORA_MODEM <sf> <bw_hz>    - match a transmitter's preset (auth)");
+    Serial.println("RTL_LORA_SELFTEST              - run every LoRa DSP regression case");
     Serial.println("RTL_SQUELCH                    - query squelch (CB/GMRS audio + scan stop level)");
     Serial.println("RTL_SQUELCH <-90..-20>         - set squelch dBFS, -90 opens it (auth)");
     Serial.println("RTL_RDS_STATUS                 - on-demand RDS Stage1/2 diagnostic dump");

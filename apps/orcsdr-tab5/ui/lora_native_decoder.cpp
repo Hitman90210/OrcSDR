@@ -6,11 +6,13 @@
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <freertos/task.h>
 #include <mbedtls/aes.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <iterator>
 
@@ -49,6 +51,25 @@ struct Scratch {
 };
 
 Scratch g_scratch{};
+
+// g_scratch is a single shared block and every user reconfigures it: the decode
+// task sets the chirp for the live modem, the self-test sets it per case. They
+// run on different tasks, so without this a self-test landing mid-decode
+// dechirps against the other one's table and fails for a reason that has
+// nothing to do with the code under test.
+StaticSemaphore_t g_scratch_mutex_storage{};
+SemaphoreHandle_t g_scratch_mutex = nullptr;
+
+struct ScratchLock {
+  ScratchLock() {
+    if (g_scratch_mutex != nullptr) xSemaphoreTake(g_scratch_mutex, portMAX_DELAY);
+  }
+  ~ScratchLock() {
+    if (g_scratch_mutex != nullptr) xSemaphoreGive(g_scratch_mutex);
+  }
+  ScratchLock(const ScratchLock&) = delete;
+  ScratchLock& operator=(const ScratchLock&) = delete;
+};
 
 uint32_t now_millis() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -706,9 +727,167 @@ bool decode_mesh(const uint8_t* data, size_t size, const Config& config, Packet*
   return true;
 }
 
+// --- DSP regression vector ---------------------------------------------------
+// self_check() below covers decryption, telemetry and node info -- the protocol
+// layer -- and none of the signal path. Nothing guards the chirp maths, the
+// resampler or the symbol mapping, and a silent break in any of them looks
+// exactly like a mesh that has gone quiet: no error, no log line, just nothing
+// decoded. That is the worst failure mode to have no coverage for, so synthesise
+// symbols with known cyclic shifts and assert the front end recovers them.
+
+constexpr float kSynthTwoPi = 6.28318530717958647692f;
+constexpr float kSynthAmplitude = 0.7f;  // -3 dBFS, well clear of 8-bit clipping
+
+uint8_t quantize_cu8(float value) {
+  return static_cast<uint8_t>(std::clamp(lroundf(value * 127.5f + 127.5f), 0l, 255l));
+}
+
+// A LoRa symbol of value s is the base upchirp rotated by s / 2^SF of a symbol
+// period: the sweep starts at -BW/2 + s x BW/2^SF, rises at BW/T and wraps once
+// through -BW/2. Phase is integrated rather than evaluated in closed form because
+// that keeps it continuous across the wrap, which is what a real modulator does.
+// Past the last symbol the sweep restarts it, so the tail is still a valid symbol
+// rather than a discontinuity the resampler would smear backwards.
+void synthesize_symbols(uint8_t* cu8, size_t capacity_samples, uint32_t sample_rate,
+                        uint8_t sf, uint32_t bandwidth_hz, const uint16_t* symbols,
+                        size_t count) {
+  const float bandwidth = static_cast<float>(bandwidth_hz);
+  const float bins = static_cast<float>(1u << sf);
+  const double samples_per_symbol =
+      static_cast<double>(sample_rate) * static_cast<double>(bins) / bandwidth;
+  float phase = 0.0f;
+  for (size_t index = 0; index < capacity_samples; ++index) {
+    const double position = static_cast<double>(index) / samples_per_symbol;
+    const double whole = std::floor(position);
+    const size_t symbol = std::min(static_cast<size_t>(whole), count - 1);
+    const float local = static_cast<float>(position - whole);
+    float frequency =
+        bandwidth * (static_cast<float>(symbols[symbol]) / bins - 0.5f + local);
+    if (frequency >= bandwidth * 0.5f) frequency -= bandwidth;
+    cu8[index * 2] = quantize_cu8(kSynthAmplitude * cosf(phase));
+    cu8[index * 2 + 1] = quantize_cu8(kSynthAmplitude * sinf(phase));
+    phase += kSynthTwoPi * frequency / static_cast<float>(sample_rate);
+    if (phase >= kSynthTwoPi) phase -= kSynthTwoPi;
+    else if (phase < 0.0f) phase += kSynthTwoPi;
+  }
+}
+
+struct DspCase {
+  uint8_t sf;
+  uint32_t bandwidth_hz;
+  bool through_front_end;
+  const uint16_t* symbols;
+  size_t count;
+  const char* name;
+};
+
+// symbols[0] is the reference the rest are measured against, exactly as the real
+// decoder measures payload symbols against the preamble peak. That is not
+// cosmetic: the anti-alias IIR delays the capture by several samples, which
+// offsets every peak by the same amount, and only a relative reading cancels it.
+constexpr uint16_t kDspSymbolsSf7[] = {0, 1, 2, 63, 64, 65, 127, 42, 100, 3};
+constexpr uint16_t kDspSymbolsSf11[] = {0, 1, 1023, 1024, 2047, 700};
+
+const DspCase kDspCases[] = {
+    {7, 250000, false, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_raw"},
+    {7, 250000, true, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_front"},
+    {11, 250000, false, kDspSymbolsSf11, std::size(kDspSymbolsSf11), "sf11_raw"},
+    {11, 250000, true, kDspSymbolsSf11, std::size(kDspSymbolsSf11), "sf11_front"},
+};
+// Boot runs the first three. SF 7 covers both paths; SF 11 is LongFast and the
+// other end of the size range, where a scratch-sizing mistake shows up instead.
+// The fourth is the slowest and adds no new code path, so it is command-only.
+constexpr size_t kDspBootCases = 3;
+
+bool run_dsp_case(const DspCase& item, char* detail, size_t detail_size) {
+  const auto fail = [&](const char* step, int got, int want) {
+    if (detail == nullptr || detail_size == 0) return false;
+    if (got < 0)
+      snprintf(detail, detail_size, "%s_%s", item.name, step);
+    else
+      snprintf(detail, detail_size, "%s_%s_got%d_want%d", item.name, step, got, want);
+    return false;
+  };
+  if (item.count < 2) return fail("count", -1, 0);
+  if (!initialize()) return fail("initialize", -1, 0);
+  if (!configure_chirp(item.sf, item.bandwidth_hz)) return fail("configure", -1, 0);
+  const size_t symbol_samples = g_scratch.symbol_samples;
+  const size_t fft_bins = g_scratch.fft_size / 2;
+  const size_t bins = static_cast<size_t>(1u) << item.sf;
+  const uint32_t capture_rate = item.through_front_end ? 960000u : kDecodeRate;
+  // One spare symbol so integer truncation in the resampler cannot eat the tail
+  // of the last symbol under test.
+  const size_t capture_samples =
+      static_cast<size_t>(static_cast<uint64_t>(symbol_samples) * (item.count + 1) *
+                          capture_rate / kDecodeRate) + 16;
+  uint8_t* capture = static_cast<uint8_t*>(
+      heap_caps_malloc(capture_samples * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (capture == nullptr) return fail("alloc", -1, 0);
+  synthesize_symbols(capture, capture_samples, capture_rate, item.sf, item.bandwidth_hz,
+                     item.symbols, item.count);
+  const uint8_t* decode_cu8 = capture;
+  size_t decode_samples = capture_samples;
+  uint32_t decode_rate = capture_rate;
+  bool ok = true;
+  if (item.through_front_end) {
+    const uint8_t* filtered = nullptr;
+    size_t filtered_samples = 0;
+    const uint8_t* resampled = nullptr;
+    size_t resampled_samples = 0;
+    if (!filter_capture(capture, capture_samples, capture_rate, &filtered,
+                        &filtered_samples)) {
+      ok = fail("filter", -1, 0);
+    } else if (!linear_resample_capture(filtered, filtered_samples, capture_rate,
+                                        &resampled, &resampled_samples)) {
+      ok = fail("resample", -1, 0);
+    } else {
+      decode_cu8 = resampled;
+      decode_samples = resampled_samples;
+      decode_rate = kDecodeRate;
+    }
+  }
+  uint16_t reference = 0;
+  float height = 0.0f;
+  if (ok && !dechirp_peak(decode_cu8, decode_samples, decode_rate, 0, true, &reference,
+                          &height))
+    ok = fail("reference", -1, 0);
+  for (size_t index = 1; ok && index < item.count; ++index) {
+    uint16_t peak = 0;
+    if (!dechirp_peak(decode_cu8, decode_samples, decode_rate, index * symbol_samples,
+                      true, &peak, &height)) {
+      ok = fail("dechirp", static_cast<int>(index), 0);
+      break;
+    }
+    const uint16_t decoded = peak_to_symbol(peak, reference, fft_bins, bins);
+    if (decoded != item.symbols[index]) {
+      char step[16]{};
+      snprintf(step, sizeof(step), "sym%u", static_cast<unsigned>(index));
+      ok = fail(step, static_cast<int>(decoded), static_cast<int>(item.symbols[index]));
+      break;
+    }
+  }
+  heap_caps_free(capture);
+  return ok;
+}
+
+bool run_dsp_cases(size_t limit, char* detail, size_t detail_size) {
+  if (!initialize()) {
+    if (detail != nullptr && detail_size != 0) copy_literal(detail, detail_size, "initialize");
+    return false;
+  }
+  const ScratchLock guard;
+  if (detail != nullptr && detail_size != 0) detail[0] = '\0';
+  for (size_t index = 0; index < limit && index < std::size(kDspCases); ++index) {
+    if (!run_dsp_case(kDspCases[index], detail, detail_size)) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 bool initialize() {
+  if (g_scratch_mutex == nullptr)
+    g_scratch_mutex = xSemaphoreCreateMutexStatic(&g_scratch_mutex_storage);
   if (g_scratch.fft != nullptr && g_scratch.downchirp != nullptr)
     return rf_analysis::initialize_fft();
   g_scratch.fft = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft * 2,
@@ -947,6 +1126,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
 size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
                       uint8_t spreading_factor, uint32_t bandwidth_hz, uint32_t frequency_hz,
                       const Config& config, Packet* packets, size_t packet_capacity, Stats* stats) {
+  const ScratchLock guard;
   Stats raw{};
   Stats* first = stats != nullptr ? stats : &raw;
   const size_t found = decode_capture_pass(cu8, bytes, sample_rate_sps, spreading_factor,
@@ -962,7 +1142,8 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
   return retried;
 }
 
-bool self_check() {
+// Split from self_check() so a DSP failure is not reported as a protocol one.
+static bool protocol_self_check() {
   const uint8_t encrypted[] = {
       0x6a, 0x92, 0x18, 0x55, 0xb8, 0x20, 0x6a, 0x22, 0xd1, 0x09, 0x1b, 0xd4,
       0x70, 0x27, 0xbb, 0xef, 0xdd, 0x21, 0x0f, 0x46, 0x25, 0x82, 0xf3, 0x51,
@@ -980,9 +1161,25 @@ bool self_check() {
   const uint8_t node_info[] = {0x12, 0x0e, 'h', 'a', 'r', 'd', 'c', 'o', 'r', 'e', '_',
                                'T', 'b', 'e', 'a', 'm', 0x1a, 0x04, 'H', 'c', 'M', 'e'};
   parse_node_info(node_info, sizeof(node_info), &node);
-  return std::strstr(summary, "81%") != nullptr && std::strstr(summary, "4.12V") != nullptr &&
-         std::strcmp(node.long_name, "hardcore_Tbeam") == 0 &&
-         std::strcmp(node.short_name, "HcMe") == 0;
+  if (std::strstr(summary, "81%") == nullptr || std::strstr(summary, "4.12V") == nullptr ||
+      std::strcmp(node.long_name, "hardcore_Tbeam") != 0 ||
+      std::strcmp(node.short_name, "HcMe") != 0)
+    return false;
+  return true;
+}
+
+bool self_check() {
+  return protocol_self_check() && run_dsp_cases(kDspBootCases, nullptr, 0);
+}
+
+// RTL_LORA_SELFTEST runs every case and names the one that failed, which is the
+// difference between a bisect and a single flash when the signal path moves.
+bool self_check_detail(char* detail, size_t detail_size) {
+  if (!protocol_self_check()) {
+    if (detail != nullptr && detail_size != 0) copy_literal(detail, detail_size, "protocol");
+    return false;
+  }
+  return run_dsp_cases(std::size(kDspCases), detail, detail_size);
 }
 
 }  // namespace orcsdr::lora_native
