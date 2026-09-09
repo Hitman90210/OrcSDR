@@ -1,7 +1,7 @@
 param(
   [ValidatePattern('^COM[0-9]+$')]
   [string]$Port = 'COM3',
-  [ValidateRange(1000000, 2000000000)]
+  [ValidateRange(64000000, 108000000)]
   [uint32]$FrequencyHz = 96100000,
   [string]$PairingKeyPath = (Join-Path $PSScriptRoot '..\..\..\.orclink\ui-doc.key')
 )
@@ -74,6 +74,9 @@ $initial = $null
 $initialSound = $true
 $initialWeb = $false
 $initialWifi = $false
+$haveInitialSound = $false
+$haveInitialWeb = $false
+$haveInitialWifi = $false
 try {
   $serial.Open()
   $serial.DiscardInBuffer()
@@ -83,10 +86,13 @@ try {
   $initial = Send-Wait 'RTL_UI STATUS' '^RTL_UI_STATUS '
   $sound = Send-Wait 'RTL_SOUND' '^RTL_SOUND_STATUS '
   $initialSound = $sound -match 'enabled=1'
+  $haveInitialSound = $true
   $web = Send-Wait 'RTL_WEB_STATUS' '^RTL_WEB_STATUS '
   $initialWeb = $web -match 'enabled=1'
+  $haveInitialWeb = $true
   $wifi = Send-Wait 'RTL_WIFI_STATUS' '^RTL_WIFI_STATUS '
   $initialWifi = $wifi -match 'connected=1'
+  $haveInitialWifi = $true
 
   [void](Send-Wait "RTL_TUNE FM $FrequencyHz" "^RTL_TUNE_OK band=FM frequency_hz=$FrequencyHz$")
   [void](Send-Wait 'RTL_SOUND OFF' '^RTL_SOUND_OK enabled=0$')
@@ -121,12 +127,18 @@ try {
 } finally {
   if ($serial.IsOpen) {
     try {
-      if (!$initialWeb) { [void](Send-Wait 'RTL_WEB OFF' '^RTL_WEB_OK enabled=0 ') }
-      if ($initialSound) { [void](Send-Wait 'RTL_SOUND ON' '^RTL_SOUND_OK enabled=1$') }
+      if ($haveInitialWeb -and !$initialWeb) {
+        [void](Send-Wait 'RTL_WEB OFF' '^RTL_WEB_OK enabled=0 ')
+      }
+      if ($haveInitialSound -and $initialSound) {
+        [void](Send-Wait 'RTL_SOUND ON' '^RTL_SOUND_OK enabled=1$')
+      }
       if ($initial -match 'band=([A-Z]+) frequency_hz=([0-9]+)') {
         [void](Send-Wait "RTL_TUNE $($Matches[1]) $($Matches[2])" '^RTL_TUNE_(?:OK|UNAVAILABLE) ')
       }
-      if (!$initialWifi) { [void](Send-Wait 'RTL_WIFI_DISCONNECT' '^RTL_WIFI_DISCONNECT_OK$' 30) }
+      if ($haveInitialWifi -and !$initialWifi) {
+        [void](Send-Wait 'RTL_WIFI_DISCONNECT' '^RTL_WIFI_DISCONNECT_OK$' 30)
+      }
     } catch { Write-Warning "State restoration failed: $_" }
     $serial.Close()
   }
