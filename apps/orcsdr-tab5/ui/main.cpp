@@ -209,6 +209,9 @@ OrcConsole orc_console;
 #define Serial orc_console
 
 namespace {
+ // Issue #66 diagnostic: skip Hosted/Wi-Fi bring-up at boot to A/B the battery loop.
+ // Set false (or remove) once the experiment is done — not a product default.
+ constexpr bool kDiagSkipWifiAtBoot = true;
 constexpr int kButtonX = 390;
 constexpr int kButtonY = 300;
 constexpr int kButtonWidth = 500;
@@ -14266,7 +14269,11 @@ void setup() {
       wifi_prefs.end();
     }
   }
-  if (settings_wifi_power_enabled) initialize_wifi();
+  if (kDiagSkipWifiAtBoot) {
+    Serial.println("RTL_WIFI_SKIP_BOOT_DIAG issue66 A/B — Hosted init skipped");
+  } else if (settings_wifi_power_enabled) {
+    initialize_wifi();
+  }
   load_state();
   if (!orcsdr::visualizer::initialize(&preferences, visualizer_audio_sink)) {
     Serial.println("RTL_VIS_NVS_INIT_FAIL");
