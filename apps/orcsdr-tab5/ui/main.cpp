@@ -209,9 +209,11 @@ OrcConsole orc_console;
 #define Serial orc_console
 
 namespace {
- // Issue #66: never bring up ESP-Hosted from setup(). Settings only
- // inits Hosted lazily on Scan/Connect via poll_wifi. Boot "start at
- // boot" must use that same queued connect path after loop settles.
+ // Issue #66: never bring up ESP-Hosted from setup(). Settings lazy
+ // Scan/Connect via poll_wifi is stable. Boot autoconnect under live
+ // SDR is still intermittent (join / fail / panic) — leave disabled until
+ // that Hosted coexistence race is fixed; toggle is ignored for bring-up.
+ constexpr bool kWifiBootAutoconnectEnabled = false;
  constexpr uint32_t kWifiBootDeferMs = 10000;
  bool wifi_boot_bringup_pending = false;
  uint32_t wifi_boot_defer_arm_ms = 0;
@@ -14274,10 +14276,13 @@ void setup() {
   load_state();
   // Issue #66: do not call initialize_wifi() here. If "start Wi-Fi at boot" is on,
   // queue the same saved-connect path Settings uses, after loop() has settled.
-  if (settings_wifi_power_enabled && settings_wifi_start_at_boot) {
+  if (kWifiBootAutoconnectEnabled && settings_wifi_power_enabled &&
+      settings_wifi_start_at_boot) {
     wifi_boot_bringup_pending = true;
     wifi_boot_defer_arm_ms = millis();
     Serial.println("RTL_WIFI_DEFER_TO_LOOP issue66");
+  } else if (settings_wifi_power_enabled && settings_wifi_start_at_boot) {
+    Serial.println("RTL_WIFI_BOOT_AUTOCONNECT_DISABLED issue66");
   }
   if (!orcsdr::visualizer::initialize(&preferences, visualizer_audio_sink)) {
     Serial.println("RTL_VIS_NVS_INIT_FAIL");
