@@ -448,8 +448,13 @@ function Assert-WifiCoexistenceDiagnostic($initialUi) {
     throw 'Wi-Fi diagnostic requires Connectivity Power on and a saved profile.'
   }
   $initialFrequency = $initialUi.Frequency
+  $restoreSoundOff = $false
   try {
     [void](Send-And-Wait 'RTL_TUNE FM 96100000' '^RTL_TUNE_OK band=FM frequency_hz=96100000$')
+    $restoreSoundOff = (Send-And-Wait 'RTL_SOUND' '^RTL_SOUND_STATUS enabled=[01]$').EndsWith('0')
+    if ($restoreSoundOff) {
+      [void](Send-And-Wait 'RTL_SOUND ON' '^RTL_SOUND_OK enabled=1$')
+    }
     $dropBaseline = (Get-WifiCoexStatus).AudioDrops
     Assert-WifiCoexAudio 'fm_961_baseline' $dropBaseline
     if ((Get-WifiStatus).Connected -eq 1) {
@@ -486,6 +491,7 @@ function Assert-WifiCoexistenceDiagnostic($initialUi) {
       }
       [void](Send-And-Wait "RTL_TUNE $($initialUi.Band) $initialFrequency" "^RTL_TUNE_OK band=$($initialUi.Band) ")
       [void](Open-Ui $initialUi.Screen $initialUi.Band)
+      if ($restoreSoundOff) { [void](Send-And-Wait 'RTL_SOUND OFF' '^RTL_SOUND_OK enabled=0$') }
     } catch { Write-Warning "Could not restore Wi-Fi/UI state: $($_.Exception.Message)" }
   }
 }
