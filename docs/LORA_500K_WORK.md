@@ -219,10 +219,13 @@ channel key is not stored in OrcSDR. This confirms RF trigger, IQ capture,
 preamble detection, explicit-header parsing, CR 4/8 FEC and PHY CRC on a real
 Long Turbo transmission.
 
-Operational trap: `RTL_TUNE LORA 908750000` currently reapplies the saved LoRa
-preset and can reset bandwidth to 250 kHz. For a custom 500 kHz session, tune
-first, then issue `RTL_LORA_MODEM 11 500000`, and verify with
-`RTL_LORA_MODEM`. A persistent Long Turbo UI preset is the next usability fix.
+The follow-up UI work removed the operating trap discovered during this test.
+The dashboard's `CHANNELS` overlay now has a persistent Meshtastic preset row:
+Long Fast, Long Turbo and Short Turbo. Selecting one applies SF, bandwidth,
+the preset-specific regional slot count, and the official default-frequency
+hash together. `RTL_TUNE LORA` therefore restores the saved preset instead of
+silently forcing Long Fast. The raw `RTL_LORA_MODEM` command remains useful for
+custom experiments, but is no longer required for these three presets.
 
 ---
 

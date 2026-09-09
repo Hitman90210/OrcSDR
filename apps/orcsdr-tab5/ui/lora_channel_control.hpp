@@ -9,6 +9,17 @@ class NvsStore;
 
 namespace orcsdr::lora_channel {
 
+enum class Preset : uint8_t { long_fast, long_turbo, short_turbo, count };
+
+struct ModemPreset {
+  const char* code;
+  const char* label;
+  const char* hash_name;
+  uint32_t bandwidth_hz;
+  uint8_t spreading_factor;
+  uint8_t coding_rate;
+};
+
 struct Region {
   const char* code;
   uint32_t start_hz;
@@ -17,6 +28,7 @@ struct Region {
 
 struct Selection {
   uint8_t region_index = 0;
+  Preset preset = Preset::long_fast;
   uint16_t slot = 20;
   uint32_t frequency_hz = 906875000;
   bool persisted = false;
@@ -30,6 +42,8 @@ struct SurveyStep {
 
 constexpr uint32_t kLongFastBandwidthHz = 250000;
 
+size_t preset_count();
+const ModemPreset& preset(Preset value);
 size_t region_count();
 const Region& region(size_t index);
 int find_region(const char* code);
@@ -42,6 +56,7 @@ const Selection& selection();
 void load(NvsStore& store);
 bool adopt(const char* region_code, uint32_t frequency_hz);
 bool choose(size_t region_index, uint16_t slot, NvsStore& store);
+bool choose_preset(Preset value, NvsStore& store);
 
 void start_survey(uint32_t restore_frequency_hz, uint32_t now_ms);
 uint32_t cancel_survey();

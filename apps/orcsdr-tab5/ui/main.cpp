@@ -3409,14 +3409,32 @@ void load_lora_config() {
 
 void apply_lora_channel_selection() {
   const auto& selected = orcsdr::lora_channel::selection();
+  const auto& preset = orcsdr::lora_channel::preset(selected.preset);
   lora_config_frequency_hz = selected.frequency_hz;
   rtl_saved_lora_hz = selected.frequency_hz;
-  lora_sf.store(11, std::memory_order_relaxed);
-  lora_bandwidth_hz.store(orcsdr::lora_channel::kLongFastBandwidthHz,
-                          std::memory_order_relaxed);
-  strlcpy(lora_profile_name, "LONGFAST", sizeof(lora_profile_name));
+  lora_sf.store(preset.spreading_factor, std::memory_order_relaxed);
+  lora_bandwidth_hz.store(preset.bandwidth_hz, std::memory_order_relaxed);
+  rtl_filter_bandwidth_hz.store(preset.bandwidth_hz, std::memory_order_relaxed);
+  strlcpy(lora_profile_name, preset.label, sizeof(lora_profile_name));
   strlcpy(lora_region_name, orcsdr::lora_channel::region(selected.region_index).code,
           sizeof(lora_region_name));
+}
+
+void select_lora_preset(orcsdr::lora_channel::Preset preset) {
+  if (!orcsdr::lora_channel::choose_preset(preset, preferences)) return;
+  apply_lora_channel_selection();
+  const auto& selected = orcsdr::lora_channel::selection();
+  const auto& modem = orcsdr::lora_channel::preset(selected.preset);
+  lora_iq_reset_detector();
+  Serial.printf("RTL_LORA_PRESET_SAVE preset=%s sf=%u bandwidth_hz=%u slot=%u frequency_hz=%u\n",
+                modem.code, modem.spreading_factor, modem.bandwidth_hz, selected.slot,
+                selected.frequency_hz);
+  if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running &&
+      rtl_ui_band == RtlBand::lora) {
+    request_hot_retune(selected.frequency_hz);
+  } else {
+    queue_local_rtl_listen(RtlBand::lora, selected.frequency_hz);
+  }
 }
 
 void select_lora_channel(size_t region_index, uint16_t slot) {
@@ -8572,6 +8590,8 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.frequency_hz = rtl_ui_frequency_hz;
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.sf = lora_sf.load(std::memory_order_relaxed);
+  snapshot.preset_index = static_cast<uint8_t>(channel.preset);
+  snapshot.preset_count = static_cast<uint8_t>(orcsdr::lora_channel::preset_count());
   snapshot.region_index = channel.region_index;
   snapshot.region_count = static_cast<uint8_t>(orcsdr::lora_channel::region_count());
   snapshot.channel_slot = orcsdr::lora_channel::slot_for_frequency(
@@ -8599,7 +8619,8 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.battery_percent = M5.Power.getBatteryLevel();
   snapshot.native_decoder_ready =
       lora_native_decoder_ready.load(std::memory_order_acquire) &&
-      snapshot.bandwidth_hz == 250000;
+      (snapshot.bandwidth_hz == 125000 || snapshot.bandwidth_hz == 250000 ||
+       snapshot.bandwidth_hz == 500000);
   snapshot.key_loaded = snapshot.native_decoder_ready && lora_authorized_key_loaded;
   strlcpy(snapshot.profile, lora_profile_name, sizeof(snapshot.profile));
   strlcpy(snapshot.region, lora_region_name, sizeof(snapshot.region));
@@ -9034,6 +9055,19 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
     case ActionKind::open_channels:
       orcsdr::lora::open_channel_picker();
       break;
+    case ActionKind::preset_previous: {
+      const auto selected = static_cast<size_t>(orcsdr::lora_channel::selection().preset);
+      select_lora_preset(static_cast<orcsdr::lora_channel::Preset>(
+          (selected + orcsdr::lora_channel::preset_count() - 1) %
+          orcsdr::lora_channel::preset_count()));
+      break;
+    }
+    case ActionKind::preset_next: {
+      const auto selected = static_cast<size_t>(orcsdr::lora_channel::selection().preset);
+      select_lora_preset(static_cast<orcsdr::lora_channel::Preset>(
+          (selected + 1) % orcsdr::lora_channel::preset_count()));
+      break;
+    }
     case ActionKind::region_previous:
       select_lora_channel(
           (orcsdr::lora_channel::selection().region_index +
@@ -12957,6 +12991,7 @@ void process_command(char* command) {
       else if (!strcmp(action, "LOG")) kind=K::logging_toggle; else if (!strcmp(action, "CLEAR")) kind=K::clear_events;
       else if (!strcmp(action, "EXPORT")) kind=K::export_log; else if (!strcmp(action, "FOLLOW")) kind=K::follow_node;
       else if (!strcmp(action, "CHANNELS")) kind=K::open_channels; else if (!strcmp(action, "SETTINGS")) kind=K::open_settings;
+      else if (!strcmp(action, "PRESET_PREV")) kind=K::preset_previous; else if (!strcmp(action, "PRESET_NEXT")) kind=K::preset_next;
       else if (!strcmp(action, "REGION_PREV")) kind=K::region_previous; else if (!strcmp(action, "REGION_NEXT")) kind=K::region_next;
       else if (!strcmp(action, "REGION")) kind=K::region_select; else if (!strcmp(action, "SLOT_PREV")) kind=K::channel_previous;
       else if (!strcmp(action, "SLOT_NEXT")) kind=K::channel_next; else if (!strcmp(action, "SLOT")) kind=K::channel_select;

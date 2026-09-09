@@ -55,6 +55,8 @@ struct Snapshot {
   uint32_t uptime_seconds = 0;
   uint32_t survey_progress = 0;
   uint8_t sf = 11;
+  uint8_t preset_index = 0;
+  uint8_t preset_count = 0;
   uint8_t region_index = 0;
   uint8_t region_count = 0;
   uint16_t channel_slot = 0;
@@ -101,6 +103,8 @@ enum class ActionKind : uint8_t {
   mark_point,
   save_snapshot,
   open_channels,
+  preset_previous,
+  preset_next,
   region_previous,
   region_next,
   region_select,

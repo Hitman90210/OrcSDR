@@ -594,28 +594,34 @@ void draw_channels_overlay() {
   constexpr int x = 220, y = 170, w = 840, h = 360;
   M5.Display.fillRoundRect(x, y, w, h, 14, kBg);
   M5.Display.drawRoundRect(x, y, w, h, 14, kCyan);
-  text("MESHTASTIC LONGFAST", x + 28, y + 34, kCyan, 2, middle_left);
+  text("MESHTASTIC PRESET + CHANNEL", x + 28, y + 34, kCyan, 2, middle_left);
   text("CLOSE", x + w - 70, y + 34, kYellow, 2);
 
   char value[64];
-  text("REGION", x + 100, y + 116, kMuted, 1);
-  text("<", x + 220, y + 116, kCyan, 4);
-  text(g_snapshot.region[0] ? g_snapshot.region : "US", x + w / 2, y + 116,
-       kGreen, 3);
-  text(">", x + w - 220, y + 116, kCyan, 4);
+  text("PRESET", x + 100, y + 92, kMuted, 1);
+  text("<", x + 220, y + 92, kCyan, 4);
+  text(g_snapshot.profile[0] ? g_snapshot.profile : "LONG FAST", x + w / 2, y + 92,
+       kGreen, 2);
+  text(">", x + w - 220, y + 92, kCyan, 4);
 
-  text("SLOT", x + 100, y + 220, kMuted, 1);
-  text("<", x + 220, y + 220, kCyan, 4);
+  text("REGION", x + 100, y + 164, kMuted, 1);
+  text("<", x + 220, y + 164, kCyan, 4);
+  text(g_snapshot.region[0] ? g_snapshot.region : "US", x + w / 2, y + 164,
+       kGreen, 3);
+  text(">", x + w - 220, y + 164, kCyan, 4);
+
+  text("SLOT", x + 100, y + 236, kMuted, 1);
+  text("<", x + 220, y + 236, kCyan, 4);
   snprintf(value, sizeof(value), "%u / %u", g_snapshot.channel_slot,
            g_snapshot.channel_count);
-  text(value, x + w / 2, y + 220, TFT_WHITE, 3);
-  text(">", x + w - 220, y + 220, kCyan, 4);
+  text(value, x + w / 2, y + 236, TFT_WHITE, 3);
+  text(">", x + w - 220, y + 236, kCyan, 4);
 
   snprintf(value, sizeof(value), "%.3f MHz", g_snapshot.frequency_hz / 1000000.0);
-  text(value, x + 250, y + 300,
+  text(value, x + 250, y + 310,
        g_snapshot.channel_slot == g_snapshot.default_slot ? kGreen : kMuted, 2);
   snprintf(value, sizeof(value), "DEFAULT SLOT %u", g_snapshot.default_slot);
-  button(x + 520, y + 274, 270, 52, value, kGreen,
+  button(x + 520, y + 284, 270, 52, value, kGreen,
          g_snapshot.channel_slot == g_snapshot.default_slot);
 }
 
@@ -720,11 +726,13 @@ Action handle_touch(int32_t x, int32_t y) {
       draw_static();
       return {};
     }
-    if (hit(x, y, 380, 238, 120, 100)) return {ActionKind::region_previous};
-    if (hit(x, y, 780, 238, 120, 100)) return {ActionKind::region_next};
-    if (hit(x, y, 380, 342, 120, 100)) return {ActionKind::channel_previous};
-    if (hit(x, y, 780, 342, 120, 100)) return {ActionKind::channel_next};
-    if (hit(x, y, 740, 444, 270, 52))
+    if (hit(x, y, 380, 226, 120, 70)) return {ActionKind::preset_previous};
+    if (hit(x, y, 780, 226, 120, 70)) return {ActionKind::preset_next};
+    if (hit(x, y, 380, 298, 120, 70)) return {ActionKind::region_previous};
+    if (hit(x, y, 780, 298, 120, 70)) return {ActionKind::region_next};
+    if (hit(x, y, 380, 370, 120, 70)) return {ActionKind::channel_previous};
+    if (hit(x, y, 780, 370, 120, 70)) return {ActionKind::channel_next};
+    if (hit(x, y, 740, 454, 270, 52))
       return {ActionKind::channel_select, g_snapshot.default_slot};
     if (hit(x, y, 220, 170, 840, 360)) return {};
     g_channels_open = false;
@@ -820,6 +828,7 @@ bool self_check() {
   Snapshot snapshot{};
   snapshot.frequency_hz = 906875000;
   snapshot.sf = 11;
+  snapshot.preset_count = 3;
   snapshot.bandwidth_hz = 250000;
   snapshot.node_count = 1;
   snapshot.nodes[0].id = 0xA1B2C3D4;
@@ -840,6 +849,7 @@ bool self_check() {
   const uint8_t saved_filter = g_filter;
   const View saved_view = g_view;
   const bool saved_active = g_active;
+  const bool saved_channels_open = g_channels_open;
   const bool saved_details = g_node_details;
   const size_t saved_traffic_offset = g_traffic_offset;
   g_snapshot = snapshot;
@@ -864,13 +874,23 @@ bool self_check() {
                                  g_traffic_offset == 1 &&
                                  handle_touch(1200, 220).kind == ActionKind::refresh &&
                                  g_traffic_offset == 0;
+  g_view = View::overview;
+  g_channels_open = true;
+  const bool preset_touch_ok =
+      handle_touch(390, 240).kind == ActionKind::preset_previous &&
+      handle_touch(790, 240).kind == ActionKind::preset_next &&
+      handle_touch(390, 320).kind == ActionKind::region_previous &&
+      handle_touch(790, 320).kind == ActionKind::region_next &&
+      handle_touch(390, 400).kind == ActionKind::channel_previous &&
+      handle_touch(790, 400).kind == ActionKind::channel_next;
   g_snapshot = saved_snapshot;
   g_filter = saved_filter;
   g_view = saved_view;
   g_active = saved_active;
+  g_channels_open = saved_channels_open;
   g_node_details = saved_details;
   g_traffic_offset = saved_traffic_offset;
-  if (!filter_ok || !controls_ok || !traffic_scroll_ok) return false;
+  if (!filter_ok || !controls_ok || !traffic_scroll_ok || !preset_touch_ok) return false;
   return audio_header::self_check() && lora_channel::self_check();
 }
 
