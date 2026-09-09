@@ -212,7 +212,7 @@ namespace {
  // Issue #66: never bring up ESP-Hosted from setup(). Settings only
  // inits Hosted lazily on Scan/Connect via poll_wifi. Boot "start at
  // boot" must use that same queued connect path after loop settles.
- constexpr uint32_t kWifiBootDeferMs = 2500;
+ constexpr uint32_t kWifiBootDeferMs = 10000;
  bool wifi_boot_bringup_pending = false;
  uint32_t wifi_boot_defer_arm_ms = 0;
 constexpr int kButtonX = 390;
