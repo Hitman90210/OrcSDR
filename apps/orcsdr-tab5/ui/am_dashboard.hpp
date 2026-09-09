@@ -23,6 +23,16 @@ struct Snapshot {
   bool recording = false;
   uint8_t volume = 0;
   uint8_t preset_count = 0;
+  bool gain_auto = true;
+  bool gain_auto_selecting = false;
+  int gain_tenth_db = 0;
+  int gain_steps_tenth_db[32]{};
+  uint8_t gain_step_count = 0;
+  bool scan_active = false;
+  uint16_t scan_step = 0;
+  uint16_t scan_total = 1;
+  uint8_t scan_found = 0;
+  uint32_t scan_frequency_hz = 0;
   int8_t selected_preset = -1;
   int32_t battery_percent = -1;
 };
@@ -43,6 +53,9 @@ enum class ActionKind : uint8_t {
   volume_up,
   graphics_toggle,
   recording_toggle,
+  gain_auto,
+  gain_tenth_db,
+  scan_toggle,
   open_device_settings,
   exit_home,
 };
@@ -58,6 +71,7 @@ void draw();
 void update(const Snapshot& snapshot);
 void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, float floor);
 Action handle_touch(int32_t x, int32_t y);
+Action handle_gain_drag(int32_t x, int32_t y);
 bool active();
 bool spectrum_active();
 View view();
@@ -68,6 +82,11 @@ void note_tuned(uint32_t frequency_hz);
 uint32_t toggle_channel_step();
 uint32_t preset(size_t index);
 void save_current_preset();
+bool add_scanned_preset(uint32_t frequency_hz);
+uint8_t add_scan_results(uint32_t start_hz, uint32_t step_hz,
+                         const float* levels, size_t count, float* baseline_dbfs);
+constexpr float kAutoGainTargetDbfs = -24.0f;
+bool auto_gain_should_advance(float level_dbfs, size_t step, size_t step_count);
 void populate_presets(Snapshot& snapshot);
 bool self_check();
 

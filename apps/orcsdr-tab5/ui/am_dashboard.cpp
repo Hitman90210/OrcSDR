@@ -31,6 +31,22 @@ constexpr int kSpectrumW = 1188;
 constexpr int kSpectrumH = 145;
 constexpr int kWaterfallY = 420;
 constexpr int kWaterfallH = 130;
+constexpr int kGainAutoX = 48;
+constexpr int kGainAutoY = 486;
+constexpr int kGainAutoW = 190;
+constexpr int kGainSliderX = 280;
+constexpr int kGainSliderY = 525;
+constexpr int kGainSliderW = 900;
+
+struct GainLayout {
+  int auto_x;
+  int auto_y;
+  int auto_w;
+  int auto_h;
+  int slider_x;
+  int slider_y;
+  int slider_w;
+};
 
 Snapshot g_snapshot{};
 View g_view = View::listen;
@@ -43,9 +59,44 @@ uint32_t g_saved_frequency = receiver_bands::kAmBroadcast.default_hz;
 uint32_t g_channel_step = receiver_bands::kAmBroadcast.default_step_hz;
 uint32_t g_presets[6]{};
 uint8_t g_preset_count = 0;
+EXT_RAM_BSS_ATTR float g_scan_sorted[160]{};
+
+struct ScanCandidate {
+  size_t index;
+  float level;
+};
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
   return x >= bx && x < bx + bw && y >= by && y < by + bh;
+}
+
+size_t select_scan_candidates(const float* levels, size_t count,
+                              ScanCandidate* candidates, size_t capacity,
+                              float* baseline_dbfs) {
+  if (!levels || !candidates || !count || count > std::size(g_scan_sorted)) return 0;
+  std::copy_n(levels, count, g_scan_sorted);
+  std::nth_element(g_scan_sorted, g_scan_sorted + count / 2, g_scan_sorted + count);
+  const float baseline = g_scan_sorted[count / 2];
+  if (baseline_dbfs) *baseline_dbfs = baseline;
+  size_t found = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const float level = levels[i];
+    const float left = i ? levels[i - 1] : baseline;
+    const float right = i + 1 < count ? levels[i + 1] : baseline;
+    // ponytail: local-prominence heuristic; add audio validation if RF-only scans prove noisy.
+    if (level < baseline + 3.0f || level < left + 1.0f || level < right + 1.0f) continue;
+    size_t slot = found;
+    if (slot < capacity) ++found;
+    else if (level <= candidates[slot = capacity - 1].level) continue;
+    while (slot > 0 && level > candidates[slot - 1].level) {
+      if (slot < capacity) candidates[slot] = candidates[slot - 1];
+      --slot;
+    }
+    candidates[slot] = {i, level};
+  }
+  std::sort(candidates, candidates + found,
+            [](const ScanCandidate& a, const ScanCandidate& b) { return a.index < b.index; });
+  return found;
 }
 
 void text(const char* value, int x, int y, uint16_t color = TFT_WHITE,
@@ -106,6 +157,39 @@ void draw_meter(int x, int y, int w, float dbfs) {
                         i < lit ? (i >= 14 ? kYellow : kGreen) : kGrid);
 }
 
+GainLayout gain_layout() {
+  if (g_view == View::listen) return {1128, 304, 86, 42, 884, 338, 220};
+  if (g_view == View::spectrum) return {928, 561, 82, 44, 1024, 584, 190};
+  return {kGainAutoX, kGainAutoY, kGainAutoW, 70,
+          kGainSliderX, kGainSliderY, kGainSliderW};
+}
+
+void draw_gain_control(bool compact) {
+  const GainLayout layout = gain_layout();
+  char value[24];
+  if (g_snapshot.gain_auto)
+    snprintf(value, sizeof(value), g_snapshot.gain_auto_selecting ? "AUTO..." : "AUTO %.1f",
+             static_cast<double>(g_snapshot.gain_tenth_db) / 10.0);
+  else
+    snprintf(value, sizeof(value), "%.1f dB",
+             static_cast<double>(g_snapshot.gain_tenth_db) / 10.0);
+  button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "AUTO", kGreen,
+         g_snapshot.gain_auto);
+  text(compact ? "GAIN" : "RF GAIN", layout.slider_x,
+       layout.slider_y - (compact ? 15 : 33), kCyan, 2, middle_left);
+  text(value, layout.slider_x + layout.slider_w,
+       layout.slider_y - (compact ? 15 : 33),
+       g_snapshot.gain_auto ? kGreen : TFT_WHITE, 2, middle_right);
+  M5.Display.fillRoundRect(layout.slider_x, layout.slider_y, layout.slider_w, 18, 9, kGrid);
+  const int gain_x = layout.slider_x + std::clamp(g_snapshot.gain_tenth_db, 0, 496) *
+                                         layout.slider_w / 496;
+  if (!g_snapshot.gain_auto)
+    M5.Display.fillRoundRect(layout.slider_x, layout.slider_y,
+                             std::max(9, gain_x - layout.slider_x), 18, 9, kGreen);
+  M5.Display.fillCircle(gain_x, layout.slider_y + 9, compact ? 11 : 14,
+                        g_snapshot.gain_auto ? kMuted : kGreen);
+}
+
 void draw_listen_static() {
   card(24, 150, 820, 230);
   card(860, 150, 396, 230);
@@ -114,6 +198,7 @@ void draw_listen_static() {
   button(224, 398, 190, 76, "STEP +");
   button(424, 398, 190, 76, "9 / 10 kHz");
   button(624, 398, 220, 76, "BANDWIDTH");
+  button(860, 398, 396, 76, "SCAN BAND", kGreen);
   for (int i = 0; i < 6; ++i) button(24 + i * 166, 494, 154, 70, "EMPTY", kGrid);
   button(1020, 494, 236, 70, "SAVE CURRENT", kGreen);
   text("PRESETS", 24, 582, kCyan, 2, middle_left);
@@ -130,11 +215,23 @@ void draw_listen_dynamic() {
            static_cast<unsigned long>(g_snapshot.step_hz / 1000),
            static_cast<unsigned long>(g_snapshot.filter_bandwidth_hz / 1000));
   text(value, 430, 330, kCyan, 3);
-  M5.Display.fillRect(882, 215, 350, 130, kPanel);
+  M5.Display.fillRect(882, 215, 350, 145, kPanel);
   draw_meter(884, 220, 330, g_snapshot.relative_dbfs);
   snprintf(value, sizeof(value), "%.1f dBFS  %s", static_cast<double>(g_snapshot.relative_dbfs),
            g_snapshot.running ? "RECEIVING" : "STOPPED");
-  text(value, 1058, 295, g_snapshot.running ? kGreen : TFT_RED, 3);
+  text(value, 1058, 275, g_snapshot.running ? kGreen : TFT_RED, 2);
+  draw_gain_control(true);
+  if (g_snapshot.scan_active) {
+    const unsigned percent = g_snapshot.scan_total
+        ? static_cast<unsigned>(g_snapshot.scan_step) * 100u / g_snapshot.scan_total : 0u;
+    snprintf(value, sizeof(value), "STOP  %lu kHz  %u%%",
+             static_cast<unsigned long>(g_snapshot.scan_frequency_hz / 1000), percent);
+    button(860, 398, 396, 76, value, TFT_RED, true);
+  } else {
+    snprintf(value, sizeof(value), g_snapshot.scan_found ? "SCAN BAND  +%u PRESETS" : "SCAN BAND",
+             g_snapshot.scan_found);
+    button(860, 398, 396, 76, value, kGreen);
+  }
   for (int i = 0; i < 6; ++i) {
     char preset[20];
     if (i < g_snapshot.preset_count && g_snapshot.presets_hz[i])
@@ -161,7 +258,7 @@ void draw_spectrum_static() {
   button(390, 565, 70, 42, "-");
   button(820, 565, 70, 42, "+");
   text("SPAN", 55, 585, kCyan, 2, middle_left);
-  text("TAP SPECTRUM TO TUNE", 1040, 585, TFT_WHITE, 2);
+  text("TAP TO TUNE", 720, 585, TFT_WHITE, 2);
 }
 
 void draw_spectrum_dynamic() {
@@ -174,6 +271,7 @@ void draw_spectrum_dynamic() {
            static_cast<unsigned long>(g_snapshot.filter_bandwidth_hz / 1000),
            static_cast<unsigned long>(g_snapshot.span_hz / 1000));
   text(value, 1220, 214, kGreen, 3, middle_right);
+  draw_gain_control(true);
 }
 
 void draw_settings_static() {
@@ -188,17 +286,17 @@ void draw_settings_static() {
   button(380, 400, 310, 70, "RECORD AUDIO", TFT_RED);
   button(720, 220, 512, 70, "DEVICE SETTINGS");
   button(720, 310, 512, 70, "HOME", kGreen, true);
-  text("AM keeps playing while controls are adjusted", 976, 445, kMuted, 2);
 }
 
 void draw_settings_dynamic() {
   char value[96];
-  M5.Display.fillRect(48, 500, 1184, 70, kPanel);
+  M5.Display.fillRect(48, 476, 1184, 112, kPanel);
+  draw_gain_control(false);
   snprintf(value, sizeof(value), "VOL %u   SPACING %lu kHz   BW %lu kHz   GRAPHICS %s   RECORD %s",
            g_snapshot.volume, static_cast<unsigned long>(g_snapshot.step_hz / 1000),
            static_cast<unsigned long>(g_snapshot.filter_bandwidth_hz / 1000),
            g_snapshot.graphics_enabled ? "ON" : "OFF", g_snapshot.recording ? "ON" : "OFF");
-  text(value, 640, 535, TFT_WHITE, 2);
+  text(value, 640, 572, TFT_WHITE, 2);
 }
 
 void draw_view() {
@@ -315,11 +413,15 @@ Action handle_touch(int32_t x, int32_t y) {
     }
     return {};
   }
+  const GainLayout layout = gain_layout();
+  if (hit(x, y, layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h))
+    return {ActionKind::gain_auto};
   if (g_view == View::listen) {
     if (hit(x, y, 24, 398, 190, 76)) return {ActionKind::step_down};
     if (hit(x, y, 224, 398, 190, 76)) return {ActionKind::step_up};
     if (hit(x, y, 424, 398, 190, 76)) return {ActionKind::spacing_toggle};
     if (hit(x, y, 624, 398, 220, 76)) return {ActionKind::filter_cycle};
+    if (hit(x, y, 860, 398, 396, 76)) return {ActionKind::scan_toggle};
     for (uint32_t i = 0; i < 6; ++i)
       if (hit(x, y, 24 + static_cast<int>(i) * 166, 494, 154, 70))
         return {ActionKind::preset_recall, i};
@@ -346,6 +448,20 @@ Action handle_touch(int32_t x, int32_t y) {
     if (hit(x, y, 720, 310, 512, 70)) return {ActionKind::exit_home};
   }
   return {};
+}
+
+Action handle_gain_drag(int32_t x, int32_t y) {
+  const GainLayout layout = gain_layout();
+  if (!g_active ||
+      !hit(x, y, layout.slider_x - 14, layout.slider_y - 24, layout.slider_w + 28, 66) ||
+      g_snapshot.gain_step_count == 0) return {};
+  const int raw_index = static_cast<int>(x - layout.slider_x) *
+                        static_cast<int>(g_snapshot.gain_step_count) / layout.slider_w;
+  const size_t index = static_cast<size_t>(std::clamp(
+      raw_index, 0, static_cast<int>(g_snapshot.gain_step_count) - 1));
+  const int gain = g_snapshot.gain_steps_tenth_db[index];
+  if (!g_snapshot.gain_auto && gain == g_snapshot.gain_tenth_db) return {};
+  return {ActionKind::gain_tenth_db, static_cast<uint32_t>(gain)};
 }
 
 bool active() { return g_active; }
@@ -399,6 +515,34 @@ void save_current_preset() {
   (void)g_store->put_u8("am_preset_count", g_preset_count);
 }
 
+bool add_scanned_preset(uint32_t frequency_hz) {
+  for (size_t i = 0; i < g_preset_count; ++i)
+    if (g_presets[i] == frequency_hz) return false;
+  if (g_preset_count == std::size(g_presets)) return false;
+  g_presets[g_preset_count++] = frequency_hz;
+  if (g_store) {
+    (void)g_store->put_bytes("am_presets", g_presets, sizeof(g_presets));
+    (void)g_store->put_u8("am_preset_count", g_preset_count);
+  }
+  return true;
+}
+
+uint8_t add_scan_results(uint32_t start_hz, uint32_t step_hz,
+                         const float* levels, size_t count, float* baseline_dbfs) {
+  ScanCandidate candidates[6]{};
+  const size_t found = select_scan_candidates(levels, count, candidates,
+                                               std::size(candidates), baseline_dbfs);
+  uint8_t added = 0;
+  for (size_t i = 0; i < found; ++i)
+    if (add_scanned_preset(start_hz + static_cast<uint32_t>(candidates[i].index) * step_hz))
+      ++added;
+  return added;
+}
+
+bool auto_gain_should_advance(float level_dbfs, size_t step, size_t step_count) {
+  return step + 1 < step_count && level_dbfs < kAutoGainTargetDbfs;
+}
+
 void populate_presets(Snapshot& snapshot) {
   snapshot.preset_count = g_preset_count;
   for (size_t i = 0; i < std::size(g_presets); ++i) {
@@ -408,9 +552,19 @@ void populate_presets(Snapshot& snapshot) {
 }
 
 bool self_check() {
+  const float scan_levels[] = {-80.0f, -70.0f, -80.0f, -60.0f, -80.0f};
+  ScanCandidate candidates[2]{};
+  float baseline = 0.0f;
   return static_cast<uint8_t>(View::count) == 3 &&
          receiver_bands::valid(receiver_bands::kAmBroadcast) &&
-         kSpectrumX + kSpectrumW <= 1280 && kTabsY < 720 && audio_header::self_check();
+         kSpectrumX + kSpectrumW <= 1280 && kGainSliderX + kGainSliderW <= 1280 &&
+         kTabsY < 720 && audio_header::self_check() &&
+          select_scan_candidates(scan_levels, std::size(scan_levels), candidates,
+                                 std::size(candidates), &baseline) == 2 &&
+          baseline == -80.0f && candidates[0].index == 1 && candidates[1].index == 3 &&
+          auto_gain_should_advance(-30.0f, 0, 3) &&
+          !auto_gain_should_advance(kAutoGainTargetDbfs, 0, 3) &&
+          !auto_gain_should_advance(-30.0f, 2, 3);
 }
 
 }  // namespace orcsdr::am

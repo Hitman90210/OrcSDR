@@ -832,11 +832,23 @@ function Set-AmFilter([uint32]$TargetHz) {
   throw "AM filter did not reach $TargetHz Hz: $($signal.Line)"
 }
 
+function Get-AmScanStatus {
+  $line = Send-And-Wait 'RTL_AM_SCAN STATUS' '^RTL_AM_SCAN_STATUS '
+  if ($line -notmatch '^RTL_AM_SCAN_STATUS active=([01]) step=(\d+) total=(\d+) found=(\d+) frequency_hz=(\d+)$') {
+    throw "Malformed AM scan status: $line"
+  }
+  [pscustomobject]@{
+    Active = [int]$Matches[1]; Step = [int]$Matches[2]; Total = [int]$Matches[3]
+    Found = [int]$Matches[4]; Frequency = [uint32]$Matches[5]
+  }
+}
+
 function Invoke-AmBroadcastTest {
   Wait-DeviceReady 60 11000
   Connect-Authenticated
   $initial = $null
   $initialSignal = $null
+  $initialDriver = $null
   $initialVerbosity = $null
   try {
     $verbosity = Send-And-Wait 'RTL_SERIAL VERBOSITY' '^RTL_SERIAL_VERBOSITY mode=(QUIET|NORMAL|DEBUG|TRACE)$'
@@ -846,18 +858,24 @@ function Invoke-AmBroadcastTest {
     $initial = Get-UiState
     $initialSignal = Get-SignalStatus
     [void](Open-Ui 'AM' 'AM')
-    $audio = Get-AudioStatus
+    $routeDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+      $audio = Get-AudioStatus
+      if ($audio.headphone_connected -ne 1 -or $audio.internal_speaker_muted -eq 1) { break }
+      Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $routeDeadline)
     if ($audio.headphone_connected -eq 1 -and $audio.internal_speaker_muted -ne 1) {
       throw 'Headphones detected but internal speaker is not muted.'
     }
     $driver = Get-DriverStatus
+    $initialDriver = $driver
     if ($driver.State -ne 'STREAMING') {
       throw "AM test requires active IQ streaming; state=$($driver.State)"
     }
     $lastBytes = $driver.Bytes
     foreach ($frequency in @(590000, 1120000, 1280000)) {
       [void](Send-And-Wait "RTL_UI ACTION AM TUNE $frequency" '^RTL_UI_ACTION_OK$')
-      foreach ($filter in @(4000, 6000, 10000)) {
+      foreach ($filter in @(4000, 6000, 8000, 10000)) {
         [void](Set-AmFilter $filter)
         Start-Sleep -Seconds $DwellSeconds
         $signal = Get-SignalStatus
@@ -875,7 +893,50 @@ function Invoke-AmBroadcastTest {
       }
       Assert-Health
     }
-    Write-SoakLine 'RTL_AM_REGRESSION_RESULT pass=1 frequencies=3 filters=3 samples=9'
+    [void](Open-Ui 'HOME' 'AM')
+    [void](Open-Ui 'AM' 'AM')
+    $signal = Get-SignalStatus
+    if ($signal.Frequency -ne 1280000) {
+      throw "AM dashboard entry changed the current station: $($signal.Line)"
+    }
+    Write-SoakLine 'RTL_AM_ENTRY_REGRESSION pass=1 preserved_frequency_hz=1280000'
+    [void](Send-And-Wait 'RTL_UI ACTION AM GAIN_AUTO' '^RTL_UI_ACTION_OK$')
+    Start-Sleep -Milliseconds 300
+    $driver = Get-DriverStatus
+    $auto = Send-And-Wait 'RTL_AM_GAIN STATUS' '^RTL_AM_GAIN_STATUS '
+    if ($driver.Mode -ne 'MANUAL' -or
+        $auto -notmatch 'mode=AUTO selecting=1 gain_tenth_db=0 target_dbfs=-24\.0') {
+      throw "AM bounded auto gain failed: driver_mode=$($driver.Mode) status=$auto"
+    }
+    foreach ($gain in @(0, 496)) {
+      [void](Send-And-Wait "RTL_UI ACTION AM GAIN $gain" '^RTL_UI_ACTION_OK$')
+      Start-Sleep -Milliseconds 300
+      $driver = Get-DriverStatus
+      if ($driver.Mode -ne 'MANUAL' -or $driver.Gain -ne $gain) {
+        throw "AM manual gain action failed: requested=$gain mode=$($driver.Mode) gain=$($driver.Gain)"
+      }
+    }
+    Write-SoakLine 'RTL_AM_GAIN_REGRESSION pass=1 auto=lowest_usable manual_range_tenth_db=0-496'
+    [void](Send-And-Wait 'RTL_UI ACTION AM SCAN' '^RTL_UI_ACTION_OK$')
+    $scanDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+      $scan = Get-AmScanStatus
+      if ($scan.Active -eq 1) { break }
+      Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $scanDeadline)
+    if ($scan.Active -ne 1 -or $scan.Total -lt 100) {
+      throw "AM scan did not start: $($scan | ConvertTo-Json -Compress)"
+    }
+    [void](Send-And-Wait 'RTL_UI ACTION AM SCAN' '^RTL_UI_ACTION_OK$')
+    $scanDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    do {
+      $scan = Get-AmScanStatus
+      if ($scan.Active -eq 0) { break }
+      Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $scanDeadline)
+    if ($scan.Active -ne 0) { throw 'AM scan did not cancel.' }
+    Write-SoakLine "RTL_AM_SCAN_REGRESSION pass=1 action=start+cancel channels=$($scan.Total)"
+    Write-SoakLine 'RTL_AM_REGRESSION_RESULT pass=1 frequencies=3 filters=4 samples=12'
   } finally {
     try {
       if ($null -ne $initial -and
@@ -883,9 +944,16 @@ function Invoke-AmBroadcastTest {
         [void](Send-And-Wait "RTL_TUNE $($initial.Band) $($initial.Frequency)" '^RTL_TUNE_(?:OK|UNAVAILABLE|INVALID)')
       }
       if ($null -ne $initial -and $null -ne $initialSignal -and
-          $initial.Band -eq 'AM' -and $initialSignal.FilterHz -in @(4000, 6000, 10000)) {
+          $initial.Band -eq 'AM' -and $initialSignal.FilterHz -in @(4000, 6000, 8000, 10000)) {
         [void](Open-Ui 'AM' 'AM')
         [void](Set-AmFilter $initialSignal.FilterHz)
+      }
+      if ($null -ne $initialDriver) {
+        if ($initialDriver.Mode -eq 'AUTO') {
+          [void](Send-And-Wait 'RTL_UI ACTION AM GAIN_AUTO' '^RTL_UI_ACTION_OK$')
+        } else {
+          [void](Send-And-Wait "RTL_UI ACTION AM GAIN $($initialDriver.Gain)" '^RTL_UI_ACTION_OK$')
+        }
       }
       if ($null -ne $initial) {
         [void](Send-And-Wait "RTL_UI OPEN $($initial.Screen)" '^RTL_UI_OPEN_(?:OK|INVALID)')

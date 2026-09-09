@@ -1125,7 +1125,24 @@ static std::atomic<int> rtl_fm_preset_scan_total_steps{1};
 static std::atomic<int> rtl_fm_preset_scan_found{0};
 static std::atomic<uint32_t> rtl_fm_preset_scan_freq_hz{kRtlFmMinHz};
 
-enum class ActiveScan : uint8_t { none, fm_presets, p25_survey, pocsag_discovery };
+constexpr size_t kAmScanMaxChannels = 160;
+constexpr uint32_t kAmScanSettleMs = 220;
+EXT_RAM_BSS_ATTR static float am_scan_levels[kAmScanMaxChannels]{};
+static uint32_t am_scan_start_hz = 530000;
+static uint32_t am_scan_step_hz = 10000;
+static size_t am_scan_count = 0;
+static std::atomic<bool> rtl_am_scan_requested{false};
+static std::atomic<bool> rtl_am_scan_cancel{false};
+static std::atomic<bool> rtl_am_scan_active{false};
+static std::atomic<uint16_t> rtl_am_scan_step{0};
+static std::atomic<uint16_t> rtl_am_scan_total{1};
+static std::atomic<uint8_t> rtl_am_scan_found{0};
+static std::atomic<uint32_t> rtl_am_scan_freq_hz{kRtlAmDefaultHz};
+static std::atomic<bool> rtl_am_gain_auto_enabled{true};
+static std::atomic<bool> rtl_am_gain_auto_selecting{false};
+static std::atomic<bool> rtl_am_gain_auto_restart{true};
+
+enum class ActiveScan : uint8_t { none, fm_presets, am_presets, p25_survey, pocsag_discovery };
 orcsdr::radio::Session radio_session;
 orcsdr::scan::Engine scan_engine;
 ActiveScan active_scan = ActiveScan::none;  // Streaming task only.
@@ -2214,6 +2231,7 @@ void handle_p25_dashboard_action(const orcsdr::p25::Action& action);
 orcsdr::lora::Snapshot lora_dashboard_snapshot();
 void handle_lora_dashboard_action(const orcsdr::lora::Action& action);
 void service_shared_scan(uint32_t now);
+void service_am_auto_gain(uint32_t now);
 void service_p25_entry_probe(uint32_t now);
 void cancel_active_scan(bool restore);
 void service_p25_follow(uint32_t now);
@@ -7753,6 +7771,7 @@ static void rtl_driver_app_task(void *) {
           }
           service_p25_entry_probe(now_retune);
           service_shared_scan(now_retune);
+          service_am_auto_gain(now_retune);
           uint32_t desired_lo = rtl_hot_retune_hz.load(std::memory_order_acquire);
           const bool force_lo =
               rtl_fm_force_lo_apply.load(std::memory_order_acquire);
@@ -8670,6 +8689,25 @@ orcsdr::am::Snapshot am_dashboard_snapshot() {
   snapshot.recording = g_audio_rec_active.load(std::memory_order_relaxed);
   snapshot.volume = rtl_ui_volume;
   snapshot.battery_percent = M5.Power.getBatteryLevel();
+  snapshot.scan_active = rtl_am_scan_active.load(std::memory_order_relaxed);
+  snapshot.scan_step = rtl_am_scan_step.load(std::memory_order_relaxed);
+  snapshot.scan_total = rtl_am_scan_total.load(std::memory_order_relaxed);
+  snapshot.scan_found = rtl_am_scan_found.load(std::memory_order_relaxed);
+  snapshot.scan_frequency_hz = rtl_am_scan_freq_hz.load(std::memory_order_relaxed);
+#if !RTL_USE_LEGACY_USB
+  if (g_rtl != nullptr) {
+    snapshot.gain_auto = rtl_am_gain_auto_enabled.load(std::memory_order_relaxed);
+    snapshot.gain_auto_selecting =
+        rtl_am_gain_auto_selecting.load(std::memory_order_relaxed);
+    (void)esp_rtl_sdr_get_tuner_gain(g_rtl, &snapshot.gain_tenth_db);
+    size_t gain_count = 0;
+    if (esp_rtl_sdr_get_tuner_gains(g_rtl, snapshot.gain_steps_tenth_db,
+                                    std::size(snapshot.gain_steps_tenth_db),
+                                    &gain_count) == ESP_OK)
+      snapshot.gain_step_count = static_cast<uint8_t>(std::min(
+          gain_count, std::size(snapshot.gain_steps_tenth_db)));
+  }
+#endif
   orcsdr::am::populate_presets(snapshot);
   return snapshot;
 }
@@ -8694,7 +8732,7 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
       rtl_am_step_hz = orcsdr::am::toggle_channel_step();
       break;
     case ActionKind::filter_cycle: {
-      static constexpr uint32_t widths[] = {4000, 6000, 10000};
+      static constexpr uint32_t widths[] = {4000, 6000, 8000, 10000};
       size_t i = 0;
       const uint32_t current = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
       while (i < std::size(widths) && widths[i] != current) ++i;
@@ -8730,6 +8768,30 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
     case ActionKind::recording_toggle:
       if (g_audio_rec_active.load(std::memory_order_acquire)) (void)audio_rec_stop_and_export();
       else (void)audio_rec_start();
+      break;
+    case ActionKind::gain_auto:
+#if !RTL_USE_LEGACY_USB
+      rtl_am_gain_auto_enabled.store(true, std::memory_order_relaxed);
+      rtl_am_gain_auto_restart.store(true, std::memory_order_release);
+      Serial.println("RTL_AM_GAIN mode=AUTO strategy=lowest_usable");
+#endif
+      break;
+    case ActionKind::gain_tenth_db:
+#if !RTL_USE_LEGACY_USB
+      rtl_am_gain_auto_enabled.store(false, std::memory_order_relaxed);
+      rtl_am_gain_auto_selecting.store(false, std::memory_order_relaxed);
+      rtl_am_gain_auto_restart.store(false, std::memory_order_relaxed);
+      if (g_rtl != nullptr)
+        Serial.printf("RTL_AM_GAIN mode=MANUAL gain_tenth_db=%lu result=%s\n",
+                      static_cast<unsigned long>(action.value), esp_rtl_sdr_err_to_name(
+                          esp_rtl_sdr_set_tuner_gain(g_rtl, static_cast<int>(action.value))));
+#endif
+      break;
+    case ActionKind::scan_toggle:
+      if (rtl_am_scan_active.load(std::memory_order_relaxed))
+        rtl_am_scan_cancel.store(true, std::memory_order_relaxed);
+      else
+        rtl_am_scan_requested.store(true, std::memory_order_relaxed);
       break;
     case ActionKind::open_device_settings:
       open_global_settings(orcsdr::settings::Section::radio_defaults);
@@ -9267,7 +9329,9 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
 }
 
 bool scan_retune(uint32_t frequency_hz, void*) {
-  if (active_scan == ActiveScan::fm_presets) reset_spectrum_renderer();
+  if (active_scan == ActiveScan::fm_presets || active_scan == ActiveScan::am_presets)
+    reset_spectrum_renderer();
+  if (active_scan == ActiveScan::am_presets) rtl_audio_reset_demod_filters();
   // Each discovery candidate must start with a clean decoder: without this,
   // stats() would accumulate across channels and scan_measure's per-channel
   // read would reflect the WHOLE scan so far, not just this one candidate.
@@ -9277,6 +9341,16 @@ bool scan_retune(uint32_t frequency_hz, void*) {
 }
 
 void scan_measure(size_t index, uint32_t frequency_hz, void*) {
+  if (active_scan == ActiveScan::am_presets) {
+    if (index < kAmScanMaxChannels)
+      am_scan_levels[index] = rtl_signal_dbfs.load(std::memory_order_relaxed);
+    rtl_am_scan_step.store(static_cast<uint16_t>(index + 1), std::memory_order_relaxed);
+    if (serial_verbosity_at(SerialVerbosity::trace))
+      Serial.printf("RTL_AM_SCAN_SAMPLE index=%u frequency_hz=%lu relative_dbfs=%.1f\n",
+                    static_cast<unsigned>(index), static_cast<unsigned long>(frequency_hz),
+                    static_cast<double>(am_scan_levels[index]));
+    return;
+  }
   if (active_scan == ActiveScan::fm_presets) {
     const float level = rtl_scope_peak_level.load(std::memory_order_relaxed);
     const int32_t offset = rtl_scope_peak_offset_hz.load(std::memory_order_relaxed);
@@ -9335,6 +9409,22 @@ void scan_finished(orcsdr::scan::Finish reason, void*) {
                               ? "done"
                               : reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed";
     Serial.printf("RTL_PRESET_SCAN %s found=%d\n", outcome, fm_preset_count);
+    return;
+  }
+  if (finished == ActiveScan::am_presets) {
+    rtl_am_scan_active.store(false, std::memory_order_release);
+    uint8_t added = 0;
+    float baseline = -120.0f;
+    if (reason == orcsdr::scan::Finish::completed && am_scan_count > 0)
+      added = orcsdr::am::add_scan_results(am_scan_start_hz, am_scan_step_hz,
+                                           am_scan_levels, am_scan_count, &baseline);
+    rtl_am_scan_found.store(added, std::memory_order_relaxed);
+    rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+    const char* outcome = reason == orcsdr::scan::Finish::completed
+                              ? "done"
+                              : reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed";
+    Serial.printf("RTL_AM_SCAN %s added=%u baseline_dbfs=%.1f\n", outcome,
+                  static_cast<unsigned>(added), static_cast<double>(baseline));
     return;
   }
   if (finished == ActiveScan::pocsag_discovery) {
@@ -9427,6 +9517,9 @@ void service_shared_scan(uint32_t now) {
   if (rtl_fm_preset_scan_cancel.exchange(false, std::memory_order_acq_rel) &&
       active_scan == ActiveScan::fm_presets)
     scan_engine.cancel(true, callbacks);
+  if (rtl_am_scan_cancel.exchange(false, std::memory_order_acq_rel) &&
+      active_scan == ActiveScan::am_presets)
+    scan_engine.cancel(true, callbacks);
   if (p25_survey_cancel_requested.exchange(false, std::memory_order_acq_rel) &&
       active_scan == ActiveScan::p25_survey) {
     scan_engine.cancel(false, callbacks);
@@ -9480,6 +9573,31 @@ void service_shared_scan(uint32_t now) {
                     static_cast<unsigned>(p25_config.control_channel_count));
     }
   }
+  if (!scan_engine.active() && g_stream_band == RtlBand::am &&
+      rtl_am_scan_requested.exchange(false, std::memory_order_acq_rel)) {
+    am_scan_step_hz = rtl_am_step_hz;
+    am_scan_start_hz = am_scan_step_hz == 9000 ? 531000u : 530000u;
+    am_scan_count = (kRtlAmMaxHz - am_scan_start_hz) / am_scan_step_hz + 1;
+    const auto session = radio_session.snapshot();
+    scan_radio_token = {session.owner, session.generation};
+    const orcsdr::scan::Plan plan{orcsdr::scan::Mode::frequency_range, nullptr, am_scan_count,
+                                  am_scan_start_hz, am_scan_step_hz,
+                                  kAmScanSettleMs, true};
+    if (am_scan_count <= kAmScanMaxChannels &&
+        scan_engine.start(plan, rtl_ui_frequency_hz, now)) {
+      active_scan = ActiveScan::am_presets;
+      std::fill_n(am_scan_levels, am_scan_count, -120.0f);
+      rtl_am_scan_active.store(true, std::memory_order_release);
+      rtl_am_scan_step.store(0, std::memory_order_relaxed);
+      rtl_am_scan_total.store(static_cast<uint16_t>(am_scan_count), std::memory_order_relaxed);
+      rtl_am_scan_found.store(0, std::memory_order_relaxed);
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_AM_SCAN start channels=%u step_hz=%lu settle_ms=%lu\n",
+                    static_cast<unsigned>(am_scan_count),
+                    static_cast<unsigned long>(am_scan_step_hz),
+                    static_cast<unsigned long>(kAmScanSettleMs));
+    }
+  }
   if (!scan_engine.active() && g_stream_band == RtlBand::pocsag &&
       pocsag_scan_requested.exchange(false, std::memory_order_acq_rel)) {
     const auto session = radio_session.snapshot();
@@ -9505,7 +9623,49 @@ void service_shared_scan(uint32_t now) {
   const auto progress = scan_engine.progress();
   if (active_scan == ActiveScan::fm_presets && progress.active)
     rtl_fm_preset_scan_freq_hz.store(progress.frequency_hz, std::memory_order_relaxed);
+  if (active_scan == ActiveScan::am_presets && progress.active)
+    rtl_am_scan_freq_hz.store(progress.frequency_hz, std::memory_order_relaxed);
   scan_engine.service(now, callbacks);
+}
+
+void service_am_auto_gain(uint32_t now) {
+#if !RTL_USE_LEGACY_USB
+  static uint8_t step = 0;
+  static uint32_t sample_at_ms = 0;
+  if (g_stream_band != RtlBand::am || g_rtl == nullptr ||
+      rtl_am_scan_active.load(std::memory_order_relaxed) ||
+      !rtl_am_gain_auto_enabled.load(std::memory_order_relaxed)) return;
+
+  int gains[32]{};
+  size_t count = 0;
+  if (esp_rtl_sdr_get_tuner_gains(g_rtl, gains, std::size(gains), &count) != ESP_OK ||
+      count == 0) return;
+  count = std::min(count, std::size(gains));
+  if (rtl_am_gain_auto_restart.exchange(false, std::memory_order_acq_rel)) {
+    step = 0;
+    rtl_am_gain_auto_selecting.store(true, std::memory_order_relaxed);
+    (void)esp_rtl_sdr_set_tuner_gain(g_rtl, gains[step]);
+    sample_at_ms = now + 500;
+    Serial.printf("RTL_AM_AUTO_GAIN start gain_tenth_db=%d target_dbfs=%.1f\n",
+                  gains[step], static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
+    return;
+  }
+  if (!rtl_am_gain_auto_selecting.load(std::memory_order_relaxed) ||
+      static_cast<int32_t>(now - sample_at_ms) < 0) return;
+
+  const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
+  if (orcsdr::am::auto_gain_should_advance(level, step, count)) {
+    ++step;
+    (void)esp_rtl_sdr_set_tuner_gain(g_rtl, gains[step]);
+    sample_at_ms = now + 500;
+    return;
+  }
+  rtl_am_gain_auto_selecting.store(false, std::memory_order_relaxed);
+  Serial.printf("RTL_AM_AUTO_GAIN selected gain_tenth_db=%d level_dbfs=%.1f\n",
+                gains[step], static_cast<double>(level));
+#else
+  (void)now;
+#endif
 }
 
 void service_p25_entry_probe(uint32_t now) {
@@ -10019,7 +10179,12 @@ void open_dashboard(orcsdr::dashboards::Id id) {
   uint32_t frequency = rtl_ui_frequency_hz;
   switch (id) {
     case Id::fm: band = RtlBand::fm; frequency = rtl_saved_fm_hz; break;
-    case Id::am: band = RtlBand::am; frequency = orcsdr::am::saved_frequency(); break;
+    case Id::am:
+      band = RtlBand::am;
+      frequency = rtl_ui_band == RtlBand::am
+                      ? rtl_ui_frequency_hz
+                      : orcsdr::am::saved_frequency();
+      break;
     case Id::p25: band = RtlBand::p25; frequency = p25_control_frequency_hz; break;
     case Id::adsb: band = RtlBand::adsb; frequency = kAdsbDefaultHz; break;
     case Id::pocsag: band = RtlBand::pocsag; frequency = pocsag_config_frequency_hz; break;
@@ -10060,6 +10225,7 @@ void handle_home_action(const orcsdr::home::Action& action) {
       open_global_settings(orcsdr::settings::Section::connectivity);
       return;
     case ActionKind::tune_frequency:
+      if (rtl_ui_band == RtlBand::am) orcsdr::am::note_tuned(action.value);
       if (rtl_ui_band == RtlBand::p25) {
         cancel_p25_survey();
         tune_p25_control(action.value);
@@ -10083,6 +10249,7 @@ void handle_home_action(const orcsdr::home::Action& action) {
       const uint32_t next = rtl_step_frequency(
           rtl_ui_band, rtl_ui_frequency_hz,
           action.kind == ActionKind::step_down ? -1 : 1);
+      if (rtl_ui_band == RtlBand::am) orcsdr::am::note_tuned(next);
       if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running)
         request_hot_retune(next);
       else
@@ -11011,6 +11178,9 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   if (rtl_ui_band == RtlBand::fm) ui_hz = rtl_fm_sanitize_display_hz(ui_hz);
   if (!radio_session.retuned(token, ui_hz)) return false;
   const bool ui_changed = (ui_hz != rtl_ui_frequency_hz);
+  if (ui_changed && rtl_ui_band == RtlBand::am &&
+      rtl_am_gain_auto_enabled.load(std::memory_order_relaxed))
+    rtl_am_gain_auto_restart.store(true, std::memory_order_release);
   if (ui_changed && rtl_ui_band == RtlBand::fm) {
     rtl_fm_lo_nudge_hz.store(0, std::memory_order_relaxed);
     rtl_fm_last_user_tune_ms.store(millis(), std::memory_order_relaxed);
@@ -11088,6 +11258,15 @@ void poll_sdr_touch(bool from_stream) {
     if (pressed && !was_pressed) handle_sdr_touch(touch.x, touch.y);
     was_pressed = pressed;
     return;
+  }
+
+  if (pressed && rtl_ui_band == RtlBand::am && orcsdr::am::active()) {
+    const auto action = orcsdr::am::handle_gain_drag(touch.x, touch.y);
+    if (action.kind != orcsdr::am::ActionKind::none) {
+      handle_am_dashboard_action(action);
+      was_pressed = true;
+      return;
+    }
   }
 
   if (touch_count >= 2) {
@@ -11322,6 +11501,7 @@ void handle_sdr_touch(int32_t x, int32_t y) {
     handle_fm_dashboard_action(orcsdr::fm::handle_touch(x, y));
     return;
   }
+
   if (rtl_ui_band == RtlBand::am && orcsdr::am::active()) {
     handle_am_dashboard_action(orcsdr::am::handle_touch(x, y));
     return;
@@ -12532,6 +12712,8 @@ void process_command(char* command) {
       else if (!strcmp(action, "SAVE")) kind=K::preset_save; else if (!strcmp(action, "SOUND")) kind=K::sound_toggle;
       else if (!strcmp(action, "VOL_DOWN")) kind=K::volume_down; else if (!strcmp(action, "VOL_UP")) kind=K::volume_up;
       else if (!strcmp(action, "GRAPHICS")) kind=K::graphics_toggle; else if (!strcmp(action, "RECORD")) kind=K::recording_toggle;
+      else if (!strcmp(action, "GAIN_AUTO")) kind=K::gain_auto; else if (!strcmp(action, "GAIN")) kind=K::gain_tenth_db;
+      else if (!strcmp(action, "SCAN")) kind=K::scan_toggle;
       else if (!strcmp(action, "SETTINGS")) kind=K::open_device_settings; else if (!strcmp(action, "HOME")) kind=K::exit_home;
       if (kind == K::tune_hz &&
           (fields != 3 || value < orcsdr::receiver_bands::kAmBroadcast.min_hz ||
@@ -12541,6 +12723,10 @@ void process_command(char* command) {
       }
       if (kind == K::preset_recall && (fields != 3 || value < 1 || value > 6)) {
         Serial.println("RTL_UI_ACTION_INVALID am_preset_out_of_range");
+        return;
+      }
+      if (kind == K::gain_tenth_db && (fields != 3 || value > 496)) {
+        Serial.println("RTL_UI_ACTION_INVALID am_gain_out_of_range");
         return;
       }
       if (kind != K::none) {
@@ -13195,6 +13381,24 @@ void process_command(char* command) {
   }
   if (strcmp(command, "RTL_DRIVER STATUS") == 0) {
     print_rtl_driver_status();
+    return;
+  }
+  if (strcmp(command, "RTL_AM_SCAN STATUS") == 0) {
+    Serial.printf("RTL_AM_SCAN_STATUS active=%d step=%u total=%u found=%u frequency_hz=%lu\n",
+                  rtl_am_scan_active.load(std::memory_order_relaxed) ? 1 : 0,
+                  static_cast<unsigned>(rtl_am_scan_step.load(std::memory_order_relaxed)),
+                  static_cast<unsigned>(rtl_am_scan_total.load(std::memory_order_relaxed)),
+                  static_cast<unsigned>(rtl_am_scan_found.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long>(rtl_am_scan_freq_hz.load(std::memory_order_relaxed)));
+    return;
+  }
+  if (strcmp(command, "RTL_AM_GAIN STATUS") == 0) {
+    int gain = 0;
+    if (g_rtl != nullptr) (void)esp_rtl_sdr_get_tuner_gain(g_rtl, &gain);
+    Serial.printf("RTL_AM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d target_dbfs=%.1f\n",
+                  rtl_am_gain_auto_enabled.load(std::memory_order_relaxed) ? "AUTO" : "MANUAL",
+                  rtl_am_gain_auto_selecting.load(std::memory_order_relaxed) ? 1 : 0, gain,
+                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
     return;
   }
   if (strcmp(command, "RTL_DRIVER SELF_CHECK") == 0) {
