@@ -8258,7 +8258,10 @@ void poll_wifi() {
   }
   if (wifi_scan_requested.exchange(false, std::memory_order_acq_rel)) start_wifi_inventory();
   if (wifi_connect_requested.exchange(false, std::memory_order_acq_rel)) {
-    start_wifi_connection(wifi_connect_pause_requested.exchange(false, std::memory_order_acq_rel));
+    // Issue #66: Hosted connect while SDR URBs are live is intermittent
+    // (fail/panic). Always take the radio-pause window; no-op if idle.
+    (void)wifi_connect_pause_requested.exchange(false, std::memory_order_acq_rel);
+    start_wifi_connection(/*pause_radio=*/true);
   }
   if (!wifi_station_ready) return;
   if (!wifi_scan_running && !wifi_connecting && !wifi_connected) return;
@@ -9968,7 +9971,9 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
       if (action.value >= 0 && action.value < wifi_profile_count) {
         select_wifi_profile(static_cast<uint8_t>(action.value));
         wifi_save_after_connect = false;
+        wifi_connect_pause_requested.store(true, std::memory_order_release);
         wifi_connect_requested.store(true, std::memory_order_release);
+        Serial.println("RTL_WIFI_CONNECT_SAVED_PAUSE issue66");
         update_global_settings();
       }
       break;
