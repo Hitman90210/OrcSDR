@@ -1,7 +1,7 @@
 diff --git a/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c b/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
 --- a/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
 +++ b/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
-@@ -49,11 +49,21 @@ static void trampoline(void *p)
+@@ -49,9 +49,19 @@ static void trampoline(void *p)
      } else if (t && t->exit_sem) {
          xSemaphoreGive(t->exit_sem);
      }
@@ -26,5 +26,3 @@ diff --git a/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_po
 +    (void)with_caps;
 +    vTaskDelete(NULL);
  }
-
- eh_host_port_err_t eh_host_port_task_create(const eh_host_port_task_create_cfg_t *cfg,
