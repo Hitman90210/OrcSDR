@@ -66,6 +66,9 @@ struct Command {
 void set_enabled(bool enabled);
 bool enabled();
 bool listening();
+// True briefly after a browser requests an audio chunk.  This lets the SDR
+// keep demodulating for remote listeners even when the local speaker is muted.
+bool audio_active();
 void poll(bool wifi_connected);
 void update(const Snapshot& snapshot);
 bool take_command(Command* command);

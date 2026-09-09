@@ -204,13 +204,24 @@ retune, and `stale_skips` counts any that did not.
 ## LAN web console
 
 Off by default. Enable from Settings → Companion or the serial commands
-below. The page is read-only (`GET /` and `GET /api/status`); it does not
-tune, change volume, or return passwords or coordinates.
+below. The page returns no passwords or coordinates. It does provide basic
+receiver controls through `POST /api/action` and 16 kHz mono audio through
+`GET /api/audio.wav`. Those endpoints have no TLS or browser login, so enable
+the console only on a trusted LAN. Muting the Tab5 speaker does not mute the
+browser stream.
 
 | Command | Auth | Reply |
 |---|---|---|
 | `RTL_WEB` / `RTL_WEB_STATUS` | no | `RTL_WEB_STATUS enabled=0\|1 listening=0\|1 url=http://…/\|offline` |
 | `RTL_WEB ON\|OFF` | yes | `RTL_WEB_OK enabled=… listening=… url=…` |
+
+After flashing, the authenticated hardware check below verifies that the web
+stream still contains live samples while the local speaker is muted. It
+restores the original band, sound, web-console, and Wi-Fi states afterward.
+
+```powershell
+.\apps\orcsdr-tab5\tools\run-tab5-web-audio-validation.ps1 -Port COM3
+```
 
 ## Telemetry
 

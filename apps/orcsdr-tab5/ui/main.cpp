@@ -2938,6 +2938,10 @@ bool rtl_audio_select_writable_block(uint32_t now) {
 void flush_audio_play_batch(bool force) {
   if (rtl_audio_play_count == 0) return;
   if (!force && rtl_audio_play_count < kRtlAudioPlayBatchSamples) return;
+  if (!rtl_audio_enabled.load(std::memory_order_acquire)) {
+    rtl_audio_play_count = 0;
+    return;
+  }
   if (rtl_volume_changed.exchange(false, std::memory_order_acq_rel)) {
     apply_speaker_volume(rtl_live_volume.load(std::memory_order_acquire));
   }
@@ -2947,18 +2951,12 @@ void flush_audio_play_batch(bool force) {
       return;
     }
   }
-  if (!rtl_audio_enabled.load(std::memory_order_acquire)) {
-    rtl_audio_play_count = 0;
-    return;
-  }
   const uint32_t now = millis();
   if (!rtl_audio_select_writable_block(now)) {
     rtl_audio_play_count = 0;
     return;
   }
   const size_t submitted_index = rtl_audio_play_block_index;
-  orcsdr::web_console::tap_audio(rtl_audio_play_blocks[submitted_index],
-                                 rtl_audio_play_count, 2);
   if (M5.Speaker.playRaw(rtl_audio_play_blocks[submitted_index], rtl_audio_play_count * 2,
                          48000, true, 1, 0, false)) {
     ++rtl_audio.queued_chunks;
@@ -6341,9 +6339,17 @@ int16_t shape_audio_sample(float demodulated, float base_scale) {
 void queue_audio_samples(int16_t* audio, size_t audio_count) {
   if (audio_count == 0) return;
   orcsdr::visualizer::offer_audio(audio, nullptr, audio_count, 48000);
+  // Feed the web console from the post-DSP mono stream.  This path is
+  // intentionally independent of local speaker state and queue availability.
+  orcsdr::web_console::tap_audio(audio, audio_count, 1);
   /* Capture the post-DSP mono stream before expanding it for the stereo codec. */
   if (g_audio_rec_active.load(std::memory_order_acquire)) {
     audio_rec_append(audio, audio_count);
+  }
+  if (!rtl_audio_enabled.load(std::memory_order_acquire)) {
+    rtl_audio_play_count = 0;
+    rtl_audio.buffer = (rtl_audio.buffer + 1) % std::size(rtl_audio_buffers);
+    return;
   }
   /* M5Unified retains playRaw pointers, so fill one owned stereo block at a time. */
   for (size_t i = 0; i < audio_count; ++i) {
@@ -7024,7 +7030,8 @@ static void rtl_dsp_task(void *) {
         block.band != RtlBand::lora && block.band != RtlBand::p25 &&
         block.band != RtlBand::pocsag &&
         (rtl_audio_enabled.load(std::memory_order_relaxed) ||
-         g_audio_rec_active.load(std::memory_order_relaxed)) &&
+         g_audio_rec_active.load(std::memory_order_relaxed) ||
+         orcsdr::web_console::audio_active()) &&
         !rtl_audio_test_tone.load(std::memory_order_relaxed)) {
       if (block.band == RtlBand::cb) {
         if (channel_audio_gate_open()) {

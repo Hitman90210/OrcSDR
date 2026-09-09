@@ -115,6 +115,7 @@ var S={freq:0,sig:-90,left:-90,right:-90,span:960000,mode:'',recv:false,rtl:fals
 sound:true,stereo:false,rdsC:false,rdsL:false,rec:false,vol:0,bw:0,sps:0,batt:-1,ip:'',clk:'',fresh:0,rtt:0};
 var D={freq:0,sig:-90,left:-90,right:-90}, bins=new Float32Array(64), peak=new Float32Array(64);
 var hist=[], lastArrow=0,lastAct=0,lastSound=0,lastQueue=0,audioOn=false,soundTimer=0,linked=false,fallBuf=null;
+var audioCtx=null,audioNext=0,audioFetching=false,audioGeneration=0;
 function $(id){return document.getElementById(id)}
 function lerp(a,b,t){return a+(b-a)*t}
 function modeName(m){
@@ -288,31 +289,54 @@ function setSoundUi(on){
   b.textContent=on?'TV SOUND ON':'TV SOUND';
   b.className=on?'on':'';
 }
-function queueClip(){
+function legacyClip(){
   if(!audioOn) return;
   lastQueue=Date.now();
-  var a=$('radio');
-  a.src='/api/audio.wav?t='+lastQueue;
+  var a=$('radio'); a.src='/api/audio.wav?t='+lastQueue;
   var p=a.play(); if(p&&p.catch) p.catch(function(){});
 }
-function pumpAudio(){
+function legacyPump(){
   if(!audioOn) return;
-  var a=$('radio'), age=Date.now()-lastQueue;
+  var a=$('radio'),age=Date.now()-lastQueue,nearEnd=false,pos=0,dur=0;
   if(age<250) return;
-  var nearEnd=false,pos=0,dur=0;
-  try{ pos=a.currentTime||0; dur=a.duration||0; nearEnd=dur>0&&pos>=dur-0.06; }catch(e){}
-  if(!a.src||a.ended||nearEnd){ queueClip(); return; }
-  if(a.paused&&(pos>0||age>900)) queueClip();
+  try{pos=a.currentTime||0;dur=a.duration||0;nearEnd=dur>0&&pos>=dur-.06;}catch(e){}
+  if(!a.src||a.ended||nearEnd||(a.paused&&(pos>0||age>900))) legacyClip();
+}
+function queueWebAudio(gen){
+  if(!audioOn||gen!==audioGeneration||audioFetching||!audioCtx) return;
+  if(audioNext-audioCtx.currentTime>.75){setTimeout(function(){queueWebAudio(gen);},100);return;}
+  audioFetching=true;
+  fetch('/api/audio.wav?t='+Date.now(),{cache:'no-store'}).then(function(r){
+    if(!r.ok) throw new Error('audio '+r.status); return r.arrayBuffer();
+  }).then(function(b){
+    return new Promise(function(resolve,reject){audioCtx.decodeAudioData(b,resolve,reject);});
+  }).then(function(buf){
+    if(!audioOn||gen!==audioGeneration) return;
+    var source=audioCtx.createBufferSource(); source.buffer=buf; source.connect(audioCtx.destination);
+    var start=Math.max(audioCtx.currentTime+.08,audioNext); source.start(start);
+    audioNext=start+buf.duration;
+  }).catch(function(){}).then(function(){
+    audioFetching=false;
+    if(audioOn) setTimeout(function(){queueWebAudio(audioGeneration);},20);
+  });
 }
 function startTvSound(){
   audioOn=true;
   try{ localStorage.setItem('orcsdr_tv_sound','1'); }catch(e){}
-  setSoundUi(true); queueClip();
+  setSoundUi(true);
   if(soundTimer) clearInterval(soundTimer);
-  soundTimer=setInterval(pumpAudio,80);
+  var AC=window.AudioContext||window.webkitAudioContext;
+  if(AC){
+    if(!audioCtx) audioCtx=new AC();
+    try{audioCtx.resume();}catch(e){}
+    audioNext=audioCtx.currentTime+.12; audioGeneration++; queueWebAudio(audioGeneration);
+  }else{
+    legacyClip(); soundTimer=setInterval(legacyPump,80);
+  }
 }
 function stopTvSound(){
   audioOn=false;
+  audioGeneration++; audioNext=0;
   if(soundTimer){ clearInterval(soundTimer); soundTimer=0; }
   try{ localStorage.setItem('orcsdr_tv_sound','0'); }catch(e){}
   setSoundUi(false);
@@ -341,8 +365,8 @@ document.addEventListener('keydown',function(e){
     if(document.activeElement===$('tvsound')){ toggleTvSound(); e.preventDefault(); }
   }
 });
-$('radio').addEventListener('ended',function(){ if(audioOn) queueClip(); });
-$('radio').addEventListener('error',function(){ if(audioOn) setTimeout(queueClip,200); });
+$('radio').addEventListener('ended',function(){ if(audioOn&&!audioCtx) legacyClip(); });
+$('radio').addEventListener('error',function(){ if(audioOn&&!audioCtx) setTimeout(legacyClip,200); });
 try{ if(localStorage.getItem('orcsdr_tv_sound')==='1') setTimeout(startTvSound,1800); }catch(e){}
 setTimeout(function(){ if(!linked) $('bootmsg').textContent='SEARCHING FOR TAB5'; },2500);
 tick(); setInterval(tick,1000); requestAnimationFrame(frame);

@@ -20,7 +20,7 @@ namespace {
 constexpr char kLogTag[] = "OrcSDR";
 
 std::atomic<bool> g_enabled{false};
-bool g_listening = false;
+std::atomic<bool> g_listening{false};
 bool g_mdns_started = false;
 httpd_handle_t g_server = nullptr;
 Snapshot g_snapshot{};
@@ -30,6 +30,7 @@ constexpr size_t kAudioRing = 16384;
 constexpr size_t kAudioClip = 4800;
 constexpr size_t kAudioMin = 1600;
 constexpr uint32_t kAudioRate = 16000;
+constexpr uint32_t kAudioDemandHoldMs = 2000;
 EXT_RAM_BSS_ATTR int16_t g_audio_ring[kAudioRing]{};
 EXT_RAM_BSS_ATTR int16_t g_audio_clip[kAudioClip]{};
 EXT_RAM_BSS_ATTR uint8_t g_wav_out[44 + kAudioClip * sizeof(int16_t)]{};
@@ -39,7 +40,7 @@ EXT_RAM_BSS_ATTR char g_status_spec[259]{};
 uint32_t g_wifi_up_ms = 0;
 std::atomic<uint32_t> g_audio_w{0};
 std::atomic<uint32_t> g_audio_r{0};
-std::atomic<int> g_audio_clients{0};
+std::atomic<uint32_t> g_audio_last_request_ms{0};
 uint8_t g_spec[kSpectrumBins]{};
 uint8_t g_spec_count = 0;
 uint32_t g_last_action_ms = 0;
@@ -188,6 +189,14 @@ void write_wav(uint8_t* out, const int16_t* pcm, size_t samples) {
 }
 
 esp_err_t handle_audio(httpd_req_t* req) {
+  // Mark demand before waiting for samples.  A muted receiver can then start
+  // its demodulator while this request is still open.
+  const uint32_t now = millis();
+  const uint32_t previous = g_audio_last_request_ms.exchange(now, std::memory_order_acq_rel);
+  if (previous == 0 || static_cast<uint32_t>(now - previous) >= kAudioDemandHoldMs) {
+    // A new listening session should never begin by replaying an old clip.
+    g_audio_r.store(g_audio_w.load(std::memory_order_acquire), std::memory_order_release);
+  }
   size_t got = 0;
   for (int spin = 0; spin < 20 && got < kAudioMin; ++spin) {
     got += copy_audio(g_audio_clip + got, kAudioClip - got);
@@ -276,8 +285,8 @@ void stop_server() {
     g_server = nullptr;
   }
   stop_mdns();
-  if (g_listening) ESP_LOGI(kLogTag, "RTL_WEB_STOP");
-  g_listening = false;
+  if (g_listening.load(std::memory_order_acquire)) ESP_LOGI(kLogTag, "RTL_WEB_STOP");
+  g_listening.store(false, std::memory_order_release);
 }
 
 bool start_server() {
@@ -335,7 +344,7 @@ bool start_server() {
   httpd_register_uri_handler(g_server, &audiowav);
   httpd_register_uri_handler(g_server, &spectrum);
   start_mdns();
-  g_listening = true;
+  g_listening.store(true, std::memory_order_release);
   ESP_LOGI(kLogTag, "RTL_WEB_LISTEN port=80");
   return true;
 }
@@ -346,17 +355,24 @@ void set_enabled(bool enabled) { g_enabled.store(enabled, std::memory_order_rele
 
 bool enabled() { return g_enabled.load(std::memory_order_acquire); }
 
-bool listening() { return g_listening; }
+bool listening() { return g_listening.load(std::memory_order_acquire); }
+
+bool audio_active() {
+  if (!g_enabled.load(std::memory_order_acquire) ||
+      !g_listening.load(std::memory_order_acquire)) return false;
+  const uint32_t requested = g_audio_last_request_ms.load(std::memory_order_acquire);
+  return requested != 0 && static_cast<uint32_t>(millis() - requested) < kAudioDemandHoldMs;
+}
 
 void poll(bool wifi_connected) {
   const bool want = g_enabled.load(std::memory_order_acquire) && wifi_connected;
   if (!want) {
     g_wifi_up_ms = 0;
-    if (g_listening) stop_server();
+    if (g_listening.load(std::memory_order_acquire)) stop_server();
     return;
   }
   if (g_wifi_up_ms == 0) g_wifi_up_ms = millis();
-  if (g_listening) return;
+  if (g_listening.load(std::memory_order_acquire)) return;
   if (millis() - g_wifi_up_ms < 2500) return;
   start_server();
 }
@@ -380,7 +396,7 @@ bool take_command(Command* command) {
 }
 
 void tap_audio(const int16_t* samples, size_t frames, size_t stride) {
-  if (!g_enabled.load(std::memory_order_relaxed) || samples == nullptr || frames < 3)
+  if (!audio_active() || samples == nullptr || frames < 3)
     return;
   if (stride == 0) stride = 1;
   uint32_t w = g_audio_w.load(std::memory_order_relaxed);
