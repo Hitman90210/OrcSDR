@@ -33,6 +33,7 @@ constexpr int kWaterfallY = 402;
 constexpr int kWaterfallH = 126;
 constexpr uint32_t kDynamicRefreshIntervalMs = 1000;
 constexpr uint32_t kSpectrumRefreshIntervalMs = 250;
+constexpr size_t kTrafficRows = 5;
 
 Snapshot g_snapshot{};
 View g_view = View::overview;
@@ -44,6 +45,7 @@ bool g_map_center_set = false;
 int32_t g_map_center_lat_e7 = INT32_MAX;
 int32_t g_map_center_lon_e7 = INT32_MAX;
 uint8_t g_filter = 0;
+size_t g_traffic_offset = 0;
 uint32_t g_last_dynamic_ms = 0;
 uint32_t g_last_spectrum_ms = 0;
 uint16_t g_waterfall_row[kPlotW]{};
@@ -54,6 +56,10 @@ bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
 
 bool has_position(const Node& node) {
   return node.latitude_e7 != INT32_MAX && node.longitude_e7 != INT32_MAX;
+}
+
+size_t traffic_max_offset(size_t event_count) {
+  return event_count > kTrafficRows ? event_count - kTrafficRows : 0;
 }
 
 const Node* visible_node_at(size_t row, size_t* snapshot_index = nullptr) {
@@ -475,9 +481,11 @@ void draw_nodes_dynamic() {
 void draw_traffic_dynamic() {
   M5.Display.fillRect(42, 192, 307, 400, kPanel);
   M5.Display.fillRect(400, 192, 834, 400, kPanel);
-  for (size_t i = 0; i < std::min<size_t>(5, g_snapshot.event_count); ++i) {
-    const Event& event = g_snapshot.events[i];
-    draw_event_row(event, 408, 204 + static_cast<int>(i) * 72, 814);
+  g_traffic_offset = std::min(g_traffic_offset, traffic_max_offset(g_snapshot.event_count));
+  const size_t visible = std::min(kTrafficRows, g_snapshot.event_count - g_traffic_offset);
+  for (size_t i = 0; i < visible; ++i) {
+    const Event& event = g_snapshot.events[g_traffic_offset + i];
+    draw_event_row(event, 408, 204 + static_cast<int>(i) * 72, 772);
     char sender[18]; event_sender(event, sender, sizeof(sender), false);
     text(sender, 62, 215 + static_cast<int>(i) * 72, event.verified ? kGreen : kYellow,
          2, middle_left);
@@ -488,6 +496,17 @@ void draw_traffic_dynamic() {
   char value[48];
   snprintf(value, sizeof(value), "FILTER: %s", g_filter == 0 ? "ALL" : "SUPPORTED");
   text(value, 1150, 170, kCyan, 1, middle_right);
+  const bool can_scroll_up = g_traffic_offset > 0;
+  const bool can_scroll_down = g_traffic_offset < traffic_max_offset(g_snapshot.event_count);
+  button(1188, 204, 36, 44, "^", can_scroll_up ? kCyan : kMuted);
+  button(1188, 548, 36, 44, "v", can_scroll_down ? kCyan : kMuted);
+  if (g_snapshot.event_count) {
+    snprintf(value, sizeof(value), "%u-%u / %u",
+             static_cast<unsigned>(g_traffic_offset + 1),
+             static_cast<unsigned>(g_traffic_offset + visible),
+             static_cast<unsigned>(g_snapshot.event_count));
+    text(value, 1206, 526, kMuted, 1);
+  }
 }
 
 void draw_map_dynamic() {
@@ -737,6 +756,15 @@ Action handle_touch(int32_t x, int32_t y) {
     }
     if (hit(x, y, 1040, 532, 190, 44)) return {ActionKind::export_log};
   } else if (g_view == View::traffic) {
+    if (hit(x, y, 1188, 204, 36, 44) && g_traffic_offset > 0) {
+      --g_traffic_offset;
+      return {ActionKind::refresh};
+    }
+    if (hit(x, y, 1188, 548, 36, 44) &&
+        g_traffic_offset < traffic_max_offset(g_snapshot.event_count)) {
+      ++g_traffic_offset;
+      return {ActionKind::refresh};
+    }
     if (hit(x, y, 604, 616, 202, 42)) return {ActionKind::export_log};
     if (hit(x, y, 822, 616, 202, 42)) return {ActionKind::filter_next};
     if (hit(x, y, 1040, 616, 202, 42)) return {ActionKind::clear_events};
@@ -813,6 +841,7 @@ bool self_check() {
   const View saved_view = g_view;
   const bool saved_active = g_active;
   const bool saved_details = g_node_details;
+  const size_t saved_traffic_offset = g_traffic_offset;
   g_snapshot = snapshot;
   g_filter = 1;
   g_view = View::nodes;
@@ -827,12 +856,21 @@ bool self_check() {
       handle_touch(1050, 490).kind == ActionKind::toggle_favorite &&
       handle_touch(850, 540).kind == ActionKind::refresh && g_node_details &&
       handle_touch(1050, 540).kind == ActionKind::export_log && 576 < kTabsY;
+  g_view = View::traffic;
+  g_snapshot.event_count = 8;
+  g_traffic_offset = 0;
+  const bool traffic_scroll_ok = traffic_max_offset(5) == 0 && traffic_max_offset(8) == 3 &&
+                                 handle_touch(1200, 560).kind == ActionKind::refresh &&
+                                 g_traffic_offset == 1 &&
+                                 handle_touch(1200, 220).kind == ActionKind::refresh &&
+                                 g_traffic_offset == 0;
   g_snapshot = saved_snapshot;
   g_filter = saved_filter;
   g_view = saved_view;
   g_active = saved_active;
   g_node_details = saved_details;
-  if (!filter_ok || !controls_ok) return false;
+  g_traffic_offset = saved_traffic_offset;
+  if (!filter_ok || !controls_ok || !traffic_scroll_ok) return false;
   return audio_header::self_check() && lora_channel::self_check();
 }
 
