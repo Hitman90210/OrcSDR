@@ -19,7 +19,33 @@
 namespace orcsdr::lora_native {
 namespace {
 
-constexpr uint32_t kDecodeRate = 500000;
+// The decoder works on a grid of two samples per chip, so its sample rate
+// follows the modem bandwidth rather than being fixed. This is a property of
+// the internal grid -- 2^(SF+1) samples per symbol keeps the FFT a power of
+// two -- and NOT a Nyquist requirement on the capture, which only has to
+// contain the channel. A 960 kHz complex capture covers +/- 480 kHz, so it
+// feeds a 500 kHz channel perfectly well by interpolating up to 1 MHz.
+constexpr uint32_t kMinBandwidthHz = 125000;
+constexpr uint32_t kMaxBandwidthHz = 500000;
+constexpr uint32_t kMaxDecodeRate = kMaxBandwidthHz * 2;
+
+uint32_t decode_rate_for(uint32_t bandwidth_hz) { return bandwidth_hz * 2u; }
+
+// Meshtastic only uses these three, and each has to be a rate the resampler
+// can reach from the capture. Anything else is refused rather than guessed at.
+bool supported_bandwidth(uint32_t bandwidth_hz) {
+  return bandwidth_hz == 125000u || bandwidth_hz == 250000u ||
+         bandwidth_hz == 500000u;
+}
+
+// kLoraLowpass is a 250 kHz-channel design: -3.01 dB at 125 kHz, -78 dB at
+// 250 kHz, measured at the 960 kHz capture rate. It is the right anti-alias
+// filter when the resampler is decimating to 250 or 500 kS/s, and it would
+// remove everything past half a 500 kHz channel. The 500 kHz path interpolates
+// upward instead, where there is nothing to fold in and so nothing to filter.
+bool needs_anti_alias(uint32_t bandwidth_hz, uint32_t sample_rate) {
+  return decode_rate_for(bandwidth_hz) < sample_rate && bandwidth_hz <= 250000u;
+}
 constexpr uint8_t kMinSf = 7;
 constexpr uint8_t kMaxSf = 12;
 constexpr size_t kFftPadding = 4;
@@ -46,6 +72,10 @@ struct Scratch {
   uint8_t* resampled = nullptr;
   size_t resampled_capacity = 0;
   uint8_t sf = 0;
+  // Part of the cache key, not decoration: the chirp table depends on the
+  // bandwidth through the decode rate, and SF alone no longer identifies it.
+  uint32_t bandwidth_hz = 0;
+  uint32_t decode_rate = 0;
   size_t symbol_samples = 0;
   size_t fft_size = 0;
 };
@@ -441,37 +471,47 @@ bool phy_crc_matches(const uint8_t* data, size_t payload_len, const uint8_t* phy
 }
 
 bool configure_chirp(uint8_t sf, uint32_t bandwidth_hz) {
-  if (sf < kMinSf || sf > kMaxSf || bandwidth_hz != 250000 || g_scratch.downchirp == nullptr)
+  if (sf < kMinSf || sf > kMaxSf || !supported_bandwidth(bandwidth_hz) ||
+      g_scratch.downchirp == nullptr)
     return false;
+  const uint32_t decode_rate = decode_rate_for(bandwidth_hz);
   const size_t symbol_samples = 1u << (sf + 1u);
   const size_t fft_size = symbol_samples * kFftPadding;
-  if (g_scratch.sf == sf && g_scratch.fft_size == fft_size) return true;
+  // Cache on bandwidth as well as SF. Keying on SF alone would hand a 500 kHz
+  // decode the 250 kHz chirp table, whose sweep rate is half as steep -- and
+  // it would look like a decoder that simply finds no preambles.
+  if (g_scratch.sf == sf && g_scratch.bandwidth_hz == bandwidth_hz &&
+      g_scratch.fft_size == fft_size)
+    return true;
   constexpr float kPi = 3.14159265358979323846f;
   const float bandwidth = static_cast<float>(bandwidth_hz);
   const float symbols = static_cast<float>(1u << sf);
   const float seconds_per_symbol = symbols / bandwidth;
   const float dfdt = -bandwidth / seconds_per_symbol;
   for (size_t i = 0; i < symbol_samples; ++i) {
-    const float t = static_cast<float>(i) / static_cast<float>(kDecodeRate);
+    const float t = static_cast<float>(i) / static_cast<float>(decode_rate);
     const float phase = 2.0f * kPi * (bandwidth * 0.5f + 0.5f * dfdt * t) * t;
     g_scratch.downchirp[i * 2] = cosf(phase);
     g_scratch.downchirp[i * 2 + 1] = sinf(phase);
   }
   g_scratch.sf = sf;
+  g_scratch.bandwidth_hz = bandwidth_hz;
+  g_scratch.decode_rate = decode_rate;
   g_scratch.symbol_samples = symbol_samples;
   g_scratch.fft_size = fft_size;
   return true;
 }
 
-void interpolated_iq(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size_t output_index,
-                     float* real, float* imaginary) {
+void interpolated_iq(const uint8_t* cu8, size_t samples, uint32_t sample_rate,
+                     uint32_t decode_rate, size_t output_index, float* real,
+                     float* imaginary) {
   // ponytail: linear resampling is the bounded baseline; use ESP-DSP polyphase FIR only if
   // archived-vector or weak-signal acceptance shows it is needed.
   const uint64_t scaled = static_cast<uint64_t>(output_index) * sample_rate;
-  const size_t first = static_cast<size_t>(scaled / kDecodeRate);
-  const uint32_t remainder = static_cast<uint32_t>(scaled % kDecodeRate);
+  const size_t first = static_cast<size_t>(scaled / decode_rate);
+  const uint32_t remainder = static_cast<uint32_t>(scaled % decode_rate);
   const size_t second = std::min(first + 1, samples - 1);
-  const float ratio = static_cast<float>(remainder) / static_cast<float>(kDecodeRate);
+  const float ratio = static_cast<float>(remainder) / static_cast<float>(decode_rate);
   const float a_real = (static_cast<int>(cu8[first * 2]) - 127.5f) / 127.5f;
   const float a_imag = (static_cast<int>(cu8[first * 2 + 1]) - 127.5f) / 127.5f;
   const float b_real = (static_cast<int>(cu8[second * 2]) - 127.5f) / 127.5f;
@@ -517,10 +557,19 @@ bool filter_capture(const uint8_t* cu8, size_t samples, uint32_t sample_rate,
 }
 
 bool linear_resample_capture(const uint8_t* cu8, size_t samples, uint32_t sample_rate,
-                             const uint8_t** output, size_t* output_samples) {
-  if (cu8 == nullptr || output == nullptr || output_samples == nullptr || sample_rate < kDecodeRate)
+                             uint32_t decode_rate, const uint8_t** output,
+                             size_t* output_samples) {
+  if (cu8 == nullptr || output == nullptr || output_samples == nullptr ||
+      sample_rate == 0 || decode_rate == 0)
     return false;
-  const size_t needed = static_cast<size_t>(static_cast<uint64_t>(samples) * kDecodeRate / sample_rate);
+  // Decimating, the read index runs ahead of the write index, so writing into
+  // the buffer being read is safe -- which is what makes the filter-then-
+  // resample chain work without a second buffer. Interpolating reverses that:
+  // the read index falls behind and in-place would corrupt its own input. The
+  // interpolating path feeds the untouched capture instead, so this only ever
+  // fires on a wiring mistake.
+  if (cu8 == g_scratch.resampled && decode_rate > sample_rate) return false;
+  const size_t needed = static_cast<size_t>(static_cast<uint64_t>(samples) * decode_rate / sample_rate);
   if (g_scratch.resampled_capacity < needed) {
     if (g_scratch.resampled != nullptr) heap_caps_free(g_scratch.resampled);
     g_scratch.resampled = static_cast<uint8_t*>(
@@ -530,15 +579,15 @@ bool linear_resample_capture(const uint8_t* cu8, size_t samples, uint32_t sample
   if (g_scratch.resampled == nullptr) return false;
   for (size_t index = 0; index < needed; ++index) {
     const uint64_t scaled = static_cast<uint64_t>(index) * sample_rate;
-    const size_t first = static_cast<size_t>(scaled / kDecodeRate);
+    const size_t first = static_cast<size_t>(scaled / decode_rate);
     const size_t second = std::min(first + 1, samples - 1);
-    const uint32_t remainder = static_cast<uint32_t>(scaled % kDecodeRate);
+    const uint32_t remainder = static_cast<uint32_t>(scaled % decode_rate);
     for (size_t component = 0; component < 2; ++component) {
       const int a = cu8[first * 2 + component];
       const int b = cu8[second * 2 + component];
       g_scratch.resampled[index * 2 + component] = static_cast<uint8_t>(
-          (a * static_cast<int>(kDecodeRate - remainder) + b * static_cast<int>(remainder) +
-           static_cast<int>(kDecodeRate / 2)) / static_cast<int>(kDecodeRate));
+          (a * static_cast<int>(decode_rate - remainder) + b * static_cast<int>(remainder) +
+           static_cast<int>(decode_rate / 2)) / static_cast<int>(decode_rate));
     }
     if ((index & 0x3ffffu) == 0) vTaskDelay(1);
   }
@@ -549,11 +598,13 @@ bool linear_resample_capture(const uint8_t* cu8, size_t samples, uint32_t sample
 
 bool dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size_t start,
                   bool input_is_up, uint16_t* peak, float* height, float cfo_hz = 0.0f) {
-  if (peak == nullptr || height == nullptr || g_scratch.fft == nullptr || g_scratch.fft_size == 0)
+  if (peak == nullptr || height == nullptr || g_scratch.fft == nullptr ||
+      g_scratch.fft_size == 0 || g_scratch.decode_rate == 0)
     return false;
+  const uint32_t decode_rate = g_scratch.decode_rate;
   const size_t n = g_scratch.fft_size;
   const size_t symbol_samples = g_scratch.symbol_samples;
-  const uint64_t output_samples = static_cast<uint64_t>(samples) * kDecodeRate / sample_rate;
+  const uint64_t output_samples = static_cast<uint64_t>(samples) * decode_rate / sample_rate;
   if (start + symbol_samples > output_samples) return false;
   float phase_real = 1.0f;
   float phase_imaginary = 0.0f;
@@ -561,8 +612,8 @@ bool dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size
   float step_imaginary = 0.0f;
   if (cfo_hz != 0.0f) {
     constexpr float kTwoPi = 6.28318530717958647692f;
-    const float phase = -kTwoPi * cfo_hz * static_cast<float>(start) / kDecodeRate;
-    const float step = -kTwoPi * cfo_hz / kDecodeRate;
+    const float phase = -kTwoPi * cfo_hz * static_cast<float>(start) / decode_rate;
+    const float step = -kTwoPi * cfo_hz / decode_rate;
     phase_real = cosf(phase);
     phase_imaginary = sinf(phase);
     step_real = cosf(step);
@@ -573,7 +624,7 @@ bool dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size
     if ((i & 0x3ffu) == 0) vTaskDelay(1);
     float real = 0;
     float imaginary = 0;
-    interpolated_iq(cu8, samples, sample_rate, start + i, &real, &imaginary);
+    interpolated_iq(cu8, samples, sample_rate, decode_rate, start + i, &real, &imaginary);
     if (cfo_hz != 0.0f) {
       const float corrected_real = real * phase_real - imaginary * phase_imaginary;
       imaginary = real * phase_imaginary + imaginary * phase_real;
@@ -788,16 +839,26 @@ struct DspCase {
 constexpr uint16_t kDspSymbolsSf7[] = {0, 1, 2, 63, 64, 65, 127, 42, 100, 3};
 constexpr uint16_t kDspSymbolsSf11[] = {0, 1, 1023, 1024, 2047, 700};
 
+// Every supported bandwidth, both front-end directions. 250 kHz decimates
+// behind the anti-alias filter; 500 kHz interpolates with no filter, which is
+// the path Long Turbo and Short Turbo take and the one with no prior art here.
 const DspCase kDspCases[] = {
-    {7, 250000, false, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_raw"},
-    {7, 250000, true, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_front"},
-    {11, 250000, false, kDspSymbolsSf11, std::size(kDspSymbolsSf11), "sf11_raw"},
-    {11, 250000, true, kDspSymbolsSf11, std::size(kDspSymbolsSf11), "sf11_front"},
+    {7, 250000, false, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_250_raw"},
+    {7, 500000, false, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_500_raw"},
+    {7, 250000, true, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_250_front"},
+    {7, 500000, true, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_500_front"},
+    {11, 250000, false, kDspSymbolsSf11, std::size(kDspSymbolsSf11), "sf11_250_raw"},
+    {11, 500000, false, kDspSymbolsSf11, std::size(kDspSymbolsSf11), "sf11_500_raw"},
+    {11, 250000, true, kDspSymbolsSf11, std::size(kDspSymbolsSf11), "sf11_250_front"},
+    {11, 500000, true, kDspSymbolsSf11, std::size(kDspSymbolsSf11), "sf11_500_front"},
+    {7, 125000, false, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_125_raw"},
+    {7, 125000, true, kDspSymbolsSf7, std::size(kDspSymbolsSf7), "sf7_125_front"},
 };
-// Boot runs the first three. SF 7 covers both paths; SF 11 is LongFast and the
-// other end of the size range, where a scratch-sizing mistake shows up instead.
-// The fourth is the slowest and adds no new code path, so it is command-only.
-constexpr size_t kDspBootCases = 3;
+// The boot subset buys the most coverage per millisecond. SF 7 symbols are 256
+// samples against SF 11's 4096, so the first four cases cover both bandwidths
+// and both front-end directions for the price of one SF 11 case; the fifth is
+// LongFast's own SF 11. The rest is RTL_LORA_SELFTEST.
+constexpr size_t kDspBootCases = 5;
 
 bool run_dsp_case(const DspCase& item, char* detail, size_t detail_size) {
   const auto fail = [&](const char* step, int got, int want) {
@@ -814,12 +875,15 @@ bool run_dsp_case(const DspCase& item, char* detail, size_t detail_size) {
   const size_t symbol_samples = g_scratch.symbol_samples;
   const size_t fft_bins = g_scratch.fft_size / 2;
   const size_t bins = static_cast<size_t>(1u) << item.sf;
-  const uint32_t capture_rate = item.through_front_end ? 960000u : kDecodeRate;
+  const uint32_t decode_rate = g_scratch.decode_rate;
+  const uint32_t capture_rate = item.through_front_end ? 960000u : decode_rate;
   // One spare symbol so integer truncation in the resampler cannot eat the tail
-  // of the last symbol under test.
+  // of the last symbol under test. Holds in both directions: interpolating,
+  // capture_rate < decode_rate makes this smaller and the resampler gives the
+  // samples back.
   const size_t capture_samples =
       static_cast<size_t>(static_cast<uint64_t>(symbol_samples) * (item.count + 1) *
-                          capture_rate / kDecodeRate) + 16;
+                          capture_rate / decode_rate) + 16;
   uint8_t* capture = static_cast<uint8_t*>(
       heap_caps_malloc(capture_samples * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   if (capture == nullptr) return fail("alloc", -1, 0);
@@ -827,33 +891,36 @@ bool run_dsp_case(const DspCase& item, char* detail, size_t detail_size) {
                      item.symbols, item.count);
   const uint8_t* decode_cu8 = capture;
   size_t decode_samples = capture_samples;
-  uint32_t decode_rate = capture_rate;
+  uint32_t rate_into_dechirp = capture_rate;
   bool ok = true;
   if (item.through_front_end) {
-    const uint8_t* filtered = nullptr;
-    size_t filtered_samples = 0;
+    // Mirrors decode_capture_pass() exactly, filter decision included -- a test
+    // that took a different route through the front end would not be testing it.
+    const uint8_t* staged = capture;
+    size_t staged_samples = capture_samples;
     const uint8_t* resampled = nullptr;
     size_t resampled_samples = 0;
-    if (!filter_capture(capture, capture_samples, capture_rate, &filtered,
-                        &filtered_samples)) {
+    if (needs_anti_alias(item.bandwidth_hz, capture_rate) &&
+        !filter_capture(capture, capture_samples, capture_rate, &staged,
+                        &staged_samples)) {
       ok = fail("filter", -1, 0);
-    } else if (!linear_resample_capture(filtered, filtered_samples, capture_rate,
-                                        &resampled, &resampled_samples)) {
+    } else if (!linear_resample_capture(staged, staged_samples, capture_rate,
+                                        decode_rate, &resampled, &resampled_samples)) {
       ok = fail("resample", -1, 0);
     } else {
       decode_cu8 = resampled;
       decode_samples = resampled_samples;
-      decode_rate = kDecodeRate;
+      rate_into_dechirp = decode_rate;
     }
   }
   uint16_t reference = 0;
   float height = 0.0f;
-  if (ok && !dechirp_peak(decode_cu8, decode_samples, decode_rate, 0, true, &reference,
+  if (ok && !dechirp_peak(decode_cu8, decode_samples, rate_into_dechirp, 0, true, &reference,
                           &height))
     ok = fail("reference", -1, 0);
   for (size_t index = 1; ok && index < item.count; ++index) {
     uint16_t peak = 0;
-    if (!dechirp_peak(decode_cu8, decode_samples, decode_rate, index * symbol_samples,
+    if (!dechirp_peak(decode_cu8, decode_samples, rate_into_dechirp, index * symbol_samples,
                       true, &peak, &height)) {
       ok = fail("dechirp", static_cast<int>(index), 0);
       break;
@@ -906,28 +973,36 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     ++stats->captures;
     stats->decode_millis = 0;
   }
+  // The capture only has to contain the channel; the resampler puts it on the
+  // decoder grid. 960 kHz complex covers +/- 480 kHz, which is why a 500 kHz
+  // channel needs no faster capture than a 250 kHz one.
   if (cu8 == nullptr || packets == nullptr || packet_capacity == 0 || (bytes & 1u) != 0 ||
-      sample_rate_sps < kDecodeRate || !initialize() ||
-      !configure_chirp(spreading_factor, bandwidth_hz)) return 0;
+      !supported_bandwidth(bandwidth_hz) || sample_rate_sps < bandwidth_hz ||
+      !initialize() || !configure_chirp(spreading_factor, bandwidth_hz)) return 0;
+  const uint32_t decode_rate = decode_rate_for(bandwidth_hz);
   const uint32_t started = now_millis();
-  const uint8_t* decode_cu8 = cu8;
   size_t samples = bytes / 2;
-  uint32_t decode_rate = sample_rate_sps;
-  const uint8_t* filtered_cu8 = nullptr;
-  size_t filtered_samples = 0;
-  if (!filter_capture(cu8, samples, sample_rate_sps, &filtered_cu8, &filtered_samples)) return 0;
+  const uint8_t* front_end_cu8 = cu8;
+  size_t front_end_samples = samples;
+  // Decimating to the decode grid folds everything above half the decode rate
+  // back into the channel, so it has to be filtered first. Interpolating up to
+  // it does not, and the filter on hand would take the outer half of a 500 kHz
+  // channel with it.
+  if (needs_anti_alias(bandwidth_hz, sample_rate_sps) &&
+      !filter_capture(cu8, samples, sample_rate_sps, &front_end_cu8, &front_end_samples))
+    return 0;
   const uint8_t* resampled_cu8 = nullptr;
   size_t resampled_samples = 0;
-  if (!linear_resample_capture(filtered_cu8, filtered_samples, sample_rate_sps, &resampled_cu8,
-                               &resampled_samples)) return 0;
-  decode_cu8 = resampled_cu8;
+  if (!linear_resample_capture(front_end_cu8, front_end_samples, sample_rate_sps,
+                               decode_rate, &resampled_cu8, &resampled_samples))
+    return 0;
+  const uint8_t* decode_cu8 = resampled_cu8;
   samples = resampled_samples;
-  decode_rate = kDecodeRate;
-  // Dechirping linearly selects the 500 kS/s CSS grid from the original source.
   const size_t n = g_scratch.symbol_samples;
   const size_t fft_bins = g_scratch.fft_size / 2;
   const size_t bins = 1u << spreading_factor;
-  const uint64_t virtual_samples = static_cast<uint64_t>(samples) * kDecodeRate / decode_rate;
+  // Already on the decode grid, so these coincide. Kept named for the reader.
+  const uint64_t virtual_samples = samples;
   const size_t preamble = 16;
   size_t start = 0;
   size_t found = 0;

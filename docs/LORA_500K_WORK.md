@@ -22,9 +22,9 @@ regression vector this work is checked against).
 | Stage | State |
 | --- | --- |
 | 0. Measure the constraints | **done** |
-| 1. Thread a runtime decode rate | not started |
-| 2. Extend the DSP vector to 500 kHz | not started |
-| 3. Verify on hardware | not started |
+| 1. Thread a runtime decode rate | **done** |
+| 2. Extend the DSP vector to 500 kHz | **done** |
+| 3. Verify on hardware | **done** -- 10/10 cases pass |
 | 4. Try a real 500 kHz node | not started |
 | 5. Optional: a 500 kHz channel filter | not started |
 | 6. Coding rate 4/8 | not started |
@@ -115,6 +115,84 @@ by skipping the filter, so the resampler reads the caller's capture buffer and
 writes `g_scratch.resampled`: different buffers. This is load-bearing and easy
 to undo by accident, so it is guarded explicitly in the code rather than left as
 a comment.
+
+---
+
+## Stages 1-3 -- what changed, and the proof
+
+### The change
+
+`kDecodeRate` is gone. In its place:
+
+```c
+uint32_t decode_rate_for(uint32_t bandwidth_hz) { return bandwidth_hz * 2u; }
+
+bool supported_bandwidth(uint32_t bandwidth_hz);   // 125k / 250k / 500k
+
+// Decimating folds everything above half the decode rate into the channel and
+// has to be filtered. Interpolating does not -- and the filter on hand would
+// take the outer half of a 500 kHz channel with it.
+bool needs_anti_alias(uint32_t bandwidth_hz, uint32_t sample_rate) {
+  return decode_rate_for(bandwidth_hz) < sample_rate && bandwidth_hz <= 250000u;
+}
+```
+
+Threaded through `configure_chirp()`, `interpolated_iq()`,
+`linear_resample_capture()`, `dechirp_peak()` and `decode_capture_pass()`.
+
+Three things worth knowing if you touch this again:
+
+1. **`Scratch` caches the bandwidth, not just the SF.** `configure_chirp()`
+   returns early when the cached key matches. Keyed on SF alone, a 500 kHz
+   decode would be handed the 250 kHz chirp table -- whose sweep is half as
+   steep -- and would present as a decoder that simply finds no preambles.
+2. **`dechirp_peak()` reads the decode rate from `g_scratch`**, not from an
+   argument, so it cannot disagree with the chirp table it is about to use.
+3. **The in-place resample is only safe downward.** Guarded in
+   `linear_resample_capture()`: it refuses when handed its own buffer while
+   interpolating.
+
+### Sizes are unchanged, as predicted
+
+Binary grew 0x330 bytes. No new PSRAM, no new internal RAM, no driver change.
+
+### Proof: the DSP vector, extended to 10 cases
+
+Modelled on the host first, then run on hardware. Both agree:
+
+| Case | Front end | Worst bin error (tolerance +/- 2) |
+| --- | --- | --- |
+| `sf7_250_raw` | - | 0 |
+| `sf7_500_raw` | - | 0 |
+| `sf7_250_front` | anti-alias, decimate 1.92x | 1 |
+| `sf7_500_front` | none, interpolate 1.042x | **0** |
+| `sf11_250_raw` | - | 0 |
+| `sf11_500_raw` | - | 0 |
+| `sf11_250_front` | anti-alias, decimate 1.92x | 1 |
+| `sf11_500_front` | none, interpolate 1.042x | **0** |
+| `sf7_125_raw` | - | 0 |
+| `sf7_125_front` | anti-alias, decimate 3.84x | 0 |
+
+The 500 kHz front end is *more* accurate than the 250 kHz one -- no IIR group
+delay to cancel, and a 1.042x interpolation disturbs the grid far less than a
+1.92x decimation. That was not the expected result and is worth remembering:
+the path with no filter is the better-conditioned one.
+
+On hardware:
+
+```
+RTL_LORA_NATIVE_SELF_CHECK_OK dsp_cases=boot elapsed_ms=432
+RTL_LORA_SELFTEST ok failed_case=none elapsed_ms=1724
+```
+
+432 ms for the 5-case boot subset, against 366 ms for the previous 3 -- the two
+added cases are SF 7, whose symbols are 256 samples against SF 11's 4096.
+
+**This proves the signal path, not reception.** Synthesised symbols are clean,
+perfectly aligned and noise-free. What is proved is that chirp generation,
+resampling, dechirping and symbol mapping are correct at 500 kHz -- which is
+exactly what was broken. Preamble detection, header parsing, FEC and CRC on a
+real off-air burst are stage 4.
 
 ---
 
