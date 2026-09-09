@@ -209,9 +209,12 @@ OrcConsole orc_console;
 #define Serial orc_console
 
 namespace {
- // Issue #66 diagnostic: skip Hosted/Wi-Fi bring-up at boot to A/B the battery loop.
- // Set false (or remove) once the experiment is done — not a product default.
- constexpr bool kDiagSkipWifiAtBoot = true;
+ // Issue #66: do not bring up ESP-Hosted inside setup() on battery/no-USB.
+ // Mid-setup and even post-show_home()-in-setup still panic; Settings-idle
+ // init is fine. One-shot bring-up from loop() after settle.
+ constexpr uint32_t kWifiBootDeferMs = 2500;
+ bool wifi_boot_bringup_pending = false;
+ uint32_t wifi_boot_defer_arm_ms = 0;
 constexpr int kButtonX = 390;
 constexpr int kButtonY = 300;
 constexpr int kButtonWidth = 500;
@@ -14258,9 +14261,8 @@ void setup() {
   esp_read_mac(mac, ESP_MAC_BASE);
   snprintf(node_id, sizeof(node_id), "m5tab5_%02x%02x%02x%02x%02x%02x",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  // ESP-Hosted must initialise Slot 1 before load_state() reaches the
-  // SD-backed receiver profiles on Slot 0. Read only the preferences needed
-  // for C6 bring-up first so power and antenna choices take effect immediately.
+  // Issue #66: read Wi-Fi prefs early; Hosted bring-up is deferred to loop().
+  // Slot 0 (SD) may be active before Slot 1 (Hosted) — intentional.
   {
     orcsdr::NvsStore wifi_prefs;
     if (wifi_prefs.begin("orclink", true)) {
@@ -14269,10 +14271,10 @@ void setup() {
       wifi_prefs.end();
     }
   }
-  if (kDiagSkipWifiAtBoot) {
-    Serial.println("RTL_WIFI_SKIP_BOOT_DIAG issue66 A/B — Hosted init skipped");
-  } else if (settings_wifi_power_enabled) {
-    initialize_wifi();
+  if (settings_wifi_power_enabled) {
+    wifi_boot_bringup_pending = true;
+    wifi_boot_defer_arm_ms = millis();
+    Serial.println("RTL_WIFI_DEFER_TO_LOOP issue66");
   }
   load_state();
   if (!orcsdr::visualizer::initialize(&preferences, visualizer_audio_sink)) {
@@ -14296,24 +14298,6 @@ void setup() {
     (void)orcsdr::offline_map::load(g_sd_fs);
     refresh_adsb_atc_preset();
   }
-  if (settings_wifi_power_enabled && settings_wifi_start_at_boot && wifi_station_ready &&
-      wifi_profile_count) {
-    select_wifi_profile(0);
-    for (uint8_t attempt = 0; attempt < 2 && !wifi_connected; ++attempt) {
-      if (attempt) {
-        Serial.println("RTL_WIFI_BOOT_RETRY saved_profile=0");
-        delay(1000);
-      }
-      start_wifi_connection();
-      const uint32_t wifi_deadline = millis() + 15000;
-      while (wifi_connecting && static_cast<int32_t>(wifi_deadline - millis()) > 0) {
-        M5.update();
-        poll_wifi();
-        delay(10);
-      }
-    }
-  }
-
   /* Loading splash owns the display while SD-backed splash assets load. */
   (void)orcsdr_splash_begin();
   orcsdr_splash_set_status("Starting RTL-SDR USB host…");
@@ -14344,6 +14328,22 @@ void loop() {
     Serial.printf("RTL_MAIN_STALL stage=loop_gap elapsed_ms=%u\n",
                   loop_started_ms - previous_loop_ms);
   previous_loop_ms = loop_started_ms;
+  // Issue #66: Hosted bring-up after setup() has returned and UI has settled.
+  if (wifi_boot_bringup_pending && settings_wifi_power_enabled && !wifi_station_ready &&
+      static_cast<int32_t>(millis() - wifi_boot_defer_arm_ms) >= static_cast<int32_t>(kWifiBootDeferMs)) {
+    wifi_boot_bringup_pending = false;
+    Serial.println("RTL_WIFI_LOOP_BRINGUP issue66");
+    initialize_wifi();
+    if (settings_wifi_start_at_boot && wifi_station_ready && wifi_profile_count) {
+      select_wifi_profile(0);
+      start_wifi_connection();
+      Serial.println("RTL_WIFI_BOOT_CONNECT_DEFERRED issue66");
+    }
+    if (wifi_hosted_update_required)
+      open_global_settings(orcsdr::settings::Section::connectivity);
+  } else if (wifi_boot_bringup_pending && !settings_wifi_power_enabled) {
+    wifi_boot_bringup_pending = false;
+  }
   static bool hosted_boot_status_emitted = false;
   if (!hosted_boot_status_emitted && millis() >= 10000u) {
     hosted_boot_status_emitted = true;
