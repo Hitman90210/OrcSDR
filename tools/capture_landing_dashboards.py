@@ -43,6 +43,19 @@ SCREENS = [
     ("lora.traffic", "lo2"),
     ("lora.map", "lo3"),
     ("lora.rf-health", "lo4"),
+    # Fork additions. Weather, CB and GMRS/FRS are channelized bands that
+    # render on the Home workspace; POCSAG is live-only, so it is captured
+    # only when a receiver is actually attached.
+    ("wx.radio", "wx0"),
+    ("cb.radio", "cb0"),
+    ("gmrs.radio", "gm0"),
+    ("browse.radio", "br0"),
+    ("settings.firmware-updates", "set8"),
+    ("pocsag.live", "pg0"),
+    ("pocsag.ids", "pg1"),
+    ("pocsag.signal", "pg2"),
+    ("pocsag.activity", "pg3"),
+    ("pocsag.session", "pg4"),
 ]
 
 
@@ -70,6 +83,10 @@ def show_and_capture(client: Tab5, screen_id: str, slug: str, settle: float, des
         time.sleep(2)
     if not result.startswith("UI_CAPTURE_DONE"):
         raise RuntimeError(f"{screen_id}: {result}")
+    # Live mode leaves the receiver running and SD transfers are refused
+    # while it is; the BMP is already written by now.
+    client.stop_radio_for_transfer()
+    client.authenticate()
     remote = __import__("re").search(r'path="([^"]+)"', result).group(1)
     bmp = dest_dir / f"{slug}.bmp"
     try:
@@ -92,7 +109,9 @@ def bmp_to_png(bmp: Path, png: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", default="COM17")
+    parser.add_argument("--port", default="COM3")
+    parser.add_argument("--refresh", action="store_true",
+                        help="re-capture screens that already have a PNG. The default skips them, which is right for topping up; use this to refresh the whole set after UI changes.")
     parser.add_argument("--settle-seconds", type=float, default=10.0)
     parser.add_argument("--pairing-key", type=Path, default=ROOT / ".orclink" / "ui-doc.key")
     args = parser.parse_args()
@@ -110,7 +129,7 @@ def main() -> None:
                 print(f"[{index}/{len(SCREENS)}] skip missing {screen_id}")
                 continue
             png = png_dir / f"{screen_id.replace('.', '-')}.png"
-            if png.exists():
+            if png.exists() and not args.refresh:
                 print(f"[{index}/{len(SCREENS)}] skip existing {screen_id}")
                 continue
             print(f"[{index}/{len(SCREENS)}] {screen_id} slug={slug}")

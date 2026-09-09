@@ -112,6 +112,23 @@ class Tab5:
         if reply != f"AUTH_OK {expected}":
             raise RuntimeError(f"Device authentication failed: {reply}")
 
+    def stop_radio_for_transfer(self, settle: float = 2.5) -> None:
+        """Stop reception so an SD transfer is allowed.
+
+        sd_transfer_radio_busy() refuses SD_LIST/SD_GET/SD_PUT/SD_REMOVE while
+        the capture state is queued or running, and UI_DOC_SHOW <screen> live
+        starts reception -- so staging a live screen, writing its BMP, and then
+        fetching it always failed with SD_GET_ERROR radio_busy. UI_CAPTURE has
+        already written the file to the card by that point, so stopping the
+        radio before reading it back costs nothing and changes no pixels.
+        """
+        self.send("RTL_STOP")
+        try:
+            self.wait(("RTL_STOPPING", "RTL_STOP_OK", "RTL_STOP_IGNORED"), 8)
+        except TimeoutError:
+            pass
+        time.sleep(settle)
+
     def doc_list(self) -> tuple[str, dict[str, set[str]]]:
         self.send("UI_DOC_LIST")
         begin = self.wait(("UI_DOC_LIST_BEGIN", "UI_DOC_ERROR"))

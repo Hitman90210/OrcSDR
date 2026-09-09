@@ -109,6 +109,10 @@ def main() -> None:
                 continue
 
             destination = args.out / f"{slug}.bmp"
+            # Live mode leaves the receiver running, and SD transfers are
+            # refused while it is. The BMP is already on the card.
+            client.stop_radio_for_transfer()
+            client.authenticate()
             client.get_file(f"/orcsdr/screenshots/{slug}.bmp", destination)
             print(f"saved {destination}")
     finally:
