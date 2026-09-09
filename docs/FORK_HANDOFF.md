@@ -32,7 +32,7 @@ python -m esptool --chip esp32p4 -p COM3 -b 460800 --before default_reset \
   0x2000 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin \
   0x10000 orcsdr_tab5.bin
 
-# verify: 21 boot self-checks must all print _OK, no panic, memory sane
+# verify: 22 boot self-checks must all print _OK, no panic, memory sane
 ```
 
 For UI work there is a second loop: the device renders any of its 46
@@ -77,7 +77,7 @@ The `settings.*` screens and `fm.settings` are `demo`-only; asking for them in
 ## 2. Current state
 
 - **Builds clean**, 44% of the app partition free.
-- **21/21 boot self-checks pass**, no panics.
+- **22/22 boot self-checks pass**, no panics.
 - Memory at `stage=ready`: ~82 KB internal free, ~42 KB DMA-capable,
   ~26.7 MB PSRAM. Watch the first number — see §7.
 - Upstream's POCSAG pager decoder is merged and its self-check passes.
@@ -560,6 +560,55 @@ above was measured and how a user calibrates against their own noise floor.
 `Id::gmrs` is appended to the dashboard enum rather than inserted next to
 `Id::cb`, because those values are persisted to NVS; grid position comes from
 `kEntries` order instead.
+
+### 5.7b Marine VHF, channel lockout, and SAME alert decoding
+
+Three additions built on the channel-scan work.
+
+**Marine VHF** was a browse-band preset parked at 156.800 with no plan behind
+it. It is now a real channelized band carrying the 40-channel US monitoring
+set, reusing ChannelPlan, the scanner, the detector, NFM at 25 kHz and the
+squelched audio path. Its frequencies are two interleaved arithmetic series
+(channels 1-28 at 156.050 MHz + (n-1) x 50 kHz, 60-88 at 156.025 MHz +
+(n-60) x 50 kHz) whose closest pair is 25 kHz apart, which is the spacing the
+plan reports. `channel_plan_self_check()` re-derives every entry from those
+formulas rather than trusting a 40-entry table, and caught a 25 kHz step in the
+first version of the check itself.
+
+**Channel lockout** closes the hole that made the scanner unusable unattended:
+one permanently busy channel parked the sweep forever. Locked channels are
+dropped when the pass is built, so the engine never dwells on one; locking
+everything is refused rather than starting an empty sweep; and locking the
+channel a hold is parked on releases that hold instead of stranding the
+receiver there. Addressed by the name the dashboard prints ("19", "R15",
+"22A", "WX3"), which is why names moved into ChannelPlan and CB and weather
+gained name tables.
+
+**SAME/EAS decoding** (`ui/same_decoder.{hpp,cpp}`) runs automatically on the
+weather band, fed the same demodulated audio the speaker gets. 520.833 bit/s
+AFSK, mark 2083.33 Hz and space 1562.5 Hz, 8-bit ASCII LSB-first with no
+framing. Audio is decimated 48 kHz to 8 kHz, quadrature-correlated against both
+tones, and sliced at the middle of each bit.
+
+Three things worth inheriting from building it:
+
+- **Sample mid-bit, not on the boundary.** The clock is pulled so transitions
+  land on the bit boundary, which makes the boundary the worst place to decide.
+  The first version sampled there and decoded nothing at all.
+- **A burst ends only at the first non-printable byte,** which needs a full byte
+  time of carrier drop. The self-check fed 400 samples of trailing silence --
+  4.3 bit times -- and produced nothing; `Decoder::flush()` now exists for a
+  caller that knows the stream ended, and the check feeds 1200.
+- **There is no host build for this firmware,** so the algorithm was validated
+  first as a Python model with identical constants
+  (`scratchpad/same_model.py` pattern), then ported. Both bugs above were found
+  in the model or by `self_check_detail()`, which names the failing stage --
+  worth reaching for before another flash-and-guess cycle.
+
+The self-check synthesises bursts and streams them through a real decoder in
+256-sample blocks. It buffered the whole 48,000-sample burst at first and
+overflowed internal DRAM at link time; internal RAM really is the constraint
+this project keeps running into.
 
 ### 5.8 Dead code and build
 

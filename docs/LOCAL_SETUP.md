@@ -196,6 +196,15 @@ see `docs/DATA_SOURCE_LEDGER.md`.
   everywhere in the US, so the Weather screen's channel picker needs no local
   data at all. Which transmitter you hear depends only on where you are.
 - **CB** — the 40 channels are fixed by regulation.
+- **Marine VHF** — 40 channels, fixed internationally. The set here is the US
+  monitoring plan: every simplex working channel plus 16 (distress and
+  calling), 13 (bridge-to-bridge), 09 (boater calling) and 22A (Coast Guard
+  liaison and safety broadcasts). Receive-only, like everything else here.
+- **NOAA SAME alerts** — nothing to configure. The weather band decodes the
+  alert header automatically and reports the event code and the six-digit FIPS
+  code of every county covered. Look yours up once (they are published by the
+  Census Bureau and by the NWS) and you will know at a glance whether an alert
+  is for you: Prince William County VA, for example, is 51153.
 - **GMRS / FRS** — 30 channels, also fixed by regulation: 1–7 and 8–14 are the
   462/467.5625 MHz interstitials, 15–22 the 462.5500 MHz main channels, and
   R15–R22 the 467.5500 MHz repeater *inputs* (listening on those hears the

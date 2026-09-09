@@ -205,6 +205,39 @@ second, so a scan hopping faster than that can read the *previous* channel's
 numbers; each measurement must come from at least two windows newer than the
 retune, and `stale_skips` counts any that did not.
 
+## SAME / EAS weather alerts
+
+NOAA Weather Radio prefixes every alert with a Specific Area Message Encoding
+burst naming the originator, the event, the counties covered, and how long it
+is valid. The decoder runs automatically on the weather band -- it is fed the
+same demodulated audio the speaker gets, so nothing needs enabling.
+
+| Command | Auth | Reply | Notes |
+|---|---|---|---|
+| `RTL_SAME_STATUS` | no | `RTL_SAME_STATUS band=.. listening=.. locked=.. headers=.. end_markers=.. preambles=.. rejected=..` | `listening=1` only on the weather band. `locked=1` means a burst is being received right now. |
+| `RTL_SAME_LAST` | no | `RTL_SAME_LAST kind=alert org=.. event=.. purge=.. issued=.. station=.. areas=..`, then one `RTL_SAME_AREA` per county and `RTL_SAME_RAW` with the full header | `RTL_SAME_LAST_NONE` if nothing has been decoded. |
+| `RTL_SAME_SELFTEST` | no | `RTL_SAME_SELFTEST ok\|fail failed_step=..` | Runs the decoder against synthetic bursts and names the failing stage. |
+
+A decoded alert also prints unprompted as `RTL_SAME alert org=.. event=..`.
+
+Fields follow the NWS format: `ORG` is the originator (`WXR` weather service,
+`CIV` civil authority, `EAS`, `PEP`), `EEE` the event code (`TOR` tornado
+warning, `SVR` severe thunderstorm, `FFW` flash flood, `RWT` required weekly
+test), each area a six-digit `PSSCCC` FIPS code, `purge` the validity in HHMM,
+and `issued` the day of year plus UTC time.
+
+**How it decodes.** 520.833 bit/s AFSK, mark 2083.33 Hz and space 1562.5 Hz,
+8-bit ASCII sent least significant bit first with no start, stop or parity
+bits. Audio is decimated 48 kHz to 8 kHz, quadrature-correlated against both
+tones, and the difference of their powers is sliced at the middle of each bit
+-- not at the boundary, which is where the clock is being pulled and where
+sampling decodes nothing. A burst ends at the first non-printable byte, so a
+stream that simply stops needs `Decoder::flush()` to close it out.
+
+Every burst is sent three times; the first clean copy is reported rather than
+voting across all three, because waiting for agreement would drop an alert
+whose later copies were stepped on.
+
 ## Volume
 
 | Command | Auth | Reply |

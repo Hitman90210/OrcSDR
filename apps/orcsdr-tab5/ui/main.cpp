@@ -47,6 +47,7 @@
 #include "adsb_dashboard.hpp"
 #include "adsb_decoder.hpp"
 #include "atc_presets.hpp"
+#include "same_decoder.hpp"
 #include "catalog_sync.hpp"
 #include "dashboard_audio_control.hpp"
 #include "dashboard_registry.hpp"
@@ -6518,8 +6519,40 @@ int16_t shape_audio_sample(float demodulated, float base_scale) {
   return static_cast<int16_t>(constrain(sample, -15000, 15000));
 }
 
+// SAME alert decoding runs on the weather band's own demodulated audio. The
+// decoder is touched only by the DSP task that calls queue_audio_samples(); the
+// serial and UI tasks read the result through the mux below rather than the
+// decoder itself, the same task-ownership rule active_scan follows.
+EXT_RAM_BSS_ATTR orcsdr::same::Decoder g_same_decoder;
+EXT_RAM_BSS_ATTR orcsdr::same::Message g_same_latest;
+portMUX_TYPE g_same_mux = portMUX_INITIALIZER_UNLOCKED;
+std::atomic<bool> g_same_have_latest{false};
+std::atomic<uint32_t> g_same_header_count{0};
+std::atomic<bool> g_same_locked{false};
+
 void queue_audio_samples(int16_t* audio, size_t audio_count) {
   if (audio_count == 0) return;
+  // Only the weather band carries SAME, and running the correlators on every
+  // band would spend DSP time on audio that cannot contain a header.
+  if (g_stream_band == RtlBand::wx) {
+    g_same_decoder.process(audio, audio_count);
+    g_same_locked.store(g_same_decoder.locked(), std::memory_order_relaxed);
+    orcsdr::same::Message decoded{};
+    if (g_same_decoder.take(&decoded)) {
+      portENTER_CRITICAL(&g_same_mux);
+      g_same_latest = decoded;
+      portEXIT_CRITICAL(&g_same_mux);
+      g_same_have_latest.store(true, std::memory_order_release);
+      if (!decoded.end_of_message)
+        g_same_header_count.fetch_add(1, std::memory_order_relaxed);
+      Serial.printf("RTL_SAME %s org=%s event=%s areas=%u purge=%s issued=%s "
+                    "station=%s",
+                    decoded.end_of_message ? "end" : "alert", decoded.originator,
+                    decoded.event, static_cast<unsigned>(decoded.area_count),
+                    decoded.purge, decoded.issued, decoded.station);
+      Serial.println();
+    }
+  }
   orcsdr::visualizer::offer_audio(audio, nullptr, audio_count, 48000);
   // Feed the web console from the post-DSP mono stream.  This path is
   // intentionally independent of local speaker state and queue availability.
@@ -13615,6 +13648,10 @@ void process_command(char* command) {
     Serial.println("RTL_CHANNEL_SCAN_STOP          - stop channel scan (auth)");
     Serial.println("RTL_CHANNEL_SCAN_STATUS        - scan state, hit count, thresholds");
     Serial.println("RTL_CHANNEL_PROBE              - detector reading for the channel on the dial");
+    Serial.println("RTL_CHANNEL_LOCK/UNLOCK <name> - skip a channel during scans (auth)");
+    Serial.println("RTL_CHANNEL_LOCK_LIST/_CLEAR   - list or clear the lockout for this band");
+    Serial.println("RTL_SAME_STATUS                - NOAA SAME/EAS decoder state and counts");
+    Serial.println("RTL_SAME_LAST                  - last decoded SAME alert, areas and raw header");
     Serial.println("RTL_SQUELCH                    - query squelch (CB/GMRS audio + scan stop level)");
     Serial.println("RTL_SQUELCH <-90..-20>         - set squelch dBFS, -90 opens it (auth)");
     Serial.println("RTL_RDS_STATUS                 - on-demand RDS Stage1/2 diagnostic dump");
@@ -14231,6 +14268,49 @@ void process_command(char* command) {
     entry->mask = 0;
     persist_channel_lockout(rtl_ui_band);
     Serial.printf("RTL_CHANNEL_LOCK_CLEAR_OK band=%s\n", rtl_band_name(rtl_ui_band));
+    return;
+  }
+  if (strcmp(command, "RTL_SAME_SELFTEST") == 0) {
+    char detail[64]{};
+    const bool ok = orcsdr::same::Decoder::self_check_detail(detail, sizeof(detail));
+    Serial.printf("RTL_SAME_SELFTEST %s failed_step=%s",
+                  ok ? "ok" : "fail", detail[0] ? detail : "none");
+    Serial.println();
+    return;
+  }
+  if (strcmp(command, "RTL_SAME_STATUS") == 0) {
+    const orcsdr::same::Stats stats = g_same_decoder.stats();
+    Serial.printf("RTL_SAME_STATUS band=%s listening=%d locked=%d headers=%lu "
+                  "end_markers=%lu preambles=%lu rejected=%lu",
+                  rtl_band_name(rtl_ui_band),
+                  rtl_ui_band == RtlBand::wx ? 1 : 0,
+                  g_same_locked.load(std::memory_order_relaxed) ? 1 : 0,
+                  static_cast<unsigned long>(stats.headers),
+                  static_cast<unsigned long>(stats.end_markers),
+                  static_cast<unsigned long>(stats.preambles),
+                  static_cast<unsigned long>(stats.rejected));
+    Serial.println();
+    return;
+  }
+  if (strcmp(command, "RTL_SAME_LAST") == 0) {
+    if (!g_same_have_latest.load(std::memory_order_acquire)) {
+      Serial.println("RTL_SAME_LAST_NONE");
+      return;
+    }
+    orcsdr::same::Message message{};
+    portENTER_CRITICAL(&g_same_mux);
+    message = g_same_latest;
+    portEXIT_CRITICAL(&g_same_mux);
+    Serial.printf("RTL_SAME_LAST kind=%s org=%s event=%s purge=%s issued=%s "
+                  "station=%s areas=%u",
+                  message.end_of_message ? "end" : "alert", message.originator,
+                  message.event, message.purge, message.issued, message.station,
+                  static_cast<unsigned>(message.area_count));
+    Serial.println();
+    for (uint8_t i = 0; i < message.area_count; ++i)
+      Serial.printf("RTL_SAME_AREA index=%u fips=%06lu\n", static_cast<unsigned>(i),
+                    static_cast<unsigned long>(message.areas[i]));
+    Serial.printf("RTL_SAME_RAW %s\n", message.raw);
     return;
   }
   if (strcmp(command, "RTL_CHANNEL_PROBE") == 0) {
@@ -14898,6 +14978,8 @@ void setup() {
                      : "RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
   Serial.println(orcsdr::rf24::self_check() ? "RF24_DASHBOARD_SELF_CHECK_OK"
                                             : "RF24_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::same::Decoder::self_check() ? "ORC_SAME_SELF_CHECK_OK"
+                                                     : "ORC_SAME_SELF_CHECK_FAIL");
   Serial.println(channel_plan_self_check() ? "ORC_CHANNEL_PLAN_SELF_CHECK_OK"
                                            : "ORC_CHANNEL_PLAN_SELF_CHECK_FAIL");
   Serial.println(ui_doc_self_check() ? "UI_DOC_SELF_CHECK_OK" : "UI_DOC_SELF_CHECK_FAIL");
