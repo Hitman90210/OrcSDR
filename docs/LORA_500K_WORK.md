@@ -9,7 +9,7 @@ LongFast path that already works.
 | Preset | Bandwidth | SF | Coding rate | Status |
 | --- | --- | --- | --- | --- |
 | Long Fast (old US stock) | 250 kHz | 11 | 4/5 | works today, must not regress |
-| **Long Turbo** (US replacement) | **500 kHz** | 11 | 4/8 | target |
+| **Long Turbo** (US replacement) | **500 kHz** | 11 | 4/8 | **verified live** |
 | Short Turbo | 500 kHz | 7 | 4/5 | target |
 
 The bench node is on **Long Turbo**, read off its own LoRa config screen as
@@ -31,7 +31,7 @@ regression vector this work is checked against).
 | 1. Thread a runtime decode rate | **done** |
 | 2. Extend the DSP vector to 500 kHz | **done** |
 | 3. Verify on hardware | **done** -- 10/10 cases pass |
-| 4. Try a real 500 kHz node | not started |
+| 4. Try a real 500 kHz node | **done -- CRC-valid encrypted frame decoded** |
 | 5. Optional: a 500 kHz channel filter | **designed and verified, not shipped** |
 | 6. Coding rate 4/8 | **done -- needed no new code** |
 
@@ -67,8 +67,9 @@ a 500 kHz LoRa channel spans     +/- 250 kHz
 
 Complex (I/Q) sampling at 960 kHz represents 960 kHz of spectrum, not 480. The
 channel fits with room to spare, so **nothing aliases** and no anti-alias filter
-is needed on the 500 kHz path at all. The resampler runs *upward*, 960 kHz to
-1 MHz, and upsampling has nothing to fold in.
+is needed on the 500 kHz path at all. The dechirper reads the 960 kHz capture on
+a virtual 1 MHz grid, interpolating each requested sample as it works; upward
+interpolation has nothing to fold in.
 
 **This corrects `FORK_HANDOFF.md` 3d item 2**, which said the capture rate had
 to rise to supply two samples per chip at 1 MHz, and worried about doubling the
@@ -79,7 +80,7 @@ symbol so the FFT size is a power of two, and the resampler is what puts the
 capture on that grid. Where those samples are interpolated from only has to
 satisfy the sampling theorem, and 960 kHz does.
 
-No driver change. No larger buffer. No internal-RAM cost.
+No driver change. No larger capture buffer. No internal-RAM cost.
 
 ### What sizes actually change
 
@@ -104,23 +105,21 @@ Only the *time base* changes: `t = i / decode_rate` instead of
 | --- | --- | --- | --- |
 | 125 kHz | 250 kHz | decimate 3.84x | yes -- existing filter |
 | 250 kHz | 500 kHz | decimate 1.92x | yes -- existing filter |
-| **500 kHz** | **1 MHz** | **interpolate 1.042x** | **no -- nothing to fold in** |
+| **500 kHz** | **1 MHz** | **virtual interpolation 1.042x** | **no -- nothing to fold in** |
 
 The rule is simply whether the resampler is going down or up.
 
-### The in-place hazard this creates
+### Why the upward path must not materialize a second capture
 
-`decode_capture_pass()` currently does filter, then resample, and *both* write
-into `g_scratch.resampled`. That is safe today only by an accident of
-arithmetic: when decimating, the resampler's read index runs ahead of its write
-index, so it never overwrites a sample it has yet to read.
+The original 500 kHz implementation materialized the entire 960 kHz-to-1 MHz
+resample in `g_scratch.resampled`. A four-second capture is 7.68 MB and its
+resampled copy is another 8 MB. That second contiguous PSRAM allocation failed
+on the live Tab5, so the decoder returned in 0 ms without examining the signal.
 
-When **upsampling that reverses** -- the read index falls behind the write index
-and in-place resampling would corrupt its own input. The 500 kHz path avoids it
-by skipping the filter, so the resampler reads the caller's capture buffer and
-writes `g_scratch.resampled`: different buffers. This is load-bearing and easy
-to undo by accident, so it is guarded explicitly in the code rather than left as
-a comment.
+`dechirp_peak()` already supports interpolation from the original sample rate.
+The fixed path therefore leaves the capture in place and interpolates only the
+symbol currently entering the FFT. Downward conversions still filter and
+resample in place; upward conversions allocate no capture-sized scratch buffer.
 
 ---
 
@@ -154,9 +153,9 @@ Three things worth knowing if you touch this again:
    steep -- and would present as a decoder that simply finds no preambles.
 2. **`dechirp_peak()` reads the decode rate from `g_scratch`**, not from an
    argument, so it cannot disagree with the chirp table it is about to use.
-3. **The in-place resample is only safe downward.** Guarded in
-   `linear_resample_capture()`: it refuses when handed its own buffer while
-   interpolating.
+3. **The materialized resample is only used downward.** Upward conversion is
+   virtual inside `dechirp_peak()`, avoiding both in-place corruption and a
+   second capture-sized PSRAM allocation.
 
 ### Sizes are unchanged, as predicted
 
@@ -194,11 +193,36 @@ RTL_LORA_SELFTEST ok failed_case=none elapsed_ms=1724
 432 ms for the 5-case boot subset, against 366 ms for the previous 3 -- the two
 added cases are SF 7, whose symbols are 256 samples against SF 11's 4096.
 
-**This proves the signal path, not reception.** Synthesised symbols are clean,
-perfectly aligned and noise-free. What is proved is that chirp generation,
-resampling, dechirping and symbol mapping are correct at 500 kHz -- which is
-exactly what was broken. Preamble detection, header parsing, FEC and CRC on a
-real off-air burst are stage 4.
+The synthetic cases prove the signal path. Stage 4 below is the off-air proof.
+
+---
+
+## Stage 4 -- real Long Turbo reception
+
+Verified on 2026-09-09 with the bench Meshtastic node on 908.750 MHz, SF 11,
+500 kHz bandwidth and CR 4/8. The Tab5 first passed all ten DSP cases after the
+fix:
+
+```
+RTL_LORA_SELFTEST ok failed_case=none elapsed_ms=1686
+```
+
+It then captured multiple live transmissions. One deliberately useful failure
+found a real preamble but failed CRC; the next capture completed end to end:
+
+```
+RTL_LORA_NATIVE_DONE packets=1 preambles=1 header_failures=0 crc_ok=1 crc_failures=0 encrypted=1 raw_cfo_hz=-1464.8 cfo_hz=-1464.8 elapsed_ms=12441
+```
+
+`encrypted=1` is expected for an over-the-air Meshtastic channel packet whose
+channel key is not stored in OrcSDR. This confirms RF trigger, IQ capture,
+preamble detection, explicit-header parsing, CR 4/8 FEC and PHY CRC on a real
+Long Turbo transmission.
+
+Operational trap: `RTL_TUNE LORA 908750000` currently reapplies the saved LoRa
+preset and can reset bandwidth to 250 kHz. For a custom 500 kHz session, tune
+first, then issue `RTL_LORA_MODEM 11 500000`, and verify with
+`RTL_LORA_MODEM`. A persistent Long Turbo UI preset is the next usability fix.
 
 ---
 
@@ -321,12 +345,10 @@ filter has for its own channel.
 
 ### Why it is not shipped yet
 
-Deliberately held until stage 4 reports. Adding a filter to a path whose basic
-decode has not yet been seen working would confound the diagnosis: a silent
-result would then have two possible causes instead of one. If stage 4 shows
-preambles but failing headers, 2.74 dB is exactly the kind of margin that
-decides it, and this goes in. The coefficients are derived and verified; what
-is left is ~15 lines and a run of the DSP vector.
+Stage 4 now works without it. That keeps the filter optional rather than a
+correctness dependency. It should be added only with before/after live tests in
+adjacent-channel interference; the coefficients are derived and verified, but
+the extra DSP and its effect on marginal packets still need measurement.
 
 ---
 

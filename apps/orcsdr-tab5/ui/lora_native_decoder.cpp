@@ -967,7 +967,7 @@ bool run_dsp_case(const DspCase& item, char* detail, size_t detail_size) {
   size_t decode_samples = capture_samples;
   uint32_t rate_into_dechirp = capture_rate;
   bool ok = true;
-  if (item.through_front_end) {
+  if (item.through_front_end && decode_rate < capture_rate) {
     // Mirrors decode_capture_pass() exactly, filter decision included -- a test
     // that took a different route through the front end would not be testing it.
     const uint8_t* staged = capture;
@@ -1056,27 +1056,35 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
   const uint32_t decode_rate = decode_rate_for(bandwidth_hz);
   const uint32_t started = now_millis();
   size_t samples = bytes / 2;
-  const uint8_t* front_end_cu8 = cu8;
-  size_t front_end_samples = samples;
+  const uint8_t* decode_cu8 = cu8;
+  uint32_t dechirp_sample_rate = sample_rate_sps;
   // Decimating to the decode grid folds everything above half the decode rate
   // back into the channel, so it has to be filtered first. Interpolating up to
   // it does not, and the filter on hand would take the outer half of a 500 kHz
-  // channel with it.
-  if (needs_anti_alias(bandwidth_hz, sample_rate_sps) &&
-      !filter_capture(cu8, samples, sample_rate_sps, &front_end_cu8, &front_end_samples))
-    return 0;
-  const uint8_t* resampled_cu8 = nullptr;
-  size_t resampled_samples = 0;
-  if (!linear_resample_capture(front_end_cu8, front_end_samples, sample_rate_sps,
-                               decode_rate, &resampled_cu8, &resampled_samples))
-    return 0;
-  const uint8_t* decode_cu8 = resampled_cu8;
-  samples = resampled_samples;
+  // channel with it. For interpolation, dechirp_peak() can read the original
+  // capture directly on the virtual decoder grid. Resampling a four-second
+  // 500 kHz capture up front would require another ~8 MB contiguous PSRAM
+  // block and can fail before decoding begins on real hardware.
+  if (decode_rate < sample_rate_sps) {
+    const uint8_t* filtered_cu8 = cu8;
+    size_t filtered_samples = samples;
+    if (needs_anti_alias(bandwidth_hz, sample_rate_sps) &&
+        !filter_capture(cu8, samples, sample_rate_sps, &filtered_cu8, &filtered_samples))
+      return 0;
+    const uint8_t* resampled_cu8 = nullptr;
+    size_t resampled_samples = 0;
+    if (!linear_resample_capture(filtered_cu8, filtered_samples, sample_rate_sps,
+                                 decode_rate, &resampled_cu8, &resampled_samples))
+      return 0;
+    decode_cu8 = resampled_cu8;
+    samples = resampled_samples;
+    dechirp_sample_rate = decode_rate;
+  }
   const size_t n = g_scratch.symbol_samples;
   const size_t fft_bins = g_scratch.fft_size / 2;
   const size_t bins = 1u << spreading_factor;
-  // Already on the decode grid, so these coincide. Kept named for the reader.
-  const uint64_t virtual_samples = samples;
+  const uint64_t virtual_samples =
+      static_cast<uint64_t>(samples) * decode_rate / dechirp_sample_rate;
   const size_t preamble = 16;
   size_t start = 0;
   size_t found = 0;
@@ -1094,7 +1102,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     while (cursor + n * preamble < search_end) {
       uint16_t peak = 0;
       float height = 0;
-      if (!dechirp_peak(decode_cu8, samples, decode_rate, cursor, true, &peak, &height,
+      if (!dechirp_peak(decode_cu8, samples, dechirp_sample_rate, cursor, true, &peak, &height,
                         phase_cfo_hz)) break;
       const uint16_t delta = peak > previous_peak ? peak - previous_peak : previous_peak - peak;
       if (matching > 0 && std::min<size_t>(delta, fft_bins - delta) <= kFftPadding) {
@@ -1123,16 +1131,16 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     float down_height = 0;
     uint16_t unused_peak = 0;
     while (sync + n < virtual_samples) {
-      if (!dechirp_peak(decode_cu8, samples, decode_rate, sync, true, &unused_peak, &up_height,
+      if (!dechirp_peak(decode_cu8, samples, dechirp_sample_rate, sync, true, &unused_peak, &up_height,
                         phase_cfo_hz) ||
-          !dechirp_peak(decode_cu8, samples, decode_rate, sync, false, &unused_peak, &down_height,
+          !dechirp_peak(decode_cu8, samples, dechirp_sample_rate, sync, false, &unused_peak, &down_height,
                         phase_cfo_hz)) break;
       sync += n;
       if (down_height > up_height) break;
     }
     uint16_t down_peak = 0;
     if (sync + n >= virtual_samples ||
-        !dechirp_peak(decode_cu8, samples, decode_rate, sync, false, &down_peak, &down_height,
+        !dechirp_peak(decode_cu8, samples, dechirp_sample_rate, sync, false, &down_peak, &down_height,
                       phase_cfo_hz)) {
       start = cursor + n;
       continue;
@@ -1143,7 +1151,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     }
     uint16_t preamble_peak = 0;
     float ignored = 0;
-    if (!dechirp_peak(decode_cu8, samples, decode_rate, sync - 4 * n, true, &preamble_peak, &ignored,
+    if (!dechirp_peak(decode_cu8, samples, dechirp_sample_rate, sync - 4 * n, true, &preamble_peak, &ignored,
                       phase_cfo_hz)) {
       start = cursor + n;
       continue;
@@ -1151,9 +1159,9 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     float correction_cfo_hz = refined_cfo_hz(preamble_peak, fft_bins, bandwidth_hz);
     float last_up = 0;
     float last_down = 0;
-    if (!dechirp_peak(decode_cu8, samples, decode_rate, sync - n, true, &unused_peak, &last_up,
+    if (!dechirp_peak(decode_cu8, samples, dechirp_sample_rate, sync - n, true, &unused_peak, &last_up,
                       phase_cfo_hz) ||
-        !dechirp_peak(decode_cu8, samples, decode_rate, sync - n, false, &unused_peak, &last_down,
+        !dechirp_peak(decode_cu8, samples, dechirp_sample_rate, sync - n, false, &unused_peak, &last_down,
                       phase_cfo_hz)) {
       start = cursor + n;
       continue;
@@ -1178,7 +1186,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       bool candidate_ok = true;
       for (size_t i = 0; i < 8; ++i) {
         uint16_t peak = 0;
-        if (!dechirp_peak(decode_cu8, samples, decode_rate, candidate + i * n, true, &peak, &ignored,
+        if (!dechirp_peak(decode_cu8, samples, dechirp_sample_rate, candidate + i * n, true, &peak, &ignored,
                           phase_cfo_hz)) {
           candidate_ok = false;
           break;
@@ -1216,7 +1224,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       uint16_t payload_preamble_peak = preamble_peak;
       float payload_drift_cfo_hz = correction_cfo_hz;
       if (phase_retry &&
-          (!dechirp_peak(decode_cu8, samples, decode_rate, sync - 4 * n, true,
+          (!dechirp_peak(decode_cu8, samples, dechirp_sample_rate, sync - 4 * n, true,
                          &payload_preamble_peak, &ignored, payload_phase_cfo_hz))) {
         continue;
       }
@@ -1232,7 +1240,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
             static_cast<int64_t>(lroundf((static_cast<float>(i) - 8.0f) * payload_clock_skew));
         uint16_t peak = 0;
         if (symbol_start < 0 ||
-            !dechirp_peak(decode_cu8, samples, decode_rate, static_cast<size_t>(symbol_start), true,
+            !dechirp_peak(decode_cu8, samples, dechirp_sample_rate, static_cast<size_t>(symbol_start), true,
                           &peak, &ignored, payload_phase_cfo_hz)) {
           symbols_ok = false;
           break;
