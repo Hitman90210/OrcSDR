@@ -50,3 +50,6 @@ jobs:
       - name: Test guarded installer plans
         shell: pwsh
         run: ./tools/release/test-installer-dry-run.ps1
+      - name: Test serial authentication helpers
+        shell: pwsh
+        run: ./tools/release/test-tab5-serial-auth.ps1

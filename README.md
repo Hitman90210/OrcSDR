@@ -594,8 +594,8 @@ For a source build, use the explicit native steps in
 > that `git apply` cannot classify, and the build stops with:
 >
 > ```text
-> error: corrupt patch at .../esp-hosted-trampoline-null-delete.patch:29
-> The installed ESP-Hosted component does not match the trampoline null-delete patch.
+> error: corrupt patch at .../esp-hosted-task-lifecycle.patch:29
+> The installed ESP-Hosted component does not match the task-lifecycle patch.
 > ```
 >
 > This fork pins `*.patch` and `*.diff` to LF in `.gitattributes`, so a fresh

@@ -537,10 +537,8 @@ constexpr uint32_t kRtlFmMaxHz = orcsdr::fmconfig::kMaxFrequencyHz;
 constexpr uint32_t kRtlFmStepHz = 100000;
 constexpr uint32_t kRtlFmAutoStepHz = 800000;
 constexpr uint32_t kRtlFmAutoSettleMs = 500;
-constexpr float kFmPresetMinDbfs = -70.0f;
 // An absolute level cannot separate a station from the noise floor: the floor
-// moves with gain and antenna, so on a real antenna every window cleared
-// kFmPresetMinDbfs and a seek stopped on the first one it looked at. Require
+// moves with gain and antenna. Require
 // the in-window peak to stand this far above the mean of the window instead.
 //
 // Measured on hardware over a full 40-window sweep of 76.5-107.7 MHz: the
@@ -7595,20 +7593,14 @@ void prepare_wifi_coprocessor() {
   // Tab5 IO expander #2 (0x44), P0 is WLAN_PWR_EN.  Cycle the rail once
   // before Hosted init so a timed-out C6 cannot survive a P4 app restart.
   //
-  // The 200 ms this used to wait is not enough for the C6 to power its rail,
-  // boot its own firmware, and be ready to answer SDIO. On USB-C the rail
-  // rises fast enough that it just barely worked; on battery it does not, and
-  // the host then starts SDIO against a co-processor that is still booting,
-  // reads garbage frames, and walks them into eh_host_feat_rpc_rx's frame
-  // dispatch -- which corrupted the heap and panicked in the allocator
-  // (`assert failed: block_locate_free ... block_size(block) >= *size`) with a
-  // frame pointer aimed into the FreeRTOS TCB region. That was a hard boot
-  // loop on battery, reproducible, and independent of the RTL-SDR dongle.
+  // A 200 ms wait was a narrow, undocumented margin for the C6 rail and boot.
+  // Raising it did not by itself fix the battery-only heap corruption (see
+  // FORK_HANDOFF.md section 3b), so do not mistake this margin for that fix.
   //
   // A boot happens rarely and the device already takes ~12 s to come up, so
   // the extra second is a cheap price for a co-processor that is actually
   // ready. Kept as one unconditional path rather than branching on VBUS: the
-  // margin is worth having on USB-C too, since 200 ms was never comfortable.
+  // margin is worth having on USB-C too.
   M5.getIOExpander(1).digitalWrite(0, false);
   delay(150);
   M5.getIOExpander(1).digitalWrite(0, true);
@@ -8736,8 +8728,7 @@ bool channel_is_busy(RtlBand band, float* out_level_dbfs, float* out_snr_db,
   // full scale), which is what the squelch setting is expressed in. Note that
   // rtl_scope_peak_level is NOT: draw_spectrum leaves it as raw 10*log10 of
   // bin power, so it reads around +55 where the squelch default is -75 and
-  // comparing the two -- as this did at first, and as the FM seek still does
-  // -- is a test that can never fail. Only its ratio to the mean, the SNR, is
+  // comparing the two is a test that can never fail. Only its ratio to the mean, the SNR, is
   // meaningful, so that is all it is used for here.
   const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
   const float snr_db = rtl_scope_peak_snr_db.load(std::memory_order_relaxed);
@@ -8778,17 +8769,19 @@ bool scan_retune(uint32_t frequency_hz, void*) {
 void scan_measure(size_t index, uint32_t frequency_hz, void*) {
   if (active_scan == ActiveScan::fm_presets) {
     const float level = rtl_scope_peak_level.load(std::memory_order_relaxed);
+    const float snr_db = rtl_scope_peak_snr_db.load(std::memory_order_relaxed);
     const int32_t offset = rtl_scope_peak_offset_hz.load(std::memory_order_relaxed);
     const int64_t found = static_cast<int64_t>(frequency_hz) + offset;
     const uint32_t found_hz = rtl_clamp_frequency(
         RtlBand::fm, found > 0 ? static_cast<uint32_t>(found) : 0u);
     const uint32_t snapped_hz = ((found_hz + 50000u) / 100000u) * 100000u;
-    if (level >= kFmPresetMinDbfs) fm_preset_offer(snapped_hz, level);
+    if (snr_db >= kFmSeekMinSnrDb) fm_preset_offer(snapped_hz, level);
     rtl_fm_preset_scan_step.store(static_cast<int>(index + 1), std::memory_order_relaxed);
     rtl_fm_preset_scan_found.store(fm_preset_count, std::memory_order_relaxed);
     if (serial_verbosity_at(SerialVerbosity::trace))
-      Serial.printf("RTL_PRESET_SCAN sample center=%u peak=%u level=%.1f\n",
-                    frequency_hz, found_hz, static_cast<double>(level));
+      Serial.printf("RTL_PRESET_SCAN sample center=%u peak=%u level=%.1f snr_db=%.1f\n",
+                    frequency_hz, found_hz, static_cast<double>(level),
+                    static_cast<double>(snr_db));
     return;
   }
   if (active_scan == ActiveScan::fm_seek) {
@@ -8806,7 +8799,7 @@ void scan_measure(size_t index, uint32_t frequency_hz, void*) {
       Serial.printf("RTL_FM_SEEK_SAMPLE center_hz=%lu level=%.1f snr_db=%.1f\n",
                     static_cast<unsigned long>(fm_seek_wrap(frequency_hz)),
                     static_cast<double>(level), static_cast<double>(snr_db));
-    if (level < kFmPresetMinDbfs || snr_db < kFmSeekMinSnrDb) return;
+    if (snr_db < kFmSeekMinSnrDb) return;
     const int32_t offset = rtl_scope_peak_offset_hz.load(std::memory_order_relaxed);
     const int64_t found = static_cast<int64_t>(fm_seek_wrap(frequency_hz)) + offset;
     const uint32_t station_hz = rtl_clamp_frequency(
@@ -12775,14 +12768,27 @@ void process_command(char* command) {
     return;
   }
   if (strncmp(command, "SD_REMOVE ", 10) == 0) {
+    if (!authenticated) {
+      Serial.println("SD_REMOVE_ERROR auth_required");
+      return;
+    }
     sd_remove(command + 10);
     return;
   }
   if (strncmp(command, "SD_PUT_BEGIN ", 13) == 0) {
+    if (!authenticated) {
+      Serial.println("SD_PUT_ERROR auth_required");
+      return;
+    }
     sd_put_begin(command + 13);
     return;
   }
   if (strncmp(command, "SD_PUT_CHUNK ", 13) == 0) {
+    if (!authenticated) {
+      if (g_sd_put.active) sd_put_abort("auth_expired");
+      else Serial.println("SD_PUT_ERROR auth_required");
+      return;
+    }
     sd_put_chunk(command + 13);
     return;
   }

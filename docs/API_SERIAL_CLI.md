@@ -115,7 +115,8 @@ below rather than papered over):
 - **`authenticated`** — gates the rest (`RTL_TUNE`, `RTL_VOLUME <n>`,
   `RTL_CAPTURE`/`RTL_LISTEN`, `RTL_STOP`, `RTL_PRESET_SCAN`,
   `RTL_PRESET_TUNE`, `RTL_P25_IQ_START`, `RTL_P25_IQ_STOP`, and
-  `RTL_P25_REPLAY`). Requires the `PAIR`/`AUTH` HMAC handshake below.
+  `RTL_P25_REPLAY`, `SD_PUT_*`, and `SD_REMOVE`). Requires the `PAIR`/`AUTH`
+  HMAC handshake below.
   This exists for a remote/untrusted-host scenario (e.g. Bluetooth); if
   you're driving the device over a physically-attached USB cable, that
   trust boundary is arguably already crossed, but the gate is enforced as
@@ -129,11 +130,9 @@ below rather than papered over):
 < AUTH_OK <32-byte-hex-hmac-of("device"+nonce)>
 ```
 
-The pairing key is stored in NVS after first pair and persists across
-reboots. There is currently no documented out-of-band way to generate a
-compliant nonce/proof pair from a plain script without replicating the
-HMAC-SHA256 handshake — treat the authenticated commands as requiring a
-proper pairing client, not something to hand-roll casually.
+The pairing key is stored in NVS after first pair and persists across reboots.
+The supported PowerShell transfer and validation tools perform this handshake
+from the untracked `.orclink/ui-doc.key`; do not hand-roll proofs in shell one-liners.
 
 ## Tuning and band control
 
@@ -357,7 +356,8 @@ Use `tools/copy_to_tab5_sd.ps1` and `tools/copy_from_tab5_sd.ps1` rather than
 re-implementing the binary framing by hand; they handle chunking and hashing:
 
 ```powershell
-.\tools\copy_to_tab5_sd.ps1 <local-file> /orcsdr/<name> -Port COM17
+.\tools\copy_to_tab5_sd.ps1 <local-file> /orcsdr/<name> -Port COM17 `
+  -PairingKeyPath .\.orclink\ui-doc.key
 .\tools\copy_from_tab5_sd.ps1 /orcsdr/<name> -Destination <local-file> -Port COM17
 ```
 
@@ -369,21 +369,10 @@ All SD writes are refused with `..._ERROR radio_busy` while a capture/
 stream is active — stop the radio (`RTL_STOP`, needs auth) or wait for it
 to be idle first.
 
-> **Auth tier — known gap.** `SD_LIST`, `SD_GET_*`, `SD_PUT_*` and `SD_REMOVE`
-> are all **unauthenticated**. Reads are consistent with the rest of the
-> query tier, but *writes and deletes are not*: an unpaired host can create or
-> remove any file under `/orcsdr/`, while `RTL_VOLUME <n>` requires the HMAC
-> handshake. That matters because several files the firmware trusts are read
-> from there without any signature — `local_map.idx`, `local_atc.idx` and
-> `p25/<id>/profile.cfg` — so an unauthenticated write is effectively
-> unsigned config injection.
->
-> Under the stated threat model (a remote or untrusted host, §Auth model) this
-> should be gated. It is left open deliberately for now because closing it
-> means adding the `PAIR`/`AUTH` handshake to `copy_to_tab5_sd.ps1`,
-> `copy_from_tab5_sd.ps1` and `get_from_tab5_sd.ps1`, and a half-done job there
-> breaks the only supported way to get files onto the card. Over a
-> physically-attached USB cable the boundary is arguably already crossed.
+`SD_LIST` and `SD_GET_*` remain in the unauthenticated query tier. `SD_PUT_*`
+and `SD_REMOVE` require an authenticated session; an expired session aborts an
+in-progress staged upload. `copy_to_tab5_sd.ps1` performs the handshake before
+starting the transfer and never prints or stores the pairing key.
 
 ## Data Catalog
 

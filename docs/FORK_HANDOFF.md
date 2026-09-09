@@ -380,7 +380,7 @@ resets defensively. There is a regression check (`home_font_ok`) for it.
      identical frozen value. `spectrum_measurement_wanted()` now lets the DSP
      run while a scan or seek is active. **This affected the pre-existing FM
      preset scan too** — it reads the same value.
-  2. *The threshold was absolute.* `kFmPresetMinDbfs` (-70 dBFS) cannot
+  2. *The threshold was absolute.* The former `kFmPresetMinDbfs` (-70 dBFS) cannot
      separate a station from a noise floor that moves with gain and antenna,
      so on a real antenna every window passed and the seek stopped on the
      first one it looked at — including 76.8 MHz. Replaced with an in-window
@@ -665,12 +665,10 @@ on their own timer and will draw straight through a panel unless
 3. **`noaa_weather` / `fcc_broadcast` packs** cannot be published from this
    fork — the catalog is signed with the upstream author's P-256 key and the
    firmware embeds only the matching public key.
-4. **`SD_PUT_*` and `SD_REMOVE` are unauthenticated** — the one finding from
-   the security audit. An unpaired host can write or delete any file under
-   `/orcsdr/`, while `RTL_VOLUME <n>` requires the HMAC handshake, and the
-   firmware trusts `local_map.idx`, `local_atc.idx` and `p25/*/profile.cfg`
-   from there with no signature. Closing it means adding `PAIR`/`AUTH` to the
-   three `copy_*_tab5_sd.ps1` tools; see `docs/API_SERIAL_CLI.md`.
+4. **Resolved: SD writes and deletes require `PAIR`/`AUTH`.** An unpaired host
+   may still list or read files, matching the query tier, but cannot inject or
+   remove trusted `/orcsdr/` configuration. The supported upload tool performs
+   the HMAC handshake from the untracked pairing-key file.
 5. **The channel scanner's GMRS threshold has not met a real GMRS signal.**
    Both halves were verified, but on different bands: "stops on a real signal"
    was proved on weather (a live NOAA transmitter, 60 dB, held and resumed
@@ -681,23 +679,21 @@ on their own timer and will draw straight through a panel unless
    walks past traffic you can hear, that number is the one to lower — check it
    with `RTL_CHANNEL_PROBE` while the signal is up, and see §5.7a for what the
    three tests mean.
-6. **`rtl_scope_peak_level` is compared against a dBFS threshold in the FM
-   seek** (`kFmPresetMinDbfs`), which can never fail because that value is not
-   dBFS — see §5.7a. Harmless today, since the SNR test carries the decision,
-   but it is a dead test that reads like a live one.
+6. **Resolved: FM preset scan and seek now use in-window SNR.** The old
+   `rtl_scope_peak_level`/dBFS comparison could never fail because the spectrum
+   value is raw bin power. Both paths now gate on `rtl_scope_peak_snr_db` and
+   retain raw level only for ranking and diagnostics — see §5.7a.
 7. **The battery boot loop is masked, not fixed** — §3b. A timing-sensitive
    heap corruption in the hosted SDIO path, held off by
    `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y`. Changing FreeRTOS or heap
    config, or anything about Wi-Fi bringup timing, can bring it back; the
    `heap_guard()` checkpoints exist to name the stage when it does.
-8. **Upstream's #66 fix leaks a task stack and TCB per detached hosted task.**
-   `xTaskCreateWithCaps` creates the task via `xTaskCreateStaticPinnedToCore`
-   (TCB from `pvPortMalloc`, stack from `heap_caps_malloc`), and only
-   `prvTaskDeleteWithCaps` frees those buffers. The patched trampoline calls
-   plain `vTaskDelete(NULL)`, which frees neither — contrary to the claim in
-   the upstream commit message. Not the cause of §3b (verified by bisect), and
-   the patch is merged because it fixes a real abort, but a correct version
-   would free the buffers itself rather than leak them.
+8. **Resolved in the fork: the Hosted task workaround no longer leaks.**
+   Detached one-shot tasks use ordinary `xTaskCreate` and let the idle task
+   reap them. Joinable WithCaps tasks signal completion, suspend, and are
+   deleted from the owner task by `vTaskDeleteWithCaps`, which frees their
+   static TCB and SPIRAM stack without using IDF 5.5.4's unsafe self-delete
+   path. The battery race in §3b remains a separate, masked issue.
 
 Audited clean: buffer handling (every `memcpy`/`strcat` bounds-checked, no
 `strcpy`/`sprintf`/`gets`), path traversal (`..` rejected on both the SD and

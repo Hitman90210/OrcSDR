@@ -1,0 +1,56 @@
+diff --git a/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c b/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
+--- a/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
++++ b/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
+@@ -42,3 +42,2 @@ static void trampoline(void *p)
+     eh_host_port_task_t *t = (eh_host_port_task_t *)p;
+-    int with_caps = t && t->with_caps;
+     int detached  = t && t->detached;
+@@ -46,12 +45,13 @@ static void trampoline(void *p)
+     if (detached) {
+-        /* Fire-and-forget: free the wrapper, then self-delete. */
++        /* Detached tasks use ordinary xTaskCreate, so the idle task owns
++         * their TCB/stack cleanup after self-delete. */
+         free(t);
+-    } else if (t && t->exit_sem) {
+-        xSemaphoreGive(t->exit_sem);
+-    }
+-    if (with_caps) {
+-        vTaskDeleteWithCaps(NULL);
+-    } else {
+         vTaskDelete(NULL);
+     }
++    /* A joinable task cannot safely self-delete with vTaskDeleteWithCaps on
++     * IDF 5.5.4. Signal the owner, then park until destroy/cancel deletes us
++     * from another task and frees the WithCaps TCB and stack. */
++    if (t && t->exit_sem) xSemaphoreGive(t->exit_sem);
++    vTaskSuspend(NULL);
++    abort();
+ }
+@@ -86,5 +86,10 @@ eh_host_port_err_t eh_host_port_task_create(const eh_host_port_task_create_cfg_t
+ #if EH_HOST_PORT_DFLT_TASK_FROM_SPIRAM
++    if (detached) {
++        /* No owner can reap a detached WithCaps task safely on IDF 5.5.4. It
++         * is short-lived, so keep its stack internal and let idle reap it. */
++        t->with_caps = 0;
++        ok = xTaskCreate(trampoline, name, depth, t, prio, &t->handle);
++    } else {
+     /* Allocate the task's TCB + stack from external SPIRAM. Such a task
+-     * MUST be torn down with vTaskDeleteWithCaps (handled in trampoline
+-     * and _cancel). */
++     * MUST be torn down with vTaskDeleteWithCaps (handled in destroy/cancel). */
+     t->with_caps = 1;
+@@ -92,2 +97,3 @@ eh_host_port_err_t eh_host_port_task_create(const eh_host_port_task_create_cfg_t
+                              MALLOC_CAP_SPIRAM);
++    }
+ #else
+@@ -121,2 +127,10 @@ eh_host_port_err_t eh_host_port_task_destroy(eh_host_port_task_t *task)
+     if (!task->joined) return EH_HOST_PORT_ERR_BUSY;
++    if (task->handle) {
++        if (task->with_caps) {
++            vTaskDeleteWithCaps(task->handle);
++        } else {
++            vTaskDelete(task->handle);
++        }
++        task->handle = NULL;
++    }
+     if (task->exit_sem) vSemaphoreDelete(task->exit_sem);
