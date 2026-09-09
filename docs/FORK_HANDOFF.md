@@ -303,48 +303,74 @@ free followed by a late DMA completion.
 
 ---
 
-### 3c. The LoRa monitor listens 8% of the time, and triggers on noise
+### 3c. The LoRa capture trigger keyed on the wrong thing
 
-Measured 2026-09-09 while checking whether any Meshtastic traffic is reachable.
-A 60-minute watch on the US LongFast default slot (20, 906.875 MHz) ran **345**
-decode cycles and reported `preambles=0` on every one -- no traffic. But the
-more useful result came from characterising the monitor itself over 180 s at
-TRACE:
+Measured 2026-09-09. A 60-minute watch on the US LongFast default slot (20,
+906.875 MHz) ran **345** decode cycles and reported `preambles=0` on every one.
+No traffic -- but characterising the monitor mattered more than the silence.
 
-| Measure | Value |
+**The fault.** `lora_iq_offer()` armed a capture when `rtl_signal_dbfs` rose
+9 dB above a tracked noise floor. That value is *wideband* power across the
+whole 960 kHz the tuner hears, not the LoRa channel. On 915 MHz ISM the window
+is full of other traffic, so a garage remote or a tyre sensor three hundred
+kilohertz away armed a capture exactly as well as a mesh packet. Over 180 s
+that produced 24 captures, 24 decodes and **zero** preambles or header
+failures: a 100% false-trigger rate, each costing 1.8-3.1 s of decode during
+which the detector is not evaluated at all.
+
+This is the same mistake the channel scanner had before 5.7a, and it has the
+same shape of answer: ask what is on the *channel*, not what is in the window.
+
+**The fix.** `lora_channel_excess_db()` sums four consecutive IQ samples --
+a cheap decimating boxcar whose passband is roughly the LoRa channel (first
+null at 240 kHz, -3 dB near 106 kHz, against a 250 kHz channel) -- and compares
+that filtered power to the raw wideband power. Correlated in-channel energy
+survives the sum; energy spread across the window does not. A capture now needs
+both the old level rise and `kLoraChannelExcessMinDb` of concentration.
+
+The scale runs from about -6 dB (flat noise) to 0 dB (all energy in-channel),
+and *below* -6 dB when the energy is mostly outside -- which is the interferer
+case. Modelled against known inputs, and measured on air:
+
+| Case | Channel excess |
 | --- | --- |
-| IQ captures started | 24 |
-| Air time actually captured | 15.0 s of 180 s |
-| **Listening fraction** | **8%** |
-| Decode time per cycle | 1828-3069 ms (mean 2348) |
-| Cycle period | 0.5-41 s (mean 7.6) |
-| Energy triggers | 24 |
-| Preambles found | 0 |
+| Out-of-channel interferer, 300-400 kHz off, SNR 10-20 dB | -11 to -13 dB |
+| Noise only | -5.8 dB modelled, -5.5 dB measured (median of 172) |
+| In-channel LoRa chirp, SNR 3 dB | -2.9 dB |
+| In-channel LoRa chirp, SNR 20 dB | -1.2 dB |
 
-**Every one of the 24 triggers was false.** 24 captures, 24 decodes, zero
-preambles and zero header failures -- none of them were LoRa. Each false
-trigger costs about 2.3 s of decode, and the receiver is not watching the air
-while it decodes, so the monitor spends most of its time chasing noise and is
-deaf for most of the rest.
+Threshold set to **-4.0 dB**: above the live noise bulk (p95 -5.3) and still
+below the weakest chirp modelled, so weak packets are not discarded.
 
-The cause is the trigger input. `service_lora_energy()` fires when
-`rtl_signal_dbfs` exceeds the tracked noise floor by `kLoraTriggerMarginDb`
-(9 dB) -- and `rtl_signal_dbfs` is **wideband** power across the whole 960 kHz
-sample window, not the LoRa channel. On the 915 MHz ISM band that window is
-full of other traffic, so anything rising 9 dB anywhere in it starts a capture
-even when the slot itself is silent. This is the same mistake the channel
-scanner had and 5.7a fixed: a wideband level cannot tell you what is on the
-*channel*. The scanner's answer -- require the strongest spectrum bin to sit
-near the dial -- applies here too.
+**Result, measured over 180 s each way.** The detector is evaluated on every IQ
+block, so the only blind window is while the decoder is busy:
 
-**What this means for a quiet result.** "Nothing heard in an hour" is much
-weaker evidence than it sounds. A Meshtastic LongFast burst is a few hundred
-milliseconds; with 8% coverage most of them would be missed even if a mesh were
-in range. Do not conclude there is no mesh nearby from this data -- conclude
-that the monitor needs an in-channel trigger before absence means anything.
+| | Decodes | Mean decode | Blind | Watching |
+| --- | --- | --- | --- | --- |
+| Before | 24 | 2348 ms | 56.4 s | 69% |
+| After | 3 | 3011 ms | 9.0 s | **95%** |
+
+False triggers fell 24 -> 6 per 180 s in one run and 24 -> 3 in another. Not
+elimination: the remainder are excursions where in-channel energy genuinely
+rose, which the metric is right to pass on. The trigger is demonstrably still
+live (`rf_events` still increments) -- worth stating because an earlier value
+of this threshold was set from a misreading of the scale, sat above the maximum
+the metric can produce, and silently disabled the trigger entirely. Zero
+captures looked like perfect selectivity and was actually a dead detector.
+
+**Two measurement traps here.** `RTL_LORA_ENERGY` is TRACE-gated, so a pass at
+NORMAL reported zero energy triggers -- the same trap the ADS-B callsign count
+fell into. And "air time captured" is *capture* time, not monitoring time:
+fewer false triggers lower it while improving coverage, so it reads backwards.
+Use decode time as the blind window instead. `RTL_LORA_TRIGGER_STATUS` reports
+level, noise, trigger, live channel excess and the threshold without needing
+TRACE.
+
+**What a quiet result means.** Even at 95% coverage this is a receive-only
+monitor on one slot; absence of traffic is evidence about this location and
+this slot, not about the mesh generally.
 
 ---
-
 ## 4. Two mistakes worth inheriting
 
 Both cost real hardware-recovery time. Do not repeat them.

@@ -1303,6 +1303,10 @@ static std::atomic<bool> lora_detector_enabled{true};
 static std::atomic<uint32_t> lora_rf_events{0};
 static std::atomic<float> lora_noise_dbfs{-90.0f};
 static std::atomic<float> lora_trigger_dbfs{-75.0f};
+// How much of the received energy sits inside the LoRa channel rather than
+// spread across the whole 960 kHz the tuner hears. 0 dB is flat noise;
+// positive means energy is concentrated where the slot actually is.
+static std::atomic<float> lora_channel_excess{0.0f};
 static std::atomic<uint32_t> lora_messages{0};
 static uint8_t lora_selected_node = 0;
 static uint32_t lora_favorite_node_id = 0;
@@ -1457,6 +1461,27 @@ constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 constexpr float kLoraTriggerMarginDb = 9.0f;
 constexpr float kLoraTriggerHysteresisDb = 3.0f;
+// How concentrated the energy must be inside the LoRa channel before a
+// capture is worth spending ~2.3 s of decode on.
+//
+// Measured, because the first value here was set from a misreading of the
+// scale and silently disabled the trigger entirely -- it was above the
+// maximum the metric can produce, so nothing ever fired and the resulting
+// silence looked like selectivity. The scale actually runs from about
+// -6 dB (flat noise) to 0 dB (all energy in the channel):
+//
+//   out-of-channel interferer, 300-400 kHz off  -11 to -13 dB
+//   noise only                                   -5.8 dB modelled,
+//                                                -5.5 dB measured on air
+//   in-channel LoRa chirp, SNR 3 dB              -2.9 dB
+//   in-channel LoRa chirp, SNR 20 dB             -1.2 dB
+//
+// -4.0 dB sits above the noise bulk (live p95 was -5.3) and still well
+// below the weakest chirp modelled, so weak packets are not thrown away.
+// Note interferers land *below* noise, which is the whole point: those are
+// exactly the captures the old wideband trigger could not tell from a
+// packet. See docs/FORK_HANDOFF.md 3c.
+constexpr float kLoraChannelExcessMinDb = -4.0f;
 static uint8_t* g_iq_rec_buf = nullptr;
 static uint8_t* g_lora_decode_buf = nullptr;
 static uint8_t* g_lora_pre_roll_buf = nullptr;
@@ -4050,6 +4075,65 @@ bool lora_native_decoder_start() {
   return true;
 }
 
+// Is the received energy inside the LoRa channel, or just somewhere in the
+// 960 kHz the tuner happens to hear?
+//
+// rtl_signal_dbfs -- what the trigger used to key on -- is wideband power, so
+// on the 915 MHz ISM band a garage remote or a tyre sensor three hundred
+// kilohertz away raised it just as effectively as a mesh packet. Measured over
+// 180 s that produced 24 captures, 24 decodes and zero LoRa preambles: a 100%
+// false-trigger rate, each one costing ~2.3 s of decode during which the
+// receiver hears nothing at all.
+//
+// Summing four consecutive IQ samples is a cheap decimating boxcar filter whose
+// passband is roughly the LoRa channel (first null at 240 kHz, -3 dB near
+// 106 kHz, against a 250 kHz channel). Comparing that filtered power to the raw
+// wideband power says how concentrated the energy is:
+//
+//   flat noise         -> the four samples are uncorrelated, so the sum has 4x
+//                         the power of one, and filtered/total lands at 1/4
+//   in-channel signal  -> the four samples are correlated, the sum has 16x, and
+//                         filtered/total approaches 1
+//
+// The returned value therefore runs from about -6 dB (energy spread evenly
+// across the window, i.e. noise) up to 0 dB (all of it inside the channel),
+// and *below* -6 dB when the energy is mostly outside the channel -- which is
+// the interferer case worth rejecting. It is a concentration ratio, not an
+// absolute level, so it needs no band-specific calibration constant.
+float lora_channel_excess_db(const uint8_t* iq, size_t bytes) {
+  if (iq == nullptr || bytes < 8) return 0.0f;
+  uint64_t total = 0;
+  uint64_t filtered = 0;
+  size_t blocks = 0;
+  // Four IQ pairs per block, and a stride so a large buffer does not cost more
+  // than it needs to; the estimate only has to be good to a dB or so.
+  constexpr size_t kPairsPerBlock = 4;
+  constexpr size_t kBlockBytes = kPairsPerBlock * 2;
+  constexpr size_t kStrideBlocks = 4;
+  for (size_t offset = 0; offset + kBlockBytes <= bytes;
+       offset += kBlockBytes * kStrideBlocks) {
+    int32_t sum_i = 0;
+    int32_t sum_q = 0;
+    for (size_t pair = 0; pair < kPairsPerBlock; ++pair) {
+      const int32_t i = static_cast<int32_t>(iq[offset + pair * 2]) - 128;
+      const int32_t q = static_cast<int32_t>(iq[offset + pair * 2 + 1]) - 128;
+      sum_i += i;
+      sum_q += q;
+      total += static_cast<uint64_t>(i * i + q * q);
+    }
+    filtered += static_cast<uint64_t>(sum_i * sum_i + sum_q * sum_q);
+    ++blocks;
+  }
+  if (blocks == 0 || total == 0) return 0.0f;
+  const float mean_total = static_cast<float>(total) /
+                           static_cast<float>(blocks * kPairsPerBlock);
+  const float mean_filtered = static_cast<float>(filtered) /
+                              static_cast<float>(blocks * kPairsPerBlock);
+  if (mean_total <= 0.0f || mean_filtered <= 0.0f) return 0.0f;
+  // /4 normalises flat noise to 0 dB; see the table above.
+  return 10.0f * log10f(mean_filtered / (mean_total * 4.0f));
+}
+
 void lora_iq_offer(const uint8_t* iq, size_t bytes) {
   if (iq == nullptr || bytes == 0) return;
   if (orcsdr::lora_channel::survey_active()) return;
@@ -4073,6 +4157,8 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
       !lora_iq_ensure_buffers()) return;
 
   const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
+  const float excess = lora_channel_excess_db(iq, bytes);
+  lora_channel_excess.store(excess, std::memory_order_relaxed);
   if (g_lora_noise_samples == 0) g_lora_noise_floor_dbfs = level;
   if (g_lora_noise_samples < 12) {
     g_lora_noise_floor_dbfs = 0.85f * g_lora_noise_floor_dbfs + 0.15f * level;
@@ -4090,15 +4176,22 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
     return;
   }
   if (!g_lora_trigger_armed || level < trigger) return;
+  // The wideband level only says something got louder somewhere in 960 kHz.
+  // On 915 MHz ISM that is usually not us: measured over 180 s, every one of
+  // 24 captures triggered this way contained no LoRa at all. Require the
+  // energy to actually be in the channel before paying for a decode.
+  if (excess < kLoraChannelExcessMinDb) return;
 
   g_lora_trigger_armed = false;
   const size_t pre_roll = lora_copy_pre_roll();
   lora_rf_events.fetch_add(1, std::memory_order_relaxed);
   iq_rec_begin(IqCaptureKind::lora, true, pre_roll);
   if (serial_verbosity_at(SerialVerbosity::trace))
-    Serial.printf("RTL_LORA_ENERGY level_dbfs=%.1f noise_dbfs=%.1f trigger_dbfs=%.1f preroll_bytes=%u\n",
+    Serial.printf("RTL_LORA_ENERGY level_dbfs=%.1f noise_dbfs=%.1f trigger_dbfs=%.1f "
+                  "channel_excess_db=%.1f preroll_bytes=%u\n",
                   static_cast<double>(level), static_cast<double>(g_lora_noise_floor_dbfs),
-                  static_cast<double>(trigger), static_cast<unsigned>(pre_roll));
+                  static_cast<double>(trigger), static_cast<double>(excess),
+                  static_cast<unsigned>(pre_roll));
 }
 
 bool iq_rec_stop_and_export() {
@@ -13281,6 +13374,24 @@ void process_command(char* command) {
                   static_cast<double>(lora_noise_dbfs.load(std::memory_order_relaxed)),
                   static_cast<double>(lora_trigger_dbfs.load(std::memory_order_relaxed)),
                   g_iq_rec_last_path[0] ? g_iq_rec_last_path : "none");
+    return;
+  }
+  if (strcmp(command, "RTL_LORA_TRIGGER_STATUS") == 0) {
+    Serial.printf("RTL_LORA_TRIGGER_STATUS level_dbfs=%.1f noise_dbfs=%.1f "
+                  "trigger_dbfs=%.1f channel_excess_db=%.1f "
+                  "min_excess_db=%.1f rf_events=%lu",
+                  static_cast<double>(
+                      rtl_signal_dbfs.load(std::memory_order_relaxed)),
+                  static_cast<double>(
+                      lora_noise_dbfs.load(std::memory_order_relaxed)),
+                  static_cast<double>(
+                      lora_trigger_dbfs.load(std::memory_order_relaxed)),
+                  static_cast<double>(
+                      lora_channel_excess.load(std::memory_order_relaxed)),
+                  static_cast<double>(kLoraChannelExcessMinDb),
+                  static_cast<unsigned long>(
+                      lora_rf_events.load(std::memory_order_relaxed)));
+    Serial.println();
     return;
   }
   if (strcmp(command, "RTL_LORA_NATIVE_STATUS") == 0) {

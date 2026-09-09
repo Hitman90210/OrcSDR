@@ -205,6 +205,19 @@ second, so a scan hopping faster than that can read the *previous* channel's
 numbers; each measurement must come from at least two windows newer than the
 retune, and `stale_skips` counts any that did not.
 
+## LoRa capture trigger
+
+| Command | Auth | Reply |
+|---|---|---|
+| `RTL_LORA_TRIGGER_STATUS` | no | `RTL_LORA_TRIGGER_STATUS level_dbfs=.. noise_dbfs=.. trigger_dbfs=.. channel_excess_db=.. min_excess_db=.. rf_events=..` |
+
+`channel_excess_db` is how concentrated the received energy is inside the LoRa
+channel rather than spread across the 960 kHz the tuner hears. About -6 dB is
+flat noise, 0 dB is all energy in-channel, and *below* -6 dB means the energy is
+mostly outside the channel -- an interferer. A capture needs both the level rise
+and `min_excess_db` of concentration, which stopped the trigger firing on ISM
+traffic that was never LoRa. See `docs/FORK_HANDOFF.md` 3c.
+
 ## SAME / EAS weather alerts
 
 NOAA Weather Radio prefixes every alert with a Specific Area Message Encoding
