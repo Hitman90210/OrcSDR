@@ -186,7 +186,7 @@ class OrcConsole {
     size_t written = 0;
     while (written < size) {
       const int count = usb_serial_jtag_write_bytes(
-          data + written, size - written, pdMS_TO_TICKS(3000));
+          data + written, size - written, 0);  // non-blocking: no USB host must not stall boot (#66)
       if (count <= 0) break;
       written += static_cast<size_t>(count);
     }
@@ -195,7 +195,7 @@ class OrcConsole {
 
  private:
   void write(const void* data, size_t size) {
-    usb_serial_jtag_write_bytes(data, size, pdMS_TO_TICKS(100));
+    usb_serial_jtag_write_bytes(data, size, 0);  // non-blocking: no USB host must not stall boot (#66)
   }
 
   uint8_t pending_ = 0;
