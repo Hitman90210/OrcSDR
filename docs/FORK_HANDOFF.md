@@ -454,6 +454,14 @@ decoder alone refuses the parameters.
 4. Long Turbo also uses coding rate 4/8 where the decoder has only been
    exercised on 4/5; worth confirming that path.
 
+**Prerequisite, now done.** Every item above touches the signal path, and
+the signal path had no test. 5.7c adds one: synthesised symbols with known
+cyclic shifts, asserted back through the chirp, the resampler and the symbol
+mapping, for SF 7 and SF 11 at 250 kHz. `RTL_LORA_SELFTEST` reports it. That
+is the baseline the 500 kHz work has to keep green -- without it, breaking
+LongFast would be invisible here, because the only node on this bench
+transmits 500 kHz.
+
 **Meanwhile:** `RTL_LORA_MODEM <sf> <bw_hz>` was added, because spreading
 factor and bandwidth were touch-only and a receiver could not be matched to a
 transmitter over serial at all. 250 kHz presets still decode; 500 kHz tunes
@@ -806,6 +814,87 @@ The self-check synthesises bursts and streams them through a real decoder in
 256-sample blocks. It buffered the whole 48,000-sample burst at first and
 overflowed internal DRAM at link time; internal RAM really is the constraint
 this project keeps running into.
+
+### 5.7c A DSP regression vector for the LoRa decoder
+
+Prompted by 3d: supporting 500 kHz presets means changing `kDecodeRate` and
+everything that assumes it, and there was nothing to change it against.
+`self_check()` covered `decrypt_ctr`, `summarize_telemetry` and
+`parse_node_info` -- the protocol layer -- and **none of the signal path**. No
+chirp generation, no dechirp, no resampling. Breaking the 250 kHz path that
+works would have produced no error and no log line, just a mesh that had
+apparently gone quiet, and the only node on this bench transmits 500 kHz so
+nothing would have contradicted it.
+
+**The vector.** A LoRa symbol of value `s` is the base upchirp rotated by
+`s / 2^SF` of a symbol period. So synthesise CU8 symbols with known shifts and
+assert the front end recovers them, which reaches the chirp maths without
+implementing LoRa TX framing (Gray coding, Hamming FEC, interleaving,
+whitening, CRC) to get there. Four cases:
+
+| Case | Path |
+| --- | --- |
+| `sf7_raw`, `sf11_raw` | straight into `dechirp_peak()` at 500 kS/s |
+| `sf7_front`, `sf11_front` | through the real 960 kHz front end: anti-alias IIR, then the linear resampler |
+
+SF 11 is LongFast, and the other end of the size range where a scratch-sizing
+mistake would show up instead of a maths one.
+
+**Symbol 0 is the reference the rest are measured against**, exactly as the
+decoder measures payload symbols against the preamble peak. That is not
+cosmetic. The anti-alias IIR delays the capture by 9.58 samples at 960 kHz,
+which offsets *every* peak by the same amount -- the reference bin moves from
+511 to 503 -- and only a relative reading cancels it. An absolute assertion
+would fail on correct code.
+
+**Modelled before flashing**, the way the SAME mid-bit bug was caught. The
+host model mirrors `synthesize_symbols()`, `configure_chirp()`,
+`dechirp_peak()` and `peak_to_symbol()` closely enough that a wrong shift
+direction or a wrong FFT fold would be wrong there too. It also measured the
+margin: through the front end the peak lands within **1 bin** of the exact
+grid position, against the **+/- 2** that `peak_to_symbol()` tolerates. Half
+the budget, spent on resampling wobble, before any change is made.
+
+**It immediately found a race.** `g_scratch` is one shared block -- chirp
+table, FFT workspace, resample buffer -- and both the decode task and the
+self-test reconfigure it, with nothing serialising them. A self-test landing
+mid-decode dechirped against the other one's table. It presented as
+`RTL_LORA_SELFTEST` failing in 26 ms right after a boot that had LoRa
+streaming, then passing on every retry -- the shape of a race, not a bug in
+the code under test. Now behind a mutex.
+
+A 6-minute soak, self-test in a loop against a live decode task:
+
+| | |
+| --- | --- |
+| self-test runs | 317 |
+| failures | 0 |
+| decodes finished | 3 |
+| runs that waited | **3** |
+| elapsed | median 813 ms, max 2860 ms |
+
+Three waits against three decodes, the excess equal to a decode duration.
+Those three are the collisions; they now queue instead of corrupting.
+
+**A reporting bug of its own making, worth the warning.** The first version
+had `self_check_detail()` call `self_check()`, which now runs the DSP subset
+with a null detail buffer -- so the first real DSP failure came back labelled
+`failed_case=protocol` and pointed at the one part of the module that was
+already covered. A test that misnames its own failures is worse than no test.
+Split into `protocol_self_check()` and the DSP cases.
+
+**How to run it.** `RTL_LORA_SELFTEST` runs all four cases in ~812 ms and
+names the failing one (`sf11_front_sym3_got701_want700`). The band-start check
+runs the first three in 366 ms and prints `RTL_LORA_NATIVE_SELF_CHECK_OK` --
+it previously printed only on failure, so the check was invisible, which is
+the same complaint as 5.5.
+
+**What it does not cover.** Coding rate 4/8 (Long Turbo uses it, only 4/5 is
+exercised), noise and weak-signal acceptance, and the header/FEC/CRC layers
+above the symbol recovery. It is a regression guard for the signal path, not
+a demodulator acceptance test.
+
+---
 
 ### 5.8 Dead code and build
 
