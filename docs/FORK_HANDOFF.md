@@ -889,6 +889,17 @@ runs the first three in 366 ms and prints `RTL_LORA_NATIVE_SELF_CHECK_OK` --
 it previously printed only on failure, so the check was invisible, which is
 the same complaint as 5.5.
 
+Both run synchronously on the main task, so `RTL_LORA_SELFTEST` freezes the
+UI for its duration and trips the loop watchdog:
+
+```
+RTL_MAIN_STALL stage=serial_dispatch elapsed_ms=814
+```
+
+That is the deliberate stall being reported as if it were an accidental one.
+Expected, and harmless, but do not go hunting for it -- and do not use
+`RTL_LORA_SELFTEST` as a keepalive inside a timing measurement.
+
 **What it does not cover.** Coding rate 4/8 (Long Turbo uses it, only 4/5 is
 exercised), noise and weak-signal acceptance, and the header/FEC/CRC layers
 above the symbol recovery. It is a regression guard for the signal path, not
