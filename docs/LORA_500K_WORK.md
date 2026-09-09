@@ -1,0 +1,134 @@
+# Adding 500 kHz LoRa support (Long Turbo / Short Turbo)
+
+Live worklog. Written to be handed off mid-flight: every decision, why it was
+made, what is done, what is left, and how to verify each piece.
+
+**Goal:** decode the 500 kHz Meshtastic presets *without* breaking the 250 kHz
+LongFast path that already works.
+
+| Preset | Bandwidth | SF | Coding rate | Status |
+| --- | --- | --- | --- | --- |
+| Long Fast (old US stock) | 250 kHz | 11 | 4/5 | works today, must not regress |
+| **Long Turbo** (US replacement) | **500 kHz** | 11 | 4/8 | target |
+| **Short Turbo** | **500 kHz** | 7 | 4/5 | target |
+
+Background: `FORK_HANDOFF.md` 3d (why it cannot decode today) and 5.7c (the DSP
+regression vector this work is checked against).
+
+---
+
+## Status
+
+| Stage | State |
+| --- | --- |
+| 0. Measure the constraints | **done** |
+| 1. Thread a runtime decode rate | not started |
+| 2. Extend the DSP vector to 500 kHz | not started |
+| 3. Verify on hardware | not started |
+| 4. Try a real 500 kHz node | not started |
+| 5. Optional: a 500 kHz channel filter | not started |
+| 6. Coding rate 4/8 | not started |
+
+---
+
+## Stage 0 — the two measurements that shaped the design
+
+### The anti-alias IIR is a 250 kHz-channel filter and cannot be reused
+
+`kLoraLowpass` in `lora_native_decoder.cpp`, five biquads, measured at the
+960 kHz capture rate:
+
+| Frequency | Response |
+| --- | --- |
+| 100 kHz | -0.03 dB |
+| **125 kHz** (edge of a 250 kHz channel) | **-3.01 dB** |
+| 150 kHz | -18.26 dB |
+| 200 kHz | -49.60 dB |
+| **250 kHz** (edge of a 500 kHz channel) | **-78.29 dB** |
+
+Its -3 dB point is 125.0 kHz -- exactly half of 250 kHz, which is what it was
+designed to be. Running a 500 kHz channel through it removes everything past
+half the channel. **So the 500 kHz path must not use it.**
+
+### A 960 kHz capture is already enough for a 500 kHz channel
+
+This is the finding that removes the hard part.
+
+```
+960 kHz complex sampling covers  +/- 480 kHz
+a 500 kHz LoRa channel spans     +/- 250 kHz
+```
+
+Complex (I/Q) sampling at 960 kHz represents 960 kHz of spectrum, not 480. The
+channel fits with room to spare, so **nothing aliases** and no anti-alias filter
+is needed on the 500 kHz path at all. The resampler runs *upward*, 960 kHz to
+1 MHz, and upsampling has nothing to fold in.
+
+**This corrects `FORK_HANDOFF.md` 3d item 2**, which said the capture rate had
+to rise to supply two samples per chip at 1 MHz, and worried about doubling the
+IQ buffer against a binding internal-RAM constraint. That was wrong. The "two
+samples per chip" figure is a property of the decoder's *internal grid*, not a
+Nyquist requirement on the capture: the decoder needs `2^(SF+1)` samples per
+symbol so the FFT size is a power of two, and the resampler is what puts the
+capture on that grid. Where those samples are interpolated from only has to
+satisfy the sampling theorem, and 960 kHz does.
+
+No driver change. No larger buffer. No internal-RAM cost.
+
+### What sizes actually change
+
+Nothing, which is the other pleasant surprise:
+
+```
+symbol_samples = 2^(SF+1)      chips, not seconds -- unchanged
+fft_size       = 2^(SF+3)      unchanged
+kMaxFft        = 32768         unchanged, so the 2 x 256 KB PSRAM scratch is unchanged
+```
+
+Only the *time base* changes: `t = i / decode_rate` instead of
+`t = i / 500000`. The whole change is threading one number.
+
+---
+
+## Design
+
+`decode_rate = 2 x bandwidth_hz`:
+
+| Bandwidth | Decode rate | 960 kHz capture must | Anti-alias filter |
+| --- | --- | --- | --- |
+| 125 kHz | 250 kHz | decimate 3.84x | yes -- existing filter |
+| 250 kHz | 500 kHz | decimate 1.92x | yes -- existing filter |
+| **500 kHz** | **1 MHz** | **interpolate 1.042x** | **no -- nothing to fold in** |
+
+The rule is simply whether the resampler is going down or up.
+
+### The in-place hazard this creates
+
+`decode_capture_pass()` currently does filter, then resample, and *both* write
+into `g_scratch.resampled`. That is safe today only by an accident of
+arithmetic: when decimating, the resampler's read index runs ahead of its write
+index, so it never overwrites a sample it has yet to read.
+
+When **upsampling that reverses** -- the read index falls behind the write index
+and in-place resampling would corrupt its own input. The 500 kHz path avoids it
+by skipping the filter, so the resampler reads the caller's capture buffer and
+writes `g_scratch.resampled`: different buffers. This is load-bearing and easy
+to undo by accident, so it is guarded explicitly in the code rather than left as
+a comment.
+
+---
+
+## What this does not address
+
+- **Out-of-channel noise on the 500 kHz path.** With no filter, the full
+  +/- 480 kHz of captured noise reaches the dechirper against a +/- 250 kHz
+  channel -- roughly 2.6 dB of avoidable SNR loss, and no rejection of an
+  adjacent-channel interferer. On 915 MHz ISM that is not academic; 3c exists
+  because of interferers. A 250 kHz-cutoff filter for this path is stage 5,
+  deliberately separate so stage 1 lands working on its own.
+- **Coding rate 4/8.** Long Turbo uses it; only 4/5 has ever been exercised.
+  Stage 6.
+- **The energy trigger's boxcar-4 metric** (`lora_channel_excess_db`) is a
+  ~250 kHz-wide filter and under-weights the edges of a 500 kHz channel. It
+  measured -0.8 to -1.5 dB against a real 500 kHz node anyway -- the top of the
+  scale -- so it is not blocking. Noted, not changed.
