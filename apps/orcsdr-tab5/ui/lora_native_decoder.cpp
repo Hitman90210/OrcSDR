@@ -255,6 +255,27 @@ void summarize_telemetry(const uint8_t* data, size_t size, char* output, size_t 
   }
 }
 
+void parse_node_info(const uint8_t* data, size_t size, Packet* packet) {
+  size_t offset = 0;
+  while (offset < size) {
+    uint64_t tag = 0;
+    if (!read_varint(data, size, &offset, &tag)) return;
+    const uint32_t field = static_cast<uint32_t>(tag >> 3);
+    const uint8_t wire = static_cast<uint8_t>(tag & 7u);
+    if ((field == 2 || field == 3) && wire == 2) {
+      uint64_t length = 0;
+      if (!read_varint(data, size, &offset, &length) || length > size - offset) return;
+      char* output = field == 2 ? packet->long_name : packet->short_name;
+      const size_t output_size = field == 2 ? sizeof(packet->long_name)
+                                             : sizeof(packet->short_name);
+      copy_text(output, output_size, data + offset, static_cast<size_t>(length));
+      offset += static_cast<size_t>(length);
+    } else if (!skip_field(data, size, &offset, wire)) {
+      return;
+    }
+  }
+}
+
 void summarize_packet(uint16_t port, const uint8_t* payload, size_t payload_size,
                       Packet* packet) {
   if (packet == nullptr) return;
@@ -270,6 +291,7 @@ void summarize_packet(uint16_t port, const uint8_t* payload, size_t payload_size
   } else if (port == 67) {
     summarize_telemetry(payload, payload_size, packet->text, sizeof(packet->text));
   } else if (port == 4) {
+    parse_node_info(payload, payload_size, packet);
     copy_literal(packet->text, sizeof(packet->text), "NODEINFO");
   } else if (port == 5) {
     copy_literal(packet->text, sizeof(packet->text), "ROUTING");
@@ -736,7 +758,12 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     uint8_t matching = 0;
     bool preamble_found = false;
     size_t cursor = start;
-    while (cursor + n * preamble < virtual_samples) {
+    const uint64_t search_end = config.preamble_search_ms == 0
+                                    ? virtual_samples
+                                    : std::min<uint64_t>(virtual_samples, start +
+                                          static_cast<uint64_t>(config.preamble_search_ms) *
+                                              decode_rate / 1000u);
+    while (cursor + n * preamble < search_end) {
       uint16_t peak = 0;
       float height = 0;
       if (!dechirp_peak(decode_cu8, samples, decode_rate, cursor, true, &peak, &height,
@@ -856,7 +883,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     uint16_t header_symbols[8]{};
     std::memcpy(header_symbols, symbols, sizeof(header_symbols));
     bool crc_ok = false;
-    for (int phase_retry = 0; phase_retry < 1 && !crc_ok; ++phase_retry) {
+    for (int phase_retry = 0; phase_retry < 2 && !crc_ok; ++phase_retry) {
       const float payload_phase_cfo_hz = phase_cfo_hz + (phase_retry ? correction_cfo_hz : 0.0f);
       uint16_t payload_preamble_peak = preamble_peak;
       float payload_drift_cfo_hz = correction_cfo_hz;
@@ -949,7 +976,13 @@ bool self_check() {
   const uint8_t telemetry[] = {0x12, 0x07, 0x08, 0x51, 0x15, 0x0a, 0xd7, 0x83, 0x40};
   char summary[48]{};
   summarize_telemetry(telemetry, sizeof(telemetry), summary, sizeof(summary));
-  return std::strstr(summary, "81%") != nullptr && std::strstr(summary, "4.12V") != nullptr;
+  Packet node{};
+  const uint8_t node_info[] = {0x12, 0x0e, 'h', 'a', 'r', 'd', 'c', 'o', 'r', 'e', '_',
+                               'T', 'b', 'e', 'a', 'm', 0x1a, 0x04, 'H', 'c', 'M', 'e'};
+  parse_node_info(node_info, sizeof(node_info), &node);
+  return std::strstr(summary, "81%") != nullptr && std::strstr(summary, "4.12V") != nullptr &&
+         std::strcmp(node.long_name, "hardcore_Tbeam") == 0 &&
+         std::strcmp(node.short_name, "HcMe") == 0;
 }
 
 }  // namespace orcsdr::lora_native

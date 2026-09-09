@@ -9,8 +9,8 @@
 ## Existing implementation and evidence
 
 The standalone driver extraction is complete. OrcSDR pins `esp_rtl_sdr`
-v0.7.9; its public C API, USB/tuner implementation, tests, and
-[`p4_serial_smoke` example](https://github.com/hardcoreerik/esp-rtl-sdr/tree/v0.7.9/examples/p4_serial_smoke)
+v0.7.14; its public C API, USB/tuner implementation, tests, and
+[`p4_serial_smoke` example](https://github.com/hardcoreerik/esp-rtl-sdr/tree/v0.7.14/examples/p4_serial_smoke)
 live in the driver repository. See the [integration contract](API_ESP_RTL_SDR.md).
 
 Waveshare second-board work has already been performed under OrcSDR. The

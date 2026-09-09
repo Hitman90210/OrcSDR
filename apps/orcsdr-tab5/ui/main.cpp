@@ -58,7 +58,9 @@
 #include "fm_config.hpp"
 #include "home_dashboard.hpp"
 #include "lora_dashboard.hpp"
+#include "lora_packet_log.hpp"
 #include "lora_native_decoder.hpp"
+#include "lora_channel_control.hpp"
 #include "location_estimate.hpp"
 #include "navigation_service.hpp"
 #include "offline_map.hpp"
@@ -97,6 +99,12 @@ orcsdr::OrcConsole orc_console;
 #define Serial orc_console
 
 namespace {
+ // Issue #66: never bring up ESP-Hosted from setup(). Settings lazy
+ // Scan/Connect via poll_wifi is stable. Boot start-at-boot queues Settings
+ // saved-connect after settle; poll_wifi always pauses SDR for Hosted join.
+ constexpr uint32_t kWifiBootDeferMs = 10000;
+ bool wifi_boot_bringup_pending = false;
+ uint32_t wifi_boot_defer_arm_ms = 0;
 constexpr int kButtonX = 390;
 constexpr int kButtonY = 300;
 constexpr int kButtonWidth = 500;
@@ -526,8 +534,8 @@ constexpr uint32_t kRtlWxChannelsHz[] = {162400000, 162425000, 162450000,
 constexpr uint32_t kRtlBrowseMinHz = ESP_RTL_SDR_FREQ_MIN_HZ;
 constexpr uint32_t kRtlBrowseMaxHz = ESP_RTL_SDR_FREQ_MAX_HZ;
 constexpr uint32_t kRtlBrowseDefaultHz = 146520000;
-constexpr uint32_t kLoraMinHz = 902000000;
-constexpr uint32_t kLoraMaxHz = 928000000;
+constexpr uint32_t kLoraMinHz = kRtlBrowseMinHz;
+constexpr uint32_t kLoraMaxHz = kRtlBrowseMaxHz;
 constexpr uint32_t kLoraDefaultHz = 906875000;  // Meshtastic US LongFast default slot
 // Meshtastic US_915 channel plan: 104 slots of 250 kHz across 902-928 MHz.
 // Slot 1 centres on 902.125 MHz, so kLoraDefaultHz above is slot 20.
@@ -1261,34 +1269,17 @@ static bool lora_config_loaded = false;
 static bool lora_authorized_key_loaded = false;
 static uint8_t lora_authorized_key[32]{};
 static size_t lora_authorized_key_bytes = 0;
-static char lora_profile_name[24] = "US LONGFAST";
-static char lora_region_name[24] = "US 902-928";
-static bool lora_survey_active = false;
-static uint8_t lora_survey_span = 0;
-static uint32_t lora_survey_next_ms = 0;
-static uint32_t lora_survey_restore_hz = 0;
+static char lora_profile_name[24] = "LONGFAST";
+static char lora_region_name[24] = "US";
 static portMUX_TYPE lora_message_mux = portMUX_INITIALIZER_UNLOCKED;
-struct LoraDisplayPacket {
-  char text[112]{};
-  uint32_t sender = 0;
-  uint32_t destination = 0;
-  uint32_t packet_id = 0;
-  uint32_t received_ms = 0;
-  int32_t latitude_e7 = INT32_MAX;
-  int32_t longitude_e7 = INT32_MAX;
-  int16_t snr_tenths = INT16_MAX;
-  int16_t signal_tenths = INT16_MAX;
-  uint16_t port = 0;
-  bool encrypted = false;
-};
+using LoraDisplayPacket = orcsdr::lora_log::Record;
 constexpr size_t kLoraDisplayPacketCount = 8;
 static LoraDisplayPacket lora_display_packets[kLoraDisplayPacketCount]{};
-struct LoraLogRecord {
-  LoraDisplayPacket packet{};
-  uint32_t frequency_hz = 0;
-};
 constexpr size_t kLoraLogQueueDepth = 32;
 constexpr char kLoraLogPath[] = "/orcsdr/lora_packets.csv";
+static uint16_t lora_export_sequence = 0;
+static uint32_t lora_log_status_revision = 0;
+static char lora_log_status[48] = "EXPORTS RECENT EVENTS";
 static QueueHandle_t lora_log_queue = nullptr;
 static TaskHandle_t lora_log_task_handle = nullptr;
 static std::atomic<bool> lora_log_requested{false};
@@ -1297,10 +1288,12 @@ static std::atomic<bool> lora_log_error{false};
 static std::atomic<uint32_t> lora_log_dropped{0};
 static std::atomic<uint32_t> lora_log_last_packet_ms{0};
 struct LoraNativeDecodeWork {
+  const uint8_t* iq = nullptr;
   size_t bytes = 0;
   uint8_t sf = 11;
   uint32_t bandwidth_hz = 250000;
   uint32_t frequency_hz = 0;
+  bool automatic = false;
 };
 static QueueHandle_t lora_native_decode_queue = nullptr;
 static TaskHandle_t lora_native_decode_task_handle = nullptr;
@@ -1320,6 +1313,9 @@ struct LoraNodePosition {
   uint32_t received_ms = 0;
   int32_t latitude_e7 = INT32_MAX;
   int32_t longitude_e7 = INT32_MAX;
+  int16_t signal_tenths = INT16_MAX;
+  int16_t snr_tenths = INT16_MAX;
+  char name[32]{};
 };
 constexpr size_t kLoraNodePositionCount = 8;
 static LoraNodePosition lora_node_positions[kLoraNodePositionCount]{};
@@ -1409,14 +1405,18 @@ static uint32_t g_rds_capture_file_seq = 0;
 static char g_rds_capture_last_path[96] = "";
 
 /* ---- Raw CU8 IQ capture and adaptive LoRa energy trigger ---- */
-constexpr size_t kIqRecSeconds = 3;
+// LongFast maximum-size packets can exceed 3.2 seconds. Four seconds retains
+// the 250 ms pre-roll and the complete packet after an energy trigger.
+constexpr size_t kIqRecSeconds = 4;
 constexpr size_t kIqRecMaxBytes = kRtlSampleRateSps * 2u * kIqRecSeconds;
 constexpr size_t kOrciqHeaderBytes = 36;
 constexpr size_t kP25IqRecMaxBytes = 1024u * 1024u - kOrciqHeaderBytes;
 constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
+constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 constexpr float kLoraTriggerMarginDb = 9.0f;
 constexpr float kLoraTriggerHysteresisDb = 3.0f;
 static uint8_t* g_iq_rec_buf = nullptr;
+static uint8_t* g_lora_decode_buf = nullptr;
 static uint8_t* g_lora_pre_roll_buf = nullptr;
 static std::atomic<size_t> g_iq_rec_write{0};
 static std::atomic<bool> g_iq_rec_active{false};
@@ -1434,6 +1434,7 @@ static uint32_t g_iq_rec_file_seq = 0;
 static char g_iq_rec_last_path[96] = "";
 static size_t g_lora_pre_roll_write = 0;
 static size_t g_lora_pre_roll_fill = 0;
+static size_t g_lora_quiet_tail_bytes = 0;
 static float g_lora_noise_floor_dbfs = -90.0f;
 static uint16_t g_lora_noise_samples = 0;
 static bool g_lora_trigger_armed = false;
@@ -1529,7 +1530,10 @@ bool wifi_c6_power_prepared = false;
 bool wifi_scan_running = false;
 std::atomic<bool> wifi_scan_requested{false};
 std::atomic<bool> wifi_connect_requested{false};
-std::atomic<bool> wifi_connect_pause_requested{false};
+// Normal connects always pause SDR traffic. This opt-in flag exists only for
+// the authenticated coexistence diagnostic that measures the unsafe live-load
+// baseline; it is consumed once and never set by the touchscreen UI.
+std::atomic<bool> wifi_connect_live_diagnostic_requested{false};
 bool wifi_configured = false;
 bool settings_wifi_power_enabled = true;
 bool settings_wifi_start_at_boot = false;
@@ -2230,6 +2234,7 @@ bool rds_replay(const char* path);
 void rds_capture_status_print();
 bool ensure_tab5_sd();
 void load_lora_config();
+void lora_iq_reset_detector();
 void lora_store_packet(const LoraDisplayPacket& packet);
 bool lora_native_decoder_start();
 uint64_t sd_total_bytes();
@@ -3194,10 +3199,42 @@ void load_lora_config() {
     }
   }
   file.close();
+  if (lora_sf.load(std::memory_order_relaxed) == 11 &&
+      lora_bandwidth_hz.load(std::memory_order_relaxed) ==
+          orcsdr::lora_channel::kLongFastBandwidthHz)
+    (void)orcsdr::lora_channel::adopt(lora_region_name, lora_config_frequency_hz);
   Serial.printf("RTL_LORA_CONFIG path=%s frequency_hz=%u sf=%u bw=%u key=%d\n", kPath,
                 lora_config_frequency_hz, lora_sf.load(std::memory_order_relaxed),
                 lora_bandwidth_hz.load(std::memory_order_relaxed),
                 lora_authorized_key_loaded ? 1 : 0);
+}
+
+void apply_lora_channel_selection() {
+  const auto& selected = orcsdr::lora_channel::selection();
+  lora_config_frequency_hz = selected.frequency_hz;
+  rtl_saved_lora_hz = selected.frequency_hz;
+  lora_sf.store(11, std::memory_order_relaxed);
+  lora_bandwidth_hz.store(orcsdr::lora_channel::kLongFastBandwidthHz,
+                          std::memory_order_relaxed);
+  strlcpy(lora_profile_name, "LONGFAST", sizeof(lora_profile_name));
+  strlcpy(lora_region_name, orcsdr::lora_channel::region(selected.region_index).code,
+          sizeof(lora_region_name));
+}
+
+void select_lora_channel(size_t region_index, uint16_t slot) {
+  if (!orcsdr::lora_channel::choose(region_index, slot, preferences)) return;
+  apply_lora_channel_selection();
+  const auto& selected = orcsdr::lora_channel::selection();
+  Serial.printf("RTL_LORA_PLAN_SAVE region=%s slot=%u frequency_hz=%u persisted=%s\n",
+                lora_region_name, selected.slot, selected.frequency_hz,
+                selected.persisted ? "true" : "false");
+  if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running &&
+      rtl_ui_band == RtlBand::lora) {
+    lora_iq_reset_detector();
+    request_hot_retune(selected.frequency_hz);
+  } else {
+    queue_local_rtl_listen(RtlBand::lora, selected.frequency_hz);
+  }
 }
 
 void refresh_adsb_atc_preset() {
@@ -3400,38 +3437,41 @@ void enrich_one_adsb_track() {
                   found ? metadata.registration : "-");
 }
 
-size_t format_lora_csv(char* output, size_t output_size,
-                       const LoraLogRecord& record) {
-  if (output == nullptr || output_size < 4) return 0;
-  const LoraDisplayPacket& packet = record.packet;
-  char destination[16];
-  if (packet.destination == UINT32_MAX) {
-    strlcpy(destination, "broadcast", sizeof(destination));
-  } else {
-    snprintf(destination, sizeof(destination), "!%08lx",
-             static_cast<unsigned long>(packet.destination));
+bool export_lora_log_snapshot() {
+  LoraDisplayPacket packets[kLoraDisplayPacketCount]{};
+  size_t count = 0;
+  portENTER_CRITICAL(&lora_message_mux);
+  for (const auto& packet : lora_display_packets)
+    if (packet.received_ms != 0) packets[count++] = packet;
+  portEXIT_CRITICAL(&lora_message_mux);
+  if (count == 0) {
+    strlcpy(lora_log_status, "NOTHING TO EXPORT", sizeof(lora_log_status));
+    ++lora_log_status_revision;
+    return false;
   }
-  int used = snprintf(
-      output, output_size,
-      "%lu,%lu,!%08lx,%s,%08lx,%u,%d,%d,%ld,%ld,\"",
-      static_cast<unsigned long>(packet.received_ms),
-      static_cast<unsigned long>(record.frequency_hz),
-      static_cast<unsigned long>(packet.sender),
-      destination,
-      static_cast<unsigned long>(packet.packet_id),
-      static_cast<unsigned>(packet.port), static_cast<int>(packet.snr_tenths),
-      static_cast<int>(packet.signal_tenths), static_cast<long>(packet.latitude_e7),
-      static_cast<long>(packet.longitude_e7));
-  if (used < 0 || static_cast<size_t>(used) >= output_size) return 0;
-  size_t position = static_cast<size_t>(used);
-  for (const char* text = packet.text; *text && position + 4 < output_size; ++text) {
-    if (*text == '"') output[position++] = '"';
-    output[position++] = *text;
+  if (lora_log_requested.load(std::memory_order_relaxed)) {
+    strlcpy(lora_log_status, "LIVE LOG: PACKETS.CSV", sizeof(lora_log_status));
+    ++lora_log_status_revision;
+    return true;
   }
-  output[position++] = '"';
-  output[position++] = '\n';
-  output[position] = '\0';
-  return position;
+  if (!ensure_tab5_sd()) {
+    strlcpy(lora_log_status, "SD CARD NOT READY", sizeof(lora_log_status));
+    ++lora_log_status_revision;
+    return false;
+  }
+  char path[48];
+  if (!orcsdr::lora_log::export_snapshot(*g_sd_fs, packets, count,
+                                         &lora_export_sequence, path, sizeof(path))) {
+    strlcpy(lora_log_status, "EXPORT FAILED", sizeof(lora_log_status));
+    ++lora_log_status_revision;
+    return false;
+  }
+  snprintf(lora_log_status, sizeof(lora_log_status), "SAVED LORA_%03u.CSV",
+           lora_export_sequence);
+  ++lora_log_status_revision;
+  Serial.printf("RTL_LORA_LOG_EXPORTED path=%s events=%u\n", path,
+                static_cast<unsigned>(count));
+  return true;
 }
 
 void lora_sd_log_task(void*) {
@@ -3441,9 +3481,9 @@ void lora_sd_log_task(void*) {
   size_t batch_bytes = 0;
   uint32_t last_flush_ms = millis();
   for (;;) {
-    LoraLogRecord record;
+    LoraDisplayPacket record;
     if (xQueueReceive(lora_log_queue, &record, pdMS_TO_TICKS(200)) == pdTRUE) {
-      const size_t line_bytes = format_lora_csv(line, sizeof(line), record);
+      const size_t line_bytes = orcsdr::lora_log::format_csv(line, sizeof(line), record);
       if (line_bytes > 0 && batch_bytes + line_bytes <= sizeof(batch)) {
         memcpy(batch + batch_bytes, line, line_bytes);
         batch_bytes += line_bytes;
@@ -3501,7 +3541,7 @@ void lora_sd_log_task(void*) {
 void set_lora_sd_logging(bool enabled) {
   if (enabled) {
     if (lora_log_queue == nullptr) {
-      lora_log_queue = xQueueCreate(kLoraLogQueueDepth, sizeof(LoraLogRecord));
+      lora_log_queue = xQueueCreate(kLoraLogQueueDepth, sizeof(LoraDisplayPacket));
     }
     if (lora_log_queue == nullptr ||
         (lora_log_task_handle == nullptr &&
@@ -3522,9 +3562,8 @@ void set_lora_sd_logging(bool enabled) {
 void enqueue_lora_sd_log(const LoraDisplayPacket& packet) {
   if (!lora_log_requested.load(std::memory_order_relaxed) ||
       lora_log_queue == nullptr) return;
-  LoraLogRecord record{packet, rtl_ui_frequency_hz};
   lora_log_last_packet_ms.store(millis(), std::memory_order_relaxed);
-  if (xQueueSend(lora_log_queue, &record, 0) != pdTRUE) {
+  if (xQueueSend(lora_log_queue, &packet, 0) != pdTRUE) {
     lora_log_dropped.fetch_add(1, std::memory_order_relaxed);
   }
 }
@@ -3551,11 +3590,16 @@ bool iq_rec_ensure_buffer() {
 
 bool lora_iq_ensure_buffers() {
   if (!iq_rec_ensure_buffer()) return false;
+  if (g_lora_decode_buf == nullptr) {
+    g_lora_decode_buf = static_cast<uint8_t*>(
+        heap_caps_malloc(kIqRecMaxBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
   if (g_lora_pre_roll_buf == nullptr) {
     g_lora_pre_roll_buf = static_cast<uint8_t*>(
         heap_caps_malloc(kLoraPreRollBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
-  return g_iq_rec_buf != nullptr && g_lora_pre_roll_buf != nullptr;
+  return g_iq_rec_buf != nullptr && g_lora_decode_buf != nullptr &&
+         g_lora_pre_roll_buf != nullptr;
 }
 
 void lora_iq_reset_detector() {
@@ -3619,6 +3663,7 @@ void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
   g_iq_rec_ready.store(false, std::memory_order_release);
   g_iq_rec_auto_triggered.store(automatic, std::memory_order_release);
   g_iq_rec_write.store(initial_bytes, std::memory_order_release);
+  g_lora_quiet_tail_bytes = 0;
   g_iq_rec_active.store(true, std::memory_order_release);
   const size_t max_bytes = iq_capture_max_bytes(kind);
   Serial.printf("RTL_IQ_START source=%s mode=%s bytes=%u seconds=%u duration_ms=%u "
@@ -3694,6 +3739,62 @@ bool p25_iq_rec_start() {
   return true;
 }
 
+bool queue_lora_auto_decode() {
+  if (!g_iq_rec_ready.load(std::memory_order_acquire) ||
+      !g_iq_rec_auto_triggered.load(std::memory_order_acquire) ||
+      g_lora_decode_buf == nullptr || lora_native_decode_queue == nullptr) return false;
+  bool expected = false;
+  if (!lora_native_decode_busy.compare_exchange_strong(
+          expected, true, std::memory_order_acq_rel)) return false;
+  const size_t bytes = g_iq_rec_write.load(std::memory_order_acquire);
+  // Transfer the completed automatic buffer to the decoder and immediately give
+  // capture the released buffer. Manual readers reject automatic captures.
+  uint8_t* decode_iq = g_iq_rec_buf;
+  g_iq_rec_buf = g_lora_decode_buf;
+  g_lora_decode_buf = decode_iq;
+  const LoraNativeDecodeWork work{decode_iq, bytes, g_iq_rec_sf,
+                                  g_iq_rec_bandwidth_hz, g_iq_rec_frequency_hz, true};
+  g_iq_rec_ready.store(false, std::memory_order_release);
+  g_iq_rec_auto_triggered.store(false, std::memory_order_release);
+  g_iq_rec_write.store(0, std::memory_order_release);
+  if (xQueueSend(lora_native_decode_queue, &work, 0) == pdTRUE) return true;
+  lora_native_decode_busy.store(false, std::memory_order_release);
+  lora_native_failures.fetch_add(1, std::memory_order_relaxed);
+  return false;
+}
+
+void iq_rec_finish() {
+  const size_t written = g_iq_rec_write.load(std::memory_order_acquire);
+  g_iq_rec_active.store(false, std::memory_order_release);
+  g_iq_rec_ready.store(true, std::memory_order_release);
+  Serial.printf("RTL_IQ_DONE storage=psram source=%s bytes=%u samples=%u rate=%u frequency_hz=%u sf=%u bw=%u mode=%s\n",
+                iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
+                static_cast<unsigned>(written), static_cast<unsigned>(written / 2),
+                kRtlSampleRateSps, g_iq_rec_frequency_hz,
+                static_cast<unsigned>(g_iq_rec_sf),
+                static_cast<unsigned>(g_iq_rec_bandwidth_hz),
+                g_iq_rec_auto_triggered.load(std::memory_order_relaxed) ? "energy" : "manual");
+  if (g_iq_rec_kind.load(std::memory_order_acquire) != IqCaptureKind::lora) return;
+  if (g_iq_rec_auto_triggered.load(std::memory_order_acquire)) {
+    (void)queue_lora_auto_decode();
+  } else if (lora_native_decoder_ready.load(std::memory_order_acquire) &&
+             lora_native_decode_queue != nullptr) {
+    const LoraNativeDecodeWork work{g_iq_rec_buf, written, g_iq_rec_sf,
+                                    g_iq_rec_bandwidth_hz, g_iq_rec_frequency_hz, false};
+    lora_native_decode_busy.store(true, std::memory_order_release);
+    if (xQueueSend(lora_native_decode_queue, &work, 0) != pdTRUE) {
+      lora_native_decode_busy.store(false, std::memory_order_release);
+      lora_native_failures.fetch_add(1, std::memory_order_relaxed);
+      g_iq_rec_ready.store(false, std::memory_order_release);
+      g_iq_rec_write.store(0, std::memory_order_release);
+    }
+  } else {
+    lora_native_failures.fetch_add(1, std::memory_order_relaxed);
+    g_iq_rec_ready.store(false, std::memory_order_release);
+    g_iq_rec_write.store(0, std::memory_order_release);
+  }
+}
+
 void iq_rec_append(const uint8_t* iq, size_t bytes) {
   if (!g_iq_rec_active.load(std::memory_order_relaxed) || iq == nullptr || bytes == 0) return;
   size_t written = g_iq_rec_write.load(std::memory_order_relaxed);
@@ -3704,36 +3805,7 @@ void iq_rec_append(const uint8_t* iq, size_t bytes) {
   memcpy(g_iq_rec_buf + written, iq, count);
   written += count;
   g_iq_rec_write.store(written, std::memory_order_release);
-  if (written == max_bytes) {
-    g_iq_rec_active.store(false, std::memory_order_release);
-    g_iq_rec_ready.store(true, std::memory_order_release);
-    Serial.printf("RTL_IQ_DONE storage=psram source=%s bytes=%u samples=%u rate=%u frequency_hz=%u sf=%u bw=%u mode=%s\n",
-                  iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
-                  static_cast<unsigned>(written), static_cast<unsigned>(written / 2),
-                  kRtlSampleRateSps, g_iq_rec_frequency_hz,
-                  static_cast<unsigned>(g_iq_rec_sf),
-                  static_cast<unsigned>(g_iq_rec_bandwidth_hz),
-                  g_iq_rec_auto_triggered.load(std::memory_order_relaxed) ? "energy"
-                                                                         : "manual");
-    if (g_iq_rec_kind.load(std::memory_order_acquire) != IqCaptureKind::lora) return;
-    const LoraNativeDecodeWork work{written, g_iq_rec_sf, g_iq_rec_bandwidth_hz,
-                                    g_iq_rec_frequency_hz};
-    if (lora_native_decoder_ready.load(std::memory_order_acquire) &&
-        lora_native_decode_queue != nullptr) {
-      lora_native_decode_busy.store(true, std::memory_order_release);
-      if (xQueueSend(lora_native_decode_queue, &work, 0) == pdTRUE) {
-      } else {
-        lora_native_decode_busy.store(false, std::memory_order_release);
-        lora_native_failures.fetch_add(1, std::memory_order_relaxed);
-        g_iq_rec_ready.store(false, std::memory_order_release);
-        g_iq_rec_write.store(0, std::memory_order_release);
-      }
-    } else {
-      lora_native_failures.fetch_add(1, std::memory_order_relaxed);
-      g_iq_rec_ready.store(false, std::memory_order_release);
-      g_iq_rec_write.store(0, std::memory_order_release);
-    }
-  }
+  if (written == max_bytes) iq_rec_finish();
 }
 
 void lora_native_decode_task(void*) {
@@ -3742,10 +3814,10 @@ void lora_native_decode_task(void*) {
     if (xQueueReceive(lora_native_decode_queue, &work, portMAX_DELAY) != pdTRUE) continue;
     orcsdr::lora_native::Packet decoded[orcsdr::lora_native::kMaxPacketsPerCapture]{};
     orcsdr::lora_native::Stats stats{};
-    const orcsdr::lora_native::Config config{lora_authorized_key,
-                                               lora_authorized_key_bytes};
+    const orcsdr::lora_native::Config config{
+        lora_authorized_key, lora_authorized_key_bytes, work.automatic ? 750u : 0u};
     const size_t count = orcsdr::lora_native::decode_capture(
-        g_iq_rec_buf, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
+        work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
         work.frequency_hz, config,
         decoded, std::size(decoded), &stats);
     lora_native_crc_ok.fetch_add(stats.crc_ok, std::memory_order_relaxed);
@@ -3768,6 +3840,8 @@ void lora_native_decode_task(void*) {
       packet.longitude_e7 = decoded[i].longitude_e7;
       packet.port = decoded[i].port;
       packet.encrypted = decoded[i].encrypted;
+      strlcpy(packet.short_name, decoded[i].short_name, sizeof(packet.short_name));
+      strlcpy(packet.long_name, decoded[i].long_name, sizeof(packet.long_name));
       lora_store_packet(packet);
     }
     Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f elapsed_ms=%lu\n",
@@ -3780,11 +3854,8 @@ void lora_native_decode_task(void*) {
                   static_cast<double>(stats.raw_cfo_tenths_hz) / 10.0,
                   static_cast<double>(stats.cfo_tenths_hz) / 10.0,
                   static_cast<unsigned long>(stats.decode_millis));
-    if (g_iq_rec_auto_triggered.load(std::memory_order_relaxed)) {
-      g_iq_rec_ready.store(false, std::memory_order_release);
-      g_iq_rec_auto_triggered.store(false, std::memory_order_release);
-    }
     lora_native_decode_busy.store(false, std::memory_order_release);
+    (void)queue_lora_auto_decode();
     bump_rtl_ui();
   }
 }
@@ -3808,9 +3879,18 @@ bool lora_native_decoder_start() {
 
 void lora_iq_offer(const uint8_t* iq, size_t bytes) {
   if (iq == nullptr || bytes == 0) return;
+  if (orcsdr::lora_channel::survey_active()) return;
   lora_pre_roll_append(iq, bytes);
   if (g_iq_rec_active.load(std::memory_order_relaxed)) {
     iq_rec_append(iq, bytes);
+    if (g_iq_rec_active.load(std::memory_order_relaxed) &&
+        g_iq_rec_auto_triggered.load(std::memory_order_relaxed)) {
+      const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
+      const float quiet_below = lora_trigger_dbfs.load(std::memory_order_relaxed) -
+                                kLoraTriggerHysteresisDb;
+      g_lora_quiet_tail_bytes = level < quiet_below ? g_lora_quiet_tail_bytes + bytes : 0;
+      if (g_lora_quiet_tail_bytes >= kLoraQuietTailBytes) iq_rec_finish();
+    }
     return;
   }
   if (!lora_detector_enabled.load(std::memory_order_relaxed) ||
@@ -3849,6 +3929,12 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
 }
 
 bool iq_rec_stop_and_export() {
+  if (g_iq_rec_auto_triggered.load(std::memory_order_acquire) &&
+      (g_iq_rec_ready.load(std::memory_order_acquire) ||
+       lora_native_decode_busy.load(std::memory_order_acquire))) {
+    Serial.println("RTL_IQ_ERROR automatic_capture_owned_by_decoder");
+    return false;
+  }
   if (g_iq_rec_export_busy.exchange(true, std::memory_order_acq_rel)) return false;
   const auto finish = [](bool result) {
     g_iq_rec_export_busy.store(false, std::memory_order_release);
@@ -4832,7 +4918,7 @@ void iq_get_begin() {
   const size_t bytes = g_iq_rec_write.load(std::memory_order_acquire);
   if (g_iq_rec_active.load(std::memory_order_acquire) ||
       lora_native_decode_busy.load(std::memory_order_acquire) || g_iq_rec_buf == nullptr ||
-      bytes == 0) {
+      g_iq_rec_auto_triggered.load(std::memory_order_acquire) || bytes == 0) {
     Serial.println("RTL_IQ_GET_ERROR capture_not_ready");
     return;
   }
@@ -7624,9 +7710,17 @@ bool pause_radio_for_io(bool& paused);
 void resume_radio_after_io(bool& paused);
 void start_wifi_inventory() {
   if (!settings_wifi_power_enabled) return;
-  if (!wifi_station_ready) initialize_wifi();
-  if (!wifi_station_ready) return;
   if (wifi_scan_running) return;
+  if (!pause_radio_for_io(wifi_connect_radio_paused)) {
+    strlcpy(wifi_status_message, "Radio pause failed", sizeof(wifi_status_message));
+    Serial.println("RTL_WIFI_SCAN_ERROR radio_pause_failed");
+    return;
+  }
+  if (!wifi_station_ready) initialize_wifi();
+  if (!wifi_station_ready) {
+    resume_radio_after_io(wifi_connect_radio_paused);
+    return;
+  }
   wifi_scan_result_count = 0;
   wifi_network_count = 0;
   wifi_scan_started_ms = millis();
@@ -7638,6 +7732,7 @@ void start_wifi_inventory() {
   }
   begin_power_monitor("wifi_scan");
   wifi_scan_running = wifi_network_count == -2;
+  if (!wifi_scan_running) resume_radio_after_io(wifi_connect_radio_paused);
   log_wifi_coexistence(wifi_scan_running ? "scan_started" : "scan_start_failed");
   draw_wifi_state();
   if (orcsdr::rf24::active()) draw_rf24_dashboard(false);
@@ -7654,13 +7749,19 @@ void start_wifi_inventory() {
 // connect timeout in poll_wifi().
 void start_wifi_connection(bool pause_radio = true) {
   if (!settings_wifi_power_enabled) return;
-  if (!wifi_station_ready) initialize_wifi();
-  if (!wifi_station_ready || !wifi_ssid[0]) return;
+  if (!wifi_ssid[0]) return;
   wifi_auto_reconnect_suppressed = false;
   wifi_session_wants_connection = true;
   if (pause_radio && !pause_radio_for_io(wifi_connect_radio_paused)) {
     strlcpy(wifi_status_message, "Radio pause failed", sizeof(wifi_status_message));
     Serial.println("RTL_WIFI_CONNECT_ERROR radio_pause_failed");
+    return;
+  }
+  // Hosted initialization is part of the connection's exclusive I/O window.
+  // Starting it before the pause leaves SDIO bring-up racing live SDR traffic.
+  if (!wifi_station_ready) initialize_wifi();
+  if (!wifi_station_ready) {
+    resume_radio_after_io(wifi_connect_radio_paused);
     return;
   }
   wifi_scan_running = false;
@@ -7710,7 +7811,7 @@ void stop_wifi() {
 
 bool disconnect_wifi() {
   wifi_connect_requested.store(false, std::memory_order_release);
-  wifi_connect_pause_requested.store(false, std::memory_order_release);
+  wifi_connect_live_diagnostic_requested.store(false, std::memory_order_release);
   wifi_connecting = false;
   wifi_save_after_connect = false;
   // An explicit disconnect is a user decision; don't let the auto-retry below
@@ -7738,22 +7839,19 @@ void start_wifi_connection(const char* ssid, const char* password, bool save_on_
 
 bool pause_radio_for_io(bool& paused) {
   if (paused) return true;
-  // A catalog operation holds an exclusive window that the Wi-Fi callers
-  // piggyback on. That has to be decided BEFORE claiming `paused`, and must
-  // not fire when the catalog is itself the caller: written as a plain
-  // `if (catalog_radio_paused)` after `paused = true`, it was always true for
-  // pause_radio_for_catalog() -- which passes catalog_radio_paused by
-  // reference -- so the catalog's own pause reported success without ever
-  // stopping the stream. Every catalog download therefore ran against a fully
-  // streaming dongle, the condition measured at 0/15 Wi-Fi associations.
-  const bool catalog_holds =
-      catalog_radio_paused && &paused != &catalog_radio_paused;
+  // Overlapping I/O clients share one physical pause. Each keeps its own flag
+  // so the final client to finish is the only one that resumes the radio.
+  if (catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused) {
+    paused = true;
+    return true;
+  }
   paused = true;
-  if (catalog_holds) return true;
+  const auto original_state = rtl_capture_state.load(std::memory_order_acquire);
+  const bool capture_was_requested = rtl_capture_requested.load(std::memory_order_acquire);
+  const bool restart_was_requested = rtl_restart_requested.load(std::memory_order_acquire);
   const bool radio_was_active =
-      rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running ||
-      rtl_capture_requested.load(std::memory_order_acquire) ||
-      rtl_restart_requested.load(std::memory_order_acquire);
+      original_state == RtlCaptureState::queued || original_state == RtlCaptureState::running ||
+      capture_was_requested || restart_was_requested;
   if (radio_was_active) {
     // Cancel both a running stream and a queued restart before granting the
     // exclusive I/O window.
@@ -7766,6 +7864,9 @@ bool pause_radio_for_io(bool& paused) {
            static_cast<int32_t>(deadline - millis()) > 0) delay(10);
     const auto state = rtl_capture_state.load(std::memory_order_acquire);
     if (state == RtlCaptureState::queued || state == RtlCaptureState::running) {
+      rtl_stop_requested.store(false, std::memory_order_release);
+      rtl_restart_requested.store(restart_was_requested, std::memory_order_release);
+      rtl_capture_requested.store(capture_was_requested, std::memory_order_release);
       paused = false;
       return false;
     }
@@ -7781,13 +7882,8 @@ bool pause_radio_for_io(bool& paused) {
 
 void resume_radio_after_io(bool& paused) {
   if (!paused) return;
-  // Mirror of the pause guard above. This one happened to behave correctly
-  // (it cleared the flag before testing it), but state it explicitly so the
-  // two cannot drift apart again.
-  const bool catalog_holds =
-      catalog_radio_paused && &paused != &catalog_radio_paused;
   paused = false;
-  if (catalog_holds) return;
+  if (catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused) return;
   const bool resume_radio = radio_io_resume_pending;
   const bool resume_speaker = radio_io_speaker_resume_pending;
   radio_io_resume_pending = false;
@@ -7854,7 +7950,11 @@ void poll_wifi() {
   }
   if (wifi_scan_requested.exchange(false, std::memory_order_acq_rel)) start_wifi_inventory();
   if (wifi_connect_requested.exchange(false, std::memory_order_acq_rel)) {
-    start_wifi_connection(wifi_connect_pause_requested.exchange(false, std::memory_order_acq_rel));
+    const bool live_diagnostic =
+        wifi_connect_live_diagnostic_requested.exchange(false, std::memory_order_acq_rel);
+    // Issue #66: normal Hosted connects always take the radio-pause window.
+    // The only exception is an explicit authenticated diagnostic command.
+    start_wifi_connection(!live_diagnostic);
   }
   if (!wifi_station_ready) return;
   service_wifi_auto_reconnect();
@@ -7899,11 +7999,13 @@ void poll_wifi() {
       Serial.printf("RTL_WIFI_SCAN_RESULTS count=%u\n",
                     static_cast<unsigned>(wifi_scan_result_count));
       log_wifi_coexistence("scan_complete", millis() - wifi_scan_started_ms);
+      resume_radio_after_io(wifi_connect_radio_paused);
       state_changed = true;
     } else if (millis() - wifi_scan_started_ms >= 15000u) {
       wifi_scan_running = false;
       strlcpy(wifi_status_message, "Scan timed out", sizeof(wifi_status_message));
       log_wifi_coexistence("scan_timeout", millis() - wifi_scan_started_ms);
+      resume_radio_after_io(wifi_connect_radio_paused);
       state_changed = true;
     }
   }
@@ -8145,10 +8247,16 @@ void handle_fm_dashboard_action(const orcsdr::fm::Action& action) {
 
 orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   orcsdr::lora::Snapshot snapshot{};
+  const auto& channel = orcsdr::lora_channel::selection();
   snapshot.frequency_hz = rtl_ui_frequency_hz;
-  snapshot.channel_slot = static_cast<uint8_t>(lora_slot_for(rtl_ui_frequency_hz));
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.sf = lora_sf.load(std::memory_order_relaxed);
+  snapshot.region_index = channel.region_index;
+  snapshot.region_count = static_cast<uint8_t>(orcsdr::lora_channel::region_count());
+  snapshot.channel_slot = orcsdr::lora_channel::slot_for_frequency(
+      channel.region_index, snapshot.frequency_hz);
+  snapshot.channel_count = orcsdr::lora_channel::slot_count(channel.region_index);
+  snapshot.default_slot = orcsdr::lora_channel::default_slot(channel.region_index);
   snapshot.bandwidth_hz = lora_bandwidth_hz.load(std::memory_order_relaxed);
   snapshot.noise_dbfs = lora_noise_dbfs.load(std::memory_order_relaxed);
   snapshot.trigger_dbfs = lora_trigger_dbfs.load(std::memory_order_relaxed);
@@ -8164,8 +8272,9 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.wifi_connected = orcsdr::wifi::connected();
   snapshot.sound_enabled = rtl_audio_user_enabled.load(std::memory_order_relaxed);
   snapshot.sd_logging = lora_log_ready.load(std::memory_order_relaxed);
-  snapshot.survey_active = lora_survey_active;
-  snapshot.survey_progress = lora_survey_span;
+  snapshot.survey_active = orcsdr::lora_channel::survey_active();
+  snapshot.survey_progress = orcsdr::lora_channel::survey_progress();
+  snapshot.iq_recording = g_iq_rec_active.load(std::memory_order_relaxed);
   snapshot.battery_percent = M5.Power.getBatteryLevel();
   snapshot.native_decoder_ready =
       lora_native_decoder_ready.load(std::memory_order_acquire) &&
@@ -8173,6 +8282,8 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.key_loaded = snapshot.native_decoder_ready && lora_authorized_key_loaded;
   strlcpy(snapshot.profile, lora_profile_name, sizeof(snapshot.profile));
   strlcpy(snapshot.region, lora_region_name, sizeof(snapshot.region));
+  strlcpy(snapshot.log_status, lora_log_status, sizeof(snapshot.log_status));
+#if !RTL_USE_LEGACY_USB
   if (g_rtl != nullptr) {
     esp_rtl_sdr_metrics_t metrics{};
     if (esp_rtl_sdr_get_metrics(g_rtl, &metrics) == ESP_OK) {
@@ -8182,6 +8293,7 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
       snapshot.consumer_drops = metrics.consumer_drops;
     }
   }
+#endif
   portENTER_CRITICAL(&lora_message_mux);
   for (const auto& position : lora_node_positions) {
     if (position.node == 0 || snapshot.node_count >= orcsdr::lora::kNodeCapacity) continue;
@@ -8190,7 +8302,10 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
     node.seen_ms = position.received_ms;
     node.latitude_e7 = position.latitude_e7;
     node.longitude_e7 = position.longitude_e7;
+    node.signal_tenths = position.signal_tenths;
+    node.snr_tenths = position.snr_tenths;
     node.favorite = position.node == lora_favorite_node_id;
+    strlcpy(node.name, position.name, sizeof(node.name));
   }
   for (const auto& packet : lora_display_packets) {
     if (packet.received_ms == 0 || snapshot.event_count >= orcsdr::lora::kEventCapacity) continue;
@@ -8217,6 +8332,9 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.revision ^= static_cast<uint32_t>(snapshot.selected_node) << 8;
   snapshot.revision ^= snapshot.survey_active ? 1u : 0u;
   snapshot.revision ^= snapshot.sd_logging ? 2u : 0u;
+  snapshot.revision ^= snapshot.iq_recording ? 4u : 0u;
+  snapshot.revision ^= lora_favorite_node_id;
+  snapshot.revision ^= lora_log_status_revision << 4;
   return snapshot;
 }
 
@@ -8520,33 +8638,33 @@ void handle_p25_dashboard_action(const orcsdr::p25::Action& action) {
 }
 
 void service_lora_survey(uint32_t now) {
-  if (!lora_survey_active || g_stream_band != RtlBand::lora || now < lora_survey_next_ms)
-    return;
-  if (lora_survey_span >= 14) {
-    lora_survey_active = false;
-    request_hot_retune(lora_survey_restore_hz);
-    Serial.printf("RTL_LORA_SURVEY restored_hz=%u\n", lora_survey_restore_hz);
+  const auto step = orcsdr::lora_channel::service_survey(
+      now, g_stream_band == RtlBand::lora);
+  if (step.frequency_hz == 0) return;
+  if (step.restore) {
+    request_hot_retune(step.frequency_hz);
+    Serial.printf("RTL_LORA_SURVEY restored_hz=%u\n", step.frequency_hz);
     return;
   }
-  const uint32_t center_hz = 903000000u + static_cast<uint32_t>(lora_survey_span) * 2000000u;
   Serial.printf("RTL_LORA_SURVEY span=%u center_hz=%u level_dbfs=%.1f\n",
-                lora_survey_span + 1, center_hz,
+                step.span, step.frequency_hz,
                 static_cast<double>(rtl_signal_dbfs.load(std::memory_order_relaxed)));
-  request_hot_retune(center_hz);
-  ++lora_survey_span;
-  lora_survey_next_ms = now + 750;
+  request_hot_retune(step.frequency_hz);
 }
 
 void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
   using orcsdr::lora::ActionKind;
   switch (action.kind) {
+    case ActionKind::refresh:
+      break;
     case ActionKind::select_view:
       if (action.value < static_cast<uint32_t>(orcsdr::lora::View::count))
         orcsdr::lora::show_documentation_view(
             static_cast<orcsdr::lora::View>(action.value), lora_dashboard_snapshot());
       break;
     case ActionKind::select_node:
-      lora_selected_node = static_cast<uint8_t>(action.value);
+      if (action.value < orcsdr::lora::kNodeCapacity)
+        lora_selected_node = static_cast<uint8_t>(action.value);
       break;
     case ActionKind::toggle_favorite: {
       const auto snapshot = lora_dashboard_snapshot();
@@ -8566,15 +8684,13 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
       orcsdr::lora::toggle_follow_node();
       break;
     case ActionKind::scan_toggle:
-      if (lora_survey_active) {
-        lora_survey_active = false;
-        request_hot_retune(lora_survey_restore_hz);
+      if (orcsdr::lora_channel::survey_active()) {
+        request_hot_retune(orcsdr::lora_channel::cancel_survey());
       } else if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running) {
-        lora_survey_restore_hz = rtl_ui_frequency_hz;
-        lora_survey_span = 0;
-        lora_survey_next_ms = millis();
-        lora_survey_active = true;
-        Serial.println("RTL_LORA_SURVEY start spans=14 dwell_ms=750");
+        orcsdr::lora_channel::start_survey(lora_config_frequency_hz, millis());
+        Serial.printf("RTL_LORA_SURVEY start region=%s spans=%u dwell_ms=750\n",
+                      lora_region_name,
+                      static_cast<unsigned>(orcsdr::lora_channel::survey_span_count()));
       }
       break;
     case ActionKind::record_iq_toggle:
@@ -8590,43 +8706,52 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
       portEXIT_CRITICAL(&lora_message_mux);
       break;
     case ActionKind::export_log:
-      Serial.printf("RTL_LORA_LOG path=%s enabled=%d\n", kLoraLogPath,
-                    lora_log_ready.load(std::memory_order_relaxed) ? 1 : 0);
+      (void)export_lora_log_snapshot();
       break;
     // CHANNELS used to open the global Settings screen, which had nothing to
     // do with channels. It opens the frequency-slot picker now.
     case ActionKind::open_channels:
       orcsdr::lora::open_channel_picker();
       break;
+    case ActionKind::region_previous:
+      select_lora_channel(
+          (orcsdr::lora_channel::selection().region_index +
+           orcsdr::lora_channel::region_count() - 1) %
+              orcsdr::lora_channel::region_count(),
+          0);
+      break;
+    case ActionKind::region_next:
+      select_lora_channel((orcsdr::lora_channel::selection().region_index + 1) %
+                              orcsdr::lora_channel::region_count(),
+                          0);
+      break;
+    case ActionKind::region_select:
+      if (action.value >= 1 && action.value <= orcsdr::lora_channel::region_count())
+        select_lora_channel(action.value - 1, 0);
+      break;
+    case ActionKind::channel_previous: {
+      const auto& selected = orcsdr::lora_channel::selection();
+      select_lora_channel(selected.region_index,
+                          selected.slot <= 1
+                              ? orcsdr::lora_channel::slot_count(selected.region_index)
+                              : selected.slot - 1);
+      break;
+    }
+    case ActionKind::channel_next: {
+      const auto& selected = orcsdr::lora_channel::selection();
+      select_lora_channel(selected.region_index,
+                          selected.slot >= orcsdr::lora_channel::slot_count(selected.region_index)
+                              ? 1
+                              : selected.slot + 1);
+      break;
+    }
+    case ActionKind::channel_select:
+      select_lora_channel(orcsdr::lora_channel::selection().region_index,
+                          static_cast<uint16_t>(action.value));
+      break;
     case ActionKind::open_settings:
       open_global_settings(orcsdr::settings::Section::radio_defaults);
       break;
-    // Meshtastic frequency slots: 902.125 MHz + (slot-1) * 250 kHz across the
-    // US 902-928 MHz band, so slot 20 is the 906.875 MHz LongFast default.
-    // Before this the LoRa monitor could only ever watch that one slot.
-    case ActionKind::channel_prev:
-    case ActionKind::channel_next:
-    case ActionKind::channel_select: {
-      int slot = lora_slot_for(rtl_ui_frequency_hz);
-      if (slot == 0) slot = lora_slot_for(kLoraDefaultHz);
-      if (action.kind == ActionKind::channel_select)
-        slot = static_cast<int>(action.value);
-      else
-        slot += (action.kind == ActionKind::channel_next) ? 1 : -1;
-      slot = std::clamp(slot, 1, kLoraSlotCount);
-      const uint32_t hz = kLoraSlotBaseHz + static_cast<uint32_t>(slot - 1) * kLoraSlotStepHz;
-      rtl_ui_frequency_hz = hz;
-      if (hz != rtl_saved_lora_hz) {
-        rtl_saved_lora_hz = hz;
-        preferences.put_u32("sdr_lora_hz", hz);
-      }
-      const RtlCaptureState state = rtl_capture_state.load(std::memory_order_acquire);
-      if (state == RtlCaptureState::running) request_hot_retune(hz);
-      else queue_local_rtl_listen(RtlBand::lora, hz);
-      Serial.printf("RTL_LORA_SLOT slot=%d frequency_hz=%lu\n", slot,
-                    static_cast<unsigned long>(hz));
-      break;
-    }
     case ActionKind::exit_home:
       orcsdr::lora::leave();
       show_home();
@@ -9958,6 +10083,7 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
         select_wifi_profile(static_cast<uint8_t>(action.value));
         wifi_save_after_connect = false;
         wifi_connect_requested.store(true, std::memory_order_release);
+        Serial.println("RTL_WIFI_CONNECT_SAVED_PAUSE issue66");
         update_global_settings();
       }
       break;
@@ -10181,9 +10307,32 @@ bool parse_hex_u32_exact(const char* value, uint32_t* output) {
 void lora_store_packet(const LoraDisplayPacket& input) {
   LoraDisplayPacket packet = input;
   if (packet.received_ms == 0) packet.received_ms = millis();
+  if (packet.frequency_hz == 0) packet.frequency_hz = rtl_ui_frequency_hz;
   portENTER_CRITICAL(&lora_message_mux);
+  if (packet.packet_id != 0) {
+    for (const auto& existing : lora_display_packets) {
+      if (existing.received_ms != 0 && existing.sender == packet.sender &&
+          existing.packet_id == packet.packet_id) {
+        portEXIT_CRITICAL(&lora_message_mux);
+        return;
+      }
+    }
+  }
+  size_t replace_index = kLoraDisplayPacketCount;
+  if (packet.port == 3) {
+    for (size_t i = 0; i < kLoraDisplayPacketCount; ++i) {
+      if (lora_display_packets[i].received_ms != 0 &&
+          lora_display_packets[i].sender == packet.sender && lora_display_packets[i].port == 3) {
+        replace_index = i;
+        break;
+      }
+    }
+  }
+  const size_t shift_count = replace_index < kLoraDisplayPacketCount
+                                 ? replace_index
+                                 : kLoraDisplayPacketCount - 1;
   memmove(&lora_display_packets[1], &lora_display_packets[0],
-          sizeof(lora_display_packets[0]) * (kLoraDisplayPacketCount - 1));
+          sizeof(lora_display_packets[0]) * shift_count);
   lora_display_packets[0] = packet;
   if (packet.sender != 0) {
     size_t position_index = 0;
@@ -10196,10 +10345,14 @@ void lora_store_packet(const LoraDisplayPacket& input) {
     LoraNodePosition node = known_node ? lora_node_positions[position_index] : LoraNodePosition{};
     node.node = packet.sender;
     node.received_ms = packet.received_ms;
+    if (packet.signal_tenths != INT16_MAX) node.signal_tenths = packet.signal_tenths;
+    if (packet.snr_tenths != INT16_MAX) node.snr_tenths = packet.snr_tenths;
     if (packet.latitude_e7 != INT32_MAX && packet.longitude_e7 != INT32_MAX) {
       node.latitude_e7 = packet.latitude_e7;
       node.longitude_e7 = packet.longitude_e7;
     }
+    if (packet.short_name[0]) strlcpy(node.name, packet.short_name, sizeof(node.name));
+    else if (packet.long_name[0]) strlcpy(node.name, packet.long_name, sizeof(node.name));
     if (position_index > 0) {
       memmove(&lora_node_positions[1], &lora_node_positions[0],
               sizeof(lora_node_positions[0]) * position_index);
@@ -10427,6 +10580,13 @@ void load_state() {
   rtl_ui_frequency_hz = rtl_saved_fm_hz;
   rtl_requested_frequency_hz.store(rtl_saved_fm_hz, std::memory_order_release);
   Serial.printf("RTL_FM_LOAD frequency_hz=%u\n", rtl_saved_fm_hz);
+  orcsdr::lora_channel::load(preferences);
+  if (orcsdr::lora_channel::selection().persisted) {
+    apply_lora_channel_selection();
+    const auto& selected = orcsdr::lora_channel::selection();
+    Serial.printf("RTL_LORA_PLAN_LOAD region=%s slot=%u frequency_hz=%u\n",
+                  lora_region_name, selected.slot, selected.frequency_hz);
+  }
   adsb_settings.location_configured = preferences.getBool("adsb_loc_set", false);
   adsb_settings.latitude_e7 = preferences.getInt("adsb_lat_e7", 0);
   adsb_settings.longitude_e7 = preferences.getInt("adsb_lon_e7", 0);
@@ -10449,6 +10609,13 @@ void load_state() {
         stored_band == RtlBand::p25) {
       rtl_ui_band = stored_band;
       rtl_requested_band.store(stored_band, std::memory_order_release);
+      // Restore the selected band's own frequency rather than clamping the
+      // previous band's dial. LoRa additionally restores its persisted region
+      // and slot before choosing the frequency.
+      if (stored_band == RtlBand::lora) {
+        load_lora_config();
+        if (orcsdr::lora_channel::selection().persisted) apply_lora_channel_selection();
+      }
       // Only P25 used to restore a frequency to match its band; every other
       // band came up still holding the *previous* band's frequency and let the
       // clamp snap it, so restoring CB always landed on channel 1 and GMRS
@@ -10558,6 +10725,10 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   if (!g_rtl_device_ready.load(std::memory_order_acquire) || g_rtl == nullptr) return;
   if (band == RtlBand::lora) {
     load_lora_config();
+    if (orcsdr::lora_channel::selection().persisted) apply_lora_channel_selection();
+    if (!lora_native_decoder_start())
+      Serial.println("RTL_LORA_WARN native_decoder_unavailable dashboard=PHY_PENDING");
+    lora_iq_reset_detector();
     if (frequency_hz == kLoraDefaultHz) frequency_hz = lora_config_frequency_hz;
     rtl_filter_bandwidth_hz.store(lora_bandwidth_hz.load(std::memory_order_relaxed),
                                   std::memory_order_relaxed);
@@ -10596,7 +10767,7 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   channel_scan_cancel.store(true, std::memory_order_release);
   rtl_fm_preset_scan_requested.store(false, std::memory_order_release);
   p25_survey_requested.store(false, std::memory_order_release);
-  if (lora_survey_active) lora_survey_active = false;
+  if (orcsdr::lora_channel::survey_active()) (void)orcsdr::lora_channel::cancel_survey();
   const auto session_token = radio_session.acquire(
       orcsdr::radio::owner_for_band(band), band, frequency_hz,
       kRtlSampleRateSps);
@@ -10818,6 +10989,14 @@ void poll_sdr_touch(bool from_stream) {
     if (pressed && !was_pressed) {
       if (!handle_nav_touch(touch.x, touch.y)) handle_tool_tab_touch(touch.x, touch.y);
     }
+    was_pressed = pressed;
+    return;
+  }
+
+  // The LoRa dashboard owns its plot and controls. Generic SDR scope gestures
+  // overlap the channel-picker arrows and must not turn those taps into retunes.
+  if (rtl_ui_band == RtlBand::lora && orcsdr::lora::active()) {
+    if (pressed && !was_pressed) handle_sdr_touch(touch.x, touch.y);
     was_pressed = pressed;
     return;
   }
@@ -12387,11 +12566,19 @@ void process_command(char* command) {
       else if (!strcmp(action, "LOG")) kind=K::logging_toggle; else if (!strcmp(action, "CLEAR")) kind=K::clear_events;
       else if (!strcmp(action, "EXPORT")) kind=K::export_log; else if (!strcmp(action, "FOLLOW")) kind=K::follow_node;
       else if (!strcmp(action, "CHANNELS")) kind=K::open_channels; else if (!strcmp(action, "SETTINGS")) kind=K::open_settings;
+      else if (!strcmp(action, "REGION_PREV")) kind=K::region_previous; else if (!strcmp(action, "REGION_NEXT")) kind=K::region_next;
+      else if (!strcmp(action, "REGION")) kind=K::region_select; else if (!strcmp(action, "SLOT_PREV")) kind=K::channel_previous;
+      else if (!strcmp(action, "SLOT_NEXT")) kind=K::channel_next; else if (!strcmp(action, "SLOT")) kind=K::channel_select;
       else if (!strcmp(action, "HOME")) kind=K::exit_home;
-      // Meshtastic frequency slot, 1-104. SLOT takes the number; PREV/NEXT step.
-      else if (!strcmp(action, "SLOT_PREV")) kind=K::channel_prev;
-      else if (!strcmp(action, "SLOT_NEXT")) kind=K::channel_next;
-      else if (!strcmp(action, "SLOT")) kind=K::channel_select;
+      if ((kind == K::region_select &&
+           (fields != 3 || value < 1 || value > orcsdr::lora_channel::region_count())) ||
+          (kind == K::channel_select &&
+           (fields != 3 || value < 1 ||
+            value > orcsdr::lora_channel::slot_count(
+                        orcsdr::lora_channel::selection().region_index)))) {
+        Serial.println("RTL_UI_ACTION_INVALID lora_region_or_slot_out_of_range");
+        return;
+      }
       if (kind != K::none) { handle_lora_dashboard_action({kind, static_cast<uint32_t>(value)}); Serial.println("RTL_UI_ACTION_OK"); return; }
     } else if (strcmp(domain, "SETTINGS") == 0) {
       using K = orcsdr::settings::ActionKind; K kind = K::none;
@@ -12438,7 +12625,8 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_WIFI_CONNECT_SAVED") == 0 ||
-      strcmp(command, "RTL_WIFI_CONNECT_SAVED PAUSE") == 0) {
+      strcmp(command, "RTL_WIFI_CONNECT_SAVED PAUSE") == 0 ||
+      strcmp(command, "RTL_WIFI_CONNECT_SAVED LIVE") == 0) {
     if (!authenticated) {
       Serial.println("RTL_WIFI_CONNECT_ERROR auth_required");
       return;
@@ -12448,11 +12636,11 @@ void process_command(char* command) {
       return;
     }
     select_wifi_profile(0);
-    const bool pause_radio = strcmp(command, "RTL_WIFI_CONNECT_SAVED PAUSE") == 0;
-    wifi_connect_pause_requested.store(pause_radio, std::memory_order_release);
+    const bool live_diagnostic = strcmp(command, "RTL_WIFI_CONNECT_SAVED LIVE") == 0;
+    wifi_connect_live_diagnostic_requested.store(live_diagnostic, std::memory_order_release);
     wifi_connect_requested.store(true, std::memory_order_release);
     Serial.printf("RTL_WIFI_CONNECT_QUEUED saved_profile=0 mode=%s\n",
-                  pause_radio ? "pause" : "live");
+                  live_diagnostic ? "live" : "pause");
     return;
   }
   if (strcmp(command, "RTL_WIFI_RESULTS") == 0) {
@@ -12826,6 +13014,25 @@ void process_command(char* command) {
                   static_cast<double>(lora_native_last_cfo_tenths_hz.load(std::memory_order_relaxed)) / 10.0);
     return;
   }
+  if (strcmp(command, "RTL_LORA_PLAN_STATUS") == 0) {
+    const auto& selected = orcsdr::lora_channel::selection();
+    Serial.printf("RTL_LORA_PLAN_STATUS region_index=%u region=%s slot=%u slots=%u "
+                  "default_slot=%u frequency_hz=%u profile=LONGFAST persisted=%s\n",
+                  static_cast<unsigned>(selected.region_index + 1), lora_region_name,
+                  static_cast<unsigned>(selected.slot),
+                  static_cast<unsigned>(orcsdr::lora_channel::slot_count(selected.region_index)),
+                  static_cast<unsigned>(orcsdr::lora_channel::default_slot(selected.region_index)),
+                  selected.frequency_hz, selected.persisted ? "true" : "false");
+    return;
+  }
+  if (strcmp(command, "RTL_LORA_REGION_LIST") == 0) {
+    for (size_t i = 0; i < orcsdr::lora_channel::region_count(); ++i)
+      Serial.printf("RTL_LORA_REGION index=%u code=%s slots=%u default_slot=%u\n",
+                    static_cast<unsigned>(i + 1), orcsdr::lora_channel::region(i).code,
+                    static_cast<unsigned>(orcsdr::lora_channel::slot_count(i)),
+                    static_cast<unsigned>(orcsdr::lora_channel::default_slot(i)));
+    return;
+  }
   if ((strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
        strcmp(command, "RTL_LORA_AUTO OFF") == 0) &&
       authenticated) {
@@ -12902,6 +13109,7 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_IQ_RETRIEVE_BEGIN") == 0) {
     if (g_iq_rec_active.load(std::memory_order_acquire) ||
         lora_native_decode_busy.load(std::memory_order_acquire) || g_iq_rec_buf == nullptr ||
+        g_iq_rec_auto_triggered.load(std::memory_order_acquire) ||
         g_iq_rec_write.load(std::memory_order_acquire) == 0) {
       Serial.println("RTL_IQ_RETRIEVE_ERROR capture_not_ready");
       return;
@@ -13114,7 +13322,7 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_HELP") == 0) {
     Serial.println("RTL_HELP_BEGIN");
     Serial.println("RTL_STATUS                    - device connection info");
-    Serial.println("RTL_DRIVER STATUS|SELF_CHECK  - v0.7.9 capabilities, shadows and stream metrics");
+    Serial.println("RTL_DRIVER STATUS|SELF_CHECK  - driver capabilities, shadows and stream metrics");
     Serial.println("RTL_DRIVER GAINMODE AUTO|MANUAL | GAIN <0..496> | RTLAGC ON|OFF | BIAS ON|OFF (auth)");
     Serial.println("RTL_HEALTH                    - heap, task and reset diagnostics");
     Serial.println("RTL_RESET                     - authenticated software reset");
@@ -13128,7 +13336,7 @@ void process_command(char* command) {
     Serial.println("RTL_UI ACTION <domain> <action> [value] - mirror FM/P25/LoRa/Settings touch action (auth)");
     Serial.println("RTL_WIFI_STATUS|C6_STATUS|COEX_STATUS|SCAN|RESULTS|PROFILES - Wi-Fi and radio coexistence state");
     Serial.println("RTL_WIFI_C6_UPDATE CONFIRM - authenticated explicit in-app C6 update");
-    Serial.println("RTL_WIFI_CONNECT_SAVED [PAUSE]|DISCONNECT - connect profile 0 live or with a temporary SDR pause");
+    Serial.println("RTL_WIFI_CONNECT_SAVED [PAUSE|LIVE]|DISCONNECT - paused connect; LIVE is diagnostic only");
     Serial.println("SET_WIFI <ssid_hex> <pass_hex> <hmac> - signed slot-0 provisioning (auth)");
     Serial.println("RTL_TUNE <BAND> <HZ>           - tune band+freq (auth) BAND=FM|AM|WX|CB|LORA|BROWSE|ADSB|P25");
     Serial.println("RTL_FREQ                       - query current band/frequency/mode");
@@ -14360,8 +14568,9 @@ void setup() {
                                             : "ORC_HOME_SELF_CHECK_FAIL");
   Serial.println(orcsdr::web_console::self_check() ? "RTL_WEB_SELF_CHECK_OK"
                                                    : "RTL_WEB_SELF_CHECK_FAIL");
-  Serial.println(orcsdr::lora::self_check() ? "RTL_LORA_DASHBOARD_SELF_CHECK_OK"
-                                            : "RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::lora::self_check() && orcsdr::lora_log::self_check()
+                     ? "RTL_LORA_DASHBOARD_SELF_CHECK_OK"
+                     : "RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
   Serial.println(orcsdr::rf24::self_check() ? "RF24_DASHBOARD_SELF_CHECK_OK"
                                             : "RF24_DASHBOARD_SELF_CHECK_FAIL");
   Serial.println(channel_plan_self_check() ? "ORC_CHANNEL_PLAN_SELF_CHECK_OK"
@@ -14422,18 +14631,16 @@ void setup() {
   return;
 #else
 
-  /* ESP-Hosted owns SDMMC Slot 1; bring it up before the splash mounts the
-   * microSD card on Slot 0. This is the supported ESP-Hosted shared-SDMMC
-   * initialization order on ESP32-P4. */
   heap_guard("self_checks");
+  /* The microSD card and Hosted C6 use separate slots on the same SDMMC host.
+   * Initialize them sequentially; issue #66 defers Hosted until after boot. */
   g_suppress_home_paint = true;
   uint8_t mac[6];
   esp_read_mac(mac, ESP_MAC_BASE);
   snprintf(node_id, sizeof(node_id), "m5tab5_%02x%02x%02x%02x%02x%02x",
            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-  // ESP-Hosted must initialise Slot 1 before load_state() reaches the
-  // SD-backed receiver profiles on Slot 0. Read only the preferences needed
-  // for C6 bring-up first so power and antenna choices take effect immediately.
+  // Issue #66: read Wi-Fi prefs early; Hosted bring-up is deferred to loop().
+  // Slot 0 (SD) may be active before Slot 1 (Hosted) — intentional.
   {
     orcsdr::NvsStore wifi_prefs;
     if (wifi_prefs.begin("orclink", true)) {
@@ -14442,8 +14649,14 @@ void setup() {
       wifi_prefs.end();
     }
   }
-  if (settings_wifi_power_enabled) initialize_wifi();
   load_state();
+  // Issue #66: do not call initialize_wifi() here. If "start Wi-Fi at boot" is on,
+  // queue the same saved-connect path Settings uses, after loop() has settled.
+  if (settings_wifi_power_enabled && settings_wifi_start_at_boot) {
+    wifi_boot_bringup_pending = true;
+    wifi_boot_defer_arm_ms = millis();
+    Serial.println("RTL_WIFI_DEFER_TO_LOOP issue66");
+  }
   if (!orcsdr::visualizer::initialize(&preferences, visualizer_audio_sink)) {
     Serial.println("RTL_VIS_NVS_INIT_FAIL");
     abort();
@@ -14465,24 +14678,6 @@ void setup() {
     (void)orcsdr::offline_map::load(g_sd_fs);
     refresh_adsb_atc_preset();
   }
-  if (settings_wifi_power_enabled && settings_wifi_start_at_boot && wifi_station_ready &&
-      wifi_profile_count) {
-    select_wifi_profile(0);
-    for (uint8_t attempt = 0; attempt < 2 && !wifi_connected; ++attempt) {
-      if (attempt) {
-        Serial.println("RTL_WIFI_BOOT_RETRY saved_profile=0");
-        delay(1000);
-      }
-      start_wifi_connection();
-      const uint32_t wifi_deadline = millis() + 15000;
-      while (wifi_connecting && static_cast<int32_t>(wifi_deadline - millis()) > 0) {
-        M5.update();
-        poll_wifi();
-        delay(10);
-      }
-    }
-  }
-
   /* Loading splash owns the display while SD-backed splash assets load. */
   (void)orcsdr_splash_begin();
   orcsdr_splash_set_status("Starting RTL-SDR USB host…");
@@ -14513,6 +14708,20 @@ void loop() {
     Serial.printf("RTL_MAIN_STALL stage=loop_gap elapsed_ms=%u\n",
                   loop_started_ms - previous_loop_ms);
   previous_loop_ms = loop_started_ms;
+  // Issue #66: mirror Settings connect_saved — queue only; poll_wifi() calls
+  // start_wifi_connection() then initialize_wifi() on the normal loop path.
+  if (wifi_boot_bringup_pending &&
+      static_cast<int32_t>(millis() - wifi_boot_defer_arm_ms) >= static_cast<int32_t>(kWifiBootDeferMs)) {
+    wifi_boot_bringup_pending = false;
+    if (settings_wifi_power_enabled && settings_wifi_start_at_boot && wifi_profile_count) {
+      select_wifi_profile(0);
+      wifi_save_after_connect = false;
+      wifi_connect_requested.store(true, std::memory_order_release);
+      Serial.println("RTL_WIFI_BOOT_CONNECT_QUEUED_PAUSE issue66");
+    } else {
+      Serial.println("RTL_WIFI_BOOT_SKIP_NO_AUTOCONNECT issue66");
+    }
+  }
   static bool hosted_boot_status_emitted = false;
   if (!hosted_boot_status_emitted && millis() >= 10000u) {
     hosted_boot_status_emitted = true;
@@ -14555,6 +14764,15 @@ void loop() {
     const uint32_t elapsed_ms = millis() - started_ms;
     if (elapsed_ms >= 500)
       Serial.printf("RTL_MAIN_STALL stage=serial_dispatch elapsed_ms=%u\n", elapsed_ms);
+  }
+  // Keep connection success/failure/timeout and radio resume progressing even
+  // when a full-screen mode returns early from the rest of the UI loop.
+  if (boot_auto_start_allowed) {
+    const uint32_t started_ms = millis();
+    poll_wifi();
+    const uint32_t elapsed_ms = millis() - started_ms;
+    if (elapsed_ms >= 500)
+      Serial.printf("RTL_MAIN_STALL stage=wifi_poll elapsed_ms=%u\n", elapsed_ms);
   }
   if (orcsdr::visualizer::active()) {
     service_rtl_speaker_watchdog();
@@ -14601,13 +14819,6 @@ void loop() {
     }
     catalog_was_busy = catalog_state.busy;
     orcsdr::catalog::poll(wifi_connected);
-  }
-  if (boot_auto_start_allowed) {
-    const uint32_t started_ms = millis();
-    poll_wifi();
-    const uint32_t elapsed_ms = millis() - started_ms;
-    if (elapsed_ms >= 500)
-      Serial.printf("RTL_MAIN_STALL stage=wifi_poll elapsed_ms=%u\n", elapsed_ms);
   }
   {
     static uint32_t last_web_ms = 0;

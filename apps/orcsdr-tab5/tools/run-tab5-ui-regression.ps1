@@ -438,7 +438,7 @@ function Assert-WifiCoexistence($initialUi) {
 }
 
 function Wait-WifiConnectOutcome([string]$Mode) {
-  [void](Send-And-Wait "RTL_WIFI_CONNECT_SAVED$($(if ($Mode -eq 'pause') { ' PAUSE' } else { '' }))" "^RTL_WIFI_CONNECT_QUEUED saved_profile=0 mode=$Mode$" 10)
+  [void](Send-And-Wait "RTL_WIFI_CONNECT_SAVED$($(if ($Mode -eq 'pause') { ' PAUSE' } else { ' LIVE' }))" "^RTL_WIFI_CONNECT_QUEUED saved_profile=0 mode=$Mode$" 10)
   return Read-MatchingLine '^RTL_WIFI_COEX event=connect_(?:complete|failed|start_failed) ' 45
 }
 
@@ -788,7 +788,7 @@ function Invoke-Driver079Test {
   if ($initial.GainAutoCap -ne 1 -or $initial.RtlAgcCap -ne 1 -or
       $initial.GainCap -ne 1 -or $initial.BiasCap -ne 1 -or
       $initial.ShadowOk -ne 1 -or $initial.MetricsOk -ne 1) {
-    throw 'Required v0.7.9 capability or status getter is unavailable.'
+    throw 'Required RTL-SDR driver capability or status getter is unavailable.'
   }
 
   $last = $initial

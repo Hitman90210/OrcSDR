@@ -5,9 +5,8 @@ Everything this fork (`Hitman90210/OrcSDR`) has changed on top of
 cold: if you are new to this tree, read §1 and §2, then jump to whatever you
 are touching.
 
-Last updated: 2026-09-08. Head at time of writing: `a001531`, 48 non-merge
-commits ahead of upstream, last upstream merge `9215c9e` (ESP-Hosted
-vTaskDeleteWithCaps battery-boot fix).
+Last updated: 2026-09-09. The fork now includes upstream `ff8a5ee`
+(`v0.2.0-beta.5`) plus the fork-specific integration fixes described below.
 
 ---
 
@@ -77,16 +76,23 @@ The `settings.*` screens and `fm.settings` are `demo`-only; asking for them in
 
 ## 2. Current state
 
-- **Builds clean**, 45% of the app partition free.
+- **Builds clean**, 44% of the app partition free.
 - **21/21 boot self-checks pass**, no panics.
 - Memory at `stage=ready`: ~82 KB internal free, ~42 KB DMA-capable,
   ~26.7 MB PSRAM. Watch the first number — see §7.
 - Upstream's POCSAG pager decoder is merged and its self-check passes.
+- Upstream beta.5 regional LoRa plans, retained traffic scrolling, packet-log
+  export, non-blocking console writes, and deferred Wi-Fi startup are merged.
+- The exact 2026-09-09 app image passed the authenticated UI regression and
+  the paused-connect, scan, and explicit live-load Wi-Fi coexistence diagnostic
+  on COM3 with RTL-SDR 0.7.14 and zero USB, IQ, or audio drops.
 
-**Two things are still genuinely broken, both in the SDIO transport: the wedge
-(§3) and the battery boot loop (§3b).** The boot loop is *masked* by a config
-option, not repaired — read §3b before touching Wi-Fi bringup or FreeRTOS
-config. Everything else below is either fixed or is a documented limitation.
+**The remaining high-risk area is still the shared SDIO/USB startup path
+(§3 and §3b).** Normal Wi-Fi work is protected by the radio-pause window, and
+beta.5 defers Hosted startup out of `setup()`. Battery-only boot of this exact
+merged image has not yet been rerun, so the older watchpoint workaround remains
+enabled and §3b should still be read before changing Wi-Fi bringup or FreeRTOS
+configuration. Everything else below is either fixed or documented.
 
 ---
 

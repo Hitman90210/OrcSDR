@@ -2,7 +2,7 @@
 
 The public driver API is maintained in
 [`hardcoreerik/esp-rtl-sdr`](https://github.com/hardcoreerik/esp-rtl-sdr).
-OrcSDR obtains the immutable `v0.7.9` release through ESP-IDF's component
+OrcSDR obtains the immutable `v0.7.14` release through ESP-IDF's component
 manager and records the resolved commit and content hash in
 `apps/orcsdr-tab5/dependencies.lock`.
 

@@ -461,7 +461,7 @@ cannot forge serial records. Passwords are never returned.
 | `RTL_WIFI_SCAN` | yes | Queues one scan; wait for `RTL_WIFI_SCAN_RESULTS count=N` and `RTL_WIFI_COEX event=scan_complete`. |
 | `RTL_WIFI_RESULTS` | yes | Bounded `RTL_WIFI_AP` rows with `ssid_hex`, BSSID, RSSI, channel, and security flag. |
 | `RTL_WIFI_PROFILES` | yes | Priority-ordered SSID-only profile list; never returns passwords. |
-| `RTL_WIFI_CONNECT_SAVED` | yes | Compatibility shortcut for saved profile 0. Indexed connection uses `RTL_UI ACTION SETTINGS CONNECT_SAVED <index>`. |
+| `RTL_WIFI_CONNECT_SAVED [PAUSE\|LIVE]` | yes | Connect saved profile 0. The default and `PAUSE` safely pause SDR traffic; `LIVE` is an explicit coexistence diagnostic. Indexed connection uses `RTL_UI ACTION SETTINGS CONNECT_SAVED <index>`. |
 | `RTL_WIFI_DISCONNECT` | yes | Disconnects Wi-Fi and restores the paused radio/audio path. |
 | `RTL_WIFI_RESET_LINK` | yes | Manual recovery for a wedged SDIO transport to the C6 (see `RTL_WIFI_STATUS`'s `transport_healthy`): rebuilds the esp_hosted link and Wi-Fi driver, then reconnects to the current network if one was configured. Requires Wi-Fi already started (`RTL_WIFI_RESET_LINK_ERROR not_started` otherwise). Blocks for the duration of the rebuild, the same bring-up work boot already does. |
 | `SET_WIFI <ssid_hex> <pass_hex> <hmac>` | yes + signed payload | Provisions slot 0 and attempts connection without echoing credentials. |
@@ -573,7 +573,12 @@ from documentation capture because it contains the receiver's saved location.
 `RTL_IQ_GET_BEGIN`/`_CHUNK`/`_ABORT`, `RTL_LORA_AUTO ON|OFF` (auth),
 `RTL_LORA_TUNE <HZ>` (auth; `RTL_LORA_TUNE_OK frequency_hz=...` or
 `RTL_LORA_TUNE_ERROR range=<min>-<max>`; hot-retunes if LoRa is already
-streaming, otherwise switches into it), `LORA_SD_LOG ON|OFF|STATUS`,
+streaming, otherwise switches into it), `RTL_LORA_PLAN_STATUS`,
+`RTL_LORA_REGION_LIST`, `RTL_UI ACTION LORA REGION <1-based-index>`,
+`RTL_UI ACTION LORA REGION_PREV|REGION_NEXT`,
+`RTL_UI ACTION LORA SLOT <1-based-slot>`, and
+`RTL_UI ACTION LORA SLOT_PREV|SLOT_NEXT` (selection commands require auth and
+persist region/slot), `LORA_SD_LOG ON|OFF|STATUS`,
 `LORA_MESSAGE_CLEAR` — raw IQ capture and the LoRa/Meshtastic
 energy-triggered decode pipeline. See
 [docs/lora/README.md](lora/README.md) for the intended workflow (these are

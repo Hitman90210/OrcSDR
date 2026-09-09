@@ -698,7 +698,7 @@ Application notes for the Tab5 firmware live in [`apps/orcsdr-tab5/README.md`](a
 OrcSDR consumes the standalone [`esp_rtl_sdr`](https://github.com/hardcoreerik/esp-rtl-sdr)
 ESP-IDF USB Host driver for the **RTL-SDR Blog V4**.
 
-The Tab5 firmware pins the immutable `v0.7.9` GitHub release in its component
+The Tab5 firmware pins the immutable `v0.7.14` GitHub release in its component
 manifest and committed ESP-IDF lockfile. The driver is not copied into this
 repository and `managed_components` remains generated and untracked.
 
