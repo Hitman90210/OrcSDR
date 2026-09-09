@@ -605,6 +605,26 @@ Three things worth inheriting from building it:
   in the model or by `self_check_detail()`, which names the failing stage --
   worth reaching for before another flash-and-guess cycle.
 
+**Measured on air, 2026-09-09.** Marine inherited GMRS's 20 dB stop threshold
+without anyone measuring 156 MHz, so it was probed: 4 reads on each of the 40
+channels, 160 in total. Noise ceiling 9.8 dB, nothing above it, zero reads
+busy. Marine is the quietest of the three bands -- no LO-leakage problem like
+CB has at 27 MHz -- so 20 dB stands with 10.2 dB of margin, more than GMRS has.
+
+| Band | Noise/artefact ceiling | Floor | Margin |
+| --- | --- | --- | --- |
+| Marine 156 MHz | 9.8 dB (160 reads) | 20 dB | +10.2 |
+| GMRS 462 MHz | 11.6 dB (153 samples) | 20 dB | +8.4 |
+| CB 27 MHz | 17.0 dB (25 reads) | 25 dB | +8.0 |
+
+**The SAME decoder does not false-alarm on speech.** Six minutes on the live
+local NWR transmitter (162.550 MHz, synthesised NOAA voice, which is broadband
+audio sitting right where the AFSK tones live) produced zero preamble locks,
+zero headers and zero rejected bursts. It never even locked, which is a
+stronger result than locking and then rejecting. A spurious tornado warning is
+far worse than a missed one, so this is the failure mode that mattered most.
+A true positive still needs a real alert or a Wednesday weekly test.
+
 The self-check synthesises bursts and streams them through a real decoder in
 256-sample blocks. It buffered the whole 48,000-sample burst at first and
 overflowed internal DRAM at link time; internal RAM really is the constraint
@@ -725,7 +745,20 @@ on their own timer and will draw straight through a panel unless
    because `/orcsdr/` can contain recordings, location data, network settings,
    and decoder logs. All supported transfer tools perform the HMAC handshake
    from the untracked pairing-key file.
-5. **The channel scanner's GMRS threshold has not met a real GMRS signal.**
+5. **No channelized band has met a real transmission yet.** The detector is
+   proved to reject noise on all four -- CB, GMRS, weather and marine were each
+   measured against their own noise floor -- and proved to accept a real signal
+   on weather only, where a live NOAA transmitter held and resumed correctly.
+   The SAME decoder is separately proved not to false-alarm on live weather
+   voice (six minutes, zero locks) but has never seen a real alert header.
+   What is untested everywhere else is the *accept* half: whether the floor
+   lets a genuine handheld a few streets away through. If a scan walks past
+   traffic you can hear, that number is the one to lower -- read it with
+   `RTL_CHANNEL_PROBE` while the signal is up, and see 5.7a/5.7b.
+
+   The original GMRS wording follows, still accurate:
+
+   5. **The channel scanner's GMRS threshold has not met a real GMRS signal.**
    Both halves were verified, but on different bands: "stops on a real signal"
    was proved on weather (a live NOAA transmitter, 60 dB, held and resumed
    correctly), and "does not stop on noise" was proved on GMRS and CB (93 and
