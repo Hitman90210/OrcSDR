@@ -188,6 +188,24 @@ void node_name(const Node& node, char* out, size_t size) {
   else format_id(out, size, node.id);
 }
 
+const Node* find_node(uint32_t id) {
+  for (size_t i = 0; i < g_snapshot.node_count; ++i)
+    if (g_snapshot.nodes[i].id == id) return &g_snapshot.nodes[i];
+  return nullptr;
+}
+
+void event_sender(const Event& event, char* out, size_t size, bool include_id) {
+  const Node* node = find_node(event.sender);
+  if (node != nullptr && node->name[0]) {
+    if (include_id)
+      snprintf(out, size, "%s  !%08lX", node->name, static_cast<unsigned long>(event.sender));
+    else
+      strlcpy(out, node->name, size);
+  } else {
+    format_id(out, size, event.sender);
+  }
+}
+
 void draw_metric(int x, int y, int w, const char* title, const char* value,
                  uint16_t color = TFT_WHITE) {
   card(x, y, w, 88);
@@ -279,25 +297,66 @@ void draw_health_static() {
   button(804, 578, 242, 48, "CLEAR EVENTS", kCyan);
 }
 
-void draw_event_row(const Event& event, int x, int y, int w, bool detailed,
-                    int message_size) {
-  M5.Display.fillRoundRect(x, y, w, detailed ? 66 : 58, 8, kPanel);
-  M5.Display.drawRoundRect(x, y, w, detailed ? 66 : 58, 8, event.verified ? kGrid : kYellow);
-  char sender[16];
-  format_id(sender, sizeof(sender), event.sender);
+void split_message(const char* value, size_t line_chars, char* first, char* second) {
+  const size_t length = strlen(value);
+  size_t split = std::min(length, line_chars);
+  if (split < length) {
+    for (size_t i = split; i > line_chars / 2; --i) {
+      if (value[i - 1] == ' ' || value[i - 1] == ',') {
+        split = value[i - 1] == ' ' ? i - 1 : i;
+        break;
+      }
+    }
+  }
+  memcpy(first, value, split);
+  first[split] = '\0';
+  const char* remainder = value + split;
+  while (*remainder == ' ') ++remainder;
+  strlcpy(second, remainder, line_chars + 1);
+  if (strlen(remainder) > line_chars) memcpy(second + line_chars - 3, "...", 4);
+}
+
+void draw_event_row(const Event& event, int x, int y, int w) {
+  M5.Display.fillRoundRect(x, y, w, 66, 8, kPanel);
+  M5.Display.drawRoundRect(x, y, w, 66, 8, event.verified ? kGrid : kYellow);
+  char sender[48];
+  event_sender(event, sender, w >= 500 ? sizeof(sender) : 18, w >= 500);
   text(sender, x + 16, y + 19, event.verified ? kGreen : kYellow, 2, middle_left);
-  text(event.text[0] ? event.text : (event.encrypted ? "ENCRYPTED FRAME" : "WAITING"),
-       x + 16, y + (detailed ? 45 : 40), TFT_WHITE, message_size, middle_left);
+  const char* message = event.text[0] ? event.text
+                                      : (event.encrypted ? "ENCRYPTED FRAME" : "WAITING");
+  const size_t line_chars = std::min<size_t>(65, static_cast<size_t>((w - 32) / 12));
+  char first[66]{}, second[66]{};
+  split_message(message, line_chars, first, second);
+  text(first, x + 16, y + (second[0] ? 38 : 45), TFT_WHITE, 2, middle_left);
+  if (second[0]) text(second, x + 16, y + 56, TFT_WHITE, 2, middle_left);
   char age[20];
   const uint32_t seconds = event.sender == 0 ? 0 : (millis() - event.received_ms) / 1000u;
   snprintf(age, sizeof(age), "%lus", static_cast<unsigned long>(seconds));
   text(age, x + w - 16, y + 19, kMuted, 1, middle_right);
 }
 
+void draw_large_event_row(const Event& event, int x, int y, int w) {
+  M5.Display.fillRoundRect(x, y, w, 94, 8, kPanel);
+  M5.Display.drawRoundRect(x, y, w, 94, 8, event.verified ? kGrid : kYellow);
+  char sender[18];
+  event_sender(event, sender, sizeof(sender), false);
+  text(sender, x + 16, y + 18, event.verified ? kGreen : kYellow, 2, middle_left);
+  char age[20];
+  snprintf(age, sizeof(age), "%lus", static_cast<unsigned long>(
+      event.sender == 0 ? 0 : (millis() - event.received_ms) / 1000u));
+  text(age, x + w - 16, y + 18, kMuted, 1, middle_right);
+  const char* message = event.text[0] ? event.text
+                                      : (event.encrypted ? "ENCRYPTED FRAME" : "WAITING");
+  char first[18]{}, second[18]{};
+  split_message(message, 17, first, second);
+  text(first, x + 16, y + 48, TFT_WHITE, 3, middle_left);
+  if (second[0]) text(second, x + 16, y + 76, TFT_WHITE, 3, middle_left);
+}
+
 void draw_overview_dynamic() {
   M5.Display.fillRect(854, 310, 366, 205, kPanel);
-  for (size_t i = 0; i < 3 && i < g_snapshot.event_count; ++i)
-    draw_event_row(g_snapshot.events[i], 862, 318 + static_cast<int>(i) * 62, 350, false, 3);
+  for (size_t i = 0; i < 2 && i < g_snapshot.event_count; ++i)
+    draw_large_event_row(g_snapshot.events[i], 862, 316 + static_cast<int>(i) * 99, 350);
   if (g_snapshot.event_count == 0)
     text("WAITING FOR VERIFIED TRAFFIC", 1037, 410, kMuted, 1);
 }
@@ -354,8 +413,8 @@ void draw_traffic_dynamic() {
   M5.Display.fillRect(400, 192, 834, 400, kPanel);
   for (size_t i = 0; i < std::min<size_t>(5, g_snapshot.event_count); ++i) {
     const Event& event = g_snapshot.events[i];
-    draw_event_row(event, 408, 204 + static_cast<int>(i) * 72, 814, true, 2);
-    char sender[16]; format_id(sender, sizeof(sender), event.sender);
+    draw_event_row(event, 408, 204 + static_cast<int>(i) * 72, 814);
+    char sender[18]; event_sender(event, sender, sizeof(sender), false);
     text(sender, 62, 215 + static_cast<int>(i) * 72, event.verified ? kGreen : kYellow,
          2, middle_left);
     text(event.text[0] ? event.text : (event.encrypted ? "ENCRYPTED" : "—"),
@@ -419,8 +478,8 @@ void draw_health_dynamic() {
   text("RX ONLY", 1200, 196, kGreen, 2);
   M5.Display.fillRect(40, 290, 780, 240, kPanel);
   M5.Display.fillRect(870, 290, 360, 240, kPanel);
-  draw_event_row(g_snapshot.events[0], 880, 306, 340, true, 2);
-  draw_event_row(g_snapshot.events[1], 880, 382, 340, true, 2);
+  draw_event_row(g_snapshot.events[0], 880, 306, 340);
+  draw_event_row(g_snapshot.events[1], 880, 382, 340);
   snprintf(value, sizeof(value), "RATE %.3f MSPS", g_snapshot.effective_sps / 1000000.0);
   text(value, 60, 548, kGreen, 1, middle_left);
   snprintf(value, sizeof(value), "USB %lu  DROP %lu  CRC %lu",
@@ -672,6 +731,9 @@ bool self_check() {
   char value[16];
   format_id(value, sizeof(value), snapshot.nodes[0].id);
   if (strcmp(value, "!A1B2C3D4") != 0) return false;
+  char first[18]{}, second[18]{};
+  split_message("GPS 44.05641, -123.02418", 17, first, second);
+  if (strcmp(first, "GPS 44.05641,") != 0 || strcmp(second, "-123.02418") != 0) return false;
   return audio_header::self_check() && lora_channel::self_check();
 }
 

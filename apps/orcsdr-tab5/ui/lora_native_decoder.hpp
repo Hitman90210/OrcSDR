@@ -6,12 +6,13 @@
 
 namespace orcsdr::lora_native {
 
-constexpr size_t kMaxPacketsPerCapture = 4;
+constexpr size_t kMaxPacketsPerCapture = 8;
 constexpr size_t kPacketTextBytes = 112;
 
 struct Config {
   const uint8_t* authorized_psk = nullptr;
   size_t authorized_psk_bytes = 0;
+  uint32_t preamble_search_ms = 0;
 };
 
 struct Packet {
@@ -23,6 +24,8 @@ struct Packet {
   int16_t cfo_tenths_hz = 0;
   uint16_t port = 0;
   bool encrypted = false;
+  char short_name[8]{};
+  char long_name[32]{};
   char text[kPacketTextBytes]{};
 };
 

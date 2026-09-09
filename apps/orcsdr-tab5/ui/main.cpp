@@ -1256,6 +1256,8 @@ struct LoraDisplayPacket {
   int16_t signal_tenths = INT16_MAX;
   uint16_t port = 0;
   bool encrypted = false;
+  char short_name[8]{};
+  char long_name[32]{};
 };
 constexpr size_t kLoraDisplayPacketCount = 8;
 static LoraDisplayPacket lora_display_packets[kLoraDisplayPacketCount]{};
@@ -1273,10 +1275,12 @@ static std::atomic<bool> lora_log_error{false};
 static std::atomic<uint32_t> lora_log_dropped{0};
 static std::atomic<uint32_t> lora_log_last_packet_ms{0};
 struct LoraNativeDecodeWork {
+  const uint8_t* iq = nullptr;
   size_t bytes = 0;
   uint8_t sf = 11;
   uint32_t bandwidth_hz = 250000;
   uint32_t frequency_hz = 0;
+  bool automatic = false;
 };
 static QueueHandle_t lora_native_decode_queue = nullptr;
 static TaskHandle_t lora_native_decode_task_handle = nullptr;
@@ -1296,6 +1300,7 @@ struct LoraNodePosition {
   uint32_t received_ms = 0;
   int32_t latitude_e7 = INT32_MAX;
   int32_t longitude_e7 = INT32_MAX;
+  char name[32]{};
 };
 constexpr size_t kLoraNodePositionCount = 8;
 static LoraNodePosition lora_node_positions[kLoraNodePositionCount]{};
@@ -1379,9 +1384,11 @@ constexpr size_t kIqRecMaxBytes = kRtlSampleRateSps * 2u * kIqRecSeconds;
 constexpr size_t kOrciqHeaderBytes = 36;
 constexpr size_t kP25IqRecMaxBytes = 1024u * 1024u - kOrciqHeaderBytes;
 constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
+constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 constexpr float kLoraTriggerMarginDb = 9.0f;
 constexpr float kLoraTriggerHysteresisDb = 3.0f;
 static uint8_t* g_iq_rec_buf = nullptr;
+static uint8_t* g_lora_decode_buf = nullptr;
 static uint8_t* g_lora_pre_roll_buf = nullptr;
 static std::atomic<size_t> g_iq_rec_write{0};
 static std::atomic<bool> g_iq_rec_active{false};
@@ -1399,6 +1406,7 @@ static uint32_t g_iq_rec_file_seq = 0;
 static char g_iq_rec_last_path[96] = "";
 static size_t g_lora_pre_roll_write = 0;
 static size_t g_lora_pre_roll_fill = 0;
+static size_t g_lora_quiet_tail_bytes = 0;
 static float g_lora_noise_floor_dbfs = -90.0f;
 static uint16_t g_lora_noise_samples = 0;
 static bool g_lora_trigger_armed = false;
@@ -3533,11 +3541,16 @@ bool iq_rec_ensure_buffer() {
 
 bool lora_iq_ensure_buffers() {
   if (!iq_rec_ensure_buffer()) return false;
+  if (g_lora_decode_buf == nullptr) {
+    g_lora_decode_buf = static_cast<uint8_t*>(
+        heap_caps_malloc(kIqRecMaxBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
   if (g_lora_pre_roll_buf == nullptr) {
     g_lora_pre_roll_buf = static_cast<uint8_t*>(
         heap_caps_malloc(kLoraPreRollBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
-  return g_iq_rec_buf != nullptr && g_lora_pre_roll_buf != nullptr;
+  return g_iq_rec_buf != nullptr && g_lora_decode_buf != nullptr &&
+         g_lora_pre_roll_buf != nullptr;
 }
 
 void lora_iq_reset_detector() {
@@ -3601,6 +3614,7 @@ void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
   g_iq_rec_ready.store(false, std::memory_order_release);
   g_iq_rec_auto_triggered.store(automatic, std::memory_order_release);
   g_iq_rec_write.store(initial_bytes, std::memory_order_release);
+  g_lora_quiet_tail_bytes = 0;
   g_iq_rec_active.store(true, std::memory_order_release);
   const size_t max_bytes = iq_capture_max_bytes(kind);
   Serial.printf("RTL_IQ_START source=%s mode=%s bytes=%u seconds=%u duration_ms=%u "
@@ -3676,6 +3690,58 @@ bool p25_iq_rec_start() {
   return true;
 }
 
+bool queue_lora_auto_decode() {
+  if (!g_iq_rec_ready.load(std::memory_order_acquire) ||
+      !g_iq_rec_auto_triggered.load(std::memory_order_acquire) ||
+      g_lora_decode_buf == nullptr || lora_native_decode_queue == nullptr) return false;
+  bool expected = false;
+  if (!lora_native_decode_busy.compare_exchange_strong(
+          expected, true, std::memory_order_acq_rel)) return false;
+  const size_t bytes = g_iq_rec_write.load(std::memory_order_acquire);
+  memcpy(g_lora_decode_buf, g_iq_rec_buf, bytes);
+  const LoraNativeDecodeWork work{g_lora_decode_buf, bytes, g_iq_rec_sf,
+                                  g_iq_rec_bandwidth_hz, g_iq_rec_frequency_hz, true};
+  g_iq_rec_ready.store(false, std::memory_order_release);
+  g_iq_rec_auto_triggered.store(false, std::memory_order_release);
+  g_iq_rec_write.store(0, std::memory_order_release);
+  if (xQueueSend(lora_native_decode_queue, &work, 0) == pdTRUE) return true;
+  lora_native_decode_busy.store(false, std::memory_order_release);
+  lora_native_failures.fetch_add(1, std::memory_order_relaxed);
+  return false;
+}
+
+void iq_rec_finish() {
+  const size_t written = g_iq_rec_write.load(std::memory_order_acquire);
+  g_iq_rec_active.store(false, std::memory_order_release);
+  g_iq_rec_ready.store(true, std::memory_order_release);
+  Serial.printf("RTL_IQ_DONE storage=psram source=%s bytes=%u samples=%u rate=%u frequency_hz=%u sf=%u bw=%u mode=%s\n",
+                iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
+                static_cast<unsigned>(written), static_cast<unsigned>(written / 2),
+                kRtlSampleRateSps, g_iq_rec_frequency_hz,
+                static_cast<unsigned>(g_iq_rec_sf),
+                static_cast<unsigned>(g_iq_rec_bandwidth_hz),
+                g_iq_rec_auto_triggered.load(std::memory_order_relaxed) ? "energy" : "manual");
+  if (g_iq_rec_kind.load(std::memory_order_acquire) != IqCaptureKind::lora) return;
+  if (g_iq_rec_auto_triggered.load(std::memory_order_acquire)) {
+    (void)queue_lora_auto_decode();
+  } else if (lora_native_decoder_ready.load(std::memory_order_acquire) &&
+             lora_native_decode_queue != nullptr) {
+    const LoraNativeDecodeWork work{g_iq_rec_buf, written, g_iq_rec_sf,
+                                    g_iq_rec_bandwidth_hz, g_iq_rec_frequency_hz, false};
+    lora_native_decode_busy.store(true, std::memory_order_release);
+    if (xQueueSend(lora_native_decode_queue, &work, 0) != pdTRUE) {
+      lora_native_decode_busy.store(false, std::memory_order_release);
+      lora_native_failures.fetch_add(1, std::memory_order_relaxed);
+      g_iq_rec_ready.store(false, std::memory_order_release);
+      g_iq_rec_write.store(0, std::memory_order_release);
+    }
+  } else {
+    lora_native_failures.fetch_add(1, std::memory_order_relaxed);
+    g_iq_rec_ready.store(false, std::memory_order_release);
+    g_iq_rec_write.store(0, std::memory_order_release);
+  }
+}
+
 void iq_rec_append(const uint8_t* iq, size_t bytes) {
   if (!g_iq_rec_active.load(std::memory_order_relaxed) || iq == nullptr || bytes == 0) return;
   size_t written = g_iq_rec_write.load(std::memory_order_relaxed);
@@ -3686,36 +3752,7 @@ void iq_rec_append(const uint8_t* iq, size_t bytes) {
   memcpy(g_iq_rec_buf + written, iq, count);
   written += count;
   g_iq_rec_write.store(written, std::memory_order_release);
-  if (written == max_bytes) {
-    g_iq_rec_active.store(false, std::memory_order_release);
-    g_iq_rec_ready.store(true, std::memory_order_release);
-    Serial.printf("RTL_IQ_DONE storage=psram source=%s bytes=%u samples=%u rate=%u frequency_hz=%u sf=%u bw=%u mode=%s\n",
-                  iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
-                  static_cast<unsigned>(written), static_cast<unsigned>(written / 2),
-                  kRtlSampleRateSps, g_iq_rec_frequency_hz,
-                  static_cast<unsigned>(g_iq_rec_sf),
-                  static_cast<unsigned>(g_iq_rec_bandwidth_hz),
-                  g_iq_rec_auto_triggered.load(std::memory_order_relaxed) ? "energy"
-                                                                         : "manual");
-    if (g_iq_rec_kind.load(std::memory_order_acquire) != IqCaptureKind::lora) return;
-    const LoraNativeDecodeWork work{written, g_iq_rec_sf, g_iq_rec_bandwidth_hz,
-                                    g_iq_rec_frequency_hz};
-    if (lora_native_decoder_ready.load(std::memory_order_acquire) &&
-        lora_native_decode_queue != nullptr) {
-      lora_native_decode_busy.store(true, std::memory_order_release);
-      if (xQueueSend(lora_native_decode_queue, &work, 0) == pdTRUE) {
-      } else {
-        lora_native_decode_busy.store(false, std::memory_order_release);
-        lora_native_failures.fetch_add(1, std::memory_order_relaxed);
-        g_iq_rec_ready.store(false, std::memory_order_release);
-        g_iq_rec_write.store(0, std::memory_order_release);
-      }
-    } else {
-      lora_native_failures.fetch_add(1, std::memory_order_relaxed);
-      g_iq_rec_ready.store(false, std::memory_order_release);
-      g_iq_rec_write.store(0, std::memory_order_release);
-    }
-  }
+  if (written == max_bytes) iq_rec_finish();
 }
 
 void lora_native_decode_task(void*) {
@@ -3724,10 +3761,10 @@ void lora_native_decode_task(void*) {
     if (xQueueReceive(lora_native_decode_queue, &work, portMAX_DELAY) != pdTRUE) continue;
     orcsdr::lora_native::Packet decoded[orcsdr::lora_native::kMaxPacketsPerCapture]{};
     orcsdr::lora_native::Stats stats{};
-    const orcsdr::lora_native::Config config{lora_authorized_key,
-                                               lora_authorized_key_bytes};
+    const orcsdr::lora_native::Config config{
+        lora_authorized_key, lora_authorized_key_bytes, work.automatic ? 750u : 0u};
     const size_t count = orcsdr::lora_native::decode_capture(
-        g_iq_rec_buf, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
+        work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
         work.frequency_hz, config,
         decoded, std::size(decoded), &stats);
     lora_native_crc_ok.fetch_add(stats.crc_ok, std::memory_order_relaxed);
@@ -3750,6 +3787,8 @@ void lora_native_decode_task(void*) {
       packet.longitude_e7 = decoded[i].longitude_e7;
       packet.port = decoded[i].port;
       packet.encrypted = decoded[i].encrypted;
+      strlcpy(packet.short_name, decoded[i].short_name, sizeof(packet.short_name));
+      strlcpy(packet.long_name, decoded[i].long_name, sizeof(packet.long_name));
       lora_store_packet(packet);
     }
     Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f elapsed_ms=%lu\n",
@@ -3762,11 +3801,8 @@ void lora_native_decode_task(void*) {
                   static_cast<double>(stats.raw_cfo_tenths_hz) / 10.0,
                   static_cast<double>(stats.cfo_tenths_hz) / 10.0,
                   static_cast<unsigned long>(stats.decode_millis));
-    if (g_iq_rec_auto_triggered.load(std::memory_order_relaxed)) {
-      g_iq_rec_ready.store(false, std::memory_order_release);
-      g_iq_rec_auto_triggered.store(false, std::memory_order_release);
-    }
     lora_native_decode_busy.store(false, std::memory_order_release);
+    (void)queue_lora_auto_decode();
     bump_rtl_ui();
   }
 }
@@ -3794,6 +3830,14 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
   lora_pre_roll_append(iq, bytes);
   if (g_iq_rec_active.load(std::memory_order_relaxed)) {
     iq_rec_append(iq, bytes);
+    if (g_iq_rec_active.load(std::memory_order_relaxed) &&
+        g_iq_rec_auto_triggered.load(std::memory_order_relaxed)) {
+      const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
+      const float quiet_below = lora_trigger_dbfs.load(std::memory_order_relaxed) -
+                                kLoraTriggerHysteresisDb;
+      g_lora_quiet_tail_bytes = level < quiet_below ? g_lora_quiet_tail_bytes + bytes : 0;
+      if (g_lora_quiet_tail_bytes >= kLoraQuietTailBytes) iq_rec_finish();
+    }
     return;
   }
   if (!lora_detector_enabled.load(std::memory_order_relaxed) ||
@@ -8552,6 +8596,7 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
     node.latitude_e7 = position.latitude_e7;
     node.longitude_e7 = position.longitude_e7;
     node.favorite = position.node == lora_favorite_node_id;
+    strlcpy(node.name, position.name, sizeof(node.name));
   }
   for (const auto& packet : lora_display_packets) {
     if (packet.received_ms == 0 || snapshot.event_count >= orcsdr::lora::kEventCapacity) continue;
@@ -10133,8 +10178,30 @@ void lora_store_packet(const LoraDisplayPacket& input) {
   LoraDisplayPacket packet = input;
   if (packet.received_ms == 0) packet.received_ms = millis();
   portENTER_CRITICAL(&lora_message_mux);
+  if (packet.packet_id != 0) {
+    for (const auto& existing : lora_display_packets) {
+      if (existing.received_ms != 0 && existing.sender == packet.sender &&
+          existing.packet_id == packet.packet_id) {
+        portEXIT_CRITICAL(&lora_message_mux);
+        return;
+      }
+    }
+  }
+  size_t replace_index = kLoraDisplayPacketCount;
+  if (packet.port == 3) {
+    for (size_t i = 0; i < kLoraDisplayPacketCount; ++i) {
+      if (lora_display_packets[i].received_ms != 0 &&
+          lora_display_packets[i].sender == packet.sender && lora_display_packets[i].port == 3) {
+        replace_index = i;
+        break;
+      }
+    }
+  }
+  const size_t shift_count = replace_index < kLoraDisplayPacketCount
+                                 ? replace_index
+                                 : kLoraDisplayPacketCount - 1;
   memmove(&lora_display_packets[1], &lora_display_packets[0],
-          sizeof(lora_display_packets[0]) * (kLoraDisplayPacketCount - 1));
+          sizeof(lora_display_packets[0]) * shift_count);
   lora_display_packets[0] = packet;
   if (packet.sender != 0) {
     size_t position_index = 0;
@@ -10151,6 +10218,8 @@ void lora_store_packet(const LoraDisplayPacket& input) {
       node.latitude_e7 = packet.latitude_e7;
       node.longitude_e7 = packet.longitude_e7;
     }
+    if (packet.short_name[0]) strlcpy(node.name, packet.short_name, sizeof(node.name));
+    else if (packet.long_name[0]) strlcpy(node.name, packet.long_name, sizeof(node.name));
     if (position_index > 0) {
       memmove(&lora_node_positions[1], &lora_node_positions[0],
               sizeof(lora_node_positions[0]) * position_index);
