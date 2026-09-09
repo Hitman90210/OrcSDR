@@ -209,9 +209,9 @@ OrcConsole orc_console;
 #define Serial orc_console
 
 namespace {
- // Issue #66: do not bring up ESP-Hosted inside setup() on battery/no-USB.
- // Mid-setup and even post-show_home()-in-setup still panic; Settings-idle
- // init is fine. One-shot bring-up from loop() after settle.
+ // Issue #66: never bring up ESP-Hosted from setup(). Settings only
+ // inits Hosted lazily on Scan/Connect via poll_wifi. Boot "start at
+ // boot" must use that same queued connect path after loop settles.
  constexpr uint32_t kWifiBootDeferMs = 2500;
  bool wifi_boot_bringup_pending = false;
  uint32_t wifi_boot_defer_arm_ms = 0;
@@ -14271,12 +14271,14 @@ void setup() {
       wifi_prefs.end();
     }
   }
-  if (settings_wifi_power_enabled) {
+  load_state();
+  // Issue #66: do not call initialize_wifi() here. If "start Wi-Fi at boot" is on,
+  // queue the same saved-connect path Settings uses, after loop() has settled.
+  if (settings_wifi_power_enabled && settings_wifi_start_at_boot) {
     wifi_boot_bringup_pending = true;
     wifi_boot_defer_arm_ms = millis();
     Serial.println("RTL_WIFI_DEFER_TO_LOOP issue66");
   }
-  load_state();
   if (!orcsdr::visualizer::initialize(&preferences, visualizer_audio_sink)) {
     Serial.println("RTL_VIS_NVS_INIT_FAIL");
     abort();
@@ -14328,21 +14330,19 @@ void loop() {
     Serial.printf("RTL_MAIN_STALL stage=loop_gap elapsed_ms=%u\n",
                   loop_started_ms - previous_loop_ms);
   previous_loop_ms = loop_started_ms;
-  // Issue #66: Hosted bring-up after setup() has returned and UI has settled.
-  if (wifi_boot_bringup_pending && settings_wifi_power_enabled && !wifi_station_ready &&
+  // Issue #66: mirror Settings connect_saved — queue only; poll_wifi() calls
+  // start_wifi_connection() then initialize_wifi() on the normal loop path.
+  if (wifi_boot_bringup_pending &&
       static_cast<int32_t>(millis() - wifi_boot_defer_arm_ms) >= static_cast<int32_t>(kWifiBootDeferMs)) {
     wifi_boot_bringup_pending = false;
-    Serial.println("RTL_WIFI_LOOP_BRINGUP issue66");
-    initialize_wifi();
-    if (settings_wifi_start_at_boot && wifi_station_ready && wifi_profile_count) {
+    if (settings_wifi_power_enabled && settings_wifi_start_at_boot && wifi_profile_count) {
       select_wifi_profile(0);
-      start_wifi_connection();
-      Serial.println("RTL_WIFI_BOOT_CONNECT_DEFERRED issue66");
+      wifi_save_after_connect = false;
+      wifi_connect_requested.store(true, std::memory_order_release);
+      Serial.println("RTL_WIFI_BOOT_CONNECT_QUEUED issue66");
+    } else {
+      Serial.println("RTL_WIFI_BOOT_SKIP_NO_AUTOCONNECT issue66");
     }
-    if (wifi_hosted_update_required)
-      open_global_settings(orcsdr::settings::Section::connectivity);
-  } else if (wifi_boot_bringup_pending && !settings_wifi_power_enabled) {
-    wifi_boot_bringup_pending = false;
   }
   static bool hosted_boot_status_emitted = false;
   if (!hosted_boot_status_emitted && millis() >= 10000u) {
