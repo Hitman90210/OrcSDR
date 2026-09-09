@@ -83,8 +83,10 @@ The `settings.*` screens and `fm.settings` are `demo`-only; asking for them in
   ~26.7 MB PSRAM. Watch the first number — see §7.
 - Upstream's POCSAG pager decoder is merged and its self-check passes.
 
-**The one thing that is still genuinely broken is the SDIO transport wedge
-(§3).** Everything else below is either fixed or is a documented limitation.
+**Two things are still genuinely broken, both in the SDIO transport: the wedge
+(§3) and the battery boot loop (§3b).** The boot loop is *masked* by a config
+option, not repaired — read §3b before touching Wi-Fi bringup or FreeRTOS
+config. Everything else below is either fixed or is a documented limitation.
 
 ---
 
@@ -193,6 +195,89 @@ An earlier confound worth remembering: the plugged runs were originally done
 *before* a full power cycle and the unplugged ones after, so "power cycle"
 looked like it might be the real variable. Re-plugging the dongle in the same
 session with no power cycle is what settled it.
+
+### 3b. Battery boot loop — masked, not fixed
+
+**Symptom.** The device boot-loops to a blue screen when powered from the
+battery, and runs normally the moment USB-C is plugged in. Independent of the
+RTL-SDR dongle. First observed 2026-09-08, on the first battery boot anyone had
+ever tried — so there is no evidence it ever worked, and no reason to think
+this fork introduced it.
+
+**Evidence.** Battery boots leave a coredump (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`
+is on, `coredump` partition at `0x410000`). Read it back over USB-C afterwards:
+
+```powershell
+python -m esp_coredump --port COM3 --chip esp32p4 info_corefile `
+  build-native-hosted3\orcsdr_tab5.elf
+```
+
+Three dumps, all the same panic, all in different places:
+
+| Dump | Crashing frame | Allocation |
+| --- | --- | --- |
+| 1 | main task inside `eh_host_core_bringup` → `reconfigure_attempt` | — |
+| 2 | hosted **RX**: `sdio_process_rx_task` → `rx_upcall` | `malloc(8)` |
+| 3 | hosted **TX**: `tx_worker` → `eh_host_feat_rpc_ext_v2_pack` | `malloc(10)` |
+
+```
+Panic reason: assert failed: block_locate_free tlsf_control_functions.h:618
+              (block_size(block) >= *size)
+```
+
+Eight- and ten-byte allocations corrupt nothing. They are the first code to
+touch a heap that was **already** broken, which is why the victim differs every
+time. In dump 2 the frame pointer handed to `rx_upcall` (`0x4ff339d8`) was
+unreadable and sat among the FreeRTOS TCB addresses.
+
+**What was ruled out, on hardware.** Every row is a real build and a real
+battery power-on:
+
+| Build | Heap poisoning | End-of-stack watchpoint | Battery |
+| --- | --- | --- | --- |
+| Merged head (GMRS + scanner + upstream trampoline patch) | off | off | **fail** |
+| Upstream trampoline patch reverted (bisect) | off | off | **fail** |
+| C6 post-power-on delay 200 ms → 1000 ms | off | off | **fail** |
+| Light poisoning + watchpoint | light | on | boots |
+| Poisoning removed again, watchpoint kept | off | on | boots |
+
+- **Upstream's `vTaskDeleteWithCaps` fix (#66) is not the cause.** Backing it
+  out reproduced the loop with a byte-identical panic. It is merged.
+- **Not a C6 bringup timing problem.** A 5× longer delay changed nothing. The
+  delay is kept anyway — 200 ms was never a comfortable margin for a rail rise
+  plus a C6 firmware boot.
+- **Not a stack overflow.** `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK` never
+  fired, and it traps a stack overrun regardless of heap layout.
+- **Not caught by poisoning.** Light poisoning never reported a bad canary; all
+  it did was shift the heap layout, and the loop stopped.
+
+**What it looks like.** Layout-sensitive *and* timing-sensitive, with an
+asynchronous corruptor that leaves a different victim each run: an SDIO/DMA
+write landing in memory that has already been freed, inside Espressif's
+`esp_hosted` transport. Every frame in every dump is in vendor code. Note §3
+documents a separate, independently confirmed fault in that same SDIO path.
+
+**Why the tree is the way it is.** `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y`
+is the only thing both working builds share and no failing build had. It does
+not repair anything — it arms a hardware watchpoint and adds work to every
+context switch, and that timing shift moves the race out of the way. It is kept
+because the device otherwise will not boot unplugged, and because a
+stack-overflow tripwire earns its keep anyway. **Treat this as mitigation. The
+fault is still in there.**
+
+`heap_guard()` in `main.cpp` is the tripwire for the recurrence: seven boot
+checkpoints (`m5_begin`, `graphics`, `self_checks`, `pre_wifi`, `c6_power`,
+`pre_hosted_start`, `post_hosted_start`) run `heap_caps_check_integrity_all()`
+and, on failure, `esp_system_abort()` with the checkpoint's name — which lands
+in the coredump's "Panic reason". On USB-C all seven print `ORC_HEAP_OK`. If a
+battery boot loop returns, the dump names the stage instead of leaving you
+where this started.
+
+**If you pick this up again.** Un-mask it first (drop the watchpoint config),
+confirm it reproduces, then get a channel out of a battery boot — SD-card boot
+logging, or RTC `NOINIT` memory read back over USB-C — because serial is gone
+the moment the cable is. Then instrument the hosted SDIO buffer lifecycle for a
+free followed by a late DMA completion.
 
 ---
 
@@ -600,6 +685,19 @@ on their own timer and will draw straight through a panel unless
    seek** (`kFmPresetMinDbfs`), which can never fail because that value is not
    dBFS — see §5.7a. Harmless today, since the SNR test carries the decision,
    but it is a dead test that reads like a live one.
+7. **The battery boot loop is masked, not fixed** — §3b. A timing-sensitive
+   heap corruption in the hosted SDIO path, held off by
+   `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y`. Changing FreeRTOS or heap
+   config, or anything about Wi-Fi bringup timing, can bring it back; the
+   `heap_guard()` checkpoints exist to name the stage when it does.
+8. **Upstream's #66 fix leaks a task stack and TCB per detached hosted task.**
+   `xTaskCreateWithCaps` creates the task via `xTaskCreateStaticPinnedToCore`
+   (TCB from `pvPortMalloc`, stack from `heap_caps_malloc`), and only
+   `prvTaskDeleteWithCaps` frees those buffers. The patched trampoline calls
+   plain `vTaskDelete(NULL)`, which frees neither — contrary to the claim in
+   the upstream commit message. Not the cause of §3b (verified by bisect), and
+   the patch is merged because it fixes a real abort, but a correct version
+   would free the buffers itself rather than leak them.
 
 Audited clean: buffer handling (every `memcpy`/`strcat` bounds-checked, no
 `strcpy`/`sprintf`/`gets`), path traversal (`..` rejected on both the SD and

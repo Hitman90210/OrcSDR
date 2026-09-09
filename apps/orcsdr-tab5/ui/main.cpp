@@ -555,6 +555,9 @@ constexpr float kFmSeekMinSnrDb = 15.0f;
 // really did read one channel late. 400 ms roughly doubles the margin and
 // still sweeps 40 CB channels in 16 s or 30 GMRS channels in 12 s.
 constexpr uint32_t kChannelScanDwellMs = 400;
+// How long the ESP32-C6 gets between its power rail coming up and the host
+// starting SDIO. See prepare_wifi_coprocessor() for why 200 ms was not enough.
+constexpr uint32_t kWifiC6BootDelayMs = 1000;
 // How far a carrier must stand above the mean of the visible bins. Measured on
 // this hardware with nothing on the air, not guessed:
 //
@@ -2759,6 +2762,32 @@ bool channel_plan_self_check() {
     return false;
   return gmrs_channel_index(kGmrsDefaultHz) == 0 &&
          std::size(kGmrsChannelsHz) == std::size(kGmrsChannelNames);
+}
+
+// Boot-time heap tripwire -- see docs/FORK_HANDOFF.md §3b.
+//
+// The battery boot loop panicked inside the allocator on an already-corrupted
+// internal heap, at a different innocent malloc each time, so the write that
+// broke it happened earlier and somewhere else entirely. That fault is masked
+// rather than fixed, so this stays in: if it ever comes back, these checkpoints
+// turn a silent boot loop into an abort that names the stage.
+//
+// There is no serial console on battery, so the only channel back out is the
+// coredump -- and esp_system_abort()'s message becomes the dump's "Panic
+// reason". Checking heap integrity at each boot checkpoint and aborting with
+// the checkpoint's own name therefore reports, through the coredump, the last
+// stage at which the heap was still intact. Reading it back:
+//
+//   idf.py -p COM3 coredump-info      (or esp_coredump info_corefile)
+void heap_guard(const char* stage) {
+  if (heap_caps_check_integrity_all(true)) {
+    Serial.printf("ORC_HEAP_OK stage=%s\n", stage);
+    return;
+  }
+  static char message[64];
+  snprintf(message, sizeof(message), "ORC_HEAP_CORRUPT stage=%s", stage);
+  Serial.println(message);
+  esp_system_abort(message);
 }
 
 void log_dram_budget(const char* stage) {
@@ -7565,17 +7594,35 @@ void prepare_wifi_coprocessor() {
   if (wifi_c6_power_prepared) return;
   // Tab5 IO expander #2 (0x44), P0 is WLAN_PWR_EN.  Cycle the rail once
   // before Hosted init so a timed-out C6 cannot survive a P4 app restart.
+  //
+  // The 200 ms this used to wait is not enough for the C6 to power its rail,
+  // boot its own firmware, and be ready to answer SDIO. On USB-C the rail
+  // rises fast enough that it just barely worked; on battery it does not, and
+  // the host then starts SDIO against a co-processor that is still booting,
+  // reads garbage frames, and walks them into eh_host_feat_rpc_rx's frame
+  // dispatch -- which corrupted the heap and panicked in the allocator
+  // (`assert failed: block_locate_free ... block_size(block) >= *size`) with a
+  // frame pointer aimed into the FreeRTOS TCB region. That was a hard boot
+  // loop on battery, reproducible, and independent of the RTL-SDR dongle.
+  //
+  // A boot happens rarely and the device already takes ~12 s to come up, so
+  // the extra second is a cheap price for a co-processor that is actually
+  // ready. Kept as one unconditional path rather than branching on VBUS: the
+  // margin is worth having on USB-C too, since 200 ms was never comfortable.
   M5.getIOExpander(1).digitalWrite(0, false);
-  delay(100);
+  delay(150);
   M5.getIOExpander(1).digitalWrite(0, true);
-  delay(200);
+  delay(kWifiC6BootDelayMs);
   wifi_c6_power_prepared = true;
-  Serial.println("RTL_WIFI_C6_POWER_CYCLE ok");
+  Serial.printf("RTL_WIFI_C6_POWER_CYCLE ok boot_delay_ms=%lu\n",
+                static_cast<unsigned long>(kWifiC6BootDelayMs));
 }
 
 void initialize_wifi() {
   if (wifi_station_ready) return;
+  heap_guard("pre_wifi");
   prepare_wifi_coprocessor();
+  heap_guard("c6_power");
   const uint32_t dma_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
   const uint32_t dma_largest =
       heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA);
@@ -7584,7 +7631,9 @@ void initialize_wifi() {
                 static_cast<unsigned long>(dma_largest),
                 CONFIG_ESP_HOSTED_HOST_SDIO_TX_Q_SIZE, CONFIG_ESP_HOSTED_HOST_SDIO_RX_Q_SIZE);
   apply_wifi_antenna();
+  heap_guard("pre_hosted_start");
   wifi_station_ready = orcsdr::wifi::start();
+  heap_guard("post_hosted_start");
   strlcpy(wifi_hosted_failure_stage, orcsdr::wifi::hosted_failure_stage(),
           sizeof(wifi_hosted_failure_stage));
   wifi_hosted_failure_code = orcsdr::wifi::hosted_failure_code();
@@ -14274,6 +14323,7 @@ void setup() {
   speaker_config.task_pinned_core = 1;
   M5.Speaker.config(speaker_config);
   log_dram_budget("boot");
+  heap_guard("m5_begin");
   {
     orcsdr::NvsStore rot_prefs;
     if (rot_prefs.begin("orclink", true)) {
@@ -14299,6 +14349,7 @@ void setup() {
   } else {
     Serial.println(rf_lab_initialized ? "RTL_LAB_SELF_CHECK_FAIL" : "RTL_LAB_INIT_FAIL");
   }
+  heap_guard("graphics");
   configure_navigation_service();
   Serial.println(orcsdr::adsb::self_check() && orcsdr::adsb_rx::Decoder::self_check() &&
                           orcsdr::offline_map::self_check() && orcsdr::atc::self_check()
@@ -14404,6 +14455,7 @@ void setup() {
   /* ESP-Hosted owns SDMMC Slot 1; bring it up before the splash mounts the
    * microSD card on Slot 0. This is the supported ESP-Hosted shared-SDMMC
    * initialization order on ESP32-P4. */
+  heap_guard("self_checks");
   g_suppress_home_paint = true;
   uint8_t mac[6];
   esp_read_mac(mac, ESP_MAC_BASE);

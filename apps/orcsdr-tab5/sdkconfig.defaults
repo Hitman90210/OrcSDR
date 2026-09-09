@@ -89,3 +89,17 @@ CONFIG_ESP_COREDUMP_STACK_SIZE=4096
 CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=20
 CONFIG_DSP_MAX_FFT_SIZE_8192=y
+
+# Battery boot loop -- see docs/FORK_HANDOFF.md §3b. The device boot-looped on
+# battery (fine on USB-C) with the allocator asserting on an already-corrupted
+# internal heap. Enabling this made it boot, and kept it booting across a
+# further build that removed heap poisoning again, so this option is the one
+# thing every working build has and no failing build had.
+#
+# Be clear about what that means: this does not fix anything. It arms a
+# hardware watchpoint and adds work to every context switch, and the timing
+# shift is what moves the race out of the way. The fault is still there. It is
+# kept because it is cheap, because a stack-overflow tripwire is worth having
+# on its own merits, and because the alternative is a device that will not boot
+# unplugged -- not because it is a repair.
+CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y

@@ -484,7 +484,7 @@ void slot_entry_push(char digit) {
   const size_t len = strlen(g_slot_entry);
   if (len + 1 >= sizeof(g_slot_entry)) return;
   g_slot_entry[len] = digit;
-  g_slot_entry[len + 1] = ' ';
+  g_slot_entry[len + 1] = '\0';
 }
 
 int slot_entry_value() {
@@ -669,7 +669,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (g_channels_open && g_view == View::overview) {
     if (hit(x, y, kCX + kCW - 128, kCY + 10, 110, 42)) {
       g_channels_open = false;
-      g_slot_entry[0] = ' ';
+      g_slot_entry[0] = '\0';
       draw_static();
       return {};
     }
@@ -679,13 +679,13 @@ Action handle_touch(int32_t x, int32_t y) {
       int bx, by; key_rect(i, &bx, &by);
       if (!hit(x, y, bx, by, kKeyW, kKeyH)) continue;
       if (i == 9) {                       // CLR
-        g_slot_entry[0] = ' ';
+        g_slot_entry[0] = '\0';
         draw_channels_overlay();
         return {};
       }
       if (i == 11) {                      // GO
         const int slot = slot_entry_value();
-        g_slot_entry[0] = ' ';
+        g_slot_entry[0] = '\0';
         if (slot >= 1 && slot <= kSlotCount)
           return {ActionKind::channel_select, static_cast<uint32_t>(slot)};
         draw_channels_overlay();
@@ -698,7 +698,7 @@ Action handle_touch(int32_t x, int32_t y) {
     for (size_t i = 0; i < std::size(kQuick); ++i) {
       const int col = static_cast<int>(i) % 2, row = static_cast<int>(i) / 2;
       if (hit(x, y, kCX + 26 + col * 214, kCY + 224 + row * 62, 200, 54)) {
-        g_slot_entry[0] = ' ';
+        g_slot_entry[0] = '\0';
         return {ActionKind::channel_select, static_cast<uint32_t>(kQuick[i])};
       }
     }
@@ -706,7 +706,7 @@ Action handle_touch(int32_t x, int32_t y) {
     // underneath; a tap outside closes it.
     if (hit(x, y, kCX, kCY, kCW, kCH)) return {};
     g_channels_open = false;
-    g_slot_entry[0] = ' ';
+    g_slot_entry[0] = '\0';
     draw_static();
     return {};
   }

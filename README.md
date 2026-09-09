@@ -610,6 +610,16 @@ For a source build, use the explicit native steps in
 > will appear in a plain `hardcoreerik/OrcSDR` clone on Windows. The build works
 > there on Linux and macOS, where checkout does not rewrite line endings.
 
+> **Battery boot: keep `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y`.** Without
+> it this fork boot-loops when running on battery (fine on USB-C), panicking in
+> the allocator on a heap corrupted from inside the ESP-Hosted SDIO transport.
+> That option does not repair the fault — it shifts context-switch timing
+> enough to move the race out of the way — but it is the difference between a
+> device that boots unplugged and one that does not. If you change FreeRTOS or
+> heap configuration and battery boots start failing, that is where to look;
+> `docs/FORK_HANDOFF.md` §3b has the coredumps, the build matrix, and what was
+> ruled out.
+
 Saved NVS settings are preserved. PlatformIO is not a supported OrcSDR build or flash path.
 
 A matching boot line looks like:
