@@ -303,6 +303,48 @@ free followed by a late DMA completion.
 
 ---
 
+### 3c. The LoRa monitor listens 8% of the time, and triggers on noise
+
+Measured 2026-09-09 while checking whether any Meshtastic traffic is reachable.
+A 60-minute watch on the US LongFast default slot (20, 906.875 MHz) ran **345**
+decode cycles and reported `preambles=0` on every one -- no traffic. But the
+more useful result came from characterising the monitor itself over 180 s at
+TRACE:
+
+| Measure | Value |
+| --- | --- |
+| IQ captures started | 24 |
+| Air time actually captured | 15.0 s of 180 s |
+| **Listening fraction** | **8%** |
+| Decode time per cycle | 1828-3069 ms (mean 2348) |
+| Cycle period | 0.5-41 s (mean 7.6) |
+| Energy triggers | 24 |
+| Preambles found | 0 |
+
+**Every one of the 24 triggers was false.** 24 captures, 24 decodes, zero
+preambles and zero header failures -- none of them were LoRa. Each false
+trigger costs about 2.3 s of decode, and the receiver is not watching the air
+while it decodes, so the monitor spends most of its time chasing noise and is
+deaf for most of the rest.
+
+The cause is the trigger input. `service_lora_energy()` fires when
+`rtl_signal_dbfs` exceeds the tracked noise floor by `kLoraTriggerMarginDb`
+(9 dB) -- and `rtl_signal_dbfs` is **wideband** power across the whole 960 kHz
+sample window, not the LoRa channel. On the 915 MHz ISM band that window is
+full of other traffic, so anything rising 9 dB anywhere in it starts a capture
+even when the slot itself is silent. This is the same mistake the channel
+scanner had and 5.7a fixed: a wideband level cannot tell you what is on the
+*channel*. The scanner's answer -- require the strongest spectrum bin to sit
+near the dial -- applies here too.
+
+**What this means for a quiet result.** "Nothing heard in an hour" is much
+weaker evidence than it sounds. A Meshtastic LongFast burst is a few hundred
+milliseconds; with 8% coverage most of them would be missed even if a mesh were
+in range. Do not conclude there is no mesh nearby from this data -- conclude
+that the monitor needs an in-channel trigger before absence means anything.
+
+---
+
 ## 4. Two mistakes worth inheriting
 
 Both cost real hardware-recovery time. Do not repeat them.
