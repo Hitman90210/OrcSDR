@@ -15,7 +15,7 @@ vTaskDeleteWithCaps battery-boot fix).
 
 Target: **M5Stack Tab5** — ESP32-P4 host with an ESP32-C6 Wi-Fi co-processor
 over ESP-Hosted SDIO. ESP-IDF 5.5.4. The application is
-`apps/orcsdr-tab5`, and `ui/main.cpp` is a ~13,500-line monolith that owns the
+`apps/orcsdr-tab5`, and `ui/main.cpp` is still a ~14,900-line monolith that owns the
 radio session, the streaming task, the serial CLI, and the generic radio
 screen; each dedicated dashboard (FM, P25, ADS-B, LoRa, POCSAG, home) is its
 own file.
@@ -665,10 +665,11 @@ on their own timer and will draw straight through a panel unless
 3. **`noaa_weather` / `fcc_broadcast` packs** cannot be published from this
    fork — the catalog is signed with the upstream author's P-256 key and the
    firmware embeds only the matching public key.
-4. **Resolved: SD writes and deletes require `PAIR`/`AUTH`.** An unpaired host
-   may still list or read files, matching the query tier, but cannot inject or
-   remove trusted `/orcsdr/` configuration. The supported upload tool performs
-   the HMAC handshake from the untracked pairing-key file.
+4. **Resolved: every SD transfer operation requires `PAIR`/`AUTH`.** Listing,
+   reading, writing, and deleting are all inside the authenticated boundary
+   because `/orcsdr/` can contain recordings, location data, network settings,
+   and decoder logs. All supported transfer tools perform the HMAC handshake
+   from the untracked pairing-key file.
 5. **The channel scanner's GMRS threshold has not met a real GMRS signal.**
    Both halves were verified, but on different bands: "stops on a real signal"
    was proved on weather (a live NOAA transmitter, 60 dB, held and resumed
@@ -709,6 +710,8 @@ accumulate, no early exit), and no secrets on the serial console.
 | File | What lives there |
 | --- | --- |
 | `ui/main.cpp` | Radio session, streaming task, serial CLI, generic radio screen, scan drivers, snapshot builders. Everything not in a dashboard. |
+| `ui/orc_console.*` | Buffered USB Serial/JTAG transport extracted from `main.cpp`; serial command routing remains in the monolith. |
+| `ui/ui_theme.hpp` | Shared RGB565, radius, and minimum-touch-size tokens for product chrome. |
 | `ui/waterfall_view.{hpp,cpp}` | Ring-buffer waterfall. Added by this fork. |
 | `ui/wifi_service.{hpp,cpp}` | Station lifecycle, `reset_link()`, transport health, disconnect reasons. |
 | `ui/catalog_sync.{hpp,cpp}` | Signed data catalog: fetch, verify, install, remove. |

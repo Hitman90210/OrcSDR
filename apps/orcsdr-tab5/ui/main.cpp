@@ -14,7 +14,6 @@
 #include <nvs_flash.h>
 #include <mbedtls/md.h>
 #include <mbedtls/sha256.h>
-#include <driver/usb_serial_jtag.h>
 #include <usb/usb_helpers.h>
 #include <usb/usb_host.h>
 #include <freertos/FreeRTOS.h>
@@ -44,6 +43,7 @@
 
 #include "orcsdr_splash.hpp"
 #include "orcsdr_storage.hpp"
+#include "orc_console.hpp"
 #include "adsb_dashboard.hpp"
 #include "adsb_decoder.hpp"
 #include "atc_presets.hpp"
@@ -90,86 +90,7 @@
 #error "ORCSDR_HOSTED_C6_VERSION must come from tools/release/hosted-c6-release.json"
 #endif
 
-class OrcConsole {
- public:
-  void begin(uint32_t) {
-    if (usb_serial_jtag_is_driver_installed()) return;
-    usb_serial_jtag_driver_config_t config = {
-        .tx_buffer_size = 4096,
-        .rx_buffer_size = 1024,
-    };
-    usb_serial_jtag_driver_install(&config);
-  }
-
-  int available() {
-    if (has_pending_) return 1;
-    // A zero-tick USB Serial/JTAG poll can miss a packet handed off just
-    // after this loop iteration. One RTOS tick keeps the CLI responsive
-    // without moving radio/DSP work off its existing task.
-    has_pending_ = usb_serial_jtag_read_bytes(&pending_, 1, pdMS_TO_TICKS(1)) == 1;
-    return has_pending_ ? 1 : 0;
-  }
-
-  int read() {
-    if (!has_pending_) return -1;
-    has_pending_ = false;
-    return pending_;
-  }
-
-  size_t readBytes(uint8_t* output, size_t size, uint32_t timeout_ms) {
-    if (output == nullptr || size == 0) return 0;
-    size_t received = 0;
-    if (has_pending_) {
-      output[received++] = pending_;
-      has_pending_ = false;
-    }
-    while (received < size) {
-      const int count = usb_serial_jtag_read_bytes(
-          output + received, size - received, pdMS_TO_TICKS(timeout_ms));
-      if (count <= 0) break;
-      received += static_cast<size_t>(count);
-    }
-    return received;
-  }
-
-  void print(char value) { write(&value, 1); }
-  void print(const char* value) { write(value, strlen(value)); }
-  void println() { print('\n'); }
-  void println(const char* value) {
-    print(value);
-    println();
-  }
-
-  void printf(const char* format, ...) {
-    char output[2048];
-    va_list args;
-    va_start(args, format);
-    const int length = vsnprintf(output, sizeof(output), format, args);
-    va_end(args);
-    if (length > 0) write(output, min(static_cast<size_t>(length), sizeof(output) - 1));
-  }
-
-  size_t writeBytes(const uint8_t* data, size_t size) {
-    size_t written = 0;
-    while (written < size) {
-      const int count = usb_serial_jtag_write_bytes(
-          data + written, size - written, pdMS_TO_TICKS(3000));
-      if (count <= 0) break;
-      written += static_cast<size_t>(count);
-    }
-    return written;
-  }
-
- private:
-  void write(const void* data, size_t size) {
-    usb_serial_jtag_write_bytes(data, size, pdMS_TO_TICKS(100));
-  }
-
-  uint8_t pending_ = 0;
-  bool has_pending_ = false;
-};
-
-OrcConsole orc_console;
+orcsdr::OrcConsole orc_console;
 #ifdef Serial
 #undef Serial
 #endif
@@ -5135,6 +5056,16 @@ void sd_put_chunk(const char* length_text) {
   Serial.printf("SD_PUT_ACK bytes=%llu\n",
                 static_cast<unsigned long long>(g_sd_put.received));
   if (g_sd_put.received == g_sd_put.expected) (void)sd_put_commit();
+}
+
+void end_authenticated_session(const char* transfer_reason) {
+  if (!authenticated) return;
+  authenticated = false;
+  // A session is the authorization boundary for the whole transfer, not just
+  // its first command. Close files and discard staged writes immediately when
+  // the host stops proving liveness or rotates its credential.
+  if (g_sd_get.active) sd_get_abort(transfer_reason);
+  if (g_sd_put.active) sd_put_abort(transfer_reason);
 }
 
 void draw_capture_tool_panel() {
@@ -12498,12 +12429,20 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_WIFI_SCAN") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_WIFI_SCAN_ERROR auth_required");
+      return;
+    }
     wifi_scan_requested.store(true, std::memory_order_release);
     Serial.println("RTL_WIFI_SCAN_QUEUED");
     return;
   }
   if (strcmp(command, "RTL_WIFI_CONNECT_SAVED") == 0 ||
       strcmp(command, "RTL_WIFI_CONNECT_SAVED PAUSE") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_WIFI_CONNECT_ERROR auth_required");
+      return;
+    }
     if (wifi_profile_count == 0) {
       Serial.println("RTL_WIFI_CONNECT_ERROR no_saved_profile");
       return;
@@ -12517,6 +12456,10 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_WIFI_RESULTS") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_WIFI_RESULTS_ERROR auth_required");
+      return;
+    }
     Serial.printf("RTL_WIFI_RESULTS_BEGIN count=%u total=%u revision=%u age_s=%u duration_ms=%u\n",
                   static_cast<unsigned>(wifi_scan_result_count),
                   static_cast<unsigned>(wifi_network_count),
@@ -12540,6 +12483,10 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_WIFI_PROFILES") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_WIFI_PROFILES_ERROR auth_required");
+      return;
+    }
     Serial.printf("RTL_WIFI_PROFILES_BEGIN count=%u\n",
                   static_cast<unsigned>(wifi_profile_count));
     for (uint8_t i = 0; i < wifi_profile_count; ++i) {
@@ -12692,6 +12639,7 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_LOCATION STATUS") == 0) {
+    if (!authenticated) { Serial.println("RTL_LOCATION_ERROR auth_required"); return; }
     const auto location = orcsdr::location_estimate::state();
     Serial.printf("RTL_LOCATION_STATUS busy=%d ready=%d latitude_e7=%ld longitude_e7=%ld message=\"%s\"\n",
                   location.busy ? 1 : 0, location.ready ? 1 : 0,
@@ -12722,6 +12670,7 @@ void process_command(char* command) {
     return;
   }
   if (strncmp(command, "RTL_ADSB_LOCATION ", 18) == 0) {
+    if (!authenticated) { Serial.println("RTL_ADSB_LOCATION_ERROR auth_required"); return; }
     double latitude = 0, longitude = 0;
     char trailing = 0;
     if (sscanf(command + 18, "%lf %lf %c", &latitude, &longitude, &trailing) != 2 ||
@@ -12741,24 +12690,39 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_ADSB_STOP") == 0 && rtl_ui_band == RtlBand::adsb) {
+    if (!authenticated) { Serial.println("RTL_ADSB_STOP_ERROR auth_required"); return; }
     rtl_stop_requested.store(true, std::memory_order_release);
     Serial.println("RTL_ADSB_STOPPING");
     return;
   }
   if (strcmp(command, "RTL_ADSB_START") == 0) {
+    if (!authenticated) { Serial.println("RTL_ADSB_START_ERROR auth_required"); return; }
     queue_local_rtl_listen(RtlBand::adsb, kAdsbDefaultHz);
     Serial.println("RTL_ADSB_STARTING");
     return;
   }
   if (strcmp(command, "SD_LIST") == 0) {
+    if (!authenticated) {
+      Serial.println("SD_LIST_ERROR auth_required");
+      return;
+    }
     sd_list();
     return;
   }
   if (strncmp(command, "SD_GET_BEGIN ", 13) == 0) {
+    if (!authenticated) {
+      Serial.println("SD_GET_ERROR auth_required");
+      return;
+    }
     sd_get_begin(command + 13);
     return;
   }
   if (strcmp(command, "SD_GET_CHUNK") == 0) {
+    if (!authenticated) {
+      if (g_sd_get.active) sd_get_abort("auth_expired");
+      else Serial.println("SD_GET_ERROR auth_required");
+      return;
+    }
     sd_get_chunk();
     return;
   }
@@ -14148,7 +14112,7 @@ void process_command(char* command) {
     preferences.putBytes("pair_key", pairing_key, sizeof(pairing_key));
     append_journal("credential_rotated");
     Serial.println("KEY_ROTATED");
-    authenticated = false;
+    end_authenticated_session("credential_rotated");
     offline_transition_handled = false;
     last_ping_ms = millis();
     draw_session_state("Credential rotated - host reconnect required", TFT_YELLOW);
@@ -14596,7 +14560,7 @@ void loop() {
     service_rtl_speaker_watchdog();
     const uint32_t now = millis();
     if (!offline_transition_handled && now - last_ping_ms > kSessionTimeoutMs) {
-      authenticated = false;
+      end_authenticated_session("auth_expired");
       offline_transition_handled = true;
       append_journal("session_degraded");
       run_offline_workflow();
@@ -14607,7 +14571,7 @@ void loop() {
   if (orcsdr::rf_lab::active()) {
     const uint32_t now = millis();
     if (!offline_transition_handled && now - last_ping_ms > kSessionTimeoutMs) {
-      authenticated = false;
+      end_authenticated_session("auth_expired");
       offline_transition_handled = true;
       append_journal("session_degraded");
       run_offline_workflow();
@@ -14927,7 +14891,7 @@ void loop() {
     draw_power_state();
   }
   if (!offline_transition_handled && now - last_ping_ms > kSessionTimeoutMs) {
-    authenticated = false;
+    end_authenticated_session("auth_expired");
     offline_transition_handled = true;
     if (!rtl_ui_active.load(std::memory_order_acquire)) {
       draw_session_state("Host offline - local journal active", TFT_ORANGE);

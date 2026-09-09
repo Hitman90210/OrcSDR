@@ -1,4 +1,5 @@
 #include "radio_ui_service.hpp"
+#include "ui_theme.hpp"
 
 #include <M5Unified.h>
 
@@ -8,7 +9,7 @@
 
 namespace orcsdr::radio_ui {
 namespace {
-constexpr uint16_t kGrid = 0x2104;
+constexpr uint16_t kGrid = theme::grid;
 // FM AM WX CB GMRS LORA BROWSE REC START. The row was already 1252 px wide of
 // the 1280 available, so fitting GMRS meant taking the slack out of the labels
 // that had it rather than appending: at text size 3 a glyph is 18 px, so
@@ -98,8 +99,9 @@ void draw_button_row(int x, int y, int height, int gap, const Button* buttons,
                      size_t count) {
   for (size_t index = 0; index < count; ++index) {
     const Button& button = buttons[index];
-    M5.Display.fillRoundRect(x, y, button.width, height, 10, button.color);
-    M5.Display.drawRoundRect(x, y, button.width, height, 10, TFT_WHITE);
+    M5.Display.fillRoundRect(x, y, button.width, height, theme::control_radius, button.color);
+    M5.Display.drawRoundRect(x, y, button.width, height, theme::control_radius,
+                             theme::text_muted);
     M5.Display.setTextColor(TFT_WHITE, button.color);
     M5.Display.setTextDatum(middle_center);
     M5.Display.setTextSize(3);

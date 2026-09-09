@@ -1,10 +1,12 @@
 param(
   [string]$Port = 'COM17',
   [int]$BaudRate = 921600,
-  [int]$TimeoutSeconds = 45
+  [int]$TimeoutSeconds = 45,
+  [string]$PairingKeyPath = (Join-Path $PSScriptRoot '..\..\..\.orclink\ui-doc.key')
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\..\..\tools\tab5_serial_auth.ps1')
 $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
 $logPath = Join-Path $PSScriptRoot "wifi-release-$stamp.log"
 $serial = [System.IO.Ports.SerialPort]::new($Port, $BaudRate, 'None', 8, 'One')
@@ -23,8 +25,23 @@ function Wait-Line([string]$Pattern, [int]$Seconds) {
   throw "Timed out waiting for $Pattern"
 }
 
+function Wait-AuthLine([string[]]$Prefixes, [int]$TimeoutSeconds = 10) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try { $line = $serial.ReadLine().Trim() } catch [TimeoutException] { continue }
+    if (!$line) { continue }
+    Add-Content -LiteralPath $logPath -Value $line
+    foreach ($prefix in $Prefixes) {
+      if ($line.StartsWith($prefix, [StringComparison]::Ordinal)) { return $line }
+    }
+  }
+  throw "Timed out waiting for: $($Prefixes -join ', ')"
+}
+
 try {
   $serial.DiscardInBuffer()
+  $waitLine = { param($Prefixes, $TimeoutSeconds) Wait-AuthLine $Prefixes $TimeoutSeconds }
+  Connect-Tab5AuthenticatedSerial -Serial $serial -PairingKeyPath $PairingKeyPath -WaitLine $waitLine
   $serial.WriteLine('RTL_WIFI_STATUS')
   $status = Wait-Line '^RTL_WIFI_STATUS ' $TimeoutSeconds
   $serial.WriteLine('RTL_WIFI_SCAN')

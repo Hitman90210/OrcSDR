@@ -105,17 +105,19 @@ COM port, unplug the cable, then use the LAN console.
 
 ## Auth model
 
-Two tiers, and the split is not fully consistent across the codebase (some
-state-changing commands require auth, some don't — documented per-command
-below rather than papered over):
+Two tiers. Commands that expose private stored state, trigger network work, or
+change persistent/radio state require authentication; bounded hardware and
+receiver diagnostics remain available for bring-up:
 
 - **Unauthenticated** — works immediately over the physical serial
-  connection. Covers all status/query commands and several state-changing
-  ones (`RTL_REC_START`, `RTL_TOOL`, `RTL_RDS_STATUS`, `RTL_FREQ` query).
+  connection. Covers bounded hardware and receiver diagnostics plus a small
+  legacy control surface (`RTL_REC_START`, `RTL_TOOL`, `RTL_RDS_STATUS`,
+  `RTL_FREQ` query). Private SD, Wi-Fi identity, and location data are excluded.
 - **`authenticated`** — gates the rest (`RTL_TUNE`, `RTL_VOLUME <n>`,
   `RTL_CAPTURE`/`RTL_LISTEN`, `RTL_STOP`, `RTL_PRESET_SCAN`,
   `RTL_PRESET_TUNE`, `RTL_P25_IQ_START`, `RTL_P25_IQ_STOP`, and
-  `RTL_P25_REPLAY`, `SD_PUT_*`, and `SD_REMOVE`). Requires the `PAIR`/`AUTH`
+  `RTL_P25_REPLAY`, all `SD_*` transfers, Wi-Fi scan/profile operations, and
+  receiver-location operations). Requires the `PAIR`/`AUTH`
   HMAC handshake below.
   This exists for a remote/untrusted-host scenario (e.g. Bluetooth); if
   you're driving the device over a physically-attached USB cable, that
@@ -369,10 +371,12 @@ All SD writes are refused with `..._ERROR radio_busy` while a capture/
 stream is active — stop the radio (`RTL_STOP`, needs auth) or wait for it
 to be idle first.
 
-`SD_LIST` and `SD_GET_*` remain in the unauthenticated query tier. `SD_PUT_*`
-and `SD_REMOVE` require an authenticated session; an expired session aborts an
-in-progress staged upload. `copy_to_tab5_sd.ps1` performs the handshake before
-starting the transfer and never prints or stores the pairing key.
+All `SD_LIST`, `SD_GET_*`, `SD_PUT_*`, and `SD_REMOVE` operations require an
+authenticated session because `/orcsdr/` may contain recordings, location data,
+network configuration, and decoder logs. An expired session closes an active
+download or discards an in-progress staged upload. The supported `copy_to_*`,
+`copy_from_*`, and `get_from_*` scripts perform the handshake before starting
+and never print or store the pairing key.
 
 ## Data Catalog
 
@@ -403,7 +407,7 @@ RTL_CATALOG_INSTALL faa_aircraft
 `RTL_UI` gives a serial agent the same semantic action handlers used by the
 FM, P25, LoRa, and Settings touch views. It is authenticated because every
 action can change device state. Credentials continue to use signed `SET_WIFI`;
-ADS-B coordinates use `RTL_ADSB_LOCATION`.
+ADS-B coordinates use authenticated `RTL_ADSB_LOCATION`.
 
 ```text
 RTL_UI STATUS
@@ -454,10 +458,10 @@ cannot forge serial records. Passwords are never returned.
 | Command | Auth | Reply / behavior |
 |---|---|---|
 | `RTL_WIFI_STATUS` | no | Station/Hosted state, scan/connect state, profile/AP counts, power, auto-connect, and antenna. |
-| `RTL_WIFI_SCAN` | no | Queues one scan; wait for `RTL_WIFI_SCAN_RESULTS count=N` and `RTL_WIFI_COEX event=scan_complete`. |
-| `RTL_WIFI_RESULTS` | no | Bounded `RTL_WIFI_AP` rows with `ssid_hex`, BSSID, RSSI, channel, and security flag. |
-| `RTL_WIFI_PROFILES` | no | Priority-ordered SSID-only profile list; never returns passwords. |
-| `RTL_WIFI_CONNECT_SAVED` | no | Compatibility shortcut for saved profile 0. Indexed connection uses `RTL_UI ACTION SETTINGS CONNECT_SAVED <index>`. |
+| `RTL_WIFI_SCAN` | yes | Queues one scan; wait for `RTL_WIFI_SCAN_RESULTS count=N` and `RTL_WIFI_COEX event=scan_complete`. |
+| `RTL_WIFI_RESULTS` | yes | Bounded `RTL_WIFI_AP` rows with `ssid_hex`, BSSID, RSSI, channel, and security flag. |
+| `RTL_WIFI_PROFILES` | yes | Priority-ordered SSID-only profile list; never returns passwords. |
+| `RTL_WIFI_CONNECT_SAVED` | yes | Compatibility shortcut for saved profile 0. Indexed connection uses `RTL_UI ACTION SETTINGS CONNECT_SAVED <index>`. |
 | `RTL_WIFI_DISCONNECT` | yes | Disconnects Wi-Fi and restores the paused radio/audio path. |
 | `RTL_WIFI_RESET_LINK` | yes | Manual recovery for a wedged SDIO transport to the C6 (see `RTL_WIFI_STATUS`'s `transport_healthy`): rebuilds the esp_hosted link and Wi-Fi driver, then reconnects to the current network if one was configured. Requires Wi-Fi already started (`RTL_WIFI_RESET_LINK_ERROR not_started` otherwise). Blocks for the duration of the rebuild, the same bring-up work boot already does. |
 | `SET_WIFI <ssid_hex> <pass_hex> <hmac>` | yes + signed payload | Provisions slot 0 and attempts connection without echoing credentials. |

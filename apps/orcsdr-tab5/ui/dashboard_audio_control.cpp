@@ -1,4 +1,5 @@
 #include "dashboard_audio_control.hpp"
+#include "ui_theme.hpp"
 
 #include <M5Unified.h>
 
@@ -9,13 +10,13 @@
 namespace orcsdr::audio_header {
 namespace {
 
-constexpr uint16_t kBg = TFT_BLACK;
-constexpr uint16_t kPanel = 0x0841;
-constexpr uint16_t kCyan = 0x2e7f;
-constexpr uint16_t kGreen = 0x6fe8;
-constexpr uint16_t kMuted = 0x8c71;
-constexpr uint16_t kMutedRed = TFT_RED;
-constexpr uint16_t kGrid = 0x2945;
+constexpr uint16_t kBg = theme::background;
+constexpr uint16_t kPanel = theme::surface;
+constexpr uint16_t kCyan = theme::primary;
+constexpr uint16_t kGreen = theme::success;
+constexpr uint16_t kMuted = theme::text_muted;
+constexpr uint16_t kMutedRed = theme::danger;
+constexpr uint16_t kGrid = theme::grid;
 constexpr int kRegionX = 866;
 constexpr int kRegionY = 20;
 constexpr int kRegionW = 174;
@@ -23,7 +24,9 @@ constexpr int kRegionW = 174;
 // icon row's y=39) and the expanded -/MUTE/+ buttons (kButtonY=34, height 64).
 constexpr int kRegionH = 82;
 constexpr int kIndicatorX = 870;
-constexpr int kIndicatorW = 88;
+// End exactly where the battery starts. The previous 6 px overlap meant a tap
+// on the battery's left edge unexpectedly opened the volume tray.
+constexpr int kIndicatorW = 82;
 constexpr int kButtonY = 34;
 constexpr int kButtonH = 64;
 constexpr int kButtonW = 54;
@@ -47,7 +50,7 @@ constexpr int kVisualizerW = 54;
 constexpr int kVisualizerH = 54;
 constexpr int kSettingsX = 1217;
 constexpr int kSettingsY = 12;
-constexpr int kSettingsW = 51;
+constexpr int kSettingsW = 54;
 constexpr int kSettingsH = 54;
 constexpr uint32_t kTrayTimeoutMs = 4000;
 
@@ -100,8 +103,8 @@ void draw_battery(int x, int y, int32_t battery_percent) {
 }
 
 void draw_button(int x, const char* label, uint16_t color) {
-  M5.Display.fillRoundRect(x, kButtonY, kButtonW, kButtonH, 9, kPanel);
-  M5.Display.drawRoundRect(x, kButtonY, kButtonW, kButtonH, 9, color);
+  M5.Display.fillRoundRect(x, kButtonY, kButtonW, kButtonH, theme::control_radius, kPanel);
+  M5.Display.drawRoundRect(x, kButtonY, kButtonW, kButtonH, theme::control_radius, color);
   text(label, x + kButtonW / 2, kButtonY + kButtonH / 2, color, 2);
 }
 
@@ -133,8 +136,8 @@ void draw(const Control& control, uint8_t volume, bool sound_enabled,
 }
 
 void draw_home_button() {
-  M5.Display.fillRoundRect(kHomeX, kHomeY, kHomeW, kHomeH, 8, kPanel);
-  M5.Display.drawRoundRect(kHomeX, kHomeY, kHomeW, kHomeH, 8, kCyan);
+  M5.Display.fillRoundRect(kHomeX, kHomeY, kHomeW, kHomeH, theme::control_radius, kPanel);
+  M5.Display.drawRoundRect(kHomeX, kHomeY, kHomeW, kHomeH, theme::control_radius, kCyan);
   const int cx = kHomeX + kHomeW / 2;
   M5.Display.fillTriangle(cx, 17, kHomeX + 9, 38, kHomeX + kHomeW - 9, 38, kGreen);
   M5.Display.fillRect(cx - 12, 35, 24, 21, kGreen);
@@ -146,8 +149,8 @@ bool home_hit(int32_t x, int32_t y) {
 }
 
 void draw_mute_button(bool sound_enabled) {
-  M5.Display.fillRoundRect(kMuteX, kMuteY, kMuteW, kMuteH, 8, kPanel);
-  M5.Display.drawRoundRect(kMuteX, kMuteY, kMuteW, kMuteH, 8,
+  M5.Display.fillRoundRect(kMuteX, kMuteY, kMuteW, kMuteH, theme::control_radius, kPanel);
+  M5.Display.drawRoundRect(kMuteX, kMuteY, kMuteW, kMuteH, theme::control_radius,
                            sound_enabled ? kGreen : kMutedRed);
   draw_speaker(kMuteX + 13, kMuteY + kMuteH / 2,
                sound_enabled ? kGreen : kMuted, sound_enabled);
@@ -159,8 +162,10 @@ bool mute_hit(int32_t x, int32_t y) {
 
 void draw_visualizer_button(bool enabled) {
   const uint16_t color = enabled ? kCyan : kMuted;
-  M5.Display.fillRoundRect(kVisualizerX, kVisualizerY, kVisualizerW, kVisualizerH, 8, kPanel);
-  M5.Display.drawRoundRect(kVisualizerX, kVisualizerY, kVisualizerW, kVisualizerH, 8, color);
+  M5.Display.fillRoundRect(kVisualizerX, kVisualizerY, kVisualizerW, kVisualizerH,
+                           theme::control_radius, kPanel);
+  M5.Display.drawRoundRect(kVisualizerX, kVisualizerY, kVisualizerW, kVisualizerH,
+                           theme::control_radius, color);
   text("VIS", kVisualizerX + kVisualizerW / 2, kVisualizerY + kVisualizerH / 2,
        color, 2);
 }
@@ -172,8 +177,10 @@ bool visualizer_hit(int32_t x, int32_t y) {
 void draw_settings_button() {
   constexpr int cx = kSettingsX + kSettingsW / 2;
   constexpr int cy = kSettingsY + kSettingsH / 2;
-  M5.Display.fillRoundRect(kSettingsX, kSettingsY, kSettingsW, kSettingsH, 8, kPanel);
-  M5.Display.drawRoundRect(kSettingsX, kSettingsY, kSettingsW, kSettingsH, 8, TFT_LIGHTGREY);
+  M5.Display.fillRoundRect(kSettingsX, kSettingsY, kSettingsW, kSettingsH,
+                           theme::control_radius, kPanel);
+  M5.Display.drawRoundRect(kSettingsX, kSettingsY, kSettingsW, kSettingsH,
+                           theme::control_radius, kMuted);
   M5.Display.drawCircle(cx, cy, 13, kCyan);
   M5.Display.drawCircle(cx, cy, 5, kCyan);
   M5.Display.drawLine(cx - 21, cy, cx - 13, cy, kCyan);
@@ -216,6 +223,10 @@ bool service_timeout(Control& control, uint32_t now_ms) {
 }
 
 bool self_check() {
+  static_assert(kHomeW >= theme::minimum_touch_size &&
+                kMuteW >= theme::minimum_touch_size &&
+                kVisualizerW >= theme::minimum_touch_size &&
+                kSettingsW >= theme::minimum_touch_size);
   Control control{};
   if (handle_touch(control, 900, 60, 100) != Action::opened || !control.expanded)
     return false;
@@ -231,8 +242,10 @@ bool self_check() {
   reset(control);
   if (handle_touch(control, 800, 60, 0) != Action::none) return false;
   return kRegionX + kRegionW <= kHomeX && kButtonX[2] + kButtonW <= kHomeX &&
+         kIndicatorX + kIndicatorW <= 952 &&
          kHomeX + kHomeW <= kMuteX && kMuteX + kMuteW <= kVisualizerX &&
          kVisualizerX + kVisualizerW <= kSettingsX &&
+         kSettingsX + kSettingsW <= 1280 &&
          home_hit(kHomeX + 1, kHomeY + 1) &&
          !home_hit(kHomeX - 1, kHomeY) &&
          mute_hit(kMuteX + 1, kMuteY + 1) && !mute_hit(kMuteX - 1, kMuteY) &&

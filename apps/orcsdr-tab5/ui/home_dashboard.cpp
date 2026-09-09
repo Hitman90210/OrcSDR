@@ -2,6 +2,7 @@
 
 #include "dashboard_audio_control.hpp"
 #include "orc_badge.hpp"
+#include "ui_theme.hpp"
 #include "waterfall_view.hpp"
 
 #include <M5Unified.h>
@@ -14,10 +15,10 @@
 namespace orcsdr::home {
 namespace {
 
-constexpr uint16_t kCyan = 0x05FF;
-constexpr uint16_t kGreen = 0x6FE0;
-constexpr uint16_t kDim = 0x4228;
-constexpr uint16_t kPanel = 0x0021;
+constexpr uint16_t kCyan = theme::primary;
+constexpr uint16_t kGreen = theme::success;
+constexpr uint16_t kDim = theme::divider;
+constexpr uint16_t kPanel = theme::surface_deep;
 constexpr int kRailX = 24, kRailY = 112, kRailW = 280, kRailH = 530;
 constexpr int kMainX = 318, kMainY = 112, kMainW = 930, kMainH = 530;
 constexpr int kPlotX = 330, kPlotW = 906;
@@ -224,7 +225,7 @@ void draw_recent_list() {
     const int y = kListY + offset + slot * kRowPitch;
     const bool selected = id == current.active_dashboard;
     M5.Display.fillRoundRect(kListX + 2, y, kListW - 20, kRowH, 7,
-                             selected ? 0x00A0 : TFT_BLACK);
+                             selected ? theme::surface_selected : theme::background);
     M5.Display.drawRoundRect(kListX + 2, y, kListW - 20, kRowH, 7,
                              selected ? kGreen : kCyan);
     draw_menu_icon(id, kListX + 34, y + kRowH / 2, selected ? kGreen : kCyan);
@@ -234,7 +235,7 @@ void draw_recent_list() {
   M5.Display.clearClipRect();
 
   const int track_x = kListX + kListW - 10;
-  M5.Display.fillRoundRect(track_x, kListY, 7, kListH, 4, 0x1082);
+  M5.Display.fillRoundRect(track_x, kListY, 7, kListH, 4, theme::surface);
   if (max_scroll_px() > 0) {
     const int content_h = recent_content_rows() * kRowPitch;
     const int thumb_h = std::max(36, kListH * kListH / content_h);
@@ -365,7 +366,7 @@ int weather_channel_at(int32_t x, int32_t y) {
 void draw_scan_button(int x, int y, int w, int h) {
   const bool on = current.channel_scan_active;
   const bool holding = current.channel_scan_holding;
-  const uint16_t colour = !on ? kGreen : holding ? TFT_ORANGE : TFT_RED;
+  const uint16_t colour = !on ? kGreen : holding ? theme::warning : theme::danger;
   if (on) M5.Display.fillRoundRect(x, y, w, h, 7, holding ? 0x3200 : 0x3000);
   panel(x, y, w, h, colour, 7);
   text(!on ? "SCAN" : holding ? "HOLD" : "SCAN*", x + w / 2, y + h / 2, colour, 2,

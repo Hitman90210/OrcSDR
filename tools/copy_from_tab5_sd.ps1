@@ -8,10 +8,13 @@ param(
 
     [switch]$LatestRecording,
 
-    [switch]$List
+    [switch]$List,
+
+    [string]$PairingKeyPath = (Join-Path $PSScriptRoot '..\.orclink\ui-doc.key')
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'tab5_serial_auth.ps1')
 
 # [Convert]::ToHexString is .NET 5+, so this script threw
 # "does not contain a method named 'ToHexString'" on stock Windows PowerShell
@@ -70,6 +73,8 @@ function Get-Tab5Files {
 try {
     $serial.Open()
     $serial.DiscardInBuffer()
+    $waitLine = { param($Prefixes, $TimeoutSeconds) Wait-Tab5Line $Prefixes $TimeoutSeconds }
+    Connect-Tab5AuthenticatedSerial -Serial $serial -PairingKeyPath $PairingKeyPath -WaitLine $waitLine
     $files = Get-Tab5Files
     if ($List -or (-not $Path -and -not $LatestRecording)) {
         $files | Sort-Object Modified, Path -Descending

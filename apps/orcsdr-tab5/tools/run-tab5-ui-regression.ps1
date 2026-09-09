@@ -32,6 +32,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\..\..\tools\tab5_serial_auth.ps1')
 $script:serial = $null
 $script:linesSeen = 0
 $script:soakLogPath = $null
@@ -135,34 +136,13 @@ function Drain-SerialOutput([int]$QuietMilliseconds = 300, [int]$MaximumMillisec
 }
 
 function Connect-Authenticated {
-  $keyFile = (Resolve-Path -LiteralPath $PairingKeyPath).Path
-  $keyText = [IO.File]::ReadAllText($keyFile).Trim()
-  if ($keyText -notmatch '^[0-9A-Fa-f]{64}$') {
-    throw 'Pairing key must contain exactly 32 hexadecimal bytes.'
+  $waitLine = {
+    param($Prefixes, $TimeoutSeconds)
+    $escaped = $Prefixes | ForEach-Object { [Regex]::Escape($_) }
+    Read-MatchingLine ('^(?:' + ($escaped -join '|') + ')') $TimeoutSeconds
   }
-  $key = [Convert]::FromHexString($keyText)
-  $pair = Send-And-Wait ('PAIR ' + $keyText) '^PAIR_(?:OK|LOCKED|INVALID)$'
-  if ($pair -ne 'PAIR_OK') { throw "Device pairing failed: $pair" }
-
-  $nonce = [byte[]]::new(16)
-  [Security.Cryptography.RandomNumberGenerator]::Fill($nonce)
-  $hmac = [Security.Cryptography.HMACSHA256]::new($key)
-  try {
-    $hostProof = $hmac.ComputeHash([byte[]]([Text.Encoding]::ASCII.GetBytes('host') + $nonce))
-    $reply = Send-And-Wait (
-      'AUTH ' + [Convert]::ToHexString($nonce) + ' ' + [Convert]::ToHexString($hostProof)
-    ) '^AUTH_(?:OK|DENIED|ERROR|INVALID)'
-    if ($reply -notmatch '^AUTH_OK ([0-9A-Fa-f]{64})$') {
-      throw "Device authentication failed: $reply"
-    }
-    $expected = $hmac.ComputeHash([byte[]]([Text.Encoding]::ASCII.GetBytes('device') + $nonce))
-    if (-not [Security.Cryptography.CryptographicOperations]::FixedTimeEquals(
-        [Convert]::FromHexString($Matches[1]), $expected)) {
-      throw 'Device authentication proof did not match.'
-    }
-  } finally {
-    $hmac.Dispose()
-  }
+  Connect-Tab5AuthenticatedSerial -Serial $script:serial `
+    -PairingKeyPath $PairingKeyPath -WaitLine $waitLine
   Write-SoakLine 'RTL_UI_SOAK_AUTH verified=1'
   Drain-SerialOutput
 }

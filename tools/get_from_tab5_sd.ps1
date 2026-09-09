@@ -5,10 +5,13 @@ param(
     [Parameter(Mandatory = $true, Position = 1)]
     [string]$Destination,
 
-    [string]$Port = 'COM17'
+    [string]$Port = 'COM17',
+
+    [string]$PairingKeyPath = (Join-Path $PSScriptRoot '..\.orclink\ui-doc.key')
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'tab5_serial_auth.ps1')
 
 # [Convert]::ToHexString is .NET 5+, so this script threw
 # "does not contain a method named 'ToHexString'" on stock Windows PowerShell
@@ -57,6 +60,8 @@ function Read-ExactBytes([int]$Count) {
 try {
     $serial.Open()
     $serial.DiscardInBuffer()
+    $waitLine = { param($Prefixes, $TimeoutSeconds) Wait-Tab5Line $Prefixes $TimeoutSeconds }
+    Connect-Tab5AuthenticatedSerial -Serial $serial -PairingKeyPath $PairingKeyPath -WaitLine $waitLine
     $serial.WriteLine("SD_GET_BEGIN $pathHex")
     $ready = Wait-Tab5Line @('SD_GET_READY', 'SD_GET_ERROR')
     if ($ready.StartsWith('SD_GET_ERROR')) { throw $ready }
