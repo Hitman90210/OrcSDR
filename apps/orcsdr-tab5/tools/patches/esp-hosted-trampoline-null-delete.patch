@@ -26,5 +26,5 @@ diff --git a/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_po
 +    (void)with_caps;
 +    vTaskDelete(NULL);
  }
-
+ 
  eh_host_port_err_t eh_host_port_task_create(const eh_host_port_task_create_cfg_t *cfg,
