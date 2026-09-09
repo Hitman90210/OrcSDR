@@ -81,6 +81,22 @@ The `settings.*` screens and `fm.settings` are `demo`-only; asking for them in
 - Memory at `stage=ready`: ~82 KB internal free, ~42 KB DMA-capable,
   ~26.7 MB PSRAM. Watch the first number — see §7.
 - Upstream's POCSAG pager decoder is merged and its self-check passes.
+- **ADS-B verified end to end on air (2026-09-09).** 1090 MHz, live traffic:
+  receiver at 2,047,945 sps with zero overruns, drops or IQ queue drops;
+  78,632 preambles, 11,254 DF17, 1,074 CRC-valid messages, 24 aircraft tracked.
+  Altitudes 5,775-23,850 ft and ground speeds 263-441 kts are all plausible.
+  The 34 MB FAA aircraft pack resolved **31 of 32** ICAO addresses to tail
+  numbers (A8996B to N653RW, A9F461 to N740UW, and so on), so the database
+  lookup path works, not just the decoder.
+
+  Callsigns decode correctly (`ASH6130`, `UAL21`). A first pass reported none
+  and that was a measurement error worth recording: `RTL_ADSB_FRAME` is emitted
+  only at TRACE, and identification messages are type codes 1-4, which are just
+  **2 of 211** frames -- about 1% of the mix against 156 TC 0, 25 TC 19
+  velocity and 21 TC 11 position. A short sample containing no callsign is the
+  expected outcome, not a fault. Assert on the RTL_ADSB_STATUS counters, which
+  are authoritative and available at DEBUG, and sample frames separately.
+
 - Upstream beta.5 regional LoRa plans, retained traffic scrolling, packet-log
   export, non-blocking console writes, and deferred Wi-Fi startup are merged.
 - The exact 2026-09-09 app image passed the authenticated UI regression and
