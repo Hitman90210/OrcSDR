@@ -13376,6 +13376,41 @@ void process_command(char* command) {
                   g_iq_rec_last_path[0] ? g_iq_rec_last_path : "none");
     return;
   }
+  // Meshtastic presets differ in both spreading factor and bandwidth, and a
+  // receiver on the wrong pair hears nothing at all. These were touch-only
+  // controls, which left no way to match a node over serial.
+  if (strncmp(command, "RTL_LORA_MODEM ", 15) == 0 && authenticated) {
+    unsigned sf = 0;
+    unsigned bandwidth = 0;
+    if (sscanf(command + 15, "%u %u", &sf, &bandwidth) != 2) {
+      Serial.println("RTL_LORA_MODEM_INVALID usage: RTL_LORA_MODEM <sf 7-12> <bw 125000|250000|500000>");
+      return;
+    }
+    if (sf < 7 || sf > 12) {
+      Serial.println("RTL_LORA_MODEM_INVALID spreading factor must be 7-12");
+      return;
+    }
+    if (bandwidth != 125000u && bandwidth != 250000u && bandwidth != 500000u) {
+      Serial.println("RTL_LORA_MODEM_INVALID bandwidth must be 125000, 250000 or 500000");
+      return;
+    }
+    lora_sf.store(static_cast<uint8_t>(sf), std::memory_order_relaxed);
+    lora_bandwidth_hz.store(bandwidth, std::memory_order_relaxed);
+    rtl_filter_bandwidth_hz.store(bandwidth, std::memory_order_relaxed);
+    reset_spectrum_renderer();
+    Serial.printf("RTL_LORA_MODEM_OK sf=%u bandwidth_hz=%u", sf, bandwidth);
+    Serial.println();
+    return;
+  }
+  if (strcmp(command, "RTL_LORA_MODEM") == 0) {
+    Serial.printf("RTL_LORA_MODEM_STATUS sf=%u bandwidth_hz=%u frequency_hz=%lu",
+                  static_cast<unsigned>(lora_sf.load(std::memory_order_relaxed)),
+                  static_cast<unsigned>(
+                      lora_bandwidth_hz.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long>(rtl_ui_frequency_hz));
+    Serial.println();
+    return;
+  }
   if (strcmp(command, "RTL_LORA_TRIGGER_STATUS") == 0) {
     Serial.printf("RTL_LORA_TRIGGER_STATUS level_dbfs=%.1f noise_dbfs=%.1f "
                   "trigger_dbfs=%.1f channel_excess_db=%.1f "
@@ -13754,6 +13789,8 @@ void process_command(char* command) {
     Serial.println("RTL_CHANNEL_LOCK_LIST/_CLEAR   - list or clear the lockout for this band");
     Serial.println("RTL_SAME_STATUS                - NOAA SAME/EAS decoder state and counts");
     Serial.println("RTL_SAME_LAST                  - last decoded SAME alert, areas and raw header");
+    Serial.println("RTL_LORA_MODEM                 - query LoRa spreading factor and bandwidth");
+    Serial.println("RTL_LORA_MODEM <sf> <bw_hz>    - match a transmitter's preset (auth)");
     Serial.println("RTL_SQUELCH                    - query squelch (CB/GMRS audio + scan stop level)");
     Serial.println("RTL_SQUELCH <-90..-20>         - set squelch dBFS, -90 opens it (auth)");
     Serial.println("RTL_RDS_STATUS                 - on-demand RDS Stage1/2 diagnostic dump");

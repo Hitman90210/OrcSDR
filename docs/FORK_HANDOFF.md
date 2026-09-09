@@ -371,6 +371,99 @@ monitor on one slot; absence of traffic is evidence about this location and
 this slot, not about the mesh generally.
 
 ---
+### 3d. The LoRa decoder cannot decode 500 kHz Meshtastic presets
+
+Meshtastic moved the US stock preset off **LongFast** because its 250 kHz
+bandwidth is not US-compliant: FCC 15.247 expects at least 500 kHz for a
+digitally-modulated system in the 902-928 MHz band. Two presets are 500 kHz
+wide, and this fork's native decoder can decode neither.
+
+| Preset | Bandwidth | SF | Coding rate |
+| --- | --- | --- | --- |
+| Long Fast (old US stock) | 250 kHz | 11 | 4/5 |
+| **Long Turbo** (US replacement) | **500 kHz** | 11 | 4/8 |
+| Short Turbo | **500 kHz** | 7 | 4/5 |
+
+Preset names are easy to confuse here -- Long Turbo and Short Turbo are both
+500 kHz and differ only in spreading factor, and the frequency alone cannot
+tell them apart. What the frequency *does* pin down is the bandwidth, which
+is the part that matters below.
+
+**The grids differ, so a slot number is meaningless without the bandwidth.**
+From `RadioInterface.cpp`:
+
+```
+freq        = freqStart + (bw / 2000) + (channel_num * bw / 1000)
+numChannels = floor((freqEnd - freqStart) / (spacing + bw / 1000))
+channel_num = (config.channel_num ? config.channel_num - 1 : hash(channelName))
+              % numChannels
+```
+
+For the US (902.0-928.0 MHz, spacing 0):
+
+| Slot shown | at 250 kHz | at 500 kHz |
+| --- | --- | --- |
+| 14 | 905.375 MHz | **908.750 MHz** |
+
+A node reporting "Frequency slot 0" is on *auto*: Meshtastic hashes the
+channel name to pick the slot. Read the frequency the node displays, never
+the slot number alone. An observed 908.750 MHz is only reachable on the
+500 kHz grid, which is how the bandwidth was identified here.
+
+**Why it cannot decode.** `lora_native_decoder.cpp`:
+
+```c
+constexpr uint32_t kDecodeRate = 500000;   // exactly 2 samples per chip at 250 kHz
+
+bool configure_chirp(uint8_t sf, uint32_t bandwidth_hz) {
+  if (sf < kMinSf || sf > kMaxSf || bandwidth_hz != 250000 || ...)
+    return false;
+```
+
+The decoder is built around two samples per chip at a fixed 250 kHz, so any
+other bandwidth is refused before a sample is examined. `decode()` returns 0
+and `preambles` stays 0 however strong the signal is.
+
+**Confirmed on air, 2026-09-09.** A Meshtastic node feet away on 908.750 MHz,
+receiver tuned to match:
+
+- At automatic gain the bursts arrived at **-2.0 to -4.4 dBFS** -- essentially
+  full scale, against -19 to -25 dBFS for the quiet band. An 8-bit ADC clips
+  there, so gain was dropped to manual 7.7 dB.
+- With sane levels the energy trigger fired repeatedly at a channel excess of
+  **-0.8 to -1.5 dB**, the top of the scale and exactly what 3c's model
+  predicts for a strong in-channel chirp. **That is the accept half of the
+  trigger proved on a real transmission**, which noise and interferer tests
+  could not establish.
+- Every decode still returned `preambles=0`, at both SF 7 and the parameters
+  above, because the bandwidth check rejects the capture outright.
+
+So the antenna, tuner, trigger and capture path all work end to end. The
+decoder alone refuses the parameters.
+
+**What supporting 500 kHz would take.** Not a one-line relaxation:
+
+1. `kDecodeRate` must become `2 x bandwidth_hz` -- 1 MHz for a 500 kHz
+   channel, not a fixed 500 kHz.
+2. The LoRa capture runs at 960 kHz, which cannot supply two samples per chip
+   at 1 MHz. The driver already sustains 2,047,945 sps for ADS-B so a faster
+   capture is available, but it doubles the IQ buffer for the same duration,
+   and internal RAM is this project's binding constraint.
+3. `configure_chirp()` and `interpolated_iq()` must take the bandwidth rather
+   than assume it, with FFT scratch sizing following.
+4. Long Turbo also uses coding rate 4/8 where the decoder has only been
+   exercised on 4/5; worth confirming that path.
+
+**Meanwhile:** `RTL_LORA_MODEM <sf> <bw_hz>` was added, because spreading
+factor and bandwidth were touch-only and a receiver could not be matched to a
+transmitter over serial at all. 250 kHz presets still decode; 500 kHz tunes
+and triggers correctly but will not decode until the above is done.
+
+**Two populations now exist** -- nodes on old LongFast and nodes on the newer
+500 kHz stock preset -- and which one a node belongs to depends on when its
+firmware was flashed. Anyone still on LongFast is unaffected by all of this.
+
+---
 ## 4. Two mistakes worth inheriting
 
 Both cost real hardware-recovery time. Do not repeat them.

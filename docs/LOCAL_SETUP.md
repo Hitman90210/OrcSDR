@@ -220,6 +220,22 @@ is the dial to turn: raise it with the CB panel's SQL+ or over serial with
 `RTL_SQUELCH`, and use `RTL_CHANNEL_PROBE` to see what the detector actually
 reads on a given channel. `docs/API_SERIAL_CLI.md` explains how "busy" is
 decided and why a plain signal-strength test does not work.
+> **Check your Meshtastic modem preset before blaming the receiver.**
+> Meshtastic moved the US stock preset off **LongFast** (250 kHz, SF 11)
+> because its bandwidth is not US-compliant -- FCC 15.247 expects at least
+> 500 kHz for digital modulation. The 500 kHz presets are **Long Turbo**
+> (SF 11) and **Short Turbo** (SF 7).
+>
+> The grids differ, so a slot number means nothing without the bandwidth:
+> slot 14 is 905.375 MHz at 250 kHz but **908.750 MHz** at 500 kHz. Read the
+> frequency your node displays, not the slot. "Frequency slot 0" means auto,
+> where Meshtastic hashes the channel name to choose one.
+>
+> **This fork decodes 250 kHz presets only.** The native decoder is built
+> around 250 kHz and refuses 500 kHz outright, so a node on the current US
+> stock preset is invisible to it. `RTL_LORA_MODEM <sf> <bw_hz>` will tune and
+> trigger on 500 kHz but cannot decode it yet. See `docs/FORK_HANDOFF.md` 3d.
+
 - **LoRa** — the Meshtastic US band is 104 frequency slots of 250 kHz starting
   at 902.125 MHz, and **slot 20 (906.875 MHz) is the LongFast default**. The
   LoRa dashboard's CHANNELS button opens a picker for stepping slots or jumping
