@@ -11,6 +11,7 @@ constexpr Descriptor kEntries[] = {
     {Id::p25, "P25 RADIO", "Trunking monitor and voice follow", Category::digital, true},
     {Id::adsb, "ADS-B", "1090 MHz aircraft tracking", Category::aviation, true},
     {Id::shortwave, "SHORTWAVE", "General HF receiver workspace", Category::audio, true},
+    {Id::am, "AM RADIO", "Broadcast AM with channel-aware tuning", Category::audio, true},
     {Id::weather, "WEATHER", "NOAA weather radio", Category::audio, true},
     {Id::cb, "CB RADIO", "40-channel AM/SSB receiver", Category::audio, true},
     {Id::lora, "LORA", "LoRa and Meshtastic receive tools", Category::digital, true},
@@ -56,7 +57,7 @@ void load_recent(const uint8_t* ids, size_t count_value) {
     }
   }
   if (g_recent_count == 0) {
-    constexpr Id defaults[] = {Id::rf_lab, Id::fm, Id::p25, Id::adsb,
+    constexpr Id defaults[] = {Id::rf_lab, Id::fm, Id::am, Id::p25, Id::adsb,
                                Id::shortwave, Id::lora, Id::cb, Id::weather};
     std::copy(std::begin(defaults), std::end(defaults), g_recent.begin());
     g_recent_count = std::size(defaults);
@@ -101,7 +102,8 @@ bool self_check() {
                      g_recent[1] == Id::fm && !record_open(Id::p25);
   g_recent = saved;
   g_recent_count = saved_count;
-  return loaded && moved && std::size(kEntries) == 14 && find(Id::rf_lab) != nullptr &&
+  return loaded && moved && std::size(kEntries) == 15 && find(Id::rf_lab) != nullptr &&
+         find(Id::am) != nullptr &&
          find(Id::wifi_analysis) != nullptr && find(Id::pocsag) != nullptr;
 }
 

@@ -25,6 +25,7 @@ param(
   [switch]$DataOnly,
   [switch]$C6Update,
   [switch]$RadioScan,
+  [switch]$AmBroadcast,
   [switch]$InstallLaneMap,
   [string]$LocationQuery = '97401',
   [switch]$RequireWifiConnection,
@@ -169,16 +170,16 @@ function Connect-Authenticated {
 
 function Get-UiState {
   $line = Send-And-Wait 'RTL_UI STATUS' '^RTL_UI_STATUS '
-  if ($line -notmatch 'screen=(\S+) band=(\S+) frequency_hz=(\d+) settings=([01]) fm=([01]) p25=([01]) adsb=([01]) lora=([01]) rf24=([01]) home_font=([01]) graphics=([01])') {
+  if ($line -notmatch 'screen=(\S+) band=(\S+) frequency_hz=(\d+) settings=([01]) fm=([01]) am=([01]) p25=([01]) adsb=([01]) lora=([01]) rf24=([01]) home_font=([01]) graphics=([01])') {
     throw "Malformed UI status: $line"
   }
   return [pscustomobject]@{
     Screen = $Matches[1].ToUpperInvariant()
     Band = $Matches[2].ToUpperInvariant()
     Frequency = [uint32]$Matches[3]
-    Active = @([int]$Matches[4], [int]$Matches[5], [int]$Matches[6], [int]$Matches[7], [int]$Matches[8], [int]$Matches[9])
-    HomeFont = [int]$Matches[10]
-    Graphics = [int]$Matches[11]
+    Active = @([int]$Matches[4], [int]$Matches[5], [int]$Matches[6], [int]$Matches[7], [int]$Matches[8], [int]$Matches[9], [int]$Matches[10])
+    HomeFont = [int]$Matches[11]
+    Graphics = [int]$Matches[12]
   }
 }
 
@@ -186,17 +187,18 @@ function Test-ExclusiveScreen($State, [string]$Screen) {
   # RF24 is an overlay: FM remains active so the receiver/audio stream continues.
   if ($Screen -eq 'WIFI_ANALYSIS') {
     return $State.Active[0] -eq 0 -and $State.Active[1] -eq 1 -and
-           $State.Active[2] -eq 0 -and
-           $State.Active[3] -eq 0 -and $State.Active[4] -eq 0 -and
-           $State.Active[5] -eq 1
+           $State.Active[2] -eq 0 -and $State.Active[3] -eq 0 -and
+           $State.Active[4] -eq 0 -and $State.Active[5] -eq 0 -and
+           $State.Active[6] -eq 1
   }
   $expected = switch ($Screen) {
-    'FM' { @(0,1,0,0,0,0) }
-    'P25' { @(0,0,1,0,0,0) }
-    'ADSB' { @(0,0,0,1,0,0) }
-    'LORA' { @(0,0,0,0,1,0) }
-    'SETTINGS' { @(1,0,0,0,0,0) }
-    'HOME' { @(0,0,0,0,0,0) }
+    'FM' { @(0,1,0,0,0,0,0) }
+    'AM' { @(0,0,1,0,0,0,0) }
+    'P25' { @(0,0,0,1,0,0,0) }
+    'ADSB' { @(0,0,0,0,1,0,0) }
+    'LORA' { @(0,0,0,0,0,1,0) }
+    'SETTINGS' { @(1,0,0,0,0,0,0) }
+    'HOME' { @(0,0,0,0,0,0,0) }
     default { return $true }
   }
   return ($State.Active -join ',') -eq ($expected -join ',')
@@ -234,6 +236,29 @@ function Watch-Responsive([int]$Seconds, [string]$Screen, [string]$Band) {
 function Get-AudioStatus {
   $line = Send-And-Wait 'RTL_AUDIO_TEST STATUS' '^\{"type":"rtl_audio_test"'
   try { return $line | ConvertFrom-Json } catch { throw "Malformed audio status: $line" }
+}
+
+function ConvertFrom-SignalStatus([string]$Line) {
+  if ($line -notmatch '^RTL_SIGNAL_STATUS band=(\S+) frequency_hz=(\d+) signal_dbfs_tenths=(-?\d+) .*filter_hz=(\d+) lo_nudge=(-?\d+)$') {
+    throw "Malformed signal status: $line"
+  }
+  return [pscustomobject]@{
+    Band = $Matches[1]
+    Frequency = [uint32]$Matches[2]
+    SignalTenths = [int]$Matches[3]
+    FilterHz = [uint32]$Matches[4]
+    Line = $line
+  }
+}
+
+function Get-SignalStatus {
+  for ($attempt = 0; $attempt -lt 3; $attempt++) {
+    $line = Send-And-Wait 'RTL_SIGNAL' '^RTL_SIGNAL_STATUS '
+    try { return ConvertFrom-SignalStatus $line } catch {
+      if ($attempt -eq 2) { throw }
+      Start-Sleep -Milliseconds 100
+    }
+  }
 }
 
 function Assert-FmAudioProgress {
@@ -692,25 +717,31 @@ function Invoke-SelfCheck {
   if (Test-FatalLine 'RTL_UI_STATUS screen=home band=FM frequency_hz=96144000') {
     throw 'Fatal parser rejected healthy telemetry.'
   }
-  $audio = '{"type":"rtl_audio_test","speaker_enabled":1,"speaker_running":1,"audio_chunks":42}' | ConvertFrom-Json
-  if ($audio.speaker_running -ne 1 -or $audio.audio_chunks -ne 42) { throw 'Audio parser failed.' }
+  $audio = '{"type":"rtl_audio_test","speaker_enabled":1,"speaker_running":1,"headphone_connected":1,"internal_speaker_muted":1,"audio_chunks":42}' | ConvertFrom-Json
+  if ($audio.speaker_running -ne 1 -or $audio.audio_chunks -ne 42 -or
+      $audio.headphone_connected -ne 1 -or $audio.internal_speaker_muted -ne 1) {
+    throw 'Audio parser failed.'
+  }
   $coex = 'RTL_WIFI_COEX_STATUS station=1 scanning=0 connecting=0 connected=1 connect_pause=0 rtl_ready=1 capture_state=3 capture_requested=0 band=FM frequency_hz=96100000 audio_enabled=1 speaker_running=1 audio_chunks=42 audio_drops=0'
   if ($coex -notmatch 'connect_pause=0.*rtl_ready=1.*capture_state=3.*band=FM.*speaker_running=1') { throw 'Coexistence parser failed.' }
   $c6 = 'RTL_WIFI_C6_STATUS host=3.0.6 coprocessor=2.12.6 transport=1 embedded=1 state=ready percent=0 stage=version match=0'
   if ($c6 -notmatch '^RTL_WIFI_C6_STATUS host=\S+ coprocessor=\S+ transport=1 embedded=1 state=ready percent=0 stage=\S+ match=0$') {
     throw 'C6 update parser failed.'
   }
-  if (-not (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,0,0,1,0,0) }) 'ADSB')) {
+  if (-not (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,0,0,0,1,0,0) }) 'ADSB')) {
     throw 'Exclusive dashboard check rejected valid ADS-B state.'
   }
-  if (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,1,0,1,0,0) }) 'ADSB') {
+  if (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,1,0,0,1,0,0) }) 'ADSB') {
     throw 'Exclusive dashboard check accepted stale FM state.'
   }
-  if (-not (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,1,0,0,0,1) }) 'WIFI_ANALYSIS')) {
+  if (-not (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,1,0,0,0,0,1) }) 'WIFI_ANALYSIS')) {
     throw 'RF24 overlay check rejected active FM.'
   }
-  if (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,1,1,0,0,1) }) 'WIFI_ANALYSIS') {
+  if (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,1,0,1,0,0,1) }) 'WIFI_ANALYSIS') {
     throw 'RF24 overlay check accepted an active P25 dashboard.'
+  }
+  if (-not (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,0,1,0,0,0,0) }) 'AM')) {
+    throw 'Exclusive dashboard check rejected valid AM state.'
   }
   $health = ConvertFrom-HealthStatus 'RTL_HEALTH_STATUS uptime_ms=123 free_heap=456 min_free_heap=400 dma_free=300 dma_min=250 dma_largest=200 tasks=12 main_stack_hwm=2048 reset_reason=1'
   Assert-HealthStatus $health
@@ -727,12 +758,17 @@ function Invoke-SelfCheck {
       $frequency.Mode -ne 'P25 C4FM') {
     throw 'Radio frequency parser failed.'
   }
+  $signal = ConvertFrom-SignalStatus 'RTL_SIGNAL_STATUS band=AM frequency_hz=590000 signal_dbfs_tenths=-321 stereo_locked=0 left_dbfs_tenths=-400 right_dbfs_tenths=-400 rds_carrier=0 rds_signal_tenths=-900 pilot_env_thou=0 filter_hz=6000 lo_nudge=0'
+  if ($signal.Band -ne 'AM' -or $signal.Frequency -ne 590000 -or
+      $signal.SignalTenths -ne -321 -or $signal.FilterHz -ne 6000) {
+    throw 'AM signal parser failed.'
+  }
   Write-SoakLine 'RTL_UI_SOAK_SELF_CHECK pass=1'
 }
 
 if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
-if (@($Run, $Soak, $Driver079, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan).Where({ $_ }).Count -gt 1) {
-  throw 'Choose only one of -Run, -Soak, -Driver079, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, or -RadioScan.'
+if (@($Run, $Soak, $Driver079, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast).Where({ $_ }).Count -gt 1) {
+  throw 'Choose only one of -Run, -Soak, -Driver079, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, or -AmBroadcast.'
 }
 
 function Get-C6UpdateStatus {
@@ -782,6 +818,84 @@ function Get-DriverStatus {
     Bias = [int]$Matches[10]; Bytes = [uint64]$Matches[11]; Blocks = [uint64]$Matches[12]
     EffectiveSps = [uint32]$Matches[13]; Overruns = [uint32]$Matches[14]
     Drops = [uint32]$Matches[15]; ShadowOk = [int]$Matches[16]; MetricsOk = [int]$Matches[17]
+  }
+}
+
+function Set-AmFilter([uint32]$TargetHz) {
+  for ($attempt = 0; $attempt -lt 4; $attempt++) {
+    $signal = Get-SignalStatus
+    if ($signal.Band -eq 'AM' -and $signal.FilterHz -eq $TargetHz) { return $signal }
+    [void](Send-And-Wait 'RTL_UI ACTION AM FILTER' '^RTL_UI_ACTION_OK$')
+    Start-Sleep -Milliseconds 150
+  }
+  $signal = Get-SignalStatus
+  throw "AM filter did not reach $TargetHz Hz: $($signal.Line)"
+}
+
+function Invoke-AmBroadcastTest {
+  Wait-DeviceReady 60 11000
+  Connect-Authenticated
+  $initial = $null
+  $initialSignal = $null
+  $initialVerbosity = $null
+  try {
+    $verbosity = Send-And-Wait 'RTL_SERIAL VERBOSITY' '^RTL_SERIAL_VERBOSITY mode=(QUIET|NORMAL|DEBUG|TRACE)$'
+    $initialVerbosity = $verbosity.Split('=')[-1]
+    [void](Send-And-Wait 'RTL_SERIAL VERBOSITY QUIET' '^RTL_SERIAL_VERBOSITY_OK mode=QUIET$')
+    Drain-SerialOutput
+    $initial = Get-UiState
+    $initialSignal = Get-SignalStatus
+    [void](Open-Ui 'AM' 'AM')
+    $audio = Get-AudioStatus
+    if ($audio.headphone_connected -eq 1 -and $audio.internal_speaker_muted -ne 1) {
+      throw 'Headphones detected but internal speaker is not muted.'
+    }
+    $driver = Get-DriverStatus
+    if ($driver.State -ne 'STREAMING') {
+      throw "AM test requires active IQ streaming; state=$($driver.State)"
+    }
+    $lastBytes = $driver.Bytes
+    foreach ($frequency in @(590000, 1120000, 1280000)) {
+      [void](Send-And-Wait "RTL_UI ACTION AM TUNE $frequency" '^RTL_UI_ACTION_OK$')
+      foreach ($filter in @(4000, 6000, 10000)) {
+        [void](Set-AmFilter $filter)
+        Start-Sleep -Seconds $DwellSeconds
+        $signal = Get-SignalStatus
+        if ($signal.Band -ne 'AM' -or $signal.Frequency -ne $frequency -or
+            $signal.FilterHz -ne $filter) {
+          throw "AM state mismatch: $($signal.Line)"
+        }
+        $driver = Get-DriverStatus
+        if ($driver.State -ne 'STREAMING' -or $driver.Bytes -le $lastBytes -or
+            $driver.EffectiveSps -eq 0) {
+          throw "AM IQ did not progress at frequency=$frequency filter=$filter state=$($driver.State) bytes=$($driver.Bytes) effective_sps=$($driver.EffectiveSps)"
+        }
+        $lastBytes = $driver.Bytes
+        Write-SoakLine "RTL_AM_REGRESSION_SAMPLE pass=1 frequency_hz=$frequency filter_hz=$filter signal_dbfs_tenths=$($signal.SignalTenths) bytes=$($driver.Bytes) effective_sps=$($driver.EffectiveSps) overruns=$($driver.Overruns) drops=$($driver.Drops)"
+      }
+      Assert-Health
+    }
+    Write-SoakLine 'RTL_AM_REGRESSION_RESULT pass=1 frequencies=3 filters=3 samples=9'
+  } finally {
+    try {
+      if ($null -ne $initial -and
+          $initial.Band -in @('FM','AM','WX','CB','LORA','BROWSE','ADSB','P25')) {
+        [void](Send-And-Wait "RTL_TUNE $($initial.Band) $($initial.Frequency)" '^RTL_TUNE_(?:OK|UNAVAILABLE|INVALID)')
+      }
+      if ($null -ne $initial -and $null -ne $initialSignal -and
+          $initial.Band -eq 'AM' -and $initialSignal.FilterHz -in @(4000, 6000, 10000)) {
+        [void](Open-Ui 'AM' 'AM')
+        [void](Set-AmFilter $initialSignal.FilterHz)
+      }
+      if ($null -ne $initial) {
+        [void](Send-And-Wait "RTL_UI OPEN $($initial.Screen)" '^RTL_UI_OPEN_(?:OK|INVALID)')
+      }
+      if ($null -ne $initialVerbosity) {
+        [void](Send-And-Wait "RTL_SERIAL VERBOSITY $initialVerbosity" "^RTL_SERIAL_VERBOSITY_OK mode=$initialVerbosity$")
+      }
+    } catch {
+      Write-Warning "Could not restore initial AM test state: $($_.Exception.Message)"
+    }
   }
 }
 
@@ -953,6 +1067,7 @@ try {
   }
   if ($C6Update) { Invoke-C6UpdateTest; exit 0 }
   if ($RadioScan) { Invoke-RadioScanTest; exit 0 }
+  if ($AmBroadcast) { Invoke-AmBroadcastTest; exit 0 }
 
   if ($Profile) {
     $commit = (& git -C (Join-Path $PSScriptRoot '..\..\..') rev-parse --short HEAD 2>$null)

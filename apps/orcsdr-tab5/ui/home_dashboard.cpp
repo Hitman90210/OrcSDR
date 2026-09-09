@@ -111,7 +111,7 @@ void draw_menu_icon(dashboards::Id id, int x, int y, uint16_t color) {
   if (id == dashboards::Id::home) {
     M5.Display.fillTriangle(x - 14, y, x, y - 13, x + 14, y, color);
     M5.Display.drawRect(x - 10, y, 20, 15, color);
-  } else if (id == dashboards::Id::fm) {
+  } else if (id == dashboards::Id::fm || id == dashboards::Id::am) {
     M5.Display.drawRoundRect(x - 15, y - 10, 30, 22, 4, color);
     M5.Display.drawCircle(x + 7, y + 1, 5, color);
     M5.Display.drawLine(x - 10, y - 14, x + 10, y - 20, color);

@@ -21,6 +21,7 @@ idf_component_register(
         "../ui/main.cpp"
         "../ui/orcsdr_splash.cpp"
         "../ui/orcsdr_storage.cpp"
+        "../ui/am_dashboard.cpp"
         "../ui/adsb_dashboard.cpp"
         "../ui/adsb_decoder.cpp"
         "../ui/atc_presets.cpp"
