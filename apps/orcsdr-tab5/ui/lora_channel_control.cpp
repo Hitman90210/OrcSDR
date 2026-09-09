@@ -62,8 +62,7 @@ int find_region(const char* code) {
 
 uint16_t slot_count(size_t region_index) {
   const Region& plan = region(region_index);
-  return static_cast<uint16_t>((plan.end_hz - plan.start_hz + kLongFastBandwidthHz / 2u) /
-                               kLongFastBandwidthHz);
+  return static_cast<uint16_t>((plan.end_hz - plan.start_hz) / kLongFastBandwidthHz);
 }
 
 uint16_t default_slot(size_t region_index) {
@@ -165,10 +164,13 @@ bool self_check() {
   const int us = find_region("US");
   const int eu433 = find_region("EU_433");
   const int eu868 = find_region("EU_868");
+  const int ph868 = find_region("PH_868");
   return region_count() == 24 && us == 0 && slot_count(us) == 104 && default_slot(us) == 20 &&
          frequency_hz(us, 20) == 906875000 && slot_for_frequency(us, 906875000) == 20 &&
          default_slot(eu433) == 4 && frequency_hz(eu433, 4) == 433875000 &&
          default_slot(eu868) == 1 && frequency_hz(eu868, 1) == 869525000 &&
+         slot_count(ph868) == 5 && default_slot(ph868) == 1 &&
+         frequency_hz(ph868, 1) == 868125000 &&
          slot_for_frequency(us, 906800000) == 0;
 }
 

@@ -22,7 +22,7 @@ size_t format_csv(char* output, size_t output_size, const Record& record) {
       static_cast<unsigned long>(record.packet_id), static_cast<unsigned>(record.port),
       static_cast<int>(record.snr_tenths), static_cast<int>(record.signal_tenths),
       static_cast<long>(record.latitude_e7), static_cast<long>(record.longitude_e7));
-  if (used < 0 || static_cast<size_t>(used) >= output_size) return 0;
+  if (used < 0 || static_cast<size_t>(used) + 3 > output_size) return 0;
   size_t position = static_cast<size_t>(used);
   for (const char* text = record.text; *text && position + 4 < output_size; ++text) {
     if (*text == '"') output[position++] = '"';
@@ -68,9 +68,13 @@ bool self_check() {
   record.frequency_hz = 906875000;
   strlcpy(record.text, "test \"one\"", sizeof(record.text));
   char line[256];
-  return format_csv(line, sizeof(line), record) > 0 &&
-         strstr(line, "!435baa2c,broadcast,00000007") != nullptr &&
-         strstr(line, "\"test \"\"one\"\"\"") != nullptr;
+  const size_t bytes = format_csv(line, sizeof(line), record);
+  const bool content_ok = bytes > 0 &&
+                          strstr(line, "!435baa2c,broadcast,00000007") != nullptr &&
+                          strstr(line, "\"test \"\"one\"\"\"") != nullptr;
+  record.text[0] = '\0';
+  const size_t empty_bytes = format_csv(line, sizeof(line), record);
+  return content_ok && empty_bytes > 0 && format_csv(line, empty_bytes, record) == 0;
 }
 
 }  // namespace orcsdr::lora_log

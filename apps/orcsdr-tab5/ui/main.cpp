@@ -3688,7 +3688,9 @@ bool queue_lora_auto_decode() {
   if (!lora_native_decode_busy.compare_exchange_strong(
           expected, true, std::memory_order_acq_rel)) return false;
   const size_t bytes = g_iq_rec_write.load(std::memory_order_acquire);
-  memcpy(g_lora_decode_buf, g_iq_rec_buf, bytes);
+  // Automatic captures belong to the decoder after this swap. Manual export and
+  // retrieval reject automatic buffers, so they can only read g_iq_rec_buf.
+  std::swap(g_iq_rec_buf, g_lora_decode_buf);
   const LoraNativeDecodeWork work{g_lora_decode_buf, bytes, g_iq_rec_sf,
                                   g_iq_rec_bandwidth_hz, g_iq_rec_frequency_hz, true};
   g_iq_rec_ready.store(false, std::memory_order_release);
@@ -3866,6 +3868,12 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
 }
 
 bool iq_rec_stop_and_export() {
+  if (g_iq_rec_auto_triggered.load(std::memory_order_acquire) &&
+      (g_iq_rec_ready.load(std::memory_order_acquire) ||
+       lora_native_decode_busy.load(std::memory_order_acquire))) {
+    Serial.println("RTL_IQ_ERROR automatic_capture_owned_by_decoder");
+    return false;
+  }
   if (g_iq_rec_export_busy.exchange(true, std::memory_order_acq_rel)) return false;
   const auto finish = [](bool result) {
     g_iq_rec_export_busy.store(false, std::memory_order_release);
@@ -4852,7 +4860,7 @@ void iq_get_begin() {
   const size_t bytes = g_iq_rec_write.load(std::memory_order_acquire);
   if (g_iq_rec_active.load(std::memory_order_acquire) ||
       lora_native_decode_busy.load(std::memory_order_acquire) || g_iq_rec_buf == nullptr ||
-      bytes == 0) {
+      g_iq_rec_auto_triggered.load(std::memory_order_acquire) || bytes == 0) {
     Serial.println("RTL_IQ_GET_ERROR capture_not_ready");
     return;
   }
@@ -10584,10 +10592,8 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   if (band == RtlBand::lora) {
     load_lora_config();
     if (orcsdr::lora_channel::selection().persisted) apply_lora_channel_selection();
-    if (!lora_native_decoder_start()) {
-      Serial.println("RTL_LORA_START_ERROR native_decoder_unavailable");
-      return;
-    }
+    if (!lora_native_decoder_start())
+      Serial.println("RTL_LORA_WARN native_decoder_unavailable dashboard=PHY_PENDING");
     lora_iq_reset_detector();
     if (frequency_hz == kLoraDefaultHz) frequency_hz = lora_config_frequency_hz;
     rtl_filter_bandwidth_hz.store(lora_bandwidth_hz.load(std::memory_order_relaxed),
@@ -12776,6 +12782,7 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_IQ_RETRIEVE_BEGIN") == 0) {
     if (g_iq_rec_active.load(std::memory_order_acquire) ||
         lora_native_decode_busy.load(std::memory_order_acquire) || g_iq_rec_buf == nullptr ||
+        g_iq_rec_auto_triggered.load(std::memory_order_acquire) ||
         g_iq_rec_write.load(std::memory_order_acquire) == 0) {
       Serial.println("RTL_IQ_RETRIEVE_ERROR capture_not_ready");
       return;
