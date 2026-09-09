@@ -186,7 +186,7 @@ class OrcConsole {
     size_t written = 0;
     while (written < size) {
       const int count = usb_serial_jtag_write_bytes(
-          data + written, size - written, 0);  // non-blocking: no USB host must not stall boot (#66)
+          data + written, size - written, pdMS_TO_TICKS(3000));
       if (count <= 0) break;
       written += static_cast<size_t>(count);
     }
@@ -195,7 +195,7 @@ class OrcConsole {
 
  private:
   void write(const void* data, size_t size) {
-    usb_serial_jtag_write_bytes(data, size, 0);  // non-blocking: no USB host must not stall boot (#66)
+    usb_serial_jtag_write_bytes(data, size, pdMS_TO_TICKS(100));
   }
 
   uint8_t pending_ = 0;
@@ -212,7 +212,6 @@ namespace {
  // Issue #66: never bring up ESP-Hosted from setup(). Settings lazy
  // Scan/Connect via poll_wifi is stable. Boot start-at-boot queues Settings
  // saved-connect after settle; poll_wifi always pauses SDR for Hosted join.
- constexpr bool kWifiBootAutoconnectEnabled = true;
  constexpr uint32_t kWifiBootDeferMs = 10000;
  bool wifi_boot_bringup_pending = false;
  uint32_t wifi_boot_defer_arm_ms = 0;
@@ -1497,7 +1496,6 @@ bool wifi_c6_power_prepared = false;
 bool wifi_scan_running = false;
 std::atomic<bool> wifi_scan_requested{false};
 std::atomic<bool> wifi_connect_requested{false};
-std::atomic<bool> wifi_connect_pause_requested{false};
 bool wifi_configured = false;
 bool settings_wifi_power_enabled = true;
 bool settings_wifi_start_at_boot = false;
@@ -8101,9 +8099,17 @@ bool pause_radio_for_io(bool& paused);
 void resume_radio_after_io(bool& paused);
 void start_wifi_inventory() {
   if (!settings_wifi_power_enabled) return;
-  if (!wifi_station_ready) initialize_wifi();
-  if (!wifi_station_ready) return;
   if (wifi_scan_running) return;
+  if (!pause_radio_for_io(wifi_connect_radio_paused)) {
+    strlcpy(wifi_status_message, "Radio pause failed", sizeof(wifi_status_message));
+    Serial.println("RTL_WIFI_SCAN_ERROR radio_pause_failed");
+    return;
+  }
+  if (!wifi_station_ready) initialize_wifi();
+  if (!wifi_station_ready) {
+    resume_radio_after_io(wifi_connect_radio_paused);
+    return;
+  }
   wifi_scan_result_count = 0;
   wifi_network_count = 0;
   wifi_scan_started_ms = millis();
@@ -8115,18 +8121,25 @@ void start_wifi_inventory() {
   }
   begin_power_monitor("wifi_scan");
   wifi_scan_running = wifi_network_count == -2;
+  if (!wifi_scan_running) resume_radio_after_io(wifi_connect_radio_paused);
   log_wifi_coexistence(wifi_scan_running ? "scan_started" : "scan_start_failed");
   draw_wifi_state();
   if (orcsdr::rf24::active()) draw_rf24_dashboard(false);
 }
 
-void start_wifi_connection(bool pause_radio = false) {
+void start_wifi_connection() {
   if (!settings_wifi_power_enabled) return;
-  if (!wifi_station_ready) initialize_wifi();
-  if (!wifi_station_ready || !wifi_ssid[0]) return;
-  if (pause_radio && !pause_radio_for_io(wifi_connect_radio_paused)) {
+  if (!wifi_ssid[0]) return;
+  if (!pause_radio_for_io(wifi_connect_radio_paused)) {
     strlcpy(wifi_status_message, "Radio pause failed", sizeof(wifi_status_message));
     Serial.println("RTL_WIFI_CONNECT_ERROR radio_pause_failed");
+    return;
+  }
+  // Hosted initialization is part of the connection's exclusive I/O window.
+  // Starting it before the pause leaves SDIO bring-up racing live SDR traffic.
+  if (!wifi_station_ready) initialize_wifi();
+  if (!wifi_station_ready) {
+    resume_radio_after_io(wifi_connect_radio_paused);
     return;
   }
   wifi_scan_running = false;
@@ -8176,7 +8189,6 @@ void stop_wifi() {
 
 bool disconnect_wifi() {
   wifi_connect_requested.store(false, std::memory_order_release);
-  wifi_connect_pause_requested.store(false, std::memory_order_release);
   wifi_connecting = false;
   wifi_save_after_connect = false;
   if (wifi_connected) {
@@ -8198,12 +8210,19 @@ void start_wifi_connection(const char* ssid, const char* password, bool save_on_
 
 bool pause_radio_for_io(bool& paused) {
   if (paused) return true;
+  // Overlapping I/O clients share one physical pause. Each keeps its own flag
+  // so the final client to finish is the only one that resumes the radio.
+  if (catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused) {
+    paused = true;
+    return true;
+  }
   paused = true;
-  if (catalog_radio_paused) return true;
+  const auto original_state = rtl_capture_state.load(std::memory_order_acquire);
+  const bool capture_was_requested = rtl_capture_requested.load(std::memory_order_acquire);
+  const bool restart_was_requested = rtl_restart_requested.load(std::memory_order_acquire);
   const bool radio_was_active =
-      rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running ||
-      rtl_capture_requested.load(std::memory_order_acquire) ||
-      rtl_restart_requested.load(std::memory_order_acquire);
+      original_state == RtlCaptureState::queued || original_state == RtlCaptureState::running ||
+      capture_was_requested || restart_was_requested;
   if (radio_was_active) {
     // Cancel both a running stream and a queued restart before granting the
     // exclusive I/O window.
@@ -8216,6 +8235,9 @@ bool pause_radio_for_io(bool& paused) {
            static_cast<int32_t>(deadline - millis()) > 0) delay(10);
     const auto state = rtl_capture_state.load(std::memory_order_acquire);
     if (state == RtlCaptureState::queued || state == RtlCaptureState::running) {
+      rtl_stop_requested.store(false, std::memory_order_release);
+      rtl_restart_requested.store(restart_was_requested, std::memory_order_release);
+      rtl_capture_requested.store(capture_was_requested, std::memory_order_release);
       paused = false;
       return false;
     }
@@ -8232,7 +8254,7 @@ bool pause_radio_for_io(bool& paused) {
 void resume_radio_after_io(bool& paused) {
   if (!paused) return;
   paused = false;
-  if (catalog_radio_paused) return;
+  if (catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused) return;
   const bool resume_radio = radio_io_resume_pending;
   const bool resume_speaker = radio_io_speaker_resume_pending;
   radio_io_resume_pending = false;
@@ -8259,8 +8281,7 @@ void poll_wifi() {
   if (wifi_connect_requested.exchange(false, std::memory_order_acq_rel)) {
     // Issue #66: Hosted connect while SDR URBs are live is intermittent
     // (fail/panic). Always take the radio-pause window; no-op if idle.
-    (void)wifi_connect_pause_requested.exchange(false, std::memory_order_acq_rel);
-    start_wifi_connection(/*pause_radio=*/true);
+    start_wifi_connection();
   }
   if (!wifi_station_ready) return;
   if (!wifi_scan_running && !wifi_connecting && !wifi_connected) return;
@@ -8301,11 +8322,13 @@ void poll_wifi() {
       Serial.printf("RTL_WIFI_SCAN_RESULTS count=%u\n",
                     static_cast<unsigned>(wifi_scan_result_count));
       log_wifi_coexistence("scan_complete", millis() - wifi_scan_started_ms);
+      resume_radio_after_io(wifi_connect_radio_paused);
       state_changed = true;
     } else if (millis() - wifi_scan_started_ms >= 15000u) {
       wifi_scan_running = false;
       strlcpy(wifi_status_message, "Scan timed out", sizeof(wifi_status_message));
       log_wifi_coexistence("scan_timeout", millis() - wifi_scan_started_ms);
+      resume_radio_after_io(wifi_connect_radio_paused);
       state_changed = true;
     }
   }
@@ -9970,7 +9993,6 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
       if (action.value >= 0 && action.value < wifi_profile_count) {
         select_wifi_profile(static_cast<uint8_t>(action.value));
         wifi_save_after_connect = false;
-        wifi_connect_pause_requested.store(true, std::memory_order_release);
         wifi_connect_requested.store(true, std::memory_order_release);
         Serial.println("RTL_WIFI_CONNECT_SAVED_PAUSE issue66");
         update_global_settings();
@@ -12379,11 +12401,8 @@ void process_command(char* command) {
       return;
     }
     select_wifi_profile(0);
-    const bool pause_radio = strcmp(command, "RTL_WIFI_CONNECT_SAVED PAUSE") == 0;
-    wifi_connect_pause_requested.store(pause_radio, std::memory_order_release);
     wifi_connect_requested.store(true, std::memory_order_release);
-    Serial.printf("RTL_WIFI_CONNECT_QUEUED saved_profile=0 mode=%s\n",
-                  pause_radio ? "pause" : "live");
+    Serial.println("RTL_WIFI_CONNECT_QUEUED saved_profile=0 mode=pause");
     return;
   }
   if (strcmp(command, "RTL_WIFI_RESULTS") == 0) {
@@ -13023,7 +13042,7 @@ void process_command(char* command) {
     Serial.println("RTL_UI ACTION <domain> <action> [value] - mirror FM/P25/LoRa/Settings touch action (auth)");
     Serial.println("RTL_WIFI_STATUS|C6_STATUS|COEX_STATUS|SCAN|RESULTS|PROFILES - Wi-Fi and radio coexistence state");
     Serial.println("RTL_WIFI_C6_UPDATE CONFIRM - authenticated explicit in-app C6 update");
-    Serial.println("RTL_WIFI_CONNECT_SAVED [PAUSE]|DISCONNECT - connect profile 0 live or with a temporary SDR pause");
+    Serial.println("RTL_WIFI_CONNECT_SAVED [PAUSE]|DISCONNECT - connect profile 0 with a temporary SDR pause");
     Serial.println("SET_WIFI <ssid_hex> <pass_hex> <hmac> - signed slot-0 provisioning (auth)");
     Serial.println("RTL_TUNE <BAND> <HZ>           - tune band+freq (auth) BAND=FM|AM|WX|CB|LORA|BROWSE|ADSB|P25");
     Serial.println("RTL_FREQ                       - query current band/frequency/mode");
@@ -14259,9 +14278,8 @@ void setup() {
   return;
 #else
 
-  /* ESP-Hosted owns SDMMC Slot 1; bring it up before the splash mounts the
-   * microSD card on Slot 0. This is the supported ESP-Hosted shared-SDMMC
-   * initialization order on ESP32-P4. */
+  /* The microSD card and Hosted C6 use separate slots on the same SDMMC host.
+   * Initialize them sequentially; issue #66 defers Hosted until after boot. */
   g_suppress_home_paint = true;
   uint8_t mac[6];
   esp_read_mac(mac, ESP_MAC_BASE);
@@ -14280,13 +14298,10 @@ void setup() {
   load_state();
   // Issue #66: do not call initialize_wifi() here. If "start Wi-Fi at boot" is on,
   // queue the same saved-connect path Settings uses, after loop() has settled.
-  if (kWifiBootAutoconnectEnabled && settings_wifi_power_enabled &&
-      settings_wifi_start_at_boot) {
+  if (settings_wifi_power_enabled && settings_wifi_start_at_boot) {
     wifi_boot_bringup_pending = true;
     wifi_boot_defer_arm_ms = millis();
     Serial.println("RTL_WIFI_DEFER_TO_LOOP issue66");
-  } else if (settings_wifi_power_enabled && settings_wifi_start_at_boot) {
-    Serial.println("RTL_WIFI_BOOT_AUTOCONNECT_DISABLED issue66");
   }
   if (!orcsdr::visualizer::initialize(&preferences, visualizer_audio_sink)) {
     Serial.println("RTL_VIS_NVS_INIT_FAIL");
@@ -14347,7 +14362,6 @@ void loop() {
     if (settings_wifi_power_enabled && settings_wifi_start_at_boot && wifi_profile_count) {
       select_wifi_profile(0);
       wifi_save_after_connect = false;
-      wifi_connect_pause_requested.store(true, std::memory_order_release);
       wifi_connect_requested.store(true, std::memory_order_release);
       Serial.println("RTL_WIFI_BOOT_CONNECT_QUEUED_PAUSE issue66");
     } else {
@@ -14396,6 +14410,15 @@ void loop() {
     if (elapsed_ms >= 500)
       Serial.printf("RTL_MAIN_STALL stage=serial_dispatch elapsed_ms=%u\n", elapsed_ms);
   }
+  // Keep connection success/failure/timeout and radio resume progressing even
+  // when a full-screen mode returns early from the rest of the UI loop.
+  if (boot_auto_start_allowed) {
+    const uint32_t started_ms = millis();
+    poll_wifi();
+    const uint32_t elapsed_ms = millis() - started_ms;
+    if (elapsed_ms >= 500)
+      Serial.printf("RTL_MAIN_STALL stage=wifi_poll elapsed_ms=%u\n", elapsed_ms);
+  }
   if (orcsdr::visualizer::active()) {
     service_rtl_speaker_watchdog();
     const uint32_t now = millis();
@@ -14441,13 +14464,6 @@ void loop() {
     }
     catalog_was_busy = catalog_state.busy;
     orcsdr::catalog::poll(wifi_connected);
-  }
-  if (boot_auto_start_allowed) {
-    const uint32_t started_ms = millis();
-    poll_wifi();
-    const uint32_t elapsed_ms = millis() - started_ms;
-    if (elapsed_ms >= 500)
-      Serial.printf("RTL_MAIN_STALL stage=wifi_poll elapsed_ms=%u\n", elapsed_ms);
   }
   {
     static uint32_t last_web_ms = 0;
