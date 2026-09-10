@@ -70,6 +70,39 @@ void text(const char* value, int x, int y, uint16_t color, uint8_t size = 2,
   M5.Display.drawString(value, x, y);
 }
 
+// A switch reads as state. A button labelled with a verb reads as an action,
+// and the two point in opposite directions: ALLOW next to a green row meant
+// control was off. Knob position, label and colour here all say the same
+// thing. Right edge at 1218 and green-on/grey-off match CONNECT ON BOOT.
+constexpr int kSwitchW = 132;
+constexpr int kSwitchH = 48;
+constexpr int kSwitchX = 1218 - kSwitchW;
+constexpr int switch_top(int row_y) { return row_y - kSwitchH / 2; }
+
+void toggle_switch(int row_y, bool on) {
+  const int y = switch_top(row_y);
+  const uint16_t track = on ? TFT_DARKGREEN : TFT_DARKGREY;
+  const int knob = kSwitchH - 12;
+  M5.Display.fillRoundRect(kSwitchX, y, kSwitchW, kSwitchH, kSwitchH / 2, track);
+  M5.Display.drawRoundRect(kSwitchX, y, kSwitchW, kSwitchH, kSwitchH / 2,
+                           on ? kGreen : TFT_LIGHTGREY);
+  const int knob_x = on ? kSwitchX + kSwitchW - knob - 6 : kSwitchX + 6;
+  M5.Display.fillRoundRect(knob_x, y + 6, knob, knob, knob / 2, TFT_WHITE);
+  M5.Display.setTextDatum(middle_center);
+  M5.Display.setTextSize(2);
+  M5.Display.setTextColor(TFT_WHITE, track);
+  // On the empty half of the track, opposite the knob.
+  M5.Display.drawString(on ? "ON" : "OFF",
+                        on ? kSwitchX + 36 : kSwitchX + kSwitchW - 34,
+                        y + kSwitchH / 2);
+}
+
+void switch_row(const char* label, int y, bool on) {
+  text(label, 330, y, kMuted, 2);
+  toggle_switch(y, on);
+  M5.Display.drawFastHLine(330, y + 31, 888, 0x2945);
+}
+
 void button(const char* label, int x, int y, int w, int h, uint16_t fill) {
   M5.Display.fillRoundRect(x, y, w, h, 8, fill);
   M5.Display.drawRoundRect(x, y, w, h, 8, TFT_LIGHTGREY);
@@ -400,10 +433,7 @@ void draw_storage() {
 
 void draw_companion() {
   text("COMPANION", 330, 115, kBlue, 3);
-  value_row("WEB CONSOLE", g_state.web_console_enabled ? "ON" : "OFF", 175,
-            g_state.web_console_enabled ? kGreen : kMuted);
-  button(g_state.web_console_enabled ? "DISABLE" : "ENABLE", 960, 150, 170, 48,
-         g_state.web_console_enabled ? TFT_MAROON : TFT_DARKGREEN);
+  switch_row("WEB CONSOLE", 175, g_state.web_console_enabled);
   value_row("URL",
             g_state.web_console_listening && g_state.web_console_url[0]
                 ? g_state.web_console_url
@@ -412,13 +442,9 @@ void draw_companion() {
   value_row("LOCAL DISCOVERY",
             g_state.web_console_listening ? "orcsdr.local" : "NOT ENABLED", 275,
             g_state.web_console_listening ? kGreen : kMuted);
-  // The page is view-and-listen unless this is on. Stated as what a visitor can
-  // do, because that is the decision being made here.
-  value_row("VISITOR CONTROL",
-            g_state.web_control_enabled ? "ALLOWED" : "VIEW AND LISTEN ONLY", 325,
-            g_state.web_control_enabled ? TFT_ORANGE : kGreen);
-  button(g_state.web_control_enabled ? "BLOCK" : "ALLOW", 960, 300, 170, 48,
-         g_state.web_control_enabled ? TFT_MAROON : TFT_DARKGREEN);
+  // ON means visitors may retune and change volume. The switch says what the
+  // setting IS; the caption below says what that costs.
+  switch_row("VISITOR CONTROL", 325, g_state.web_control_enabled);
   value_row("BLUETOOTH", g_state.companion_supported ? "AVAILABLE" : "FEASIBILITY PENDING",
             375, kMuted);
   if (g_state.web_control_enabled) {
@@ -918,9 +944,9 @@ Action handle_touch(int32_t x, int32_t y) {
       return {ActionKind::graphics_changed, g_state.graphics_default};
     }
   } else if (g_section == Section::companion) {
-    if (hit(x, y, 960, 150, 170, 48))
+    if (hit(x, y, kSwitchX, switch_top(175), kSwitchW, kSwitchH))
       return {ActionKind::web_console_changed, g_state.web_console_enabled ? 0 : 1};
-    if (hit(x, y, 960, 300, 170, 48))
+    if (hit(x, y, kSwitchX, switch_top(325), kSwitchW, kSwitchH))
       return {ActionKind::web_control_changed, g_state.web_control_enabled ? 0 : 1};
   }
   if (g_section == Section::firmware_updates) {
