@@ -7,6 +7,7 @@ builds the same runtime format for any bounding box, straight from the public
 Overpass API, so the Tab5's radar and LoRa map views show local roads, water
 and airports.
 
+    python build_orcmap.py --center 47.62 -122.33 --range-nm 25 --out local_map.idx
     python build_orcmap.py --bbox 47.40 -122.60 47.85 -122.05 --out local_map.idx
 
 Copy the result to the SD card as /orcsdr/data/local_map.idx; the firmware
@@ -28,7 +29,13 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+# Two endpoints because the public one rate-limits and times out under load;
+# a 25 NM box failed on both during testing, which is what the lighter fallback
+# query below is for.
+OVERPASS_URLS = (
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter",
+)
 SEGMENT_CAPACITY = 640
 LABEL_CAPACITY = 32
 
@@ -47,6 +54,21 @@ out geom;
 """
 
 
+# What survives when the full query times out: the roads you navigate by, the
+# coast, and runways. Unnamed water is the expensive part of the full query --
+# in a rural box it is every farm pond.
+FALLBACK_TEMPLATE = """
+[out:json][timeout:{timeout}];
+(
+  way["highway"~"^(motorway|trunk)$"]({bbox});
+  way["natural"="coastline"]({bbox});
+  way["aeroway"="runway"]({bbox});
+  node["place"="city"]({bbox});
+);
+out geom;
+"""
+
+
 def classify(tags: dict) -> str | None:
     if "highway" in tags:
         return "R"
@@ -57,17 +79,31 @@ def classify(tags: dict) -> str | None:
     return None
 
 
-def fetch(bbox: tuple[float, float, float, float], timeout: int) -> dict:
-    query = QUERY_TEMPLATE.format(
-        bbox=f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}", timeout=timeout
-    )
-    request = urllib.request.Request(
-        OVERPASS_URL,
-        data=urllib.parse.urlencode({"data": query}).encode(),
-        headers={"User-Agent": "OrcSDR-map-builder/1 (+https://github.com/hardcoreerik/OrcSDR)"},
-    )
-    with urllib.request.urlopen(request, timeout=timeout + 30) as response:
-        return json.load(response)
+def post_query(query: str, timeout: int) -> dict | None:
+    """None rather than an exception, so the caller can try the next option."""
+    for url in OVERPASS_URLS:
+        try:
+            request = urllib.request.Request(
+                url,
+                data=urllib.parse.urlencode({"data": query}).encode(),
+                headers={"User-Agent":
+                         "OrcSDR-map-builder/1 (+https://github.com/hardcoreerik/OrcSDR)"},
+            )
+            with urllib.request.urlopen(request, timeout=timeout + 30) as response:
+                return json.load(response)
+        except (urllib.error.URLError, TimeoutError, OSError,
+                json.JSONDecodeError) as error:
+            print(f"  {urllib.parse.urlparse(url).netloc}: {error}", file=sys.stderr)
+    return None
+
+
+def fetch(bbox: tuple[float, float, float, float], timeout: int) -> dict | None:
+    box = f"{bbox[0]},{bbox[1]},{bbox[2]},{bbox[3]}"
+    data = post_query(QUERY_TEMPLATE.format(bbox=box, timeout=timeout), timeout)
+    if data is not None:
+        return data
+    print("  full query did not complete; retrying a lighter one", file=sys.stderr)
+    return post_query(FALLBACK_TEMPLATE.format(bbox=box, timeout=timeout), timeout)
 
 
 def simplify(points: list[tuple[float, float]], tolerance_deg: float) -> list[tuple[float, float]]:
@@ -152,9 +188,15 @@ def build(data: dict, tolerance_deg: float) -> tuple[list[str], dict[str, int], 
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--bbox", nargs=4, type=float, required=True,
-                        metavar=("SOUTH", "WEST", "NORTH", "EAST"),
-                        help="bounding box in degrees, e.g. 47.40 -122.60 47.85 -122.05")
+    where = parser.add_mutually_exclusive_group(required=True)
+    where.add_argument("--bbox", nargs=4, type=float,
+                       metavar=("SOUTH", "WEST", "NORTH", "EAST"),
+                       help="bounding box in degrees, e.g. 47.40 -122.60 47.85 -122.05")
+    where.add_argument("--center", nargs=2, type=float, metavar=("LAT", "LON"),
+                       help="receiver position; use with --range-nm")
+    parser.add_argument("--range-nm", type=float, default=25.0,
+                        help="half-width around --center in nautical miles "
+                             "(default 25, the ADS-B radar's default range)")
     parser.add_argument("--out", type=Path, default=Path("local_map.idx"))
     parser.add_argument("--tolerance", type=float, default=0.002,
                         help="simplification tolerance in degrees (default 0.002, ~200 m)")
@@ -163,17 +205,29 @@ def main(argv: list[str]) -> int:
                         help="read a local Overpass JSON file instead of querying the API")
     args = parser.parse_args(argv)
 
-    south, west, north, east = args.bbox
-    if south >= north or west >= east:
-        parser.error("bbox must be SOUTH WEST NORTH EAST with south < north and west < east")
+    if args.center:
+        # 1 NM is 1/60 of a degree of latitude; longitude shrinks with latitude,
+        # and the cosine is floored so a polar argument cannot explode the box.
+        lat, lon = args.center
+        dlat = args.range_nm / 60.0
+        dlon = args.range_nm / (60.0 * max(0.15, math.cos(math.radians(lat))))
+        south, west, north, east = lat - dlat, lon - dlon, lat + dlat, lon + dlon
+        print(f"Area: {args.range_nm:g} NM around {lat:.4f}, {lon:.4f}")
+    else:
+        south, west, north, east = args.bbox
+        if south >= north or west >= east:
+            parser.error("bbox must be SOUTH WEST NORTH EAST with south < north "
+                         "and west < east")
 
     if args.geojson:
         data = json.loads(args.geojson.read_text(encoding="utf-8"))
     else:
-        try:
-            data = fetch((south, west, north, east), args.timeout)
-        except urllib.error.URLError as error:
-            print(f"Overpass request failed: {error}", file=sys.stderr)
+        data = fetch((south, west, north, east), args.timeout)
+        if data is None:
+            print("Overpass did not answer. Public endpoints rate-limit and time "
+                  "out under load -- wait a few minutes and retry, reduce "
+                  "--range-nm, or save an Overpass JSON response and pass "
+                  "--geojson.", file=sys.stderr)
             return 1
 
     records, counts, labels = build(data, args.tolerance)
@@ -194,8 +248,8 @@ def main(argv: list[str]) -> int:
           f"({counts['R']} road, {counts['W']} water, {counts['A']} airport), "
           f"{labels}/{LABEL_CAPACITY} labels.")
     if segments >= SEGMENT_CAPACITY:
-        print("Segment budget was reached -- raise --tolerance or shrink --bbox "
-              "for a map that covers the whole box evenly.")
+        print("Segment budget was reached -- raise --tolerance, or shrink "
+              "--range-nm/--bbox, for a map that covers the whole area evenly.")
     print("Copy it to the SD card as /orcsdr/data/local_map.idx.")
     return 0
 

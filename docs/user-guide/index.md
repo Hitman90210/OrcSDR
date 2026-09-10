@@ -11,3 +11,16 @@ The labels used throughout the guide are deliberate:
 - **Deferred** — planned work that is not present in this release.
 
 Start with [Getting started](getting-started.md), then use the searchable [screen catalog](reference/screen-catalog.md) for a control-by-control view.
+
+## Where to go next
+
+| Page | For |
+| --- | --- |
+| [Getting started](getting-started.md) | First power-on, the dongle, the antenna |
+| [Feature status](feature-status.md) | What is verified, what is prototype, what is missing |
+| [Maps and data packs](maps-and-data.md) | Aircraft/airport databases, and building a map for your own area |
+| [Settings](settings.md) | Every Settings category, including the companion console |
+| [Shared controls](shared-controls.md) | The controls every dashboard has in common |
+| [Workflows](workflows.md) | End-to-end tasks |
+| [Troubleshooting](troubleshooting.md) | When something does not work |
+| [Safety and privacy](safety-privacy.md) | What leaves the device, and what never does |

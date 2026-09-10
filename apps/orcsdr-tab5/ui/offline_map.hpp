@@ -11,7 +11,7 @@ namespace orcsdr::offline_map {
 
 // The only map pack the signed catalog publishes is the upstream author's
 // home county, which is useless to everyone else. A user-supplied map at
-// kUserPath (built with tools/build_orcmap.py from any OSM extract and copied
+// kUserPath (built with apps/orcsdr-tab5/tools/build_orcmap.py from OSM and copied
 // to the SD card) is loaded in preference to it, so "offline map" means the
 // user's own area rather than Lane County, Oregon.
 constexpr const char kUserPath[] = "/orcsdr/data/local_map.idx";

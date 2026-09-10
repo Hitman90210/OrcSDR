@@ -8,7 +8,7 @@
   <strong>RTL-SDR Blog V4 → USB High-Speed → ESP32-P4 → DSP + Touch UI + Audio</strong>
 </p>
 
-**OrcSDR is a self-contained radio you hold in your hands.** Plug an RTL-SDR Blog V4 into a M5Stack Tab5, flash this firmware, and the tablet becomes the radio: live spectrum, waterfall, speaker audio, FM with RDS, P25 trunking, ADS-B, passive LoRa mesh monitoring, RF Lab tools, and 2.4 GHz Wi-Fi Analysis. There is no Raspberry Pi in the bag, no laptop running SDR#, and no desktop app you have to keep open.
+**OrcSDR is a self-contained radio you hold in your hands.** Plug an RTL-SDR Blog V4 into a M5Stack Tab5, flash this firmware, and the tablet becomes the radio: live spectrum, waterfall, speaker audio, FM with RDS, AM broadcast, P25 trunking, ADS-B, weather radio with SAME alert decoding, CB, GMRS/FRS and marine VHF with a channel scanner, passive LoRa mesh monitoring, RF Lab tools, and 2.4 GHz Wi-Fi Analysis. There is no Raspberry Pi in the bag, no laptop running SDR#, and no desktop app you have to keep open.
 
 <p align="center">
   <img src="docs/images/OrcSDR-Main.png"
@@ -106,7 +106,10 @@ Several features need data about where *you* are — the ADS-B radar, the
 "Listen to ATC" preset, offline maps and P25 trunking. None of it is baked in,
 and the one published map pack covers Lane County, Oregon.
 
-**[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md)** walks through all of it:
+**New here? [docs/user-guide/maps-and-data.md](docs/user-guide/maps-and-data.md)**
+is the step-by-step version: insert a card, download the packs, build a map
+for your own area, and where every file goes.
+**[docs/LOCAL_SETUP.md](docs/LOCAL_SETUP.md)** is the fuller reference:
 
 - **Data packs** — Settings → Data & Maps downloads them over Wi-Fi, but the
   34 MB aircraft pack is far more reliable copied to the SD card from a PC.
@@ -148,6 +151,7 @@ Quick map:
 | --- | --- |
 | **[Home](#home)** | Last-used radios, live spectrum, listen without retuning the LO every second |
 | **[FM Broadcast](#fm-broadcast)** | Tune broadcast FM, hear stereo, read RDS |
+| **AM Broadcast** | Channel-aware AM tuning, presets, and a wideband station finder |
 | **[P25 Trunking](#p25-trunking)** | Follow a programmed P25 system on a single tuner |
 | **[ADS-B](#ads-b)** | 1090 MHz aircraft radar, list, and target detail |
 | **[LoRa Mesh](#lora-mesh)** | Passive Meshtastic receive monitor |
