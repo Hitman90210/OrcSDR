@@ -23,7 +23,7 @@ constexpr uint8_t kMaxSf = 12;
 constexpr size_t kFftPadding = 4;
 constexpr size_t kMaxFft = (1u << (kMaxSf + 1u)) * kFftPadding;
 constexpr int kTimingSearchSamples = 4;
-constexpr float kPayloadClockSkews[] = {0.0f};
+constexpr int16_t kPayloadClockPpm[] = {0, -25, 25, -50, 50, -100, 100};
 constexpr float kLoraLowpass[][5] = {
     {1.55166027e-05f, 3.10332055e-05f, 1.55166027e-05f, -0.794469113f, 0.162197278f},
     {1.0f, 2.0f, 1.0f, -0.828439251f, 0.211890842f},
@@ -758,11 +758,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     uint8_t matching = 0;
     bool preamble_found = false;
     size_t cursor = start;
-    const uint64_t search_end = config.preamble_search_ms == 0
-                                    ? virtual_samples
-                                    : std::min<uint64_t>(virtual_samples, start +
-                                          static_cast<uint64_t>(config.preamble_search_ms) *
-                                              decode_rate / 1000u);
+    const uint64_t search_end = virtual_samples;
     while (cursor + n * preamble < search_end) {
       uint16_t peak = 0;
       float height = 0;
@@ -895,8 +891,10 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       if (phase_retry) {
         payload_drift_cfo_hz = refined_cfo_hz(payload_preamble_peak, fft_bins, bandwidth_hz);
       }
-      for (float payload_clock_skew : kPayloadClockSkews) {
+      for (int16_t payload_clock_ppm : kPayloadClockPpm) {
       if (crc_ok) break;
+      const float payload_clock_skew =
+          static_cast<float>(n) * payload_clock_ppm / 1000000.0f;
       std::memcpy(symbols, header_symbols, sizeof(header_symbols));
       bool symbols_ok = true;
       for (size_t i = 8; i < count; ++i) {
@@ -925,7 +923,10 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       size_t decoded_size = 0;
       if (symbols_ok && decode_symbols(symbols, count, spreading_factor, decoded, &decoded_size, &crc_ok) &&
           crc_ok) {
-        if (stats != nullptr) ++stats->crc_ok;
+        if (stats != nullptr) {
+          ++stats->crc_ok;
+          stats->clock_skew_ppm = payload_clock_ppm;
+        }
         Packet packet{};
         if (decode_mesh(decoded, decoded_size, config, &packet)) {
           packets[found++] = packet;
@@ -947,17 +948,42 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
 size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
                       uint8_t spreading_factor, uint32_t bandwidth_hz, uint32_t frequency_hz,
                       const Config& config, Packet* packets, size_t packet_capacity, Stats* stats) {
+  const uint32_t started = now_millis();
+  uint32_t candidate_millis = 0;
+  if (config.candidate_samples != 0 && config.candidate_samples < bytes / 2) {
+    Stats candidate{};
+    const size_t candidate_bytes = config.candidate_samples * 2;
+    const size_t found = decode_capture_pass(cu8, candidate_bytes, sample_rate_sps,
+                                             spreading_factor, bandwidth_hz, frequency_hz,
+                                             config, packets, packet_capacity, &candidate, 0.0f);
+    candidate_millis = now_millis() - started;
+    if (found != 0 || candidate.preambles == 0 || candidate.header_failures != 0 ||
+        candidate.crc_ok != 0) {
+      if (stats != nullptr) {
+        *stats = candidate;
+        stats->candidate_millis = candidate_millis;
+        stats->decode_millis = now_millis() - started;
+      }
+      return found;
+    }
+  }
   Stats raw{};
   Stats* first = stats != nullptr ? stats : &raw;
   const size_t found = decode_capture_pass(cu8, bytes, sample_rate_sps, spreading_factor,
                                            bandwidth_hz, frequency_hz, config, packets,
                                            packet_capacity, first, 0.0f);
-  if (found != 0 || first->crc_ok != 0 || fabsf(first->raw_cfo_tenths_hz) <= 5) return found;
+  first->candidate_millis = candidate_millis;
+  if (found != 0 || first->crc_ok != 0 || fabsf(first->raw_cfo_tenths_hz) <= 5) {
+    first->decode_millis = now_millis() - started;
+    return found;
+  }
   Stats corrected{};
   const size_t retried = decode_capture_pass(cu8, bytes, sample_rate_sps, spreading_factor,
                                              bandwidth_hz, frequency_hz, config, packets,
                                              packet_capacity, &corrected,
                                              first->raw_cfo_tenths_hz / 10.0f);
+  corrected.decode_millis = now_millis() - started;
+  corrected.candidate_millis = candidate_millis;
   if (stats != nullptr) *stats = corrected;
   return retried;
 }
@@ -980,9 +1006,11 @@ bool self_check() {
   const uint8_t node_info[] = {0x12, 0x0e, 'h', 'a', 'r', 'd', 'c', 'o', 'r', 'e', '_',
                                'T', 'b', 'e', 'a', 'm', 0x1a, 0x04, 'H', 'c', 'M', 'e'};
   parse_node_info(node_info, sizeof(node_info), &node);
+  const float sf11_skew_100ppm = static_cast<float>(1u << 12) * 100.0f / 1000000.0f;
   return std::strstr(summary, "81%") != nullptr && std::strstr(summary, "4.12V") != nullptr &&
          std::strcmp(node.long_name, "hardcore_Tbeam") == 0 &&
-         std::strcmp(node.short_name, "HcMe") == 0;
+         std::strcmp(node.short_name, "HcMe") == 0 &&
+         std::fabs(sf11_skew_100ppm - 0.4096f) < 0.0001f;
 }
 
 }  // namespace orcsdr::lora_native
