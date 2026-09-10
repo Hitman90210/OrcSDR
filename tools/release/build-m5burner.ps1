@@ -25,7 +25,7 @@ function Get-Sha256([string]$Path) {
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 Set-Location $repo
 if (-not $Version) { $Version = (git describe --tags --exact-match).Trim() }
-if ($Version -notmatch '^v\d+\.\d+\.\d+(-(alpha|beta)\.\d+)?(-candidate\.\d+)?$') {
+if ($Version -notmatch '^v\d+\.\d+\.\d+(-(alpha|beta)\.\d+)?(-(candidate\.\d+|multidongle-rc\d+))?$') {
   throw "Use an exact OrcSDR release tag or candidate label, not '$Version'."
 }
 $exactTag = (git describe --tags --exact-match 2>$null)
