@@ -97,6 +97,13 @@ body:after{
 .unit{font-size:17px;color:var(--cy);margin-left:9px;letter-spacing:.1em}
 .meta{margin-top:8px;font-size:11px;color:var(--mut);letter-spacing:.14em}
 .meta b{color:var(--gn);font-weight:700}
+/* min-width:0 on both the row and the scrolling half, or the Radio Text
+   refuses to ellipsis and stretches the panel instead. */
+.rds{margin-top:10px;display:flex;align-items:baseline;gap:12px;min-width:0}
+.ps{font-size:18px;font-weight:800;letter-spacing:.14em;color:var(--gn);
+  text-shadow:0 0 16px rgba(107,255,0,.28);white-space:nowrap;flex:0 0 auto}
+.rt{font-size:12px;color:var(--mut);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;min-width:0}
 .sigv{font-size:27px;font-weight:800;font-variant-numeric:tabular-nums}
 .sigv.ok{color:var(--gn)} .sigv.mid{color:var(--am)} .sigv.low{color:var(--mut)}
 .meter{height:7px;border-radius:4px;background:#0d1622;overflow:hidden;margin-top:9px;
@@ -260,6 +267,9 @@ button:focus{outline:2px solid var(--cy);outline-offset:2px}
           <div class="k">CENTER FREQUENCY</div>
           <div><span class="freq" id="freq">—</span><span class="unit" id="unit">MHz</span></div>
           <div class="meta" id="fmeta">—</div>
+          <div class="rds hide" id="rds">
+            <span class="ps" id="ps"></span><span class="rt" id="rt"></span>
+          </div>
         </div>
         <div class="panel sigbox">
           <div class="k">SIGNAL</div>
@@ -363,6 +373,7 @@ button:focus{outline:2px solid var(--cy);outline-offset:2px}
 <script>
 var S={freq:0,sig:-90,left:-90,right:-90,span:960000,mode:'',recv:false,rtl:false,usb:false,wifi:false,
 sound:true,stereo:false,rdsC:false,rdsL:false,rec:false,vol:0,bw:0,sps:0,batt:-1,ip:'',clk:'',fresh:0,rtt:0,
+ps:'',rt:'',pi:'',
 ctl:false,ch:{active:false,label:'',index:0,count:0},
 air:{active:false,messages:0,rate:0,range:25,tracked:0,located:false,targets:[]}};
 var D={freq:0,sig:-90,left:-90,right:-90};
@@ -578,6 +589,9 @@ function renderStrips(){
     var sm=t.pos?(Math.round(t.brg)+'° · '+(t.spd?t.spd+' kt':'—')):'NO POSITION';
     var rg=t.pos?t.rng.toFixed(1)+' NM':'—';
     var al=t.alt?(Math.round(t.alt/100)*100).toLocaleString():'—';
+    // Climb and descent: a contact at 3000 ft going up is a different thing
+    // from one coming down through it.
+    if(t.vr>64) al+=' \u25B2'; else if(t.vr<-64) al+=' \u25BC';
     out+='<div class="strip'+(t.pos?'':' nopos')+'"><div><div class="cs">'+t.id+
          '</div><div class="sm">'+sm+'</div></div><div class="rg">'+rg+
          '</div><div class="al">'+al+'</div></div>';
@@ -637,7 +651,17 @@ function applyUi(){
       else if(S.rdsC) flags.push('RDS CARRIER');
     }
     if(S.rec) flags.push('REC');
+    if(S.pi) flags.push('PI '+S.pi);
     $('fmeta').innerHTML=modeName(S.mode)+'  ·  '+bw+(flags.length?'  ·  <b>'+flags.join(' · ')+'</b>':'');
+    // Station name and Radio Text were being sent on every poll and shown
+    // nowhere. Only rendered once RDS actually locks, so a half-decoded name
+    // does not flicker on screen.
+    var ps=(S.ps||'').replace(/\s+$/,''), rt=(S.rt||'').replace(/\s+$/,'');
+    if(S.rdsL&&(ps||rt)){
+      $('rds').className='rds';
+      $('ps').textContent=ps;
+      $('rt').textContent=rt;
+    } else $('rds').className='rds hide';
     var sig=D.sig;
     $('sigv').textContent=(typeof sig==='number')?sig.toFixed(1)+' dBFS':'—';
     $('sigv').className='sigv '+(sig>-25?'ok':sig>-45?'mid':'low');
@@ -680,6 +704,7 @@ function tick(){
           S.span=j.span_hz||960000; S.mode=j.mode||''; S.recv=!!j.receiving; S.rtl=!!j.rtl_ready;
           S.usb=!!j.usb_connected; S.wifi=!!j.wifi_connected; S.sound=!!j.sound_enabled;
           S.stereo=!!j.stereo; S.rdsC=!!j.rds_carrier; S.rdsL=!!j.rds_locked; S.rec=!!j.recording;
+          S.ps=j.program_service||''; S.rt=j.radio_text||''; S.pi=j.pi_code||'';
           S.vol=(typeof j.volume_percent==='number')?j.volume_percent:0;
           S.bw=j.filter_bandwidth_hz||0; S.sps=j.effective_sps||0;
           S.batt=j.battery_percent; S.ip=j.wifi_ip||''; S.clk=j.clock||''; S.fresh=Date.now();

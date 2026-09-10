@@ -40,7 +40,6 @@ EXT_RAM_BSS_ATTR int16_t g_audio_clip[kAudioClip]{};
 EXT_RAM_BSS_ATTR uint8_t g_wav_out[44 + kAudioClip * sizeof(int16_t)]{};
 EXT_RAM_BSS_ATTR char g_status_json[4096]{};
 EXT_RAM_BSS_ATTR char g_status_air[1280]{};
-EXT_RAM_BSS_ATTR char g_status_recent[320]{};
 EXT_RAM_BSS_ATTR char g_status_spec[259]{};
 uint32_t g_wifi_up_ms = 0;
 std::atomic<uint32_t> g_audio_w{0};
@@ -100,33 +99,17 @@ esp_err_t handle_status(httpd_req_t* req) {
   snap = g_snapshot;
   portEXIT_CRITICAL(&g_mux);
 
-  char ip[24], mode[24], clock[24], date[28], ps[20], rt[80], pi[12], chan[24];
+  char ip[24], mode[24], clock[24], ps[20], rt[80], pi[12], chan[24];
   json_escape(chan, sizeof(chan), snap.channel_label);
   json_escape(ip, sizeof(ip), snap.wifi_ip);
   json_escape(mode, sizeof(mode), snap.mode);
   json_escape(clock, sizeof(clock), snap.clock);
-  json_escape(date, sizeof(date), snap.date);
+
   json_escape(ps, sizeof(ps), snap.program_service);
   json_escape(rt, sizeof(rt), snap.radio_text);
   json_escape(pi, sizeof(pi), snap.pi_code);
 
-  char* recent = g_status_recent;
-  recent[0] = '[';
-  recent[1] = '\0';
   size_t used = 1;
-  for (uint8_t i = 0; i < snap.recent_count && i < kRecentSlots; ++i) {
-    char id[16], title[24];
-    json_escape(id, sizeof(id), snap.recent_id[i]);
-    json_escape(title, sizeof(title), snap.recent_title[i]);
-    char item[56];
-    const int n = snprintf(item, sizeof(item), "%s{\"id\":\"%s\",\"title\":\"%s\"}",
-                           i ? "," : "", id, title);
-    if (n < 0 || used + static_cast<size_t>(n) + 2 >= sizeof(g_status_recent)) break;
-    memcpy(recent + used, item, static_cast<size_t>(n));
-    used += static_cast<size_t>(n);
-  }
-  memcpy(recent + used, "]", 2);
-
   char* spec = g_status_spec;
   spec[0] = '[';
   spec[1] = '\0';
@@ -173,15 +156,15 @@ esp_err_t handle_status(httpd_req_t* req) {
            "\"rtl_ready\":%s,\"receiving\":%s,\"sound_enabled\":%s,\"stereo\":%s,"
            "\"rds_carrier\":%s,\"rds_locked\":%s,\"program_service\":\"%s\","
            "\"radio_text\":\"%s\",\"pi_code\":\"%s\",\"recording\":%s,\"mode\":\"%s\","
-           "\"frequency_hz\":%lu,\"requested_frequency_hz\":%lu,\"span_hz\":%lu,"
-           "\"step_hz\":%lu,\"filter_bandwidth_hz\":%lu,\"effective_sps\":%lu,"
+           "\"frequency_hz\":%lu,\"span_hz\":%lu,"
+           "\"filter_bandwidth_hz\":%lu,\"effective_sps\":%lu,"
            "\"battery_percent\":%ld,\"signal_dbfs\":%.1f,\"left_dbfs\":%.1f,"
-           "\"right_dbfs\":%.1f,\"volume\":%u,\"clock\":\"%s\",\"date\":\"%s\","
-           "\"volume_percent\":%u,\"recent\":%s,\"spectrum\":%s,"
+           "\"right_dbfs\":%.1f,\"clock\":\"%s\","
+           "\"volume_percent\":%u,\"spectrum\":%s,"
            "\"channel\":{\"active\":%s,\"label\":\"%s\",\"index\":%u,\"count\":%u},"
            "\"adsb\":{\"active\":%s,\"messages\":%lu,\"rate\":%.1f,"
            "\"range_nm\":%u,\"tracked\":%u,\"located\":%s,\"targets\":%s},"
-           "\"web\":{\"enabled\":%s,\"control\":%s}}",
+           "\"web\":{\"control\":%s}}",
            ip, snap.wifi_connected ? "true" : "false",
            snap.usb_connected ? "true" : "false", snap.rtl_ready ? "true" : "false",
            snap.receiving ? "true" : "false", snap.sound_enabled ? "true" : "false",
@@ -189,16 +172,14 @@ esp_err_t handle_status(httpd_req_t* req) {
            snap.rds_locked ? "true" : "false", ps, rt, pi,
            snap.recording ? "true" : "false",
            mode, static_cast<unsigned long>(snap.frequency_hz),
-           static_cast<unsigned long>(snap.requested_frequency_hz),
            static_cast<unsigned long>(snap.span_hz),
-           static_cast<unsigned long>(snap.step_hz),
            static_cast<unsigned long>(snap.filter_bandwidth_hz),
            static_cast<unsigned long>(snap.effective_sps),
            static_cast<long>(snap.battery_percent),
            static_cast<double>(snap.signal_dbfs),
            static_cast<double>(snap.left_dbfs),
-           static_cast<double>(snap.right_dbfs), snap.volume, clock, date,
-           snap.volume_percent, recent, spec,
+           static_cast<double>(snap.right_dbfs), clock,
+           snap.volume_percent, spec,
            snap.channel_active ? "true" : "false", chan,
            static_cast<unsigned>(snap.channel_index),
            static_cast<unsigned>(snap.channel_count),
@@ -208,7 +189,6 @@ esp_err_t handle_status(httpd_req_t* req) {
            static_cast<unsigned>(snap.radar_range_nm),
            static_cast<unsigned>(snap.aircraft_tracked),
            snap.location_configured ? "true" : "false", air,
-           snap.enabled ? "true" : "false",
            g_control.load(std::memory_order_relaxed) ? "true" : "false");
 
   httpd_resp_set_type(req, "application/json");

@@ -16196,25 +16196,25 @@ void loop() {
         strlcpy(snap.wifi_ip, home.wifi_ip, sizeof(snap.wifi_ip));
         strlcpy(snap.mode, home.mode, sizeof(snap.mode));
         strlcpy(snap.clock, home.clock, sizeof(snap.clock));
-        strlcpy(snap.date, home.date, sizeof(snap.date));
+
         snap.frequency_hz = home.frequency_hz;
-        snap.requested_frequency_hz = home.requested_frequency_hz;
+
         snap.span_hz = home.span_hz;
-        snap.step_hz = home.step_hz;
+
         snap.filter_bandwidth_hz = home.filter_bandwidth_hz;
         snap.effective_sps = home.effective_sps;
         snap.battery_percent = home.battery_percent;
         snap.signal_dbfs = home.relative_dbfs;
-        snap.volume = home.volume;
-        // The device prints a percentage; the page was rendering the raw 0-255
-        // value against "/100", so half volume read as "128/100".
+        // The device prints a percentage, so that is what is sent. The raw 0-255
+        // value used to go too, and the page rendered it against "/100" -- half
+        // volume read as "128/100".
         snap.volume_percent = static_cast<uint8_t>((home.volume * 100u + 127u) / 255u);
         snap.wifi_connected = home.wifi_connected;
         snap.usb_connected = home.usb_connected;
         snap.rtl_ready = home.driver_ready;
         snap.receiving = home.receiving;
         snap.sound_enabled = home.sound_enabled;
-        snap.enabled = true;
+
         {
           const auto fm = fm_dashboard_snapshot();
           snap.stereo = fm.stereo;
@@ -16354,34 +16354,6 @@ void loop() {
           }
         }
 
-        snap.recent_count = 0;
-        for (size_t i = 0; i < orcsdr::dashboards::recent_count() &&
-                           snap.recent_count < orcsdr::web_console::kRecentSlots;
-             ++i) {
-          const auto id = orcsdr::dashboards::recent(i);
-          const auto* entry = orcsdr::dashboards::find(id);
-          if (entry == nullptr) continue;
-          const char* name = id == orcsdr::dashboards::Id::fm           ? "fm"
-                             : id == orcsdr::dashboards::Id::am          ? "am"
-                             : id == orcsdr::dashboards::Id::p25        ? "p25"
-                             : id == orcsdr::dashboards::Id::adsb       ? "adsb"
-                             : id == orcsdr::dashboards::Id::shortwave  ? "shortwave"
-                             : id == orcsdr::dashboards::Id::weather    ? "weather"
-                             : id == orcsdr::dashboards::Id::cb         ? "cb"
-                             : id == orcsdr::dashboards::Id::lora       ? "lora"
-                             : id == orcsdr::dashboards::Id::airband    ? "airband"
-                             : id == orcsdr::dashboards::Id::marine     ? "marine"
-                             : id == orcsdr::dashboards::Id::satellite  ? "satellite"
-                             : id == orcsdr::dashboards::Id::rf_lab     ? "rf_lab"
-                             : id == orcsdr::dashboards::Id::settings   ? "settings"
-                                                                        : "";
-          if (name[0] == '\0') continue;
-          strlcpy(snap.recent_id[snap.recent_count], name,
-                  sizeof(snap.recent_id[0]));
-          strlcpy(snap.recent_title[snap.recent_count], entry->title,
-                  sizeof(snap.recent_title[0]));
-          ++snap.recent_count;
-        }
         snap.spectrum_count = orcsdr::web_console::kSpectrumBins;
         float samples[orcsdr::web_console::kSpectrumBins]{};
         float sum = 0.0f;

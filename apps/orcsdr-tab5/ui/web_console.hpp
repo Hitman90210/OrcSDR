@@ -6,7 +6,6 @@
 namespace orcsdr::web_console {
 
 constexpr size_t kSpectrumBins = 64;
-constexpr size_t kRecentSlots = 8;
 // The device shows six aircraft because that is what its panel fits, not what
 // it tracks. A browser has room for more, and the tracker holds 64.
 constexpr size_t kAircraftSlots = 16;
@@ -35,27 +34,25 @@ struct Snapshot {
   char wifi_ip[16]{};
   char mode[12]{};
   char clock[12]{};
-  char date[20]{};
   char program_service[9]{};
   char radio_text[65]{};
   char pi_code[5]{};
-  char recent_id[kRecentSlots][12]{};
-  char recent_title[kRecentSlots][16]{};
+
   uint32_t frequency_hz = 0;
-  uint32_t requested_frequency_hz = 0;
+
   uint32_t span_hz = 960000;
-  uint32_t step_hz = 12500;
+
   uint32_t filter_bandwidth_hz = 0;
   uint32_t effective_sps = 0;
   int32_t battery_percent = -1;
   float signal_dbfs = -90.0f;
   float left_dbfs = -90.0f;
   float right_dbfs = -90.0f;
-  uint8_t volume = 0;
-  // What the device itself puts on screen. The raw value is 0-255 and the page
-  // was rendering it against "/100", so half volume read as "128/100".
+  // What the device itself puts on screen. The raw 0-255 value is deliberately
+  // not sent: the page rendered it against "/100" once already, and half volume
+  // read as "128/100".
   uint8_t volume_percent = 0;
-  uint8_t recent_count = 0;
+
   uint8_t spectrum[kSpectrumBins]{};
   uint8_t spectrum_count = 0;
   bool wifi_connected = false;
