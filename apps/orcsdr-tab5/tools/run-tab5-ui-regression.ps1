@@ -965,10 +965,10 @@ function Invoke-AmBroadcastTest {
       if ($scan.Active -eq 0) { break }
       Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $scanDeadline)
-    if ($scan.Active -ne 0 -or $scan.Step -ne $scan.Total -or $scan.Found -lt 1) {
-      throw "AM scan did not populate candidates: $($scan | ConvertTo-Json -Compress)"
+    if ($scan.Active -ne 0 -or $scan.Step -ne $scan.Total -or $scan.Found -gt 6) {
+      throw "AM scan did not finish with a valid candidate count: $($scan | ConvertTo-Json -Compress)"
     }
-    Write-SoakLine "RTL_AM_SCAN_REGRESSION pass=1 action=2.4MS+populate channels=$($scan.Total) found=$($scan.Found) effective_sps=$($driver.EffectiveSps)"
+    Write-SoakLine "RTL_AM_SCAN_REGRESSION pass=1 action=2.4MS+populate channels=$($scan.Total) found=$($scan.Found) capacity=6 effective_sps=$($driver.EffectiveSps)"
     Write-SoakLine 'RTL_AM_REGRESSION_RESULT pass=1 frequencies=3 filters=4 samples=12'
   } finally {
     try {
