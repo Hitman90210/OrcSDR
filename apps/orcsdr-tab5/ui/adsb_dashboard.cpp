@@ -627,17 +627,26 @@ void draw_target() {
     text(identity_values[i], 248, yy, TFT_WHITE, 1, middle_left);
   }
   M5.Display.drawFastHLine(36, 415, 460, kBorder);
+  // Wingspan is x +/- scale, so this occupies 68..184; the block below starts
+  // at 200 and clears it.
   plane(126, 494, 58, TFT_LIGHTGREY);
-  char atc[44];
-  if (g_atc_listening) strlcpy(atc, "RESUME ADS-B", sizeof(atc));
-  else if (g_settings.atc_frequency_hz) {
-    const uint32_t mhz = g_settings.atc_frequency_hz / 1000000;
-    const uint32_t khz = (g_settings.atc_frequency_hz % 1000000) / 1000;
-    snprintf(atc, sizeof(atc), "LISTEN %.22s %lu.%03lu", g_settings.atc_label,
-             static_cast<unsigned long>(mhz), static_cast<unsigned long>(khz));
+  // The preset name and frequency are their own lines rather than part of the
+  // button caption. button() draws at text size 2 (12 px per character), so the
+  // old combined caption reached 276 px inside a 250 px box and spilled over the
+  // icon and the card border. A verb-only caption cannot grow with the data.
+  text("ATC AUDIO", 200, 440, kBlue, 1, middle_left);
+  if (g_settings.atc_frequency_hz) {
+    text(g_settings.atc_label[0] ? g_settings.atc_label : "NEAREST FIELD", 200, 466,
+         TFT_WHITE, 1, middle_left);
+    snprintf(value, sizeof(value), "%lu.%03lu MHz",
+             static_cast<unsigned long>(g_settings.atc_frequency_hz / 1000000),
+             static_cast<unsigned long>((g_settings.atc_frequency_hz % 1000000) / 1000));
+    text(value, 200, 492, kGreen, 2, middle_left);
+  } else {
+    text("No verified nearby preset", 200, 466, kMuted, 1, middle_left);
+    text("See the SETTINGS tab", 200, 492, kMuted, 1, middle_left);
   }
-  else strlcpy(atc, "ATC DATA NOT INSTALLED", sizeof(atc));
-  button(atc, 230, 462, 250, 54,
+  button(g_atc_listening ? "RESUME ADS-B" : "LISTEN", 200, 516, 240, 54,
          g_atc_listening ? TFT_DARKGREEN : g_settings.atc_frequency_hz ? TFT_NAVY : TFT_DARKGREY);
 
   char values[9][32], secondary[9][28];
@@ -847,8 +856,11 @@ void draw_settings() {
   text("RADAR RANGE", 38, 348, kMuted, 1, middle_left);
   snprintf(value, sizeof(value), "%u NM", g_settings.radar_range_nm);
   button(value, 225, 322, 225, 52, TFT_DARKCYAN);
-  text("RF GAIN", 38, 430, kMuted, 1, middle_left);
-  button("AUTO  (READ ONLY)", 225, 404, 225, 52, TFT_DARKGREY);
+  // The qualifier rides on the label, which is size 1 and has the room. The
+  // button held "AUTO  (READ ONLY)" -- 17 characters at 12 px in a 225 px box,
+  // so the text sat on the rounded border.
+  text("RF GAIN (READ ONLY)", 38, 430, kMuted, 1, middle_left);
+  button("AUTO", 225, 404, 225, 52, TFT_DARKGREY);
   button("EXIT ADS-B", 38, 538, 412, 58, TFT_MAROON);
   if (g_edit != EditField::none) draw_keypad();
   else {
@@ -1093,7 +1105,7 @@ Action handle_touch(int32_t x, int32_t y) {
       toggle_lock();
       redraw_content();
     }
-    if (hit(x, y, 230, 462, 250, 54) &&
+    if (hit(x, y, 200, 516, 240, 54) &&
         (g_atc_listening || g_settings.atc_frequency_hz))
       return g_atc_listening ? Action::atc_resume : Action::atc_listen;
     if (hit(x, y, 1005, 550, 210, 54)) {
