@@ -6135,11 +6135,19 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   constexpr float kPi = 3.14159265358979323846f;
   for (size_t w = 0; w < windows; ++w) {
     const uint8_t* base = local_iq + w * window_bytes;
+    float mean_i = 0.0f;
+    float mean_q = 0.0f;
+    for (size_t index = 0; index < kRtlSpectrumBins; ++index) {
+      mean_i += static_cast<float>(base[index * 2]);
+      mean_q += static_cast<float>(base[index * 2 + 1]);
+    }
+    mean_i /= kRtlSpectrumBins;
+    mean_q /= kRtlSpectrumBins;
     for (size_t index = 0; index < kRtlSpectrumBins; ++index) {
       rtl_spectrum_real[index] =
-          (static_cast<int>(base[index * 2]) - 128) * rtl_spectrum_window[index];
+          (static_cast<float>(base[index * 2]) - mean_i) * rtl_spectrum_window[index];
       rtl_spectrum_imaginary[index] =
-          (static_cast<int>(base[index * 2 + 1]) - 128) * rtl_spectrum_window[index];
+          (static_cast<float>(base[index * 2 + 1]) - mean_q) * rtl_spectrum_window[index];
     }
     for (size_t index = 1, reversed = 0; index < kRtlSpectrumBins; ++index) {
       size_t bit = kRtlSpectrumBins >> 1;
@@ -11131,6 +11139,17 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   if (band != rtl_ui_band) {
     rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(band), std::memory_order_relaxed);
   }
+#if !RTL_USE_LEGACY_USB
+  if (rtl_ui_band == RtlBand::am && band != RtlBand::am) {
+    rtl_am_gain_auto_selecting.store(false, std::memory_order_relaxed);
+    (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO);
+  } else if (rtl_ui_band != RtlBand::am && band == RtlBand::am) {
+    if (rtl_am_gain_auto_enabled.load(std::memory_order_relaxed))
+      rtl_am_gain_auto_restart.store(true, std::memory_order_release);
+    else
+      (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
+  }
+#endif
   if (band == RtlBand::cb) {
     rtl_scope_span_hz.store(480000, std::memory_order_relaxed);
   }

@@ -914,6 +914,15 @@ function Invoke-AmBroadcastTest {
       }
     }
     Write-SoakLine 'RTL_AM_GAIN_REGRESSION pass=1 auto=lowest_usable manual_range_tenth_db=0-496'
+    [void](Open-Ui 'HOME' 'AM')
+    [void](Open-Ui 'FM' 'FM')
+    Start-Sleep -Milliseconds 500
+    $fmDriver = Get-DriverStatus
+    if ($fmDriver.State -ne 'STREAMING' -or $fmDriver.Mode -ne 'AUTO') {
+      throw "AM to FM transition did not restore FM tuner state: state=$($fmDriver.State) mode=$($fmDriver.Mode)"
+    }
+    [void](Open-Ui 'AM' 'AM')
+    Write-SoakLine 'RTL_AM_FM_TRANSITION_REGRESSION pass=1 fm_gain_mode=AUTO'
     [void](Send-And-Wait 'RTL_UI ACTION AM SCAN' '^RTL_UI_ACTION_OK$')
     $scanDeadline = [DateTime]::UtcNow.AddSeconds(3)
     do {

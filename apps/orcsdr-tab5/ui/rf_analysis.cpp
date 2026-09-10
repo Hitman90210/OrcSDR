@@ -222,8 +222,8 @@ bool analyze_iq(const uint8_t* iq, size_t bytes, Snapshot* next, float* work,
   for (int i = 0; i < n; ++i) {
     const float window = 0.5f - 0.5f * cosf(2.0f * kPi * i / (n - 1));
     coherent_sum += window;
-    work[i * 2] = ((static_cast<int>(iq[i * 2]) - 127.5f) / 127.5f) * window;
-    work[i * 2 + 1] = ((static_cast<int>(iq[i * 2 + 1]) - 127.5f) / 127.5f) * window;
+    work[i * 2] = next->iq_i[i] * window;
+    work[i * 2 + 1] = next->iq_q[i] * window;
   }
   if (dsps_fft2r_fc32_ansi(work, n) != ESP_OK ||
       dsps_bit_rev_fc32_ansi(work, n) != ESP_OK)
@@ -504,8 +504,8 @@ bool self_check() {
   }
   for (size_t i = 0; i < samples; ++i) {
     const float phase = 2.0f * kPi * 32.0f * i / samples;
-    iq[i * 2] = static_cast<uint8_t>(lroundf(127.5f + 80.0f * cosf(phase)));
-    iq[i * 2 + 1] = static_cast<uint8_t>(lroundf(127.5f + 80.0f * sinf(phase)));
+    iq[i * 2] = static_cast<uint8_t>(lroundf(227.5f + 20.0f * cosf(phase)));
+    iq[i * 2 + 1] = static_cast<uint8_t>(lroundf(227.5f + 20.0f * sinf(phase)));
     snapshot->average[i] = -160;
     snapshot->peak[i] = -160;
   }
@@ -518,7 +518,7 @@ bool self_check() {
   const bool analyzed = analyze_iq(iq, samples * 2, snapshot, work, scratch, config);
   const bool valid = analyzed && snapshot->bins == samples &&
                      fabsf(snapshot->strongest_offset_hz - 120000.0f) < 8000.0f &&
-                     snapshot->strongest > -8.0f && snapshot->strongest < 0.0f &&
+                     snapshot->strongest > -20.0f && snapshot->strongest < -12.0f &&
                      snapshot->clipping_percent == 0.0f &&
                      fabsf(snapshot->iq_imbalance_db) < 0.5f &&
                      snapshot->occupied_bandwidth_hz > 0 &&
