@@ -1,5 +1,9 @@
 # Getting started
 
+> **Just want to use the radio?** [Quick start](quick-start.md) gets you from
+> box to audio in five minutes. This page covers the hardware detail and the
+> build-from-source path.
+
 ## Hardware
 
 1. Seat the Tab5 securely and connect a supported RTL-SDR Blog V4 to the USB-A host port.

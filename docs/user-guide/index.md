@@ -16,7 +16,8 @@ Start with [Getting started](getting-started.md), then use the searchable [scree
 
 | Page | For |
 | --- | --- |
-| [Getting started](getting-started.md) | First power-on, the dongle, the antenna |
+| **[Quick start](quick-start.md)** | **Start here.** Hearing a station in five minutes |
+| [Getting started](getting-started.md) | Hardware notes and building from source |
 | [Feature status](feature-status.md) | What is verified, what is prototype, what is missing |
 | [Maps and data packs](maps-and-data.md) | Aircraft/airport databases, and building a map for your own area |
 | [Settings](settings.md) | Every Settings category, including the companion console |

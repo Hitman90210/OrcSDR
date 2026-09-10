@@ -41,6 +41,9 @@
 
 M5Burner writes the Tab5 P4 application. OrcSDR performs the separate, explicit in-app C6 update only after it can reach the Hosted transport. Normal upgrades preserve OrcSDR settings and saved Wi-Fi profiles. If the C6 is unreachable, do not keep retrying the in-app updater; use the [documented recovery path](docs/M5BURNER_RELEASE.md).
 
+**Just flashed it? [Quick start](docs/user-guide/quick-start.md)** takes you from
+first boot to a station you can hear, then points at everything optional.
+
 For developer/source installation, use **native ESP-IDF 5.5.4**. The source-build path remains below and is not the normal user install path.
 
 You power it on, wait for the splash to finish loading Wi-Fi and the dongle, tap **OrcSDR**, and land on Home. Home remembers the last radio you used. The spectrum and waterfall keep drawing while you listen. From there you open a dedicated dashboard for the kind of signal you actually care about, instead of one crowded “everything radio” screen.
