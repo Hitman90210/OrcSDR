@@ -82,7 +82,7 @@ already mounted.
 
 ## 3. An offline map for your own area
 
-`tools/build_orcmap.py` builds the device's map format for any bounding box
+`apps/orcsdr-tab5/tools/build_orcmap.py` builds the device's map format for any bounding box
 from OpenStreetMap, so you are not stuck with Lane County:
 
 ```bash

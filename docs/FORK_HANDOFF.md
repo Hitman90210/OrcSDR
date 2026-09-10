@@ -1035,7 +1035,7 @@ signed packs are never mutated.
 
 | Feature | Gap in the published pack | Builder |
 | --- | --- | --- |
-| Offline map | only `lane_county_map` exists | `tools/build_orcmap.py` (OpenStreetMap / Overpass) |
+| Offline map | only `lane_county_map` exists | `apps/orcsdr-tab5/tools/build_orcmap.py` (OpenStreetMap / Overpass) |
 | Listen to ATC | `faa_aviation` has 40,937 frequency records but **no coordinates**, and none of the optional `ATC` preset lines | `tools/build_atc_presets.py` (OurAirports) |
 
 `docs/LOCAL_SETUP.md` has the commands. Both were verified end to end on
@@ -1157,5 +1157,5 @@ accumulate, no early exit), and no secrets on the serial console.
 | `ui/p25_config.{hpp,cpp}` | P25 profile parse/validate/store. Strict parser — read it before writing a profile. |
 | `ui/scan_engine.{hpp,cpp}` | Generic non-blocking retune/measure sweep with a host self-check. |
 | `ui/offline_map.{hpp,cpp}` | ORCMAP1 loader. User map wins over the packaged one. |
-| `tools/build_orcmap.py` | Build a map for your area. Added by this fork. |
+| `apps/orcsdr-tab5/tools/build_orcmap.py` | Build a map for your area. Added by this fork. |
 | `docs/LOCAL_SETUP.md` | User-facing: data packs, maps, P25, location. Added by this fork. |

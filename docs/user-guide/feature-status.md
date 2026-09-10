@@ -47,7 +47,7 @@ blunt rather than flattering.
 | Companion LAN console | Implemented | Mode-aware: ADS-B radar with climb/descent arrows, a channel faceplate for CB/GMRS/marine/weather, spectrum with RDS station name and Radio Text elsewhere. **View-and-listen by default**; visitor control is a separate opt-in switch and is refused at the server (403) when off. No TLS and no login either way, so trusted networks only. |
 | Android TV viewer | Experimental | Sideload `apps/orcsdr-tv` on Android 9 TV. Unplug the PC flash/JTAG USB cable after flashing — that cable, not general power, is the bench brownout trigger. |
 | Signed data packs | Implemented | See [maps and data](maps-and-data.md) |
-| Offline maps | Implemented (build your own) | The catalog's only map is upstream's home county. `tools/build_orcmap.py` builds one for your area from OpenStreetMap; the device prefers it. See [maps and data](maps-and-data.md). |
+| Offline maps | Implemented (build your own) | The catalog's only map is upstream's home county. `apps/orcsdr-tab5/tools/build_orcmap.py` builds one for your area from OpenStreetMap; the device prefers it. See [maps and data](maps-and-data.md). |
 | Battery operation | Implemented, with a caveat | A boot loop on battery was traced to heap corruption in the hosted SDIO path and is **masked, not fixed** (`CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK`, plus a longer C6 boot delay). See `FORK_HANDOFF.md` §3b. |
 | Bluetooth speaker audio | Unavailable | The Tab5's C6 supports BLE, not Classic Bluetooth A2DP output |
 | Companion phone integration | Deferred | On-device operation never depends on it |
