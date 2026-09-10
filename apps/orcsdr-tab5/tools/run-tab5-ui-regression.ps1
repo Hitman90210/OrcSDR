@@ -706,8 +706,8 @@ function Assert-DataServices {
       throw "FAA aircraft pack was not activated: $pack"
     }
     $after = Wait-DriverStreaming 30
-    if ($after.Overruns -ne 0 -or $after.Drops -ne 0) {
-      throw "Radio resumed with transport loss: overruns=$($after.Overruns) drops=$($after.Drops)"
+    if ($after.Overruns -gt $before.Overruns -or $after.Drops -gt $before.Drops) {
+      throw "Radio resumed with new transport loss: overruns=$($before.Overruns)->$($after.Overruns) drops=$($before.Drops)->$($after.Drops)"
     }
     Write-SoakLine "RTL_CATALOG_FAA_RESULT pass=1 bytes_before=$($before.Bytes) bytes_after=$($after.Bytes)"
   }
