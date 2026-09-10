@@ -27,6 +27,7 @@ param(
   [switch]$RadioScan,
   [switch]$AmBroadcast,
   [switch]$InstallLaneMap,
+  [switch]$InstallFaaAircraft,
   [string]$LocationQuery = '97401',
   [switch]$RequireWifiConnection,
   [switch]$TestBiasTee
@@ -619,14 +620,42 @@ function Assert-WifiCli($initialUi) {
   }
 }
 
-function Wait-CatalogIdle([int]$Seconds) {
+function Wait-CatalogIdle([int]$Seconds, [switch]$RequireProgress) {
   $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+  $lastProgress = -1
+  $sawIntermediateProgress = $false
   do {
     Start-Sleep -Seconds 1
     $status = Send-And-Wait 'RTL_CATALOG_STATUS' '^RTL_CATALOG_STATUS ' 10
-    if ($status -match 'busy=0') { return $status }
+    if ($status -notmatch 'busy=([01]) operation=\d+ progress=(\d+)') {
+      throw "Malformed catalog status: $status"
+    }
+    $busy = [int]$Matches[1]
+    $progress = [int]$Matches[2]
+    if ($busy -eq 1) {
+      if ($lastProgress -ge 0 -and $progress -lt $lastProgress) {
+        throw "Catalog progress moved backwards: $lastProgress -> $progress"
+      }
+      if ($progress -gt 0 -and $progress -lt 100) { $sawIntermediateProgress = $true }
+      $lastProgress = $progress
+    } else {
+      if ($RequireProgress -and !$sawIntermediateProgress) {
+        throw "Catalog operation completed without observable progress: $status"
+      }
+      return $status
+    }
   } while ([DateTime]::UtcNow -lt $deadline)
   throw "Catalog operation timed out: $status"
+}
+
+function Wait-DriverStreaming([int]$Seconds = 30) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+  do {
+    $driver = Get-DriverStatus
+    if ($driver.State -eq 'STREAMING' -and $driver.Bytes -gt 0) { return $driver }
+    Start-Sleep -Milliseconds 500
+  } while ([DateTime]::UtcNow -lt $deadline)
+  throw "Radio did not resume streaming: state=$($driver.State) bytes=$($driver.Bytes)"
 }
 
 function Assert-DataServices {
@@ -663,6 +692,25 @@ function Assert-DataServices {
       throw "Lane County map was not activated: $pack"
     }
   }
+  if ($InstallFaaAircraft) {
+    Connect-Authenticated
+    [void](Open-Ui 'FM' 'FM')
+    $before = Wait-DriverStreaming 30
+    [void](Send-And-Wait 'RTL_CATALOG_INSTALL faa_aircraft' '^RTL_CATALOG_INSTALL_QUEUED$')
+    $catalog = Wait-CatalogIdle 900 -RequireProgress
+    if ($catalog -notmatch 'message="Pack installed and verified"') {
+      throw "FAA aircraft install failed: $catalog"
+    }
+    $pack = Send-And-Wait 'RTL_CATALOG_LIST' '^RTL_CATALOG_PACK id=faa_aircraft ' 10
+    if ($pack -notmatch 'installed=1 update=0 status="INSTALLED"') {
+      throw "FAA aircraft pack was not activated: $pack"
+    }
+    $after = Wait-DriverStreaming 30
+    if ($after.Overruns -ne 0 -or $after.Drops -ne 0) {
+      throw "Radio resumed with transport loss: overruns=$($after.Overruns) drops=$($after.Drops)"
+    }
+    Write-SoakLine "RTL_CATALOG_FAA_RESULT pass=1 bytes_before=$($before.Bytes) bytes_after=$($after.Bytes)"
+  }
 
   if ($LocationQuery -notmatch '^[\x20-\x7E]{1,63}$') {
     throw 'LocationQuery must contain 1-63 printable ASCII characters.'
@@ -679,7 +727,7 @@ function Assert-DataServices {
     throw "Location lookup failed: $location"
   }
   Assert-Health
-  Write-SoakLine "RTL_DATA_SERVICES_RESULT pass=1 catalog=verified lane_map_installed=$([int][bool]$InstallLaneMap) location_query=$LocationQuery"
+  Write-SoakLine "RTL_DATA_SERVICES_RESULT pass=1 catalog=verified lane_map_installed=$([int][bool]$InstallLaneMap) faa_aircraft_installed=$([int][bool]$InstallFaaAircraft) location_query=$LocationQuery"
 }
 
 function Capture-ResetEvidence {
@@ -767,6 +815,9 @@ function Invoke-SelfCheck {
 }
 
 if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
+if (($InstallLaneMap -or $InstallFaaAircraft) -and !$DataOnly) {
+  throw '-InstallLaneMap and -InstallFaaAircraft require -DataOnly.'
+}
 if (@($Run, $Soak, $Driver080Rc2, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast).Where({ $_ }).Count -gt 1) {
   throw 'Choose only one of -Run, -Soak, -Driver080Rc2, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, or -AmBroadcast.'
 }

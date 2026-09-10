@@ -254,11 +254,13 @@ void draw_location() {
 
 void draw_data_maps() {
   text("DATA & MAPS", 330, 115, kBlue, 3);
-  char catalog[112];
+  char catalog[112], catalog_action[32];
   snprintf(catalog, sizeof(catalog), "%s%s", g_state.catalog_ready ? "SIGNED CATALOG " : "NO CATALOG ",
            g_state.catalog_date[0] ? g_state.catalog_date : "CHECK MANUALLY");
   text(catalog, 330, 153, g_state.catalog_ready ? kGreen : kMuted, 2);
-  button(g_state.catalog_busy ? "WORKING..." : "CHECK FOR UPDATES", 940, 126, 278, 48,
+  snprintf(catalog_action, sizeof(catalog_action), g_state.catalog_busy ? "WORKING %u%%" : "CHECK FOR UPDATES",
+           static_cast<unsigned>(g_state.catalog_progress_percent));
+  button(catalog_action, 940, 126, 278, 48,
          g_state.catalog_busy ? TFT_DARKGREY : TFT_DARKCYAN);
   if (g_state.catalog_message[0]) text(g_state.catalog_message, 330, 180, kMuted, 2);
   for (uint8_t i = 0; i < 5; ++i) {
@@ -280,7 +282,7 @@ void draw_data_maps() {
     button(g_catalog_remove_armed == i ? "CONFIRM" : "REMOVE", 1072, y + 14, 126, 42,
            pack.installed && !g_state.catalog_busy ? TFT_MAROON : TFT_DARKGREY);
   }
-  text("Manual only. Downloads keep reception active.", 330, 688, TFT_LIGHTGREY, 1);
+  text("Manual only. Reception pauses and resumes after downloads.", 330, 688, TFT_LIGHTGREY, 1);
 }
 
 void draw_display_audio() {
@@ -660,6 +662,7 @@ void update(const State& state_value) {
                               strcmp(g_state.charging_state, state_value.charging_state) != 0);
   const bool catalog_changed = g_section == Section::data_maps &&
       (g_state.catalog_ready != state_value.catalog_ready || g_state.catalog_busy != state_value.catalog_busy ||
+       g_state.catalog_progress_percent != state_value.catalog_progress_percent ||
        strcmp(g_state.catalog_message, state_value.catalog_message) != 0 ||
        strcmp(g_state.catalog_date, state_value.catalog_date) != 0 ||
        memcmp(g_state.catalog_packs, state_value.catalog_packs, sizeof(g_state.catalog_packs)) != 0);

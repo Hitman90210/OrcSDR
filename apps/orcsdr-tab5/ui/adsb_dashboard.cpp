@@ -29,6 +29,11 @@ constexpr int kRadarPanelW = 646;
 constexpr int kRadarPanelH = 390;
 constexpr uint16_t kRanges[] = {10, 25, 50, 100};
 constexpr size_t kAltitudeBins = 12;
+constexpr int kGainMinTenthDb = 0;
+constexpr int kGainMaxTenthDb = 496;
+constexpr int kGainSliderX = 170;
+constexpr int kGainSliderY = 452;
+constexpr int kGainSliderW = 280;
 
 enum class View : uint8_t { radar, list, target, stats, settings, count };
 enum class EditField : uint8_t { none, latitude, longitude };
@@ -91,6 +96,11 @@ uint8_t displayed_aircraft_count() {
 float displayed_message_rate() { return g_live_snapshot.message_rate; }
 
 uint32_t displayed_total_messages() { return g_live_snapshot.total_messages; }
+
+int gain_from_slider_x(int x) {
+  const int position = constrain(x - kGainSliderX, 0, kGainSliderW);
+  return (position * kGainMaxTenthDb + kGainSliderW / 2) / kGainSliderW;
+}
 
 void draw_radar_base() {
   constexpr int cx = kRadarPanelW / 2;
@@ -798,8 +808,26 @@ void draw_settings() {
   text("RADAR RANGE", 38, 348, kMuted, 1, middle_left);
   snprintf(value, sizeof(value), "%u NM", g_settings.radar_range_nm);
   button(value, 225, 322, 225, 52, TFT_DARKCYAN);
-  text("RF GAIN", 38, 430, kMuted, 1, middle_left);
-  button("AUTO  (READ ONLY)", 225, 404, 225, 52, TFT_DARKGREY);
+  text("RF GAIN", 38, 406, kMuted, 1, middle_left);
+  button(g_settings.gain_auto ? "AUTO" : "USE AUTO", 38, 430, 112, 48,
+         g_settings.gain_auto_supported ? TFT_DARKGREEN : TFT_DARKGREY);
+  M5.Display.fillRoundRect(kGainSliderX, kGainSliderY - 5, kGainSliderW, 10, 5,
+                           g_settings.gain_supported ? TFT_DARKGREY : kBorder);
+  if (g_settings.gain_supported) {
+    const int gain = constrain(static_cast<int>(g_settings.gain_tenth_db),
+                               kGainMinTenthDb, kGainMaxTenthDb);
+    const int knob_x = kGainSliderX + gain * kGainSliderW / kGainMaxTenthDb;
+    M5.Display.fillCircle(knob_x, kGainSliderY, 12,
+                          g_settings.gain_auto ? kMuted : kBlue);
+    if (g_settings.gain_auto)
+      strlcpy(value, "TUNER AUTO", sizeof(value));
+    else
+      snprintf(value, sizeof(value), "%.1f dB", gain / 10.0);
+  } else {
+    strlcpy(value, "UNAVAILABLE", sizeof(value));
+  }
+  text(value, kGainSliderX, 486,
+       g_settings.gain_supported ? TFT_LIGHTGREY : kMuted, 1, middle_left);
   button("EXIT ADS-B", 38, 538, 412, 58, TFT_MAROON);
   if (g_edit != EditField::none) draw_keypad();
   else {
@@ -1053,6 +1081,16 @@ Action handle_touch(int32_t x, int32_t y) {
       g_settings.radar_range_nm = kRanges[(index + 1) % std::size(kRanges)];
       redraw();
       return Action::settings_changed;
+    } else if (hit(x, y, 38, 430, 112, 48) && g_settings.gain_auto_supported) {
+      g_settings.gain_auto = true;
+      redraw_content();
+      return Action::gain_auto;
+    } else if (hit(x, y, kGainSliderX - 12, kGainSliderY - 28,
+                   kGainSliderW + 24, 56) && g_settings.gain_supported) {
+      g_settings.gain_tenth_db = static_cast<int16_t>(gain_from_slider_x(x));
+      g_settings.gain_auto = false;
+      redraw_content();
+      return Action::gain_tenth_db;
     } else if (hit(x, y, 38, 538, 412, 58)) {
       g_active = false;
       return Action::exit;
@@ -1067,6 +1105,7 @@ Action handle_touch(int32_t x, int32_t y) {
 }
 
 const Settings& settings() { return g_settings; }
+int gain_tenth_db() { return g_settings.gain_tenth_db; }
 bool active() { return g_active; }
 
 void show_documentation_view(uint8_t requested, const Settings& settings_value) {
@@ -1135,6 +1174,8 @@ bool self_check() {
          keep_stale_selection(false, false) &&
          altitude_bin(-1000) == 0 && altitude_bin(4999) == 0 &&
          altitude_bin(5000) == 1 && altitude_bin(60000) == kAltitudeBins - 1 &&
+         gain_from_slider_x(kGainSliderX - 20) == kGainMinTenthDb &&
+         gain_from_slider_x(kGainSliderX + kGainSliderW + 20) == kGainMaxTenthDb &&
          valid_coordinate(EditField::latitude, -90.0) &&
          valid_coordinate(EditField::latitude, 90.0) &&
          !valid_coordinate(EditField::latitude, 90.01) &&

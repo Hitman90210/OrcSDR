@@ -2155,6 +2155,33 @@ void adsb_decoder_task(void*) {
   }
 }
 
+void print_adsb_status() {
+  esp_rtl_sdr_metrics_t metrics{};
+  if (g_rtl == nullptr || esp_rtl_sdr_get_metrics(g_rtl, &metrics) != ESP_OK) {
+    Serial.println("RTL_ADSB_STATUS available=0");
+    return;
+  }
+  const auto& decode = adsb_decoder.stats();
+  Serial.printf("RTL_ADSB_STATUS available=1 active=%d uptime_ms=%u effective_sps=%u bytes=%llu "
+                "blocks=%u short=%u overruns=%u drops=%u signal_dbfs=%.1f "
+                "sample_min=%u sample_max=%u sample_mean=%.1f iq_queue_drops=%u "
+                "iq_ready=%u iq_free=%u mag_min=%u mag_max=%u preambles=%u frames=%u "
+                "df17=%u crc_ok=%u aircraft=%u messages=%u\n",
+                g_stream_band == RtlBand::adsb ? 1 : 0, metrics.uptime_ms,
+                metrics.effective_sps, static_cast<unsigned long long>(metrics.bytes_total),
+                metrics.blocks_total, metrics.short_transfers, metrics.overruns,
+                metrics.consumer_drops,
+                static_cast<double>(rtl_signal_dbfs.load(std::memory_order_relaxed)),
+                metrics.sample_min, metrics.sample_max, static_cast<double>(metrics.sample_mean),
+                adsb_iq_drops.load(std::memory_order_relaxed),
+                adsb_iq_ready ? static_cast<unsigned>(uxQueueMessagesWaiting(adsb_iq_ready)) : 0,
+                adsb_iq_free ? static_cast<unsigned>(uxQueueMessagesWaiting(adsb_iq_free)) : 0,
+                decode.magnitude_min, decode.magnitude_max, decode.preambles, decode.frames,
+                decode.df17, decode.crc_ok,
+                adsb_aircraft_count.load(std::memory_order_relaxed),
+                adsb_total_messages.load(std::memory_order_relaxed));
+}
+
 void emit_identity();
 bool decode_hex(const char* value, uint8_t* output, size_t output_size);
 bool decode_hex_text(const char* value, char* output, size_t output_size);
@@ -5524,7 +5551,22 @@ void draw_cb_dashboard(bool static_panel) {
 void draw_adsb_dashboard(bool static_panel) {
   if (!static_panel && !orcsdr::screens::may_draw(orcsdr::screens::Id::adsb)) return;
   if (!static_panel) orcsdr::screens::note_visible_update(orcsdr::screens::Id::adsb);
-  if (!orcsdr::adsb::active()) orcsdr::adsb::enter(adsb_settings);
+  if (!orcsdr::adsb::active()) {
+#if !RTL_USE_LEGACY_USB
+    adsb_settings.gain_supported = rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN);
+    adsb_settings.gain_auto_supported =
+        rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO);
+    int gain_tenth_db = 0;
+    if (g_rtl != nullptr && adsb_settings.gain_supported &&
+        esp_rtl_sdr_get_tuner_gain(g_rtl, &gain_tenth_db) == ESP_OK)
+      adsb_settings.gain_tenth_db = static_cast<int16_t>(gain_tenth_db);
+    esp_rtl_sdr_gain_mode_t mode = ESP_RTL_SDR_GAIN_MODE_AUTO;
+    if (g_rtl != nullptr && adsb_settings.gain_auto_supported &&
+        esp_rtl_sdr_get_tuner_gain_mode(g_rtl, &mode) == ESP_OK)
+      adsb_settings.gain_auto = mode == ESP_RTL_SDR_GAIN_MODE_AUTO;
+#endif
+    orcsdr::adsb::enter(adsb_settings);
+  }
   else if (static_panel) orcsdr::adsb::draw();
   else orcsdr::adsb::update();
 }
@@ -7981,28 +8023,7 @@ static void rtl_driver_app_task(void *) {
           if (g_stream_band == RtlBand::adsb && now - adsb_metrics_last_ms >= 5000) {
             adsb_metrics_last_ms = now;
             expire_adsb_tracks(now);
-            esp_rtl_sdr_metrics_t metrics{};
-            if (serial_verbosity_at(SerialVerbosity::debug) &&
-                esp_rtl_sdr_get_metrics(g_rtl, &metrics) == ESP_OK) {
-              const auto& decode = adsb_decoder.stats();
-              Serial.printf("RTL_ADSB_STATUS uptime_ms=%u effective_sps=%u bytes=%llu "
-                            "blocks=%u short=%u overruns=%u drops=%u signal_dbfs=%.1f "
-                            "sample_min=%u sample_max=%u sample_mean=%.1f iq_queue_drops=%u "
-                            "mag_min=%u mag_max=%u preambles=%u frames=%u df17=%u crc_ok=%u "
-                            "aircraft=%u messages=%u\n",
-                            metrics.uptime_ms, metrics.effective_sps,
-                            static_cast<unsigned long long>(metrics.bytes_total),
-                            metrics.blocks_total, metrics.short_transfers, metrics.overruns,
-                            metrics.consumer_drops,
-                            static_cast<double>(rtl_signal_dbfs.load(std::memory_order_relaxed)),
-                            metrics.sample_min, metrics.sample_max,
-                            static_cast<double>(metrics.sample_mean),
-                            adsb_iq_drops.load(std::memory_order_relaxed),
-                            decode.magnitude_min, decode.magnitude_max, decode.preambles,
-                            decode.frames, decode.df17, decode.crc_ok,
-                            adsb_aircraft_count.load(std::memory_order_relaxed),
-                            adsb_total_messages.load(std::memory_order_relaxed));
-            }
+            if (serial_verbosity_at(SerialVerbosity::debug)) print_adsb_status();
           }
           if (g_stream_band == RtlBand::pocsag && now - pocsag_metrics_last_ms >= 5000) {
             pocsag_metrics_last_ms = now;
@@ -11751,6 +11772,21 @@ void handle_sdr_touch(int32_t x, int32_t y) {
     if (action == orcsdr::adsb::Action::settings_changed) {
       adsb_settings = orcsdr::adsb::settings();
       adsb_settings_persist_pending.store(true, std::memory_order_release);
+    } else if (action == orcsdr::adsb::Action::gain_auto) {
+      const esp_err_t result =
+          g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO)
+              ? esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO)
+              : ESP_RTL_SDR_ERR_UNSUPPORTED;
+      Serial.printf("RTL_ADSB_GAIN mode=AUTO result=%s\n",
+                    esp_rtl_sdr_err_to_name(result));
+    } else if (action == orcsdr::adsb::Action::gain_tenth_db) {
+      const int gain = orcsdr::adsb::gain_tenth_db();
+      const esp_err_t result =
+          g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)
+              ? esp_rtl_sdr_set_tuner_gain(g_rtl, gain)
+              : ESP_RTL_SDR_ERR_UNSUPPORTED;
+      Serial.printf("RTL_ADSB_GAIN mode=MANUAL gain_tenth_db=%d result=%s\n",
+                    gain, esp_rtl_sdr_err_to_name(result));
     } else if (action == orcsdr::adsb::Action::open_data_settings) {
       open_global_settings(orcsdr::settings::Section::data_maps);
     } else if (action == orcsdr::adsb::Action::exit) {
@@ -13681,6 +13717,10 @@ void process_command(char* command) {
                   rtl_sdr_speed, rtl_sdr_serial);
     return;
   }
+  if (strcmp(command, "RTL_ADSB STATUS") == 0) {
+    print_adsb_status();
+    return;
+  }
   if (strcmp(command, "RTL_DRIVER STATUS") == 0) {
     print_rtl_driver_status();
     return;
@@ -13776,6 +13816,7 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_HELP") == 0) {
     Serial.println("RTL_HELP_BEGIN");
     Serial.println("RTL_STATUS                    - device connection info");
+    Serial.println("RTL_ADSB STATUS               - ADS-B stream, queue and decoder counters");
     Serial.println("RTL_DRIVER STATUS|SELF_CHECK  - driver capabilities, shadows and stream metrics");
     Serial.println("RTL_DRIVER GAINMODE AUTO|MANUAL | GAIN <0..496> | RTLAGC ON|OFF | BIAS ON|OFF (auth)");
     Serial.println("RTL_HEALTH                    - heap, task and reset diagnostics");
