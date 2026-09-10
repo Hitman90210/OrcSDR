@@ -17,7 +17,8 @@ param(
   [int]$Seed = 0,
   [string]$LogPath,
   [switch]$SelfCheck,
-  [switch]$Driver079,
+  [Alias('Driver079')]
+  [switch]$Driver080Rc1,
   [switch]$ResetDevice,
   [switch]$WifiOnly,
   [switch]$WifiCoexistence,
@@ -767,8 +768,8 @@ function Invoke-SelfCheck {
 }
 
 if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
-if (@($Run, $Soak, $Driver079, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast).Where({ $_ }).Count -gt 1) {
-  throw 'Choose only one of -Run, -Soak, -Driver079, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, or -AmBroadcast.'
+if (@($Run, $Soak, $Driver080Rc1, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast).Where({ $_ }).Count -gt 1) {
+  throw 'Choose only one of -Run, -Soak, -Driver080Rc1, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, or -AmBroadcast.'
 }
 
 function Get-C6UpdateStatus {
@@ -805,19 +806,23 @@ function Invoke-C6UpdateTest {
 }
 
 function Get-DriverStatus {
-  $pattern = 'version=(\S+) state=(\S+).*gain_auto_cap=([01]) rtl_agc_cap=([01]) gain_cap=([01]) bias_cap=([01]) mode=(AUTO|MANUAL) gain_tenth_db=(\d+) rtl_agc=([01]) bias=([01]) bytes=(\d+) blocks=(\d+) effective_sps=(\d+) overruns=(\d+) drops=(\d+) shadow_ok=([01]) metrics_ok=([01])'
+  $pattern = 'version=(\S+) state=(\S+) profile=(\d+) profile_name="([^"]+)" provisional=([01]) device_caps=(0x[0-9a-fA-F]+) library_caps=(0x[0-9a-fA-F]+).*gain_auto_cap=([01]) rtl_agc_cap=([01]) gain_cap=([01]) bias_cap=([01]) mode=(AUTO|MANUAL) gain_tenth_db=(\d+) rtl_agc=([01]) bias=([01]) bytes=(\d+) blocks=(\d+) effective_sps=(\d+) overruns=(\d+) drops=(\d+) shadow_ok=([01]) metrics_ok=([01])'
   for ($attempt = 0; $attempt -lt 3; $attempt++) {
     $line = Send-And-Wait 'RTL_DRIVER STATUS' '^RTL_DRIVER_STATUS '
     if ($line -match $pattern) { break }
   }
   if ($line -notmatch $pattern) { throw "Malformed driver status: $line" }
   [pscustomobject]@{
-    Version = $Matches[1]; State = $Matches[2]; GainAutoCap = [int]$Matches[3]
-    RtlAgcCap = [int]$Matches[4]; GainCap = [int]$Matches[5]; BiasCap = [int]$Matches[6]
-    Mode = $Matches[7]; Gain = [int]$Matches[8]; RtlAgc = [int]$Matches[9]
-    Bias = [int]$Matches[10]; Bytes = [uint64]$Matches[11]; Blocks = [uint64]$Matches[12]
-    EffectiveSps = [uint32]$Matches[13]; Overruns = [uint32]$Matches[14]
-    Drops = [uint32]$Matches[15]; ShadowOk = [int]$Matches[16]; MetricsOk = [int]$Matches[17]
+    Version = $Matches[1]; State = $Matches[2]; Profile = [int]$Matches[3]
+    ProfileName = $Matches[4]; Provisional = [int]$Matches[5]
+    DeviceCaps = [Convert]::ToUInt32($Matches[6].Substring(2), 16)
+    LibraryCaps = [Convert]::ToUInt32($Matches[7].Substring(2), 16)
+    GainAutoCap = [int]$Matches[8]; RtlAgcCap = [int]$Matches[9]
+    GainCap = [int]$Matches[10]; BiasCap = [int]$Matches[11]
+    Mode = $Matches[12]; Gain = [int]$Matches[13]; RtlAgc = [int]$Matches[14]
+    Bias = [int]$Matches[15]; Bytes = [uint64]$Matches[16]; Blocks = [uint64]$Matches[17]
+    EffectiveSps = [uint32]$Matches[18]; Overruns = [uint32]$Matches[19]
+    Drops = [uint32]$Matches[20]; ShadowOk = [int]$Matches[21]; MetricsOk = [int]$Matches[22]
   }
 }
 
@@ -988,11 +993,11 @@ function Invoke-AmBroadcastTest {
   }
 }
 
-function Invoke-Driver079Test {
+function Invoke-Driver080Rc1Test {
   Wait-DeviceReady
   Connect-Authenticated
   $selfCheck = Send-And-Wait 'RTL_DRIVER SELF_CHECK' '^RTL_DRIVER_SELF_CHECK '
-  if ($selfCheck -notmatch 'pass=1 version=0\.7\.9 ') { throw "Driver self-check failed: $selfCheck" }
+  if ($selfCheck -notmatch 'pass=1 version=0\.8\.0-rc1 profile=1 ') { throw "Driver self-check failed: $selfCheck" }
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     $initial = Get-DriverStatus
@@ -1002,10 +1007,11 @@ function Invoke-Driver079Test {
   if ($initial.State -ne 'STREAMING' -or $initial.Bytes -eq 0) {
     throw "Driver test requires active IQ streaming; state=$($initial.State) bytes=$($initial.Bytes)"
   }
-  if ($initial.GainAutoCap -ne 1 -or $initial.RtlAgcCap -ne 1 -or
+  if ($initial.Profile -ne 1 -or $initial.Provisional -ne 0 -or
+      $initial.GainAutoCap -ne 1 -or $initial.RtlAgcCap -ne 1 -or
       $initial.GainCap -ne 1 -or $initial.BiasCap -ne 1 -or
       $initial.ShadowOk -ne 1 -or $initial.MetricsOk -ne 1) {
-    throw 'Required v0.7.9 capability or status getter is unavailable.'
+    throw 'Required Blog V4 v0.8.0-rc1 profile, capability, or status getter is unavailable.'
   }
 
   $last = $initial
@@ -1022,7 +1028,7 @@ function Invoke-Driver079Test {
     if ($next.Overruns -gt $initial.Overruns + 16 -or $next.Drops -gt $initial.Drops + 16) {
       throw "Drop counters grew excessively after $Command"
     }
-    Write-SoakLine "RTL_DRIVER_079_STEP command=$($Command.Replace(' ', '_')) pass=1 bytes=$($next.Bytes) effective_sps=$($next.EffectiveSps) overruns=$($next.Overruns) drops=$($next.Drops)"
+    Write-SoakLine "RTL_DRIVER_080_RC1_STEP command=$($Command.Replace(' ', '_')) pass=1 bytes=$($next.Bytes) effective_sps=$($next.EffectiveSps) overruns=$($next.Overruns) drops=$($next.Drops)"
     $script:last = $next
   }
 
@@ -1037,7 +1043,7 @@ function Invoke-Driver079Test {
       $target = 1 - $initial.Bias
       Test-Transition "RTL_DRIVER BIAS $(if ($target) { 'ON' } else { 'OFF' })" 'AUTO' 297 0
     }
-    Write-SoakLine "RTL_DRIVER_079_RESULT pass=1 version=$($initial.Version) bias_tested=$([int][bool]$TestBiasTee) evidence=request_acceptance+shadow+iq_continuity"
+    Write-SoakLine "RTL_DRIVER_080_RC1_RESULT pass=1 version=$($initial.Version) profile=$($initial.ProfileName) bias_tested=$([int][bool]$TestBiasTee) evidence=request_acceptance+shadow+iq_continuity"
   } finally {
     try {
       [void](Send-And-Wait "RTL_DRIVER GAIN $($initial.Gain)" '^RTL_DRIVER_RESULT ')
@@ -1126,7 +1132,7 @@ try {
 
   if ($ResetDevice) { Reset-DeviceBaseline }
 
-  if ($Driver079) { Invoke-Driver079Test; exit 0 }
+  if ($Driver080Rc1) { Invoke-Driver080Rc1Test; exit 0 }
   if ($WifiOnly) {
     Wait-DeviceReady 60 11000
     $initialUi = Get-UiState
