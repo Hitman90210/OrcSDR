@@ -44,7 +44,7 @@ blunt rather than flattering.
 | Feature | Status | Notes |
 |---|---|---|
 | Global on-device Settings | Implemented | Wi-Fi and Companion remain optional |
-| Companion LAN console | Implemented | Mode-aware: ADS-B radar, a channel faceplate for CB/GMRS/marine/weather, spectrum elsewhere. **View-and-listen by default**; visitor control is a separate opt-in switch and is refused at the server (403) when off. No TLS and no login either way, so trusted networks only. |
+| Companion LAN console | Implemented | Mode-aware: ADS-B radar with climb/descent arrows, a channel faceplate for CB/GMRS/marine/weather, spectrum with RDS station name and Radio Text elsewhere. **View-and-listen by default**; visitor control is a separate opt-in switch and is refused at the server (403) when off. No TLS and no login either way, so trusted networks only. |
 | Android TV viewer | Experimental | Sideload `apps/orcsdr-tv` on Android 9 TV. Unplug the PC flash/JTAG USB cable after flashing — that cable, not general power, is the bench brownout trigger. |
 | Signed data packs | Implemented | See [maps and data](maps-and-data.md) |
 | Offline maps | Implemented (build your own) | The catalog's only map is upstream's home county. `tools/build_orcmap.py` builds one for your area from OpenStreetMap; the device prefers it. See [maps and data](maps-and-data.md). |
