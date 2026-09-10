@@ -7,7 +7,7 @@ namespace orcsdr { class NvsStore; }
 
 namespace orcsdr::am {
 
-enum class View : uint8_t { listen, spectrum, settings, count };
+enum class View : uint8_t { listen, finder, spectrum, settings, count };
 
 struct Snapshot {
   uint32_t frequency_hz = 1000000;
@@ -22,7 +22,9 @@ struct Snapshot {
   bool graphics_enabled = true;
   bool recording = false;
   uint8_t volume = 0;
-  uint8_t preset_count = 0;
+  uint16_t preset_count = 0;
+  uint8_t preset_page = 0;
+  uint8_t preset_pages = 1;
   bool gain_auto = true;
   bool gain_auto_selecting = false;
   int gain_tenth_db = 0;
@@ -42,12 +44,15 @@ enum class ActionKind : uint8_t {
   tune_hz,
   step_down,
   step_up,
-  spacing_toggle,
-  filter_cycle,
+  step_cycle,
+  scan_spacing_toggle,
+  filter_bandwidth_hz,
   span_down,
   span_up,
   preset_recall,
   preset_save,
+  preset_replace,
+  preset_delete,
   sound_toggle,
   volume_down,
   volume_up,
@@ -65,26 +70,37 @@ struct Action {
   uint32_t value = 0;
 };
 
+struct TouchResult {
+  Action action{};
+  bool consumed = false;
+};
+
 void enter(const Snapshot& snapshot);
 void leave();
 void draw();
 void update(const Snapshot& snapshot);
 void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, float floor);
 Action handle_touch(int32_t x, int32_t y);
+TouchResult handle_preset_touch(int32_t x, int32_t y, bool pressed, uint32_t now_ms);
 Action handle_gain_drag(int32_t x, int32_t y);
+Action handle_bandwidth_drag(int32_t x, int32_t y);
 bool active();
 bool spectrum_active();
 View view();
 void load(NvsStore& store);
 uint32_t saved_frequency();
-uint32_t channel_step();
+uint32_t tune_step();
+uint32_t scan_spacing();
 void note_tuned(uint32_t frequency_hz);
-uint32_t toggle_channel_step();
+uint32_t cycle_tune_step();
+uint32_t toggle_scan_spacing();
 uint32_t preset(size_t index);
 void save_current_preset();
-bool add_scanned_preset(uint32_t frequency_hz);
-uint8_t add_scan_results(uint32_t start_hz, uint32_t step_hz,
-                         const float* levels, size_t count, float* baseline_dbfs);
+bool replace_preset(size_t index);
+bool delete_preset(size_t index);
+uint8_t prepare_scan_results(uint32_t start_hz, uint32_t step_hz,
+                             const float* levels, size_t count, float* baseline_dbfs);
+void clear_scan_results();
 constexpr float kAutoGainTargetDbfs = -24.0f;
 bool auto_gain_should_advance(float level_dbfs, size_t step, size_t step_count);
 void populate_presets(Snapshot& snapshot);

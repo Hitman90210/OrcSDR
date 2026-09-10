@@ -822,13 +822,10 @@ function Get-DriverStatus {
 }
 
 function Set-AmFilter([uint32]$TargetHz) {
-  for ($attempt = 0; $attempt -lt 4; $attempt++) {
-    $signal = Get-SignalStatus
-    if ($signal.Band -eq 'AM' -and $signal.FilterHz -eq $TargetHz) { return $signal }
-    [void](Send-And-Wait 'RTL_UI ACTION AM FILTER' '^RTL_UI_ACTION_OK$')
-    Start-Sleep -Milliseconds 150
-  }
+  [void](Send-And-Wait "RTL_UI ACTION AM FILTER $TargetHz" '^RTL_UI_ACTION_OK$')
+  Start-Sleep -Milliseconds 150
   $signal = Get-SignalStatus
+  if ($signal.Band -eq 'AM' -and $signal.FilterHz -eq $TargetHz) { return $signal }
   throw "AM filter did not reach $TargetHz Hz: $($signal.Line)"
 }
 
@@ -875,7 +872,7 @@ function Invoke-AmBroadcastTest {
     $lastBytes = $driver.Bytes
     foreach ($frequency in @(590000, 1120000, 1280000)) {
       [void](Send-And-Wait "RTL_UI ACTION AM TUNE $frequency" '^RTL_UI_ACTION_OK$')
-      foreach ($filter in @(4000, 6000, 8000, 10000)) {
+      foreach ($filter in @(3000, 6000, 10000, 30000)) {
         [void](Set-AmFilter $filter)
         Start-Sleep -Seconds $DwellSeconds
         $signal = Get-SignalStatus
@@ -927,15 +924,27 @@ function Invoke-AmBroadcastTest {
     if ($scan.Active -ne 1 -or $scan.Total -lt 100) {
       throw "AM scan did not start: $($scan | ConvertTo-Json -Compress)"
     }
-    [void](Send-And-Wait 'RTL_UI ACTION AM SCAN' '^RTL_UI_ACTION_OK$')
-    $scanDeadline = [DateTime]::UtcNow.AddSeconds(3)
+    $widebandDeadline = [DateTime]::UtcNow.AddSeconds(12)
+    do {
+      $driver = Get-DriverStatus
+      if ($driver.State -eq 'STREAMING' -and
+          $driver.EffectiveSps -ge 2200000 -and $driver.EffectiveSps -le 2600000) { break }
+      Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $widebandDeadline)
+    if ($driver.State -ne 'STREAMING' -or
+        $driver.EffectiveSps -lt 2200000 -or $driver.EffectiveSps -gt 2600000) {
+      throw "AM finder did not reach 2.4 MS/s: state=$($driver.State) effective_sps=$($driver.EffectiveSps)"
+    }
+    $scanDeadline = [DateTime]::UtcNow.AddSeconds(12)
     do {
       $scan = Get-AmScanStatus
       if ($scan.Active -eq 0) { break }
-      Start-Sleep -Milliseconds 100
+      Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $scanDeadline)
-    if ($scan.Active -ne 0) { throw 'AM scan did not cancel.' }
-    Write-SoakLine "RTL_AM_SCAN_REGRESSION pass=1 action=start+cancel channels=$($scan.Total)"
+    if ($scan.Active -ne 0 -or $scan.Step -ne $scan.Total -or $scan.Found -lt 1) {
+      throw "AM scan did not populate candidates: $($scan | ConvertTo-Json -Compress)"
+    }
+    Write-SoakLine "RTL_AM_SCAN_REGRESSION pass=1 action=2.4MS+populate channels=$($scan.Total) found=$($scan.Found) effective_sps=$($driver.EffectiveSps)"
     Write-SoakLine 'RTL_AM_REGRESSION_RESULT pass=1 frequencies=3 filters=4 samples=12'
   } finally {
     try {
@@ -944,7 +953,8 @@ function Invoke-AmBroadcastTest {
         [void](Send-And-Wait "RTL_TUNE $($initial.Band) $($initial.Frequency)" '^RTL_TUNE_(?:OK|UNAVAILABLE|INVALID)')
       }
       if ($null -ne $initial -and $null -ne $initialSignal -and
-          $initial.Band -eq 'AM' -and $initialSignal.FilterHz -in @(4000, 6000, 8000, 10000)) {
+          $initial.Band -eq 'AM' -and $initialSignal.FilterHz -ge 3000 -and
+          $initialSignal.FilterHz -le 30000) {
         [void](Open-Ui 'AM' 'AM')
         [void](Set-AmFilter $initialSignal.FilterHz)
       }

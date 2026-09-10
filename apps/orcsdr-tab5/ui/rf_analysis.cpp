@@ -388,9 +388,8 @@ bool initialize() {
   for (float& level : g_snapshot->average) level = -160;
   for (float& level : g_snapshot->peak) level = -160;
   if (!initialize_fft()) return false;
-  // Analysis is best-effort display work. Sharing the idle priority guarantees
-  // Core 1's watched idle task can run while continuous radio DSP is active.
-  if (xTaskCreatePinnedToCoreWithCaps(worker, "rf_analysis", 8192, nullptr, tskIDLE_PRIORITY,
+  // Interval throttling leaves idle time; priority 1 prevents high-rate IQ from starving analysis.
+  if (xTaskCreatePinnedToCoreWithCaps(worker, "rf_analysis", 8192, nullptr, tskIDLE_PRIORITY + 1,
                                       &g_task, 1,
                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS)
     return false;
