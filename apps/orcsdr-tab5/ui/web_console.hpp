@@ -39,9 +39,7 @@ struct Snapshot {
   char pi_code[5]{};
 
   uint32_t frequency_hz = 0;
-
   uint32_t span_hz = 960000;
-
   uint32_t filter_bandwidth_hz = 0;
   uint32_t effective_sps = 0;
   int32_t battery_percent = -1;
@@ -52,7 +50,6 @@ struct Snapshot {
   // not sent: the page rendered it against "/100" once already, and half volume
   // read as "128/100".
   uint8_t volume_percent = 0;
-
   uint8_t spectrum[kSpectrumBins]{};
   uint8_t spectrum_count = 0;
   bool wifi_connected = false;
@@ -64,7 +61,6 @@ struct Snapshot {
   bool rds_carrier = false;
   bool rds_locked = false;
   bool recording = false;
-  bool enabled = false;
 
   // Channelised bands (CB, GMRS, marine, weather). The label is whatever the
   // device puts on its own stepper, so the two never disagree.
@@ -81,8 +77,6 @@ struct Snapshot {
   uint8_t aircraft_tracked = 0;  // total the receiver is tracking
   bool adsb_active = false;
   bool location_configured = false;
-  // Mirrors control_enabled() so the page can hide what it may not use.
-  bool control_enabled = false;
 };
 
 enum class CommandKind : uint8_t {

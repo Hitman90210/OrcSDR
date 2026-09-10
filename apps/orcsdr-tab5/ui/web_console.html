@@ -581,6 +581,18 @@ function setView(v){
   $('v-radio').className='view'+(v==='radio'?'':' hide');
   fallBuf=null;
 }
+// Device strings go through here before they reach innerHTML. json_escape() on
+// the device escapes quotes and backslashes, which is right for JSON and does
+// nothing for markup. Nothing can currently carry a "<" -- the ADS-B decoder
+// maps every 6-bit code to A-Z, 0-9 or space -- but that makes this page's
+// safety depend on a whitelist in a different module, which stops being true
+// the day a user-set label (a tail-number alias, a talkgroup name) joins the
+// list. Escaping here costs one pass over eight short strings.
+function esc(value){
+  return String(value == null ? '' : value).replace(/[&<>"]/g, function(c){
+    return c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&quot;';
+  });
+}
 function renderStrips(){
   var host=$('striplist'), list=S.air.targets, out='';
   if(!list.length){ host.innerHTML='<div class="empty">NO TRAFFIC DECODED</div>'; return; }
@@ -592,9 +604,9 @@ function renderStrips(){
     // Climb and descent: a contact at 3000 ft going up is a different thing
     // from one coming down through it.
     if(t.vr>64) al+=' \u25B2'; else if(t.vr<-64) al+=' \u25BC';
-    out+='<div class="strip'+(t.pos?'':' nopos')+'"><div><div class="cs">'+t.id+
-         '</div><div class="sm">'+sm+'</div></div><div class="rg">'+rg+
-         '</div><div class="al">'+al+'</div></div>';
+    out+='<div class="strip'+(t.pos?'':' nopos')+'"><div><div class="cs">'+esc(t.id)+
+         '</div><div class="sm">'+esc(sm)+'</div></div><div class="rg">'+esc(rg)+
+         '</div><div class="al">'+esc(al)+'</div></div>';
   }
   host.innerHTML=out;
 }
@@ -652,7 +664,10 @@ function applyUi(){
     }
     if(S.rec) flags.push('REC');
     if(S.pi) flags.push('PI '+S.pi);
-    $('fmeta').innerHTML=modeName(S.mode)+'  ·  '+bw+(flags.length?'  ·  <b>'+flags.join(' · ')+'</b>':'');
+    // modeName() falls through to the raw mode string for anything unmapped,
+    // and the <b> wrapper means this one has to be innerHTML.
+    $('fmeta').innerHTML=esc(modeName(S.mode))+'  ·  '+esc(bw)+
+      (flags.length?'  ·  <b>'+esc(flags.join(' · '))+'</b>':'');
     // Station name and Radio Text were being sent on every poll and shown
     // nowhere. Only rendered once RDS actually locks, so a half-decoded name
     // does not flicker on screen.

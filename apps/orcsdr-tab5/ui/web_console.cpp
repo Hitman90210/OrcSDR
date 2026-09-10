@@ -109,11 +109,10 @@ esp_err_t handle_status(httpd_req_t* req) {
   json_escape(rt, sizeof(rt), snap.radio_text);
   json_escape(pi, sizeof(pi), snap.pi_code);
 
-  size_t used = 1;
   char* spec = g_status_spec;
   spec[0] = '[';
   spec[1] = '\0';
-  used = 1;
+  size_t used = 1;
   for (uint8_t i = 0; i < snap.spectrum_count && i < kSpectrumBins; ++i) {
     char item[8];
     const int n = snprintf(item, sizeof(item), "%s%u", i ? "," : "", snap.spectrum[i]);
