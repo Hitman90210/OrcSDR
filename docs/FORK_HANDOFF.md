@@ -957,7 +957,49 @@ a demodulator acceptance test.
 
 ---
 
-### 5.8 Dead code and build
+### 5.7d The serial tuner answered OK for things it did not do
+
+Ported from upstream's `codex/experimental-multi-dongle-0.8.0-rc1` (the
+driver-independent half — see §5.7e). `queue_local_rtl_listen` and
+`request_hot_retune` now return `bool` and the callers check it:
+
+- The receiver-readiness guard sat **below** the ADS-B block, so with no
+  dongle attached `RTL_TUNE ADSB` opened the dashboard, logged
+  `RTL_ADSB_CAPTURE live_rf=true ui_data=live`, and answered `RTL_TUNE_OK`
+  for a capture that never started. `RTL_TUNE` also exempted ADS-B from the
+  readiness check outright. Both fixed; ADS-B now answers
+  `RTL_TUNE_UNAVAILABLE` like every other band. The navigation cleanup
+  (AM-finder cancel, P25 automation stop) deliberately stays **above** the
+  guard — the intent to leave the previous band is real whether or not a
+  receiver answers, and every dashboard entry point draws its own screen, so
+  moving the guard up does not create a dead tap.
+- `request_hot_retune_for` refuses on a stale session token, on a clamp to
+  zero, and unconditionally on ADS-B. All three used to answer `RTL_FREQ_OK`
+  and do nothing. New reply: `RTL_FREQ_REJECTED band=... frequency_hz=...`.
+- `RTL_TUNE_INVALID` listed 8 of the 11 bands `rtl_band_from_name` parses —
+  GMRS, MARINE and POCSAG were missing from the message but tuned fine.
+
+Verified on hardware: 8/8 checks, including `RTL_FREQ` on ADS-B rejecting and
+`RTL_FREQ` on FM still succeeding.
+
+### 5.7e What we did *not* take from the multi-dongle branch
+
+That branch is built on `esp_rtl_sdr` **v0.8.0-rc2**; upstream/main and this
+fork both pin `1cd19d13` = **v0.7.15**, and our guard is
+`#if ESP_RTL_SDR_VERSION_NUMBER < 709`. So it is a driver generation ahead of
+upstream's own main, not merely unmerged. Left behind, deliberately:
+
+- **The driver bump itself** (`8cc5bbb`) and the `#error ... rc2` guard.
+- **The receiver label in the home footer** (`"RTL-SDR v4"` → the actual
+  dongle name). Needs `ESP_RTL_SDR_PROFILE_BLOG_V3`, `NOOELEC_SMART_V5` and
+  `g_rtl_profile` — **zero occurrences of any of them in our tree**; they are
+  0.8.0 concepts. Revisit when the driver lands on upstream/main.
+- **Relaxing the AM scan regression assertion** from `Found -lt 1` (throw) to
+  `Found -gt 6` (throw). It fixes real flakiness in a quiet RF environment,
+  but a scan that finds nothing would then pass. `Step -eq Total` still guards
+  completion, so it is defensible — just not adopted silently.
+
+## 5.8 Dead code and build
 
 - 705 lines of `RTL_USE_LEGACY_USB` blocks removed. The resulting binary was
   **byte-identical in size**, confirming pure dead-code removal.

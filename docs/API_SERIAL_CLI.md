@@ -140,9 +140,9 @@ from the untracked `.orclink/ui-doc.key`; do not hand-roll proofs in shell one-l
 
 | Command | Auth | Reply | Notes |
 |---|---|---|---|
-| `RTL_TUNE <BAND> <HZ>` | yes | `RTL_TUNE_OK band=... frequency_hz=...` | `BAND` = `FM\|AM\|WX\|CB\|GMRS\|MARINE\|P25\|LORA\|BROWSE`. Full retune (stops/restarts the capture path as needed). On a channelised band (`WX`/`CB`/`GMRS`) the frequency snaps to the nearest published channel. |
+| `RTL_TUNE <BAND> <HZ>` | yes | `RTL_TUNE_OK band=... frequency_hz=...` or `RTL_TUNE_UNAVAILABLE device not ready` | `BAND` = `FM\|AM\|WX\|CB\|GMRS\|MARINE\|LORA\|BROWSE\|ADSB\|P25\|POCSAG` (all 11 that `rtl_band_from_name` parses). Full retune (stops/restarts the capture path as needed). On a channelised band (`WX`/`CB`/`GMRS`/`MARINE`) the frequency snaps to the nearest published channel. **`ADSB` is no longer exempt from the receiver check** — with no dongle attached it now answers `RTL_TUNE_UNAVAILABLE` instead of reporting a capture that never started. |
 | `RTL_FREQ` | no | `RTL_FREQ_STATUS band=... frequency_hz=... mode=...` | Query only. |
-| `RTL_FREQ <HZ>` | yes | `RTL_FREQ_OK band=... frequency_hz=...` | Hot retune *within* the current band — cheaper than `RTL_TUNE`, use for stepping/scanning. |
+| `RTL_FREQ <HZ>` | yes | `RTL_FREQ_OK band=... frequency_hz=...` or `RTL_FREQ_REJECTED band=... frequency_hz=...` | Hot retune *within* the current band — cheaper than `RTL_TUNE`, use for stepping/scanning. Rejected when the radio session token is stale, when the frequency clamps to zero, or on `ADSB` (which has no hot-retune path at all); those cases used to answer `RTL_FREQ_OK` and do nothing. |
 | `RTL_CAPTURE` / `RTL_LISTEN <BAND>` | yes | `RTL_CAPTURE_QUEUED ...` or `RTL_CAPTURE_BUSY_OR_UNAVAILABLE` | Older, band-limited entry point (`FM`/`KZEL`/`NOAA`/`WX`/`AM`/`LORA` only, no `CB`/`BROWSE`, no arbitrary frequency). `RTL_LISTEN` is continuous, bare `RTL_CAPTURE` is one-shot. Prefer `RTL_TUNE` for new work — this exists for compatibility with older tooling. |
 | `RTL_STOP` | yes | `RTL_STOPPING` | Stops the active capture/stream. |
 | `RTL_TOOL` | no | `RTL_TOOL_STATUS tool=RADIO\|SCOPE\|CAPTURE` | Query the active tool tab. |

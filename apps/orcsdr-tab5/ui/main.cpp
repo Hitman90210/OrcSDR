@@ -2264,12 +2264,12 @@ void redraw_spectrum_panel();
 void draw_sdr_controls(RtlBand band, bool running);
 void handle_sdr_touch(int32_t x, int32_t y);
 void poll_sdr_touch(bool from_stream);
-void request_hot_retune(uint32_t frequency_hz);
+bool request_hot_retune(uint32_t frequency_hz);
 bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz);
 void set_radio_session_state(orcsdr::radio::ReceiverState state);
 uint32_t rtl_fm_command_lo_hz(uint32_t display_hz);
 uint32_t rtl_fm_sanitize_display_hz(uint32_t frequency_hz);
-void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
+bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
                             bool persist_navigation = true);
 void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume);
 void refresh_active_screen();
@@ -11384,7 +11384,7 @@ bool point_in_button(int32_t x, int32_t y) {
          y >= kButtonY && y < kButtonY + kButtonHeight;
 }
 
-void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
+bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
                             bool persist_navigation) {
   if (orcsdr::am_finder::active()) {
     orcsdr::am_finder::cancel();
@@ -11397,6 +11397,13 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     stop_p25_automation();
   }
   if (!rtl_band_has_audio(band)) sync_rtl_audio_for_band(band);
+  // This guard used to sit *below* the ADS-B block, so with no receiver
+  // attached the dashboard still opened and the log still announced
+  // "RTL_ADSB_CAPTURE live_rf=true ui_data=live" for a capture that never
+  // started. The navigation cleanup above stays ahead of the guard: the
+  // intent to leave the previous band is real whether or not a receiver
+  // answers, and the dashboard entry points draw the screen themselves.
+  if (!rtl_device_ready()) return false;
   if (band == RtlBand::adsb) {
     frequency_hz = kAdsbDefaultHz;
     if (!orcsdr::screens::owns(orcsdr::screens::Id::adsb))
@@ -11405,7 +11412,6 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
       orcsdr::adsb::enter(adsb_settings);
     Serial.println("RTL_ADSB_CAPTURE live_rf=true ui_data=live");
   }
-  if (!g_rtl_device_ready.load(std::memory_order_acquire) || g_rtl == nullptr) return;
   if (band == RtlBand::lora) {
     load_lora_config();
     if (orcsdr::lora_channel::selection().persisted) apply_lora_channel_selection();
@@ -11508,6 +11514,7 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
                    : band == RtlBand::adsb   ? "sdr_adsb"
                    : band == RtlBand::p25    ? "sdr_p25"
                                              : "sdr_fm");
+  return true;
 }
 
 void adjust_rtl_volume(int delta) {
@@ -11656,9 +11663,9 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   return true;
 }
 
-void request_hot_retune(uint32_t frequency_hz) {
+bool request_hot_retune(uint32_t frequency_hz) {
   const auto session = radio_session.snapshot();
-  (void)request_hot_retune_for({session.owner, session.generation}, frequency_hz);
+  return request_hot_retune_for({session.owner, session.generation}, frequency_hz);
 }
 
 // Capture used to own M5.update() during radio UI because a second update
@@ -14673,14 +14680,21 @@ void process_command(char* command) {
     }
     RtlBand band;
     if (!rtl_band_from_name(band_name, &band)) {
-      Serial.println("RTL_TUNE_INVALID unknown band (FM|AM|WX|CB|LORA|BROWSE|ADSB|P25)");
+      Serial.println("RTL_TUNE_INVALID unknown band "
+                     "(FM|AM|WX|CB|GMRS|MARINE|LORA|BROWSE|ADSB|P25|POCSAG)");
       return;
     }
-    if (band != RtlBand::adsb && !rtl_device_ready()) {
+    // ADS-B used to be exempt from this check so the dashboard could be opened
+    // without a receiver; the dashboard entry points draw themselves, and the
+    // exemption only bought a RTL_TUNE_OK for a capture that never started.
+    if (!rtl_device_ready()) {
       Serial.println("RTL_TUNE_UNAVAILABLE device not ready");
       return;
     }
-    queue_local_rtl_listen(band, static_cast<uint32_t>(freq_hz));
+    if (!queue_local_rtl_listen(band, static_cast<uint32_t>(freq_hz))) {
+      Serial.println("RTL_TUNE_UNAVAILABLE device not ready");
+      return;
+    }
     Serial.printf("RTL_TUNE_OK band=%s frequency_hz=%lu\n", rtl_band_name(band), freq_hz);
     return;
   }
@@ -14696,7 +14710,13 @@ void process_command(char* command) {
       Serial.println("RTL_FREQ_INVALID usage: RTL_FREQ <HZ>");
       return;
     }
-    request_hot_retune(static_cast<uint32_t>(freq_hz));
+    // A hot retune refuses on a stale session token, on a clamp to zero, and
+    // unconditionally on ADS-B -- all of which used to answer RTL_FREQ_OK.
+    if (!request_hot_retune(static_cast<uint32_t>(freq_hz))) {
+      Serial.printf("RTL_FREQ_REJECTED band=%s frequency_hz=%lu\n",
+                    rtl_band_name(rtl_ui_band), freq_hz);
+      return;
+    }
     Serial.printf("RTL_FREQ_OK band=%s frequency_hz=%lu\n", rtl_band_name(rtl_ui_band), freq_hz);
     return;
   }
