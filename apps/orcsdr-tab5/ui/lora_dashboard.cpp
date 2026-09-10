@@ -145,8 +145,13 @@ void draw_header() {
        g_snapshot.wifi_connected ? kGreen : kMuted, 1, middle_left);
   text(g_snapshot.running ? "RX ONLY" : "RX STOPPED", 885, 73,
        g_snapshot.running ? kGreen : kMuted, 2, middle_left);
-  text(g_snapshot.native_decoder_ready ? "DECODE" : "PHY PENDING", 1050, 44,
-       g_snapshot.native_decoder_ready ? kGreen : kYellow, 1, middle_left);
+  const char* decoder_status = g_snapshot.long_interleaved_frames
+      ? "LI FRAME SEEN"
+      : (g_snapshot.native_decoder_ready ? "DECODE" : "PHY PENDING");
+  text(decoder_status, 1050, 44,
+       g_snapshot.long_interleaved_frames ? kYellow
+                                          : (g_snapshot.native_decoder_ready ? kGreen : kYellow),
+       1, middle_left);
   text(g_snapshot.key_loaded ? "KEY LOADED" : "PUBLIC ONLY", 1050, 73,
        g_snapshot.key_loaded ? kGreen : kMuted, 1, middle_left);
   audio_header::draw_home_button();
@@ -559,10 +564,11 @@ void draw_health_dynamic() {
   draw_event_row(g_snapshot.events[1], 880, 382, 340);
   snprintf(value, sizeof(value), "RATE %.3f MSPS", g_snapshot.effective_sps / 1000000.0);
   text(value, 60, 548, kGreen, 1, middle_left);
-  snprintf(value, sizeof(value), "USB %lu  DROP %lu  CRC %lu",
+  snprintf(value, sizeof(value), "USB %lu  DROP %lu  CRC %lu  LI %lu",
            static_cast<unsigned long>(g_snapshot.usb_overruns),
            static_cast<unsigned long>(g_snapshot.consumer_drops),
-           static_cast<unsigned long>(g_snapshot.crc_ok));
+           static_cast<unsigned long>(g_snapshot.crc_ok),
+           static_cast<unsigned long>(g_snapshot.long_interleaved_frames));
   text(value, 420, 548, kCyan, 1, middle_left);
 }
 

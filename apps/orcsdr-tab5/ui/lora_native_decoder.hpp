@@ -33,6 +33,7 @@ struct Stats {
   uint32_t captures = 0;
   uint32_t preambles = 0;
   uint32_t header_failures = 0;
+  uint32_t long_interleaved_headers = 0;
   uint32_t crc_ok = 0;
   uint32_t crc_failures = 0;
   uint32_t encrypted = 0;

@@ -239,7 +239,7 @@ def decode_capture(
     pki_keys: list[tuple[str, bytes, bytes]] | None = None,
 ):
     np, _, _, _, LoRaReceiver, _ = _dependencies()
-    from lora_phy.errors import NoPreambleError
+    from lora_phy.errors import LoRaPHYError, NoPreambleError
 
     rate, freq, sf, bw, raw = read_capture(path)
     iq = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32).reshape(-1, 2) - 127.5)
@@ -256,7 +256,25 @@ def decode_capture(
         results = []
         valid_crc = 0
         for index, packet_symbols in enumerate(symbols):
-            data, calculated_crc = receiver.decode(packet_symbols)
+            try:
+                data, calculated_crc = receiver.decode(packet_symbols)
+            except LoRaPHYError as error:
+                # A capture can legitimately end partway through the next RF
+                # packet. Do not let that trailing candidate hide an earlier,
+                # complete packet from the same retained buffer.
+                message = str(error)
+                try:
+                    valid, _, coding_rate, _ = receiver._parse_header(packet_symbols[:8])
+                    long_rates = {5: "4/5", 6: "4/6", 7: "4/8"}
+                    if valid and coding_rate in long_rates:
+                        message = (
+                            f"LoRa long interleaver CR {long_rates[coding_rate]} detected; "
+                            "payload decoding is not supported by lora-phy 0.2"
+                        )
+                except (AttributeError, IndexError, LoRaPHYError):
+                    pass
+                results.append({"error": message, "index": index})
+                continue
             packet = bytes(data)
             if calculated_crc is not None:
                 received_crc = packet[-2:]

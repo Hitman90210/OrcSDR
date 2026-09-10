@@ -405,7 +405,11 @@ bool parse_header(const uint16_t* symbols, uint8_t sf, uint8_t* payload_len, uin
   *payload_len = static_cast<uint8_t>((nibbles[0] << 4) | nibbles[1]);
   *coding_rate = static_cast<uint8_t>(nibbles[2] >> 1);
   *has_crc = (nibbles[2] & 1u) != 0;
-  if (*payload_len == 0 || *coding_rate < 1 || *coding_rate > 4) return false;
+  // Values 5-7 are not corrupt: newer Semtech radios use them to advertise
+  // long interleaving (respectively 4/5, 4/6 and 4/8). Validate their header
+  // checksum here so the caller can distinguish that unsupported payload
+  // layout from an RF/header failure.
+  if (*payload_len == 0 || *coding_rate < 1 || *coding_rate > 7) return false;
   static constexpr uint8_t kChecksum[5][12] = {
       {1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0},
       {1, 0, 0, 0, 1, 1, 1, 0, 0, 0, 0, 1},
@@ -1203,6 +1207,14 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     }
     if (!header_found) {
       if (stats != nullptr) ++stats->header_failures;
+      start = cursor + n;
+      continue;
+    }
+    if (coding_rate >= 5) {
+      if (stats != nullptr) ++stats->long_interleaved_headers;
+      // Long interleaving permutes FEC bits across the complete payload rather
+      // than the legacy per-symbol group. Do not feed it to the legacy
+      // deinterleaver or report the resulting bytes/CRC as a weak RF packet.
       start = cursor + n;
       continue;
     }

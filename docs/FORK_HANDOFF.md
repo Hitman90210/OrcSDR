@@ -383,6 +383,25 @@ floor and had excellent in-channel concentration (-1.7 to -2.0 dB). The old
 that test being the false-trigger safeguard. The rise is now 4 dB so the
 measured 5-6 dB packets reach the channel gate.
 
+**Capture alignment fix, measured 2026-09-09.** A retained fixed-gain capture
+triggered from the serial level rise was unclipped, but the old 250 ms pre-roll
+held only the end of one SF11 packet while the next packet began at the end of
+the four-second buffer. LoRa pre-roll is now one second (1.92 MB at 960 kS/s
+CU8), leaving three seconds after the trigger while covering the measured
+spectrum and host-control latency.
+The automatic native decoder now searches the first 1.5 seconds rather than
+750 ms; the retained bench packet's preamble began about 815 ms into the
+buffer, beyond the old hard stop.
+
+**Meshtastic 2.8 long-interleaver finding, measured 2026-09-09.** The clean
+LongFast captures contain valid explicit headers with coding-rate value 5. That
+is Semtech's on-air marker for CR 4/5 with long interleaving, enabled by
+Meshtastic 2.8 on LR11x0 and SX128x radios. It is not a damaged legacy header.
+The native status now counts these as `li_headers` instead of
+`header_failures`, and the host tool reports the unsupported layout by name.
+Payload decode still requires a long-interleaver implementation; Meshtastic
+2.7.x or a radio using legacy interleaving remains the compatibility path.
+
 **What a quiet result means.** Even at 95% coverage this is a receive-only
 monitor on one slot; absence of traffic is evidence about this location and
 this slot, not about the mesh generally.

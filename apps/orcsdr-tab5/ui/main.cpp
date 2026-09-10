@@ -1347,10 +1347,12 @@ static std::atomic<bool> lora_native_decoder_ready{false};
 static std::atomic<bool> lora_native_decode_busy{false};
 static std::atomic<uint32_t> lora_native_crc_ok{0};
 static std::atomic<uint32_t> lora_native_encrypted{0};
+static std::atomic<uint32_t> lora_native_long_interleaved{0};
 static std::atomic<uint32_t> lora_native_failures{0};
 static std::atomic<uint32_t> lora_native_last_millis{0};
 static std::atomic<uint32_t> lora_native_last_preambles{0};
 static std::atomic<uint32_t> lora_native_last_header_failures{0};
+static std::atomic<uint32_t> lora_native_last_long_interleaved_headers{0};
 static std::atomic<uint32_t> lora_native_last_crc_failures{0};
 static std::atomic<int16_t> lora_native_last_raw_cfo_tenths_hz{0};
 static std::atomic<int16_t> lora_native_last_cfo_tenths_hz{0};
@@ -1457,7 +1459,9 @@ constexpr size_t kIqRecSeconds = 4;
 constexpr size_t kIqRecMaxBytes = kRtlSampleRateSps * 2u * kIqRecSeconds;
 constexpr size_t kOrciqHeaderBytes = 36;
 constexpr size_t kP25IqRecMaxBytes = 1024u * 1024u - kOrciqHeaderBytes;
-constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
+// One second of CU8 IQ. The old 250 ms window was shorter than the measured
+// spectrum/serial reaction latency and retained only the tail of SF11 packets.
+constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps * 2u;
 constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 // Channel concentration rejects out-of-channel ISM traffic, so the level gate
 // only needs to establish a real rise. The measured clean LongFast signal was
@@ -4050,17 +4054,24 @@ void lora_native_decode_task(void*) {
     if (xQueueReceive(lora_native_decode_queue, &work, portMAX_DELAY) != pdTRUE) continue;
     orcsdr::lora_native::Packet decoded[orcsdr::lora_native::kMaxPacketsPerCapture]{};
     orcsdr::lora_native::Stats stats{};
+    // Automatic captures carry one second of pre-roll. The measured SF11
+    // preamble started about 815 ms into that buffer, so the former 750 ms
+    // search window could never reach a correctly retained packet.
     const orcsdr::lora_native::Config config{
-        lora_authorized_key, lora_authorized_key_bytes, work.automatic ? 750u : 0u};
+        lora_authorized_key, lora_authorized_key_bytes, work.automatic ? 1500u : 0u};
     const size_t count = orcsdr::lora_native::decode_capture(
         work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
         work.frequency_hz, config,
         decoded, std::size(decoded), &stats);
     lora_native_crc_ok.fetch_add(stats.crc_ok, std::memory_order_relaxed);
     lora_native_encrypted.fetch_add(stats.encrypted, std::memory_order_relaxed);
+    lora_native_long_interleaved.fetch_add(stats.long_interleaved_headers,
+                                            std::memory_order_relaxed);
     lora_native_last_millis.store(stats.decode_millis, std::memory_order_release);
     lora_native_last_preambles.store(stats.preambles, std::memory_order_release);
     lora_native_last_header_failures.store(stats.header_failures, std::memory_order_release);
+    lora_native_last_long_interleaved_headers.store(stats.long_interleaved_headers,
+                                                     std::memory_order_release);
     lora_native_last_crc_failures.store(stats.crc_failures, std::memory_order_release);
     lora_native_last_raw_cfo_tenths_hz.store(stats.raw_cfo_tenths_hz, std::memory_order_release);
     lora_native_last_cfo_tenths_hz.store(stats.cfo_tenths_hz, std::memory_order_release);
@@ -4080,10 +4091,11 @@ void lora_native_decode_task(void*) {
       strlcpy(packet.long_name, decoded[i].long_name, sizeof(packet.long_name));
       lora_store_packet(packet);
     }
-    Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f elapsed_ms=%lu\n",
+    Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu li_headers=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f elapsed_ms=%lu\n",
                   static_cast<unsigned>(count),
                   static_cast<unsigned long>(stats.preambles),
                   static_cast<unsigned long>(stats.header_failures),
+                  static_cast<unsigned long>(stats.long_interleaved_headers),
                   static_cast<unsigned long>(stats.crc_ok),
                   static_cast<unsigned long>(stats.crc_failures),
                   static_cast<unsigned long>(stats.encrypted),
@@ -8633,6 +8645,8 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.decoded_frames = lora_messages.load(std::memory_order_relaxed);
   snapshot.crc_ok = lora_native_crc_ok.load(std::memory_order_relaxed);
   snapshot.encrypted_frames = lora_native_encrypted.load(std::memory_order_relaxed);
+  snapshot.long_interleaved_frames =
+      lora_native_long_interleaved.load(std::memory_order_relaxed);
   snapshot.log_drops = lora_log_dropped.load(std::memory_order_relaxed);
   snapshot.uptime_seconds = millis() / 1000u;
   snapshot.running = rtl_capture_state.load(std::memory_order_acquire) ==
@@ -13519,7 +13533,7 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_LORA_NATIVE_STATUS") == 0) {
-    Serial.printf("RTL_LORA_NATIVE_STATUS ready=%s busy=%s key_loaded=%s crc_ok=%lu encrypted=%lu failures=%lu last_decode_ms=%lu preambles=%lu header_failures=%lu crc_failures=%lu raw_cfo_hz=%.1f cfo_hz=%.1f\n",
+    Serial.printf("RTL_LORA_NATIVE_STATUS ready=%s busy=%s key_loaded=%s crc_ok=%lu encrypted=%lu failures=%lu last_decode_ms=%lu preambles=%lu header_failures=%lu li_headers=%lu crc_failures=%lu raw_cfo_hz=%.1f cfo_hz=%.1f\n",
                   lora_native_decoder_ready.load(std::memory_order_acquire) ? "true" : "false",
                   lora_native_decode_busy.load(std::memory_order_acquire) ? "true" : "false",
                   lora_authorized_key_loaded ? "true" : "false",
@@ -13529,6 +13543,7 @@ void process_command(char* command) {
                   static_cast<unsigned long>(lora_native_last_millis.load(std::memory_order_relaxed)),
                   static_cast<unsigned long>(lora_native_last_preambles.load(std::memory_order_relaxed)),
                   static_cast<unsigned long>(lora_native_last_header_failures.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long>(lora_native_last_long_interleaved_headers.load(std::memory_order_relaxed)),
                   static_cast<unsigned long>(lora_native_last_crc_failures.load(std::memory_order_relaxed)),
                   static_cast<double>(lora_native_last_raw_cfo_tenths_hz.load(std::memory_order_relaxed)) / 10.0,
                   static_cast<double>(lora_native_last_cfo_tenths_hz.load(std::memory_order_relaxed)) / 10.0);

@@ -51,6 +51,7 @@ struct Snapshot {
   uint32_t decoded_frames = 0;
   uint32_t crc_ok = 0;
   uint32_t encrypted_frames = 0;
+  uint32_t long_interleaved_frames = 0;
   uint32_t log_drops = 0;
   uint32_t uptime_seconds = 0;
   uint32_t survey_progress = 0;

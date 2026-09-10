@@ -662,7 +662,7 @@ factor or bandwidth yet — those load once from `/orcsdr/lora.cfg` at boot;
 tracked as follow-up work alongside POCSAG's `SET_BAUD`/`SET_POLARITY`
 precedent.
 
-Manual LoRa `RTL_IQ_START` includes the most recent 250 ms of IQ pre-roll. This
+Manual LoRa `RTL_IQ_START` includes the most recent one second of IQ pre-roll. This
 allows a host or operator to start a retained diagnostic capture after seeing
 the level rise without cutting off the preamble.
 
