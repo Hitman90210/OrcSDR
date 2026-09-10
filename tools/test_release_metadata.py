@@ -81,8 +81,14 @@ class ReleaseMetadataTests(unittest.TestCase):
             self.assertNotRegex(requested, r"[<>=~^*]", component)
             self.assertEqual(requested.lstrip("v"), lock_version(component).lstrip("v"))
 
+        # A release tag or a full commit SHA, never a range. The test used to
+        # require a tag, which broke when upstream pinned the unreleased
+        # v0.7.15 HF-routing commit directly. That is a legitimate pin -- a
+        # 40-character SHA is stricter than a tag, which can be moved -- so
+        # what actually matters is asserted instead: no floating operators.
         rtl_requested = manifest_version("esp_rtl_sdr")
-        self.assertRegex(rtl_requested, r"^v\d+\.\d+\.\d+$")
+        self.assertNotRegex(rtl_requested, r"[<>=~^*]", "esp_rtl_sdr must not float")
+        self.assertRegex(rtl_requested, r"^(v\d+\.\d+\.\d+|[0-9a-f]{40})$")
         self.assertRegex(lock_version("esp_rtl_sdr"), r"^[0-9a-f]{40}$")
 
     def test_bridge_manifest_matches_the_pin(self) -> None:
