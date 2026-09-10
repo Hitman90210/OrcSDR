@@ -869,11 +869,16 @@ function Invoke-AmBroadcastTest {
     if ($audio.headphone_connected -eq 1 -and $audio.internal_speaker_muted -ne 1) {
       throw 'Headphones detected but internal speaker is not muted.'
     }
-    $driver = Get-DriverStatus
+    $streamDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+      $driver = Get-DriverStatus
+      if ($driver.State -eq 'STREAMING' -and $driver.Bytes -gt 0) { break }
+      Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $streamDeadline)
     $initialDriver = $driver
     $initialAmGainAuto = (Send-And-Wait 'RTL_AM_GAIN STATUS' '^RTL_AM_GAIN_STATUS mode=(AUTO|MANUAL) ').Contains('mode=AUTO')
-    if ($driver.State -ne 'STREAMING') {
-      throw "AM test requires active IQ streaming; state=$($driver.State)"
+    if ($driver.State -ne 'STREAMING' -or $driver.Bytes -eq 0) {
+      throw "AM test requires active IQ streaming; state=$($driver.State) bytes=$($driver.Bytes)"
     }
     $lastBytes = $driver.Bytes
     foreach ($frequency in @(590000, 1120000, 1280000)) {
@@ -922,10 +927,14 @@ function Invoke-AmBroadcastTest {
     Write-SoakLine 'RTL_AM_GAIN_REGRESSION pass=1 auto=lowest_usable manual_range_tenth_db=0-496'
     [void](Open-Ui 'HOME' 'AM')
     [void](Open-Ui 'FM' 'FM')
-    Start-Sleep -Milliseconds 500
-    $fmDriver = Get-DriverStatus
-    if ($fmDriver.State -ne 'STREAMING' -or $fmDriver.Mode -ne 'AUTO') {
-      throw "AM to FM transition did not restore FM tuner state: state=$($fmDriver.State) mode=$($fmDriver.Mode)"
+    $fmDeadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+      $fmDriver = Get-DriverStatus
+      if ($fmDriver.State -eq 'STREAMING' -and $fmDriver.Bytes -gt 0) { break }
+      Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $fmDeadline)
+    if ($fmDriver.State -ne 'STREAMING' -or $fmDriver.Bytes -eq 0 -or $fmDriver.Mode -ne 'AUTO') {
+      throw "AM to FM transition did not restore FM tuner state: state=$($fmDriver.State) bytes=$($fmDriver.Bytes) mode=$($fmDriver.Mode)"
     }
     [void](Open-Ui 'AM' 'AM')
     Write-SoakLine 'RTL_AM_FM_TRANSITION_REGRESSION pass=1 fm_gain_mode=AUTO'
