@@ -402,6 +402,15 @@ The native status now counts these as `li_headers` instead of
 Payload decode still requires a long-interleaver implementation; Meshtastic
 2.7.x or a radio using legacy interleaving remains the compatibility path.
 
+**Legacy-interleaver compatibility result, reported 2026-09-09.** After the
+bench Meshtastic node was returned from nightly `2.8.1.125c451` to older
+firmware, the operator observed a NODEINFO event, one decoded text message
+(`TEST`), one populated node, and four encrypted frames on the Tab5. This is
+the first end-to-end user-visible confirmation on this bench that RF capture,
+legacy LoRa PHY decode, the Meshtastic envelope, and dashboard ingestion can
+work together. It does not validate 2.8 long-interleaved payload decoding;
+that remains a major open item.
+
 **What a quiet result means.** Even at 95% coverage this is a receive-only
 monitor on one slot; absence of traffic is evidence about this location and
 this slot, not about the mesh generally.

@@ -6,7 +6,7 @@
 | FM RDS decoding | Implemented | Sequential A–B–C–D groups, confirmed PS, voted PTY, Radio Text. Needs a 260 kHz FM filter. This dongle uses a +13 kHz LO bias that is not shown as the channel. |
 | P25 control and clear voice following | WIP | Phase I clear voice verified; wider system compatibility in progress. Encrypted voice is not decoded. |
 | ADS-B 1090 dashboard and aircraft database | Implemented | Live hardware verified; coverage depends on antenna, location, and valid position messages |
-| LoRa receive, packet views, and capture | Experimental | No transmit path |
+| LoRa receive, packet views, and capture | Experimental | Receive-only. A legacy-interleaved LongFast NODEINFO, `TEST` message, node, and encrypted-frame counting were observed on the bench. Meshtastic 2.8 long-interleaved payloads are detected but not yet decoded. |
 | AM, WX, CB, and Browse tools | Experimental | Shared radio/scope/capture foundation |
 | Global on-device Settings | Implemented | Wi-Fi and Companion remain optional |
 | Offline personalized map packs | Deferred | Import/status shell precedes the builder workflow |

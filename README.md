@@ -16,10 +16,16 @@
        width="100%">
 </p>
 
-> [!NOTE]
-> **Public beta — [download the current release](https://github.com/Hitman90210/OrcSDR/releases)**
+> [!WARNING]
+> **Experimental work in progress — [download the current prerelease](https://github.com/Hitman90210/OrcSDR/releases)**
 >
-> OrcSDR is available now for the M5Stack Tab5. It is a prerelease: feedback and [bug reports](https://github.com/Hitman90210/OrcSDR/issues) are welcome.
+> This fork is an active hardware and DSP development project, not a finished
+> radio product. Features vary from bench-verified to prototype-only, and
+> firmware changes can introduce regressions. Read the
+> [feature-status guide](docs/user-guide/feature-status.md) and
+> [fork handoff](docs/FORK_HANDOFF.md) before relying on a decoder. Back up
+> settings, expect frequent reflashing, and report reproducible results through
+> [GitHub Issues](https://github.com/Hitman90210/OrcSDR/issues).
 
 <a id="install"></a>
 
