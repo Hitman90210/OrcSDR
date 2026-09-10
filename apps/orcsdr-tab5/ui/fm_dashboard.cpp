@@ -588,8 +588,9 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
   M5.Display.drawFastVLine(center, kSpectrumY, kSpectrumH, kCyan);
   M5.Display.drawFastVLine(center - half_filter, kSpectrumY, kSpectrumH, kCyan);
   M5.Display.drawFastVLine(center + half_filter, kSpectrumY, kSpectrumH, kCyan);
+  // No centre cursor here: the waterfall scrolls, so a fixed vertical line
+  // paints straight through the history instead of marking a moment in it.
   g_waterfall.push();
-  M5.Display.drawFastVLine(center, kWaterfallY, kWaterfallH, kCyan);
   M5.Display.endWrite();
 }
 

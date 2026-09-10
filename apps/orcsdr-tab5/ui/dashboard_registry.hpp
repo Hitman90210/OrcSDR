@@ -28,8 +28,21 @@ enum class Id : uint8_t {
   // settings by one and made every upgraded device restore the wrong tile.
   // Where a dashboard appears in the grid comes from kEntries' order instead.
   gmrs,
+  // Upstream numbers am as 16, because it never had gmrs. This fork shipped
+  // gmrs=16 first and devices already hold that value, so am follows at 17 and
+  // our numbering diverges from upstream here permanently. Keep this order on
+  // every future merge: matching upstream would silently repoint every saved
+  // GMRS tile at AM.
+  am,
   count,
 };
+
+// These two values are in the field, written to NVS as dash_recent entries and
+// by persist_dashboard_open. A future upstream merge that takes their ordering
+// would repoint every saved GMRS tile at AM, silently and only on upgrade --
+// so fail the build instead of shipping it.
+static_assert(static_cast<uint8_t>(Id::gmrs) == 16, "gmrs must stay at 16");
+static_assert(static_cast<uint8_t>(Id::am) == 17, "am follows gmrs at 17");
 
 enum class Category : uint8_t { audio, digital, aviation, utility, system };
 
