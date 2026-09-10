@@ -412,11 +412,26 @@ void draw_companion() {
   value_row("LOCAL DISCOVERY",
             g_state.web_console_listening ? "orcsdr.local" : "NOT ENABLED", 275,
             g_state.web_console_listening ? kGreen : kMuted);
-  value_row("PHONE CONNECTION", "OPTIONAL", 325, kGreen);
+  // The page is view-and-listen unless this is on. Stated as what a visitor can
+  // do, because that is the decision being made here.
+  value_row("VISITOR CONTROL",
+            g_state.web_control_enabled ? "ALLOWED" : "VIEW AND LISTEN ONLY", 325,
+            g_state.web_control_enabled ? TFT_ORANGE : kGreen);
+  button(g_state.web_control_enabled ? "BLOCK" : "ALLOW", 960, 300, 170, 48,
+         g_state.web_control_enabled ? TFT_MAROON : TFT_DARKGREEN);
   value_row("BLUETOOTH", g_state.companion_supported ? "AVAILABLE" : "FEASIBILITY PENDING",
             375, kMuted);
-  text("LAN read-only page for Android TV. No passwords, location, or control.",
-       330, 470, TFT_LIGHTGREY, 2);
+  if (g_state.web_control_enabled) {
+    text("CONTROL ALLOWED: anyone who can open the URL can retune this receiver",
+         330, 430, TFT_ORANGE, 2);
+    text("and change volume. There is no password. Trusted networks only.", 330, 462,
+         TFT_ORANGE, 2);
+  } else {
+    text("Visitors can watch and listen. Tuning and volume are refused.", 330, 430,
+         TFT_LIGHTGREY, 2);
+    text("No passwords or coordinates are served either way.", 330, 462,
+         TFT_LIGHTGREY, 2);
+  }
   text("OrcSDR remains fully usable with no phone, BLE, GPS, or HIVE.", 330, 510,
        TFT_LIGHTGREY, 2);
 }
@@ -736,6 +751,7 @@ void update(const State& state_value) {
        strcmp(g_state.ip_location_message, state_value.ip_location_message) != 0);
   const bool companion_changed = g_section == Section::companion &&
       (g_state.web_console_enabled != state_value.web_console_enabled ||
+       g_state.web_control_enabled != state_value.web_control_enabled ||
        g_state.web_console_listening != state_value.web_console_listening ||
        strcmp(g_state.web_console_url, state_value.web_console_url) != 0);
   g_state = state_value;
@@ -904,6 +920,8 @@ Action handle_touch(int32_t x, int32_t y) {
   } else if (g_section == Section::companion) {
     if (hit(x, y, 960, 150, 170, 48))
       return {ActionKind::web_console_changed, g_state.web_console_enabled ? 0 : 1};
+    if (hit(x, y, 960, 300, 170, 48))
+      return {ActionKind::web_control_changed, g_state.web_control_enabled ? 0 : 1};
   }
   if (g_section == Section::firmware_updates) {
     if (strcmp(g_state.wifi_c6_update_state, "ready") == 0 &&

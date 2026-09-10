@@ -163,22 +163,9 @@ size_t altitude_bin(int altitude_ft) {
 
 void update_geometry(DisplayAircraft& aircraft) {
   if (!aircraft.has_position || !g_settings.location_configured) return;
-  constexpr double kEarthNm = 3440.065;
-  const double lat1 = g_settings.latitude_e7 / 10000000.0 * DEG_TO_RAD;
-  const double lon1 = g_settings.longitude_e7 / 10000000.0 * DEG_TO_RAD;
-  const double lat2 = aircraft.latitude * DEG_TO_RAD;
-  const double lon2 = aircraft.longitude * DEG_TO_RAD;
-  const double dlat = lat2 - lat1, dlon = lon2 - lon1;
-  const double a = sin(dlat / 2) * sin(dlat / 2) +
-                   cos(lat1) * cos(lat2) * sin(dlon / 2) * sin(dlon / 2);
-  const double bounded_a = std::clamp(a, 0.0, 1.0);
-  aircraft.range_nm = static_cast<float>(
-      kEarthNm * 2 * atan2(sqrt(bounded_a), sqrt(1 - bounded_a)));
-  aircraft.bearing_deg = static_cast<int>(lround(
-      fmod(atan2(sin(dlon) * cos(lat2),
-                 cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon)) /
-                   DEG_TO_RAD + 360.0,
-           360.0)));
+  relative_position(g_settings.latitude_e7, g_settings.longitude_e7,
+                    aircraft.latitude, aircraft.longitude, &aircraft.range_nm,
+                    &aircraft.bearing_deg);
 }
 
 void apply_live_snapshot() {
@@ -1154,6 +1141,28 @@ void show_documentation_view(uint8_t requested, const Settings& settings_value) 
 }
 
 uint8_t view() { return static_cast<uint8_t>(g_view); }
+
+void relative_position(int32_t receiver_latitude_e7, int32_t receiver_longitude_e7,
+                       double latitude, double longitude, float* range_nm,
+                       int* bearing_deg) {
+  if (range_nm == nullptr || bearing_deg == nullptr) return;
+  constexpr double kEarthNm = 3440.065;
+  const double lat1 = receiver_latitude_e7 / 10000000.0 * DEG_TO_RAD;
+  const double lon1 = receiver_longitude_e7 / 10000000.0 * DEG_TO_RAD;
+  const double lat2 = latitude * DEG_TO_RAD;
+  const double lon2 = longitude * DEG_TO_RAD;
+  const double dlat = lat2 - lat1, dlon = lon2 - lon1;
+  const double a = sin(dlat / 2) * sin(dlat / 2) +
+                   cos(lat1) * cos(lat2) * sin(dlon / 2) * sin(dlon / 2);
+  const double bounded_a = std::clamp(a, 0.0, 1.0);
+  *range_nm = static_cast<float>(
+      kEarthNm * 2 * atan2(sqrt(bounded_a), sqrt(1 - bounded_a)));
+  *bearing_deg = static_cast<int>(lround(
+      fmod(atan2(sin(dlon) * cos(lat2),
+                 cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon)) /
+                   DEG_TO_RAD + 360.0,
+           360.0)));
+}
 
 bool self_check() {
   DisplayAircraft saved_aircraft[kVisibleAircraft];

@@ -1682,6 +1682,13 @@ bool settings_sound_default = true;
 bool settings_auto_start_reception = true;
 bool settings_graphics_default = true;
 bool settings_web_console_enabled = false;
+// Serving the page and accepting commands are separate permissions. Off by
+// default: the console has no login and is reachable by anyone on the LAN, so
+// letting a visitor retune the receiver has to be a deliberate choice.
+bool settings_web_control_enabled = false;
+// publish_adsb_snapshot() computes the message rate as a local. The web console
+// reports the same figure, and recomputing it there would drift.
+std::atomic<uint16_t> adsb_message_rate_tenths{0};
 bool web_console_deferred = false;
 char settings_location_label[40]{};
 char settings_map_pack[40]{};
@@ -1890,6 +1897,9 @@ void publish_adsb_snapshot(uint32_t now) {
   const uint32_t state_revision = adsb_track_revision.load(std::memory_order_acquire);
   const float message_rate = (messages - last_sample_messages) * 1000.0f /
                              static_cast<float>(now - last_sample_ms);
+  adsb_message_rate_tenths.store(
+      static_cast<uint16_t>(std::clamp(lroundf(message_rate * 10.0f), 0l, 65535l)),
+      std::memory_order_relaxed);
   // catalog_state.packs[].installed needs a manifest, and g_packs resets on
   // boot -- so a pack sitting on the SD card read as NOT INSTALLED after every
   // reboot until the user ran Check for Updates again. What the card is really
@@ -10020,6 +10030,7 @@ const orcsdr::settings::State& global_settings_state() {
   }
   state.companion_supported = false;
   state.web_console_enabled = settings_web_console_enabled;
+  state.web_control_enabled = settings_web_control_enabled;
   state.web_console_listening = orcsdr::web_console::listening();
   if (state.web_console_listening && device.wifi_connected)
     orcsdr::web_console::format_url(state.web_console_url, sizeof(state.web_console_url),
@@ -10619,6 +10630,14 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
       settings_graphics_default = action.value != 0;
       preferences.putBool("set_gfx", settings_graphics_default);
       break;
+    case orcsdr::settings::ActionKind::web_control_changed:
+      settings_web_control_enabled = action.value != 0;
+      preferences.putBool("set_web_ctrl", settings_web_control_enabled);
+      orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
+      Serial.printf("RTL_WEB_CONTROL_OK control=%d\n",
+                    settings_web_control_enabled ? 1 : 0);
+      update_global_settings();
+      break;
     case orcsdr::settings::ActionKind::web_console_changed:
       settings_web_console_enabled = action.value != 0;
       preferences.putBool("set_web_console", settings_web_console_enabled);
@@ -10986,6 +11005,8 @@ void load_state() {
   settings_graphics_default = preferences.getBool("set_gfx", true);
   settings_web_console_enabled = preferences.getBool("set_web_console", false);
   orcsdr::web_console::set_enabled(settings_web_console_enabled);
+  settings_web_control_enabled = preferences.getBool("set_web_ctrl", false);
+  orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
   const std::string location_label = preferences.isKey("loc_label")
                                          ? preferences.getString("loc_label", "") : std::string();
   const std::string map_pack = preferences.isKey("map_pack")
@@ -14371,10 +14392,22 @@ void process_command(char* command) {
     if (orcsdr::web_console::listening() && wifi_connected) {
       orcsdr::web_console::format_url(url, sizeof(url), orcsdr::wifi::ip());
     }
-    Serial.printf("RTL_WEB_STATUS enabled=%d listening=%d url=%s\n",
+    Serial.printf("RTL_WEB_STATUS enabled=%d control=%d listening=%d url=%s\n",
                   orcsdr::web_console::enabled() ? 1 : 0,
+                  orcsdr::web_console::control_enabled() ? 1 : 0,
                   orcsdr::web_console::listening() ? 1 : 0,
                   url[0] ? url : "offline");
+    return;
+  }
+  if ((strcmp(command, "RTL_WEB CONTROL ON") == 0 ||
+       strcmp(command, "RTL_WEB CONTROL OFF") == 0) &&
+      authenticated) {
+    settings_web_control_enabled = strcmp(command + 16, "ON") == 0;
+    preferences.putBool("set_web_ctrl", settings_web_control_enabled);
+    orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
+    Serial.printf("RTL_WEB_CONTROL_OK control=%d\n",
+                  settings_web_control_enabled ? 1 : 0);
+    if (orcsdr::settings::active()) update_global_settings();
     return;
   }
   if ((strcmp(command, "RTL_WEB ON") == 0 || strcmp(command, "RTL_WEB OFF") == 0) &&
@@ -15548,6 +15581,9 @@ void loop() {
         snap.battery_percent = home.battery_percent;
         snap.signal_dbfs = home.relative_dbfs;
         snap.volume = home.volume;
+        // The device prints a percentage; the page was rendering the raw 0-255
+        // value against "/100", so half volume read as "128/100".
+        snap.volume_percent = static_cast<uint8_t>((home.volume * 100u + 127u) / 255u);
         snap.wifi_connected = home.wifi_connected;
         snap.usb_connected = home.usb_connected;
         snap.rtl_ready = home.driver_ready;
@@ -15566,6 +15602,133 @@ void loop() {
           snap.left_dbfs = fm.left_dbfs;
           snap.right_dbfs = fm.right_dbfs;
         }
+        // Channelised bands: the frequency is an implementation detail and the
+        // channel is what an operator reads, so the page renders a radio
+        // faceplate instead of a frequency. GMRS entry 23 prints as "R15", which
+        // is why the label is carried rather than derived from the index.
+        snap.channel_active = home.channel_count != 0;
+        snap.channel_index = home.channel;
+        snap.channel_count = home.channel_count;
+        if (home.channel_label[0] != '\0')
+          strlcpy(snap.channel_label, home.channel_label, sizeof(snap.channel_label));
+        else if (home.channel != 0)
+          snprintf(snap.channel_label, sizeof(snap.channel_label), "%u",
+                   static_cast<unsigned>(home.channel));
+        else
+          snap.channel_label[0] = '\0';
+
+        snap.adsb_active = rtl_ui_band == RtlBand::adsb;
+        if (snap.adsb_active) {
+          snap.radar_range_nm = adsb_settings.radar_range_nm;
+          snap.location_configured = adsb_settings.location_configured;
+          snap.adsb_messages = adsb_total_messages.load(std::memory_order_relaxed);
+          snap.adsb_message_rate =
+              adsb_message_rate_tenths.load(std::memory_order_relaxed) / 10.0f;
+          snap.aircraft_tracked =
+              static_cast<uint8_t>(adsb_aircraft_count.load(std::memory_order_relaxed));
+          // Copy under the tracker lock, convert outside it: the geometry is
+          // trigonometry per target and has no business holding a spinlock.
+          struct WebTrack {
+            uint32_t icao;
+            char callsign[9];
+            double latitude;
+            double longitude;
+            int altitude_ft;
+            int speed_kts;
+            int heading_deg;
+            int vertical_rate_fpm;
+            uint32_t last_seen_ms;
+            uint16_t signal;
+            bool has_callsign;
+            bool has_position;
+            bool has_altitude;
+            bool has_speed;
+            bool has_heading;
+          };
+          static WebTrack staged[kAdsbTrackCount];
+          size_t staged_count = 0;
+          const uint32_t now_ms = millis();
+          portENTER_CRITICAL(&adsb_tracks_mux);
+          for (const auto& track : adsb_tracks) {
+            if (!track.used || staged_count == kAdsbTrackCount) continue;
+            WebTrack& out = staged[staged_count++];
+            out.icao = track.icao;
+            memcpy(out.callsign, track.callsign, sizeof(out.callsign));
+            out.latitude = track.latitude;
+            out.longitude = track.longitude;
+            out.altitude_ft = track.altitude_ft;
+            out.speed_kts = track.speed_kts;
+            out.heading_deg = track.heading_deg;
+            out.vertical_rate_fpm = track.vertical_rate_fpm;
+            out.last_seen_ms = track.last_seen_ms;
+            out.signal = track.signal;
+            out.has_callsign = track.has_callsign;
+            out.has_position = track.has_position;
+            out.has_altitude = track.has_altitude;
+            out.has_speed = track.has_speed;
+            out.has_heading = track.has_heading;
+          }
+          portEXIT_CRITICAL(&adsb_tracks_mux);
+
+          struct Scored {
+            float range_nm;
+            int bearing_deg;
+            size_t index;
+          };
+          static Scored scored[kAdsbTrackCount];
+          size_t scored_count = 0;
+          for (size_t i = 0; i < staged_count; ++i) {
+            float range_nm = 0.0f;
+            int bearing_deg = 0;
+            if (staged[i].has_position && adsb_settings.location_configured) {
+              orcsdr::adsb::relative_position(adsb_settings.latitude_e7,
+                                              adsb_settings.longitude_e7,
+                                              staged[i].latitude, staged[i].longitude,
+                                              &range_nm, &bearing_deg);
+            }
+            scored[scored_count++] = {range_nm, bearing_deg, i};
+          }
+          // Nearest first, and anything without a fix after everything with one --
+          // a radar with no range for a target has nowhere to draw it.
+          std::sort(scored, scored + scored_count,
+                    [&](const Scored& a, const Scored& b) {
+                      const bool pa = staged[a.index].has_position;
+                      const bool pb = staged[b.index].has_position;
+                      if (pa != pb) return pa;
+                      return a.range_nm < b.range_nm;
+                    });
+          snap.aircraft_count = 0;
+          for (size_t i = 0;
+               i < scored_count &&
+               snap.aircraft_count < orcsdr::web_console::kAircraftSlots;
+               ++i) {
+            const WebTrack& src = staged[scored[i].index];
+            auto& out = snap.aircraft[snap.aircraft_count++];
+            if (src.has_callsign && src.callsign[0] != '\0')
+              strlcpy(out.label, src.callsign, sizeof(out.label));
+            else
+              snprintf(out.label, sizeof(out.label), "%06lX",
+                       static_cast<unsigned long>(src.icao));
+            out.range_tenths_nm = static_cast<uint16_t>(
+                std::clamp(lroundf(scored[i].range_nm * 10.0f), 0l, 65535l));
+            out.bearing_deg = static_cast<uint16_t>(scored[i].bearing_deg);
+            out.altitude_ft = src.has_altitude ? src.altitude_ft : 0;
+            out.speed_kts = static_cast<int16_t>(src.has_speed ? src.speed_kts : 0);
+            out.heading_deg =
+                static_cast<int16_t>(src.has_heading ? src.heading_deg : 0);
+            out.vertical_rate_fpm = static_cast<int16_t>(
+                std::clamp(src.vertical_rate_fpm, -32768, 32767));
+            out.signal_dbfs = static_cast<int8_t>(
+                std::clamp(static_cast<int>(src.signal) / 10 - 90, -128, 127));
+            out.age_seconds = static_cast<uint8_t>(
+                std::min<uint32_t>((now_ms - src.last_seen_ms) / 1000u, 255u));
+            out.has_position = src.has_position;
+            out.has_altitude = src.has_altitude;
+            out.has_speed = src.has_speed;
+            out.has_heading = src.has_heading;
+          }
+        }
+
         snap.recent_count = 0;
         for (size_t i = 0; i < orcsdr::dashboards::recent_count() &&
                            snap.recent_count < orcsdr::web_console::kRecentSlots;

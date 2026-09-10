@@ -76,6 +76,13 @@ const Settings& settings();
 bool active();
 void show_documentation_view(uint8_t view, const Settings& settings);
 uint8_t view();
+// Great-circle range and bearing from the receiver to a target. Exposed because
+// the web console draws the same radar and must not compute it differently --
+// two implementations of one formula is two chances to drift.
+void relative_position(int32_t receiver_latitude_e7, int32_t receiver_longitude_e7,
+                       double latitude, double longitude, float* range_nm,
+                       int* bearing_deg);
+
 bool self_check();
 
 }  // namespace orcsdr::adsb

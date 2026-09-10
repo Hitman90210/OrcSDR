@@ -7,6 +7,29 @@ namespace orcsdr::web_console {
 
 constexpr size_t kSpectrumBins = 64;
 constexpr size_t kRecentSlots = 8;
+// The device shows six aircraft because that is what its panel fits, not what
+// it tracks. A browser has room for more, and the tracker holds 64.
+constexpr size_t kAircraftSlots = 16;
+
+// Range and bearing rather than latitude and longitude, deliberately. It is
+// what a radar display needs, and it keeps the receiver's own position on the
+// device -- absolute aircraft positions plus a centred display would give it
+// away, and the console promises to leak no coordinates.
+struct Aircraft {
+  char label[9]{};  // callsign when known, otherwise the ICAO address
+  uint16_t range_tenths_nm = 0;
+  uint16_t bearing_deg = 0;
+  int32_t altitude_ft = 0;
+  int16_t speed_kts = 0;
+  int16_t heading_deg = 0;
+  int16_t vertical_rate_fpm = 0;
+  int8_t signal_dbfs = 0;
+  uint8_t age_seconds = 0;
+  bool has_position = false;
+  bool has_altitude = false;
+  bool has_speed = false;
+  bool has_heading = false;
+};
 
 struct Snapshot {
   char wifi_ip[16]{};
@@ -29,6 +52,9 @@ struct Snapshot {
   float left_dbfs = -90.0f;
   float right_dbfs = -90.0f;
   uint8_t volume = 0;
+  // What the device itself puts on screen. The raw value is 0-255 and the page
+  // was rendering it against "/100", so half volume read as "128/100".
+  uint8_t volume_percent = 0;
   uint8_t recent_count = 0;
   uint8_t spectrum[kSpectrumBins]{};
   uint8_t spectrum_count = 0;
@@ -42,6 +68,24 @@ struct Snapshot {
   bool rds_locked = false;
   bool recording = false;
   bool enabled = false;
+
+  // Channelised bands (CB, GMRS, marine, weather). The label is whatever the
+  // device puts on its own stepper, so the two never disagree.
+  char channel_label[12]{};
+  uint8_t channel_index = 0;
+  uint8_t channel_count = 0;
+  bool channel_active = false;
+
+  Aircraft aircraft[kAircraftSlots]{};
+  uint32_t adsb_messages = 0;
+  float adsb_message_rate = 0.0f;
+  uint16_t radar_range_nm = 25;
+  uint8_t aircraft_count = 0;    // entries filled in `aircraft`
+  uint8_t aircraft_tracked = 0;  // total the receiver is tracking
+  bool adsb_active = false;
+  bool location_configured = false;
+  // Mirrors control_enabled() so the page can hide what it may not use.
+  bool control_enabled = false;
 };
 
 enum class CommandKind : uint8_t {
@@ -65,6 +109,11 @@ struct Command {
 
 void set_enabled(bool enabled);
 bool enabled();
+// Control is off by default and separate from serving the page. With it off,
+// POST /api/action is refused outright rather than merely hidden in the UI --
+// hiding a button is not a permission.
+void set_control_enabled(bool enabled);
+bool control_enabled();
 bool listening();
 // True briefly after a browser requests an audio chunk.  This lets the SDR
 // keep demodulating for remote listeners even when the local speaker is muted.

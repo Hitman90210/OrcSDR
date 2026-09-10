@@ -1,65 +1,238 @@
-<!DOCTYPE html>
-<html>
-<head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,height=device-height,initial-scale=1,user-scalable=no">
-<title>OrcSDR Mission Control</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#04070c">
+<title>OrcSDR Companion</title>
+<link rel="icon" href="/badge.png">
 <style>
-html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#04070c;color:#e8eef4;
-font-family:Roboto,Arial,Helvetica,sans-serif}
-body{background:radial-gradient(1200px 700px at 50% -10%,#0b1a28 0%,#04070c 55%)}
-#app{position:absolute;inset:2.4vh 2.8vw;display:flex;flex-direction:column;gap:1.2vh}
-#bar{display:flex;align-items:center;height:7.2vh;padding:0 1.2vw;border:1px solid rgba(0,188,255,.28);
-background:rgba(0,10,18,.72);box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
-.brand{display:flex;align-items:center;gap:.7vw;min-width:22vw}
-.brand img{width:5.2vh;height:5.2vh;border-radius:8px}
-.word{font-size:2.4vh;font-weight:700;letter-spacing:.12em;color:#6bff00}
-.sub{font-size:1.35vh;color:#7ad7ff;letter-spacing:.18em;margin-top:.15vh}
-.modepill{margin:0 auto;font-size:2vh;letter-spacing:.28em;color:#e8eef4}
-.stats{display:flex;gap:1.4vw;align-items:center;font-size:1.45vh;letter-spacing:.12em}
-.dot{width:.85vh;height:.85vh;border-radius:50%;background:#5a6a72;display:inline-block;margin-right:.4vw}
-.dot.ok{background:#6bff00;box-shadow:0 0 8px #6bff00}
-.dot.warn{background:#ff9a2e}
-.dot.bad{background:#ff3b3b}
-.clk{color:#7ad7ff;font-variant-numeric:tabular-nums}
-#hero{display:grid;grid-template-columns:1.4fr .9fr;gap:1.2vw;height:20vh}
-.panel{border:1px solid rgba(0,188,255,.22);background:rgba(0,12,20,.62);
-box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
-.freqbox{padding:1.2vh 1.6vw}
-.k{font-size:1.3vh;letter-spacing:.22em;color:#7ad7ff}
-.freq{font-size:9.4vh;line-height:.9;font-weight:700;letter-spacing:.02em;font-variant-numeric:tabular-nums;
-color:#f4f8fb;text-shadow:0 0 24px rgba(0,188,255,.18)}
-.unit{font-size:2.4vh;color:#6bff00;margin-left:.4vw}
-.meta{margin-top:.6vh;font-size:1.6vh;color:#9eb3c0;letter-spacing:.14em}
-.meta b{color:#6bff00;font-weight:600}
-.sigbox{padding:1.2vh 1.4vw;display:flex;flex-direction:column;justify-content:space-between}
-.sigv{font-size:5.2vh;font-weight:700;font-variant-numeric:tabular-nums}
-.sigv.ok{color:#6bff00}.sigv.mid{color:#ff9a2e}.sigv.low{color:#8a96a0}
-.meter{height:1.5vh;background:#0a1218;border:1px solid rgba(0,188,255,.2);position:relative;overflow:hidden}
-.meter>i{position:absolute;left:0;top:0;bottom:0;width:0;background:linear-gradient(90deg,#124,#2ad,#6bff00)}
-.hist{height:5.4vh;width:100%}
-#viz{flex:1;min-height:0;display:flex;flex-direction:column;gap:.7vh}
-.scope{flex:1;min-height:0;position:relative}
-.scope canvas{position:absolute;inset:0;width:100%;height:100%}
-.axis{position:absolute;left:1vw;right:1vw;bottom:.4vh;display:flex;justify-content:space-between;
-font-size:1.25vh;color:#6d8494;letter-spacing:.08em;pointer-events:none}
-.reticle{position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(107,255,0,.55);pointer-events:none}
-.reticle b{position:absolute;left:50%;top:.4vh;transform:translateX(-50%);font-size:1.2vh;color:#6bff00;letter-spacing:.16em}
-#foot{height:8.2vh;display:grid;grid-template-columns:1.2fr .7fr .7fr .8fr .9fr auto;gap:.8vw;align-items:stretch}
-.cell{padding:.8vh 1vw;min-width:0}
-.cell .v{font-size:2.1vh;margin-top:.35vh;color:#e8eef4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#tvsound{border:1px solid #00bcff;background:#041018;color:#7ad7ff;font-size:1.7vh;letter-spacing:.16em;min-width:12vw}
-#tvsound.on{border-color:#6bff00;color:#6bff00;background:#062010}
-#tvsound:focus{outline:2px solid #fff}
-audio{display:none}
-#boot,#stale{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
-background:rgba(4,7,12,.88);z-index:5;transition:opacity .4s}
-#boot.gone,#stale.hide{opacity:0;pointer-events:none}
-#boot .t{font-size:5vh;letter-spacing:.28em;color:#6bff00}
-#boot .s,#stale .s{margin-top:2vh;color:#7ad7ff;letter-spacing:.2em;font-size:1.8vh}
-#stale .t{font-size:3.2vh;letter-spacing:.2em;color:#ff9a2e}
+/* ES5-era syntax and no backdrop-filter throughout: this runs on Android TV
+   browsers as often as on a desktop, and blur over a full-screen panel is the
+   fastest way to turn 60 fps into 12. Glow comes from gradients and shadows. */
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#04070c; --panel:#0a1018; --edge:#162130; --edge2:#1e2d3f;
+  --cy:#00bcff; --gn:#6bff00; --am:#ffb02e; --rd:#ff4d5a;
+  --tx:#e8f2fb; --mut:#5d7288;
+  --glow:0 0 24px rgba(0,188,255,.14);
+}
+html,body{height:100%}
+body{
+  background:
+    radial-gradient(1200px 700px at 50% -10%, #0b1826 0%, transparent 60%),
+    radial-gradient(900px 600px at 110% 110%, #0a1a1a 0%, transparent 55%),
+    var(--bg);
+  color:var(--tx);
+  font:500 14px/1.35 "DIN Alternate","Roboto Condensed",-apple-system,Segoe UI,Roboto,sans-serif;
+  letter-spacing:.02em; overflow:hidden;
+}
+/* A very cheap scanline veil. One repeating-gradient, no compositing cost. */
+body:after{
+  content:''; position:fixed; inset:0; pointer-events:none; z-index:60; opacity:.32;
+  background:repeating-linear-gradient(to bottom,rgba(0,0,0,0) 0 2px,rgba(0,0,0,.35) 2px 3px);
+}
+.hide{display:none!important}
+.gone{opacity:0!important;pointer-events:none!important}
+
+#boot,#stale{position:fixed;inset:0;z-index:50;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;background:var(--bg);transition:opacity .6s}
+#stale{background:rgba(4,7,12,.86)}
+#boot .t,#stale .t{font-size:44px;font-weight:800;letter-spacing:.28em;color:var(--cy);
+  text-shadow:0 0 40px rgba(0,188,255,.5)}
+#boot .s,#stale .s{margin-top:14px;color:var(--mut);letter-spacing:.3em;font-size:13px}
+#stale .t{color:var(--am);text-shadow:0 0 40px rgba(255,176,46,.45)}
+
+#app{height:100%;display:flex;flex-direction:column;gap:10px;padding:12px 14px 10px}
+
+#bar{display:flex;align-items:center;gap:14px;flex:0 0 auto}
+.brand{display:flex;align-items:center;gap:11px}
+.brand img{width:34px;height:34px;border-radius:8px;box-shadow:var(--glow)}
+.word{font-size:19px;font-weight:800;letter-spacing:.2em;color:var(--tx);line-height:1}
+.sub{font-size:9px;letter-spacing:.32em;color:var(--mut);margin-top:3px}
+.modepill{
+  padding:7px 16px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.22em;
+  color:#04121b;background:linear-gradient(135deg,var(--cy),#7de3ff);
+  box-shadow:0 0 22px rgba(0,188,255,.35);white-space:nowrap;flex:0 0 auto
+}
+.badge{
+  margin-left:auto;padding:6px 13px;border-radius:6px;font-size:10px;font-weight:700;
+  letter-spacing:.2em;border:1px solid var(--edge2);color:var(--mut)
+}
+/* Named b-* rather than .view/.ctrl: ".view" is already the class on the three
+   view containers, which carries flex:1 1 auto, and a badge that quietly picked
+   it up stretched to 540px. State classes and layout classes share a namespace. */
+.badge.b-ro{color:var(--gn);border-color:rgba(107,255,0,.35);background:rgba(107,255,0,.06)}
+.badge.b-rw{color:var(--am);border-color:rgba(255,176,46,.4);background:rgba(255,176,46,.08)}
+.stats{display:flex;align-items:center;gap:16px;font-size:11px;color:var(--mut);
+  letter-spacing:.14em;white-space:nowrap}
+.stats span{display:flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mut);display:inline-block}
+.dot.ok{background:var(--gn);box-shadow:0 0 10px var(--gn)}
+.dot.warn{background:var(--am);box-shadow:0 0 10px var(--am)}
+.dot.bad{background:var(--rd);box-shadow:0 0 10px var(--rd)}
+.clk{color:var(--tx);font-variant-numeric:tabular-nums}
+
+.panel{
+  background:linear-gradient(180deg,rgba(18,28,40,.92),rgba(8,13,20,.94));
+  border:1px solid var(--edge);border-radius:12px;position:relative;overflow:hidden
+}
+.panel:before{content:'';position:absolute;left:0;right:0;top:0;height:1px;
+  background:linear-gradient(90deg,transparent,rgba(0,188,255,.5),transparent)}
+.k{font-size:9px;letter-spacing:.3em;color:var(--mut);margin-bottom:6px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* overflow:hidden is load-bearing. Every descendant carries min-height:0 so the
+   flex column can shrink, and one min-height further down breaks that chain and
+   pushes the stage under the footer instead of shrinking. */
+#stage{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:10px;overflow:hidden}
+.view{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:10px}
+
+/* ---- scope view ---------------------------------------------------------- */
+/* Capped so the spectrum and waterfall always get room. Uncapped, the signal
+   history canvas grows the hero until the scope is clipped away entirely --
+   and the scope is the signature of the whole page. */
+#hero{display:flex;gap:10px;flex:0 1 auto;max-height:210px}
+.freqbox{flex:1.5;padding:12px 16px}
+.sigbox{flex:1;padding:12px 16px;display:flex;flex-direction:column}
+.freq{font-size:54px;font-weight:800;letter-spacing:.02em;line-height:1;
+  color:var(--tx);text-shadow:0 0 30px rgba(0,188,255,.3);font-variant-numeric:tabular-nums}
+.unit{font-size:17px;color:var(--cy);margin-left:9px;letter-spacing:.1em}
+.meta{margin-top:8px;font-size:11px;color:var(--mut);letter-spacing:.14em}
+.meta b{color:var(--gn);font-weight:700}
+.sigv{font-size:27px;font-weight:800;font-variant-numeric:tabular-nums}
+.sigv.ok{color:var(--gn)} .sigv.mid{color:var(--am)} .sigv.low{color:var(--mut)}
+.meter{height:7px;border-radius:4px;background:#0d1622;overflow:hidden;margin-top:9px;
+  border:1px solid var(--edge)}
+.meter i{display:block;height:100%;width:0;border-radius:4px;
+  background:linear-gradient(90deg,#0a5c7a,var(--cy),var(--gn));transition:width .18s linear}
+.hist{flex:1 1 auto;width:100%;min-height:0;max-height:76px;margin-top:8px}
+#viz{flex:1 1 auto;min-height:120px;display:flex;gap:10px}
+.scope{flex:1;min-width:0;position:relative}
+.scope canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.reticle{position:absolute;left:50%;top:8px;transform:translateX(-50%);font-size:9px;
+  letter-spacing:.24em;color:rgba(107,255,0,.75);pointer-events:none}
+.axis{position:absolute;left:0;right:0;bottom:4px;display:flex;justify-content:space-between;
+  padding:0 8px;font-size:9px;color:var(--mut);letter-spacing:.1em;pointer-events:none}
+
+/* ---- radar view ---------------------------------------------------------- */
+#radarwrap{flex:1 1 auto;min-height:0;display:flex;gap:10px}
+#scopewrap{flex:1.25;min-width:0;position:relative}
+#radar{position:absolute;inset:0;width:100%;height:100%;display:block}
+.rmeta{position:absolute;left:14px;top:12px;font-size:10px;letter-spacing:.2em;color:var(--mut)}
+.rmeta b{color:var(--cy)}
+.rrange{position:absolute;right:14px;top:12px;font-size:10px;letter-spacing:.2em;color:var(--mut)}
+#strips{flex:1;min-width:0;padding:12px 14px;display:flex;flex-direction:column}
+#striplist{flex:1 1 auto;overflow:hidden;display:flex;flex-direction:column;gap:5px;margin-top:4px}
+.strip{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;
+  padding:7px 10px;border-radius:7px;background:rgba(9,16,24,.8);
+  border-left:3px solid var(--cy);font-size:12px}
+.strip.nopos{border-left-color:var(--mut);opacity:.6}
+.strip .cs{font-weight:800;letter-spacing:.1em;color:var(--tx)}
+.strip .sm{font-size:9px;color:var(--mut);letter-spacing:.12em;margin-top:2px}
+.strip .rg{font-variant-numeric:tabular-nums;color:var(--cy);font-weight:700}
+.strip .al{font-variant-numeric:tabular-nums;color:var(--gn);text-align:right;min-width:62px}
+.empty{color:var(--mut);font-size:11px;letter-spacing:.2em;text-align:center;padding:26px 0}
+
+/* ---- mock radio view ----------------------------------------------------- */
+#radiowrap{flex:1 1 auto;min-height:0;display:flex;gap:10px}
+#face{
+  flex:1.35;min-width:0;padding:16px 20px;display:flex;flex-direction:column;
+  background:linear-gradient(180deg,#141b24,#080c12 60%,#0d141c);
+  border:1px solid #202d3d;border-radius:14px;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06),0 12px 34px rgba(0,0,0,.5)
+}
+.fhead{display:flex;align-items:baseline;gap:12px}
+.fbrand{font-size:13px;font-weight:800;letter-spacing:.3em;color:var(--cy)}
+.fband{font-size:9px;letter-spacing:.3em;color:var(--mut)}
+.lcd{
+  margin-top:12px;padding:16px 20px;border-radius:10px;flex:0 0 auto;
+  background:linear-gradient(180deg,#03170f,#021009);
+  border:1px solid #12402c;box-shadow:inset 0 0 40px rgba(0,255,140,.09);
+  display:flex;align-items:center;justify-content:space-between;gap:16px
+}
+.chnum{
+  font-size:76px;line-height:.92;font-weight:800;color:#59ffa8;
+  text-shadow:0 0 26px rgba(89,255,168,.5);font-variant-numeric:tabular-nums;letter-spacing:.02em
+}
+.chside{text-align:right}
+.chlab{font-size:15px;font-weight:700;letter-spacing:.2em;color:#59ffa8;opacity:.92}
+.chhz{font-size:11px;color:#2f8f66;letter-spacing:.14em;margin-top:6px;font-variant-numeric:tabular-nums}
+.lamps{display:flex;gap:8px;margin-top:12px}
+.lamp{flex:1;text-align:center;padding:7px 0;border-radius:6px;font-size:9px;letter-spacing:.18em;
+  border:1px solid var(--edge);color:var(--mut);background:#080d14}
+.lamp.on{color:#04121b;border-color:transparent}
+.lamp.rx.on{background:var(--gn);box-shadow:0 0 18px rgba(107,255,0,.5)}
+.lamp.tx.on{background:var(--rd)}
+.lamp.sq.on{background:var(--am)}
+/* Decorative. Labelled as such in the DOM so nobody wires them up by mistake. */
+.deck{margin-top:auto;padding-top:14px;display:flex;align-items:flex-end;gap:16px}
+.knobs{display:flex;gap:16px}
+.knob{width:56px;text-align:center}
+.knob .dial{
+  width:56px;height:56px;border-radius:50%;position:relative;
+  background:radial-gradient(circle at 32% 28%,#3a4a5f,#131b26 68%);
+  transition:transform .35s cubic-bezier(.22,.9,.3,1);
+  border:1px solid #2a3a4d;box-shadow:0 5px 14px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.09)
+}
+.knob .dial:after{content:'';position:absolute;left:50%;top:7px;width:2px;height:16px;
+  margin-left:-1px;border-radius:1px;background:var(--cy);box-shadow:0 0 8px var(--cy)}
+.knob span{display:block;font-size:8px;letter-spacing:.2em;color:var(--mut);margin-top:7px}
+.pads{flex:1;display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+.pad{
+  padding:9px 0;text-align:center;font-size:9px;letter-spacing:.14em;color:#7f94aa;
+  border-radius:6px;border:1px solid #22303f;
+  background:linear-gradient(180deg,#1a242f,#101821);
+  box-shadow:0 2px 0 #070b10,inset 0 1px 0 rgba(255,255,255,.05)
+}
+.pad.lit{color:var(--cy);border-color:rgba(0,188,255,.4);box-shadow:0 0 14px rgba(0,188,255,.2)}
+.grille{
+  flex:1;min-width:0;display:flex;flex-direction:column;gap:10px
+}
+.smeter{padding:14px 16px}
+.arc{width:100%;height:96px;display:block}
+#chanlist{flex:1 1 auto;padding:12px 14px;overflow:hidden}
+.chgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(52px,1fr));gap:5px;margin-top:6px}
+.chip{
+  padding:7px 0;text-align:center;font-size:11px;font-weight:700;border-radius:5px;
+  background:rgba(9,16,24,.85);border:1px solid var(--edge);color:var(--mut);
+  font-variant-numeric:tabular-nums
+}
+.chip.on{background:linear-gradient(135deg,var(--cy),#7de3ff);color:#04121b;border-color:transparent;
+  box-shadow:0 0 16px rgba(0,188,255,.45)}
+
+/* ---- footer -------------------------------------------------------------- */
+#foot{display:flex;gap:9px;flex:0 0 auto;align-items:stretch}
+/* min-width stops a cell shrinking into "N.../C..."; with #foot wrapping on
+   narrow screens they drop to a second row instead of becoming unreadable. */
+.cell{flex:1 1 130px;min-width:130px;padding:9px 12px}
+.cell .v{font-size:13px;font-weight:700;color:var(--tx);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis}
+button{
+  font:inherit;font-weight:800;letter-spacing:.18em;font-size:11px;cursor:pointer;
+  padding:0 20px;border-radius:10px;color:var(--tx);
+  border:1px solid var(--edge2);background:linear-gradient(180deg,#16202c,#0c131b)
+}
+button:focus{outline:2px solid var(--cy);outline-offset:2px}
+#tvsound.on{background:linear-gradient(135deg,var(--gn),#b6ff6a);color:#08210b;border-color:transparent;
+  box-shadow:0 0 22px rgba(107,255,0,.4)}
+#ctl{display:flex;gap:7px}
+#ctl button{padding:0 14px;font-size:13px}
+/* Narrow screens stack, and shed the cells that are least useful at a glance
+   rather than squeezing five of them into an unreadable row. */
+@media (max-width:900px){
+  #viz,#radarwrap,#radiowrap{flex-direction:column}
+  .freq{font-size:38px} .chnum{font-size:56px}
+  .stats span:nth-child(3){display:none}
+  /* The faceplate and the radar are the point of their views; the side column
+     is supporting detail, so it yields rather than squeezing both. */
+  .grille{display:none}
+  #scopewrap{min-height:180px}
+  .cell:nth-child(3),.cell:nth-child(5){display:none}
+}
+@media (max-width:640px){
+  .brand .sub,.stats span:nth-child(1) span,.cell:nth-child(4){display:none}
+  .freq{font-size:30px} .chnum{font-size:44px}
+  #foot{flex-wrap:wrap}
+}
 </style>
-</head>
 <body>
 <div id="boot"><div class="t">ORCSDR</div><div class="s" id="bootmsg">CONNECTING TO RECEIVER</div></div>
 <div id="stale" class="hide"><div class="t">DATA STALE</div><div class="s">RECONNECTING TO TAB5</div></div>
@@ -76,46 +249,127 @@ background:rgba(4,7,12,.88);z-index:5;transition:opacity .4s}
       <span id="lat">— ms</span>
       <span class="clk" id="clock">--:--:--</span>
     </div>
+    <div class="badge" id="modebadge">—</div>
   </div>
-  <div id="hero">
-    <div class="panel freqbox">
-      <div class="k">CENTER FREQUENCY</div>
-      <div><span class="freq" id="freq">—</span><span class="unit" id="unit">MHz</span></div>
-      <div class="meta" id="fmeta">—</div>
-    </div>
-    <div class="panel sigbox">
-      <div class="k">SIGNAL</div>
-      <div class="sigv" id="sigv">—</div>
-      <div class="meter"><i id="sigbar"></i></div>
-      <canvas id="hist" class="hist"></canvas>
-    </div>
+
+  <div id="stage">
+    <!-- default / FM -->
+    <section class="view" id="v-scope">
+      <div id="hero">
+        <div class="panel freqbox">
+          <div class="k">CENTER FREQUENCY</div>
+          <div><span class="freq" id="freq">—</span><span class="unit" id="unit">MHz</span></div>
+          <div class="meta" id="fmeta">—</div>
+        </div>
+        <div class="panel sigbox">
+          <div class="k">SIGNAL</div>
+          <div class="sigv" id="sigv">—</div>
+          <div class="meter"><i id="sigbar"></i></div>
+          <canvas id="hist" class="hist"></canvas>
+        </div>
+      </div>
+      <div id="viz">
+        <div class="panel scope" id="specwrap">
+          <canvas id="spec"></canvas>
+          <div class="reticle"><b>TUNED</b></div>
+          <div class="axis" id="specaxis"></div>
+        </div>
+        <div class="panel scope" id="fallwrap" style="flex:1.15">
+          <canvas id="fall"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <!-- ADS-B -->
+    <section class="view hide" id="v-radar">
+      <div id="radarwrap">
+        <div class="panel" id="scopewrap">
+          <canvas id="radar"></canvas>
+          <div class="rmeta">TRACKING <b id="rtracked">0</b> · <b id="rrate">0.0</b> MSG/S</div>
+          <div class="rrange" id="rrange">— NM</div>
+        </div>
+        <div class="panel" id="strips">
+          <div class="k">NEAREST TRAFFIC</div>
+          <div id="striplist"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CB / GMRS / marine / weather -->
+    <section class="view hide" id="v-radio">
+      <div id="radiowrap">
+        <div id="face">
+          <div class="fhead">
+            <div class="fbrand">ORCSDR</div>
+            <div class="fband" id="rbandname">—</div>
+          </div>
+          <div class="lcd">
+            <div class="chnum" id="chnum">--</div>
+            <div class="chside">
+              <div class="chlab" id="chlab">—</div>
+              <div class="chhz" id="chhz">—</div>
+            </div>
+          </div>
+          <div class="lamps">
+            <div class="lamp rx" id="l_rx">RX</div>
+            <div class="lamp sq" id="l_sq">BUSY</div>
+            <div class="lamp" id="l_snd">AUDIO</div>
+            <div class="lamp" id="l_scan">SCAN</div>
+          </div>
+          <!-- Decorative faceplate. Nothing below is wired to the receiver. -->
+          <div class="deck" aria-hidden="true">
+            <div class="knobs">
+              <div class="knob"><div class="dial" id="k_vol"></div><span>VOLUME</span></div>
+              <div class="knob"><div class="dial" id="k_sq"></div><span>SQUELCH</span></div>
+            </div>
+            <div class="pads">
+              <div class="pad" id="p_1">ANL</div><div class="pad" id="p_2">NB</div>
+              <div class="pad" id="p_3">RF GAIN</div><div class="pad" id="p_4">MIC</div>
+              <div class="pad" id="p_5">DW</div><div class="pad" id="p_6">MEM</div>
+              <div class="pad" id="p_7">PA</div><div class="pad" id="p_8">HI-CUT</div>
+            </div>
+          </div>
+        </div>
+        <div class="grille">
+          <div class="panel smeter">
+            <div class="k">SIGNAL STRENGTH</div>
+            <canvas id="arc" class="arc"></canvas>
+          </div>
+          <div class="panel" id="chanlist">
+            <div class="k">CHANNEL PLAN</div>
+            <div class="chgrid" id="chgrid"></div>
+          </div>
+        </div>
+      </div>
+    </section>
   </div>
-  <div id="viz">
-    <div class="panel scope" id="specwrap">
-      <canvas id="spec"></canvas>
-      <div class="reticle"><b>TUNED</b></div>
-      <div class="axis" id="specaxis"></div>
-    </div>
-    <div class="panel scope" id="fallwrap" style="flex:1.15">
-      <canvas id="fall"></canvas>
-    </div>
-  </div>
+
   <div id="foot">
     <div class="panel cell"><div class="k">NOW RECEIVING</div><div class="v" id="now">—</div></div>
     <div class="panel cell"><div class="k">AUDIO</div><div class="v" id="aud">—</div></div>
     <div class="panel cell"><div class="k">USB / SPS</div><div class="v" id="usb">—</div></div>
     <div class="panel cell"><div class="k">NETWORK</div><div class="v" id="net">—</div></div>
     <div class="panel cell"><div class="k">POWER</div><div class="v" id="pwr">—</div></div>
+    <div id="ctl" class="hide">
+      <button id="c_vd" title="Volume down">VOL −</button>
+      <button id="c_vu" title="Volume up">VOL +</button>
+      <button id="c_sd" title="Step down">◀</button>
+      <button id="c_su" title="Step up">▶</button>
+    </div>
     <button id="tvsound">TV SOUND</button>
   </div>
 </div>
 <audio id="radio" preload="auto" autoplay playsinline></audio>
 <script>
 var S={freq:0,sig:-90,left:-90,right:-90,span:960000,mode:'',recv:false,rtl:false,usb:false,wifi:false,
-sound:true,stereo:false,rdsC:false,rdsL:false,rec:false,vol:0,bw:0,sps:0,batt:-1,ip:'',clk:'',fresh:0,rtt:0};
-var D={freq:0,sig:-90,left:-90,right:-90}, bins=new Float32Array(64), peak=new Float32Array(64);
+sound:true,stereo:false,rdsC:false,rdsL:false,rec:false,vol:0,bw:0,sps:0,batt:-1,ip:'',clk:'',fresh:0,rtt:0,
+ctl:false,ch:{active:false,label:'',index:0,count:0},
+air:{active:false,messages:0,rate:0,range:25,tracked:0,located:false,targets:[]}};
+var D={freq:0,sig:-90,left:-90,right:-90};
+var bins=new Float32Array(64), peak=new Float32Array(64);
 var hist=[], lastArrow=0,lastAct=0,lastSound=0,lastQueue=0,audioOn=false,soundTimer=0,linked=false,fallBuf=null;
 var audioCtx=null,audioNext=0,audioFetching=false,audioGeneration=0;
+var view='scope', sweep=0, blips={};
 function $(id){return document.getElementById(id)}
 function lerp(a,b,t){return a+(b-a)*t}
 function modeName(m){
@@ -128,6 +382,9 @@ function modeName(m){
   if(m==='air'||m==='airband') return 'AIRBAND';
   if(m==='lora') return 'LORA';
   if(m==='cb') return 'CB';
+  if(m==='gmrs') return 'GMRS / FRS';
+  if(m==='marine') return 'MARINE VHF';
+  if(m==='pocsag') return 'POCSAG';
   return (m||'STANDBY').toUpperCase();
 }
 function mhz(hz){
@@ -203,23 +460,160 @@ function paintHist(){
   }
   g.stroke();
 }
-function applyUi(){
-  $('freq').textContent=mhz(D.freq);
-  $('unit').textContent=(D.freq||S.freq)>=1e6?'MHz':'kHz';
-  $('modepill').textContent=modeName(S.mode);
-  var bw=S.bw?Math.round(S.bw/1000)+' kHz':'BW —';
-  var flags=[];
-  if(S.mode.toLowerCase()==='fm'){
-    flags.push(S.stereo?'STEREO':'MONO');
-    if(S.rdsL) flags.push('RDS LOCK');
-    else if(S.rdsC) flags.push('RDS CARRIER');
+/* ---- radar ---------------------------------------------------------------
+   Bearing 0 is north and north is up, so screen x = sin(brg), y = -cos(brg).
+   Blips brighten as the sweep passes them, which is the whole visual point of
+   a radar and costs one cosine per target per frame. */
+function paintRadar(dt){
+  var c=$('radar'), host=$('scopewrap'); sizeCan(c,host);
+  var g=c.getContext('2d'), w=c.width, h=c.height;
+  var cx=w/2, cy=h/2, R=Math.min(w,h)/2-Math.min(w,h)*0.07;
+  g.fillStyle='#03070b'; g.fillRect(0,0,w,h);
+  var rings=4, rmax=S.air.range||25;
+  g.lineWidth=1;
+  for(var i=1;i<=rings;i++){
+    g.beginPath(); g.arc(cx,cy,R*i/rings,0,Math.PI*2);
+    g.strokeStyle=i===rings?'rgba(0,188,255,.34)':'rgba(0,188,255,.13)'; g.stroke();
   }
-  if(S.rec) flags.push('REC');
-  $('fmeta').innerHTML=modeName(S.mode)+'  ·  '+bw+(flags.length?'  ·  <b>'+flags.join(' · ')+'</b>':'');
-  var sig=D.sig;
-  $('sigv').textContent=(typeof sig==='number')?sig.toFixed(1)+' dBFS':'—';
-  $('sigv').className='sigv '+(sig>-25?'ok':sig>-45?'mid':'low');
-  $('sigbar').style.width=Math.max(0,Math.min(100,(sig+90)/70*100))+'%';
+  g.strokeStyle='rgba(0,188,255,.10)'; g.beginPath();
+  for(var a=0;a<12;a++){
+    var th=a*Math.PI/6;
+    g.moveTo(cx,cy); g.lineTo(cx+Math.sin(th)*R, cy-Math.cos(th)*R);
+  }
+  g.stroke();
+  var f=Math.max(10,Math.round(Math.min(w,h)*0.028));
+  g.font='700 '+f+'px sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+  g.fillStyle='rgba(93,114,136,.9)';
+  g.fillText('N',cx,cy-R-f*0.8); g.fillText('S',cx,cy+R+f*0.8);
+  g.fillText('E',cx+R+f*0.8,cy); g.fillText('W',cx-R-f*0.8,cy);
+  g.font='600 '+(f*0.72)+'px sans-serif'; g.fillStyle='rgba(93,114,136,.65)';
+  for(var i=1;i<=rings;i++) g.fillText(Math.round(rmax*i/rings)+'',cx+6+R*i/rings,cy-8);
+
+  sweep+=dt*0.00055*Math.PI*2;
+  if(sweep>Math.PI*2) sweep-=Math.PI*2;
+  var grd=g.createRadialGradient(cx,cy,0,cx,cy,R);
+  grd.addColorStop(0,'rgba(107,255,0,.20)'); grd.addColorStop(1,'rgba(107,255,0,0)');
+  g.beginPath(); g.moveTo(cx,cy);
+  g.arc(cx,cy,R,sweep-0.42,sweep); g.closePath(); g.fillStyle=grd; g.fill();
+  g.strokeStyle='rgba(107,255,0,.5)'; g.lineWidth=2; g.beginPath();
+  g.moveTo(cx,cy); g.lineTo(cx+Math.sin(sweep)*R, cy-Math.cos(sweep)*R); g.stroke();
+
+  var list=S.air.targets, shown=0;
+  for(var i=0;i<list.length;i++){
+    var t=list[i];
+    if(!t.pos) continue;
+    var rr=t.rng/rmax; if(rr>1.02) continue;
+    var br=t.brg*Math.PI/180;
+    var x=cx+Math.sin(br)*R*rr, y=cy-Math.cos(br)*R*rr;
+    var d=sweep-br; while(d<0) d+=Math.PI*2; while(d>Math.PI*2) d-=Math.PI*2;
+    var glow=Math.max(0,1-d/(Math.PI*2))*0.75+0.25;
+    var age=Math.max(0,1-(t.age||0)/45);
+    var al=glow*age;
+    g.fillStyle='rgba(107,255,0,'+al.toFixed(3)+')';
+    g.beginPath(); g.arc(x,y,Math.max(3,f*0.22),0,Math.PI*2); g.fill();
+    if(t.hdg){
+      var hd=t.hdg*Math.PI/180, L=f*1.1;
+      g.strokeStyle='rgba(107,255,0,'+(al*0.7).toFixed(3)+')'; g.lineWidth=1.5;
+      g.beginPath(); g.moveTo(x,y); g.lineTo(x+Math.sin(hd)*L, y-Math.cos(hd)*L); g.stroke();
+    }
+    g.font='700 '+(f*0.66)+'px sans-serif'; g.textAlign='left'; g.textBaseline='bottom';
+    g.fillStyle='rgba(232,242,251,'+(al*0.92).toFixed(3)+')';
+    g.fillText(t.id, x+f*0.4, y-f*0.24);
+    if(t.alt){
+      g.font='600 '+(f*0.56)+'px sans-serif'; g.textBaseline='top';
+      g.fillStyle='rgba(0,188,255,'+(al*0.8).toFixed(3)+')';
+      g.fillText(Math.round(t.alt/100)+'', x+f*0.4, y+f*0.1);
+    }
+    shown++;
+  }
+  g.fillStyle='rgba(0,188,255,.85)';
+  g.beginPath(); g.arc(cx,cy,3,0,Math.PI*2); g.fill();
+  if(!S.air.located){
+    g.font='700 '+(f*0.8)+'px sans-serif'; g.textAlign='center'; g.textBaseline='middle';
+    g.fillStyle='rgba(255,176,46,.9)';
+    g.fillText('SET RECEIVER LOCATION FOR RADAR', cx, cy+R*0.55);
+  }
+}
+function paintArc(){
+  var c=$('arc'); sizeCan(c,c.parentNode);
+  var g=c.getContext('2d'), w=c.width, h=c.height;
+  g.clearRect(0,0,w,h);
+  var cx=w/2, cy=h*0.94, R=Math.min(w*0.45,h*0.86);
+  g.lineWidth=Math.max(6,h*0.085); g.lineCap='round';
+  g.strokeStyle='#0d1622';
+  g.beginPath(); g.arc(cx,cy,R,Math.PI,Math.PI*2); g.stroke();
+  var v=Math.max(0,Math.min(1,(D.sig+90)/70));
+  var grd=g.createLinearGradient(cx-R,0,cx+R,0);
+  grd.addColorStop(0,'#0a5c7a'); grd.addColorStop(.55,'#00bcff'); grd.addColorStop(1,'#6bff00');
+  g.strokeStyle=grd;
+  g.beginPath(); g.arc(cx,cy,R,Math.PI,Math.PI*(1+v)); g.stroke();
+  var th=Math.PI*(1+v);
+  g.strokeStyle='#e8f2fb'; g.lineWidth=Math.max(2,h*0.028);
+  g.beginPath(); g.moveTo(cx+Math.cos(th)*(R*0.62), cy+Math.sin(th)*(R*0.62));
+  g.lineTo(cx+Math.cos(th)*(R*1.06), cy+Math.sin(th)*(R*1.06)); g.stroke();
+  g.font='700 '+Math.max(11,h*0.17)+'px sans-serif'; g.textAlign='center'; g.textBaseline='alphabetic';
+  g.fillStyle='#e8f2fb';
+  g.fillText(D.sig.toFixed(1)+' dBFS', cx, cy-R*0.16);
+}
+/* ---- views --------------------------------------------------------------- */
+function pickView(){
+  var m=(S.mode||'').toLowerCase();
+  if(S.air.active||m==='adsb') return 'radar';
+  if(S.ch.active) return 'radio';
+  return 'scope';
+}
+function setView(v){
+  if(v===view) return;
+  view=v;
+  $('v-scope').className='view'+(v==='scope'?'':' hide');
+  $('v-radar').className='view'+(v==='radar'?'':' hide');
+  $('v-radio').className='view'+(v==='radio'?'':' hide');
+  fallBuf=null;
+}
+function renderStrips(){
+  var host=$('striplist'), list=S.air.targets, out='';
+  if(!list.length){ host.innerHTML='<div class="empty">NO TRAFFIC DECODED</div>'; return; }
+  for(var i=0;i<list.length&&i<9;i++){
+    var t=list[i];
+    var sm=t.pos?(Math.round(t.brg)+'° · '+(t.spd?t.spd+' kt':'—')):'NO POSITION';
+    var rg=t.pos?t.rng.toFixed(1)+' NM':'—';
+    var al=t.alt?(Math.round(t.alt/100)*100).toLocaleString():'—';
+    out+='<div class="strip'+(t.pos?'':' nopos')+'"><div><div class="cs">'+t.id+
+         '</div><div class="sm">'+sm+'</div></div><div class="rg">'+rg+
+         '</div><div class="al">'+al+'</div></div>';
+  }
+  host.innerHTML=out;
+}
+function renderRadio(){
+  var num=S.ch.label||String(S.ch.index||'--');
+  $('chnum').textContent=num;
+  $('chlab').textContent=modeName(S.mode);
+  $('chhz').textContent=mhz(S.freq)+' '+((S.freq>=1e6)?'MHz':'kHz');
+  $('rbandname').textContent=(S.ch.count?('CHANNEL '+S.ch.index+' OF '+S.ch.count):'CHANNELISED');
+  var busy=S.sig>-45;
+  $('l_rx').className='lamp rx'+(S.recv?' on':'');
+  $('l_sq').className='lamp sq'+(busy?' on':'');
+  $('l_snd').className='lamp'+(S.sound?' on':'');
+  $('l_scan').className='lamp';
+  var v=Math.max(0,Math.min(1,S.vol/100));
+  $('k_vol').style.transform='rotate('+(-135+v*270).toFixed(1)+'deg)';
+  $('k_sq').style.transform='rotate('+(-135+Math.max(0,Math.min(1,(S.sig+90)/70))*270).toFixed(1)+'deg)';
+  for(var i=1;i<=8;i++){
+    var lit=(i===1&&busy)||(i===5&&S.rec)||(i===3&&S.stereo);
+    $('p_'+i).className='pad'+(lit?' lit':'');
+  }
+  var n=S.ch.count||0, out='';
+  if(n&&n<=64){
+    for(var i=1;i<=n;i++) out+='<div class="chip'+(i===S.ch.index?' on':'')+'">'+i+'</div>';
+  }
+  if($('chgrid').getAttribute('data-n')!==String(n)+':'+S.ch.index){
+    $('chgrid').setAttribute('data-n',String(n)+':'+S.ch.index);
+    $('chgrid').innerHTML=out||'<div class="empty">—</div>';
+  }
+}
+function applyUi(){
+  setView(pickView());
+  $('modepill').textContent=modeName(S.mode);
   var live=S.recv&&S.rtl&&(Date.now()-S.fresh<2500);
   $('d_tab5').className='dot '+(S.wifi?'ok':'bad');
   $('tab5s').textContent=S.wifi?(S.ip||'LIVE'):'OFFLINE';
@@ -227,16 +621,46 @@ function applyUi(){
   $('sdrs').textContent=S.rtl?(S.recv?'STREAMING':'READY'):'OFFLINE';
   $('lat').textContent=S.rtt?S.rtt+' ms':'— ms';
   $('clock').textContent=S.clk||'--:--:--';
-  $('now').textContent=live?(modeName(S.mode)+'  '+mhz(D.freq)+' '+$('unit').textContent):'STANDBY';
-  var aud=S.sound?(S.vol+'/100'):'MUTE';
+  var badge=$('modebadge');
+  badge.textContent=S.ctl?'CONTROL ENABLED':'VIEW · LISTEN ONLY';
+  badge.className='badge '+(S.ctl?'b-rw':'b-ro');
+  $('ctl').className=S.ctl?'':'hide';
+
+  if(view==='scope'){
+    $('freq').textContent=mhz(D.freq);
+    $('unit').textContent=(D.freq||S.freq)>=1e6?'MHz':'kHz';
+    var bw=S.bw?Math.round(S.bw/1000)+' kHz':'BW —';
+    var flags=[];
+    if(S.mode.toLowerCase()==='fm'){
+      flags.push(S.stereo?'STEREO':'MONO');
+      if(S.rdsL) flags.push('RDS LOCK');
+      else if(S.rdsC) flags.push('RDS CARRIER');
+    }
+    if(S.rec) flags.push('REC');
+    $('fmeta').innerHTML=modeName(S.mode)+'  ·  '+bw+(flags.length?'  ·  <b>'+flags.join(' · ')+'</b>':'');
+    var sig=D.sig;
+    $('sigv').textContent=(typeof sig==='number')?sig.toFixed(1)+' dBFS':'—';
+    $('sigv').className='sigv '+(sig>-25?'ok':sig>-45?'mid':'low');
+    $('sigbar').style.width=Math.max(0,Math.min(100,(sig+90)/70*100))+'%';
+    var ax='';
+    for(var i=0;i<5;i++) ax+='<span>'+axisHz(i/4)+'</span>';
+    $('specaxis').innerHTML=ax;
+  }else if(view==='radar'){
+    $('rtracked').textContent=S.air.tracked;
+    $('rrate').textContent=S.air.rate.toFixed(1);
+    $('rrange').textContent=S.air.range+' NM RANGE';
+    renderStrips();
+  }else{
+    renderRadio();
+  }
+
+  $('now').textContent=live?(modeName(S.mode)+'  '+mhz(D.freq)+' '+((D.freq||S.freq)>=1e6?'MHz':'kHz')):'STANDBY';
+  var aud=S.sound?(S.vol+'%'):'MUTE';
   if(S.mode.toLowerCase()==='fm' && S.left>-80) aud+='  L '+S.left.toFixed(0)+'  R '+S.right.toFixed(0);
   $('aud').textContent=aud;
   $('usb').textContent=(S.usb?'V4 LINK':'NO USB')+'  '+(S.sps?(S.sps/1e6).toFixed(3)+' MSPS':'—');
   $('net').textContent=(S.ip||'NO LAN')+(S.rtt?'  '+S.rtt+' ms':'');
   $('pwr').textContent=S.batt>=0?(S.batt+'%  BATT'):'—';
-  var ax='';
-  for(var i=0;i<5;i++) ax+='<span>'+axisHz(i/4)+'</span>';
-  $('specaxis').innerHTML=ax;
   var stale=linked && Date.now()-S.fresh>3500;
   $('stale').className=stale?'':'hide';
   if(S.wifi&&S.rtl){ linked=true; $('boot').className='gone'; $('bootmsg').textContent='TELEMETRY LINK ESTABLISHED'; }
@@ -256,8 +680,20 @@ function tick(){
           S.span=j.span_hz||960000; S.mode=j.mode||''; S.recv=!!j.receiving; S.rtl=!!j.rtl_ready;
           S.usb=!!j.usb_connected; S.wifi=!!j.wifi_connected; S.sound=!!j.sound_enabled;
           S.stereo=!!j.stereo; S.rdsC=!!j.rds_carrier; S.rdsL=!!j.rds_locked; S.rec=!!j.recording;
-          S.vol=j.volume||0; S.bw=j.filter_bandwidth_hz||0; S.sps=j.effective_sps||0;
+          S.vol=(typeof j.volume_percent==='number')?j.volume_percent:0;
+          S.bw=j.filter_bandwidth_hz||0; S.sps=j.effective_sps||0;
           S.batt=j.battery_percent; S.ip=j.wifi_ip||''; S.clk=j.clock||''; S.fresh=Date.now();
+          if(j.web){ S.ctl=!!j.web.control; }
+          if(j.channel){
+            S.ch.active=!!j.channel.active; S.ch.label=j.channel.label||'';
+            S.ch.index=j.channel.index||0; S.ch.count=j.channel.count||0;
+          }
+          if(j.adsb){
+            S.air.active=!!j.adsb.active; S.air.messages=j.adsb.messages||0;
+            S.air.rate=j.adsb.rate||0; S.air.range=j.adsb.range_nm||25;
+            S.air.tracked=j.adsb.tracked||0; S.air.located=!!j.adsb.located;
+            S.air.targets=j.adsb.targets||[];
+          }
           hist.push(S.sig); if(hist.length>120) hist.shift();
           if(j.spectrum && j.spectrum.length){
             for(var i=0;i<64;i++){
@@ -272,17 +708,31 @@ function tick(){
   };
   x.open('GET','/api/status',true); x.send();
 }
-var lastFall=0,lastUi=0;
-function frame(){
+var lastFall=0,lastUi=0,lastFrame=0;
+function frame(ts){
+  var now=Date.now(), dt=lastFrame?Math.min(80,now-lastFrame):16; lastFrame=now;
   D.freq=D.freq?lerp(D.freq,S.freq,.18):S.freq;
   D.sig=lerp(D.sig,S.sig,.16);
   D.left=lerp(D.left,S.left,.16);
   D.right=lerp(D.right,S.right,.16);
-  paintSpec();
-  var now=Date.now();
-  if(now-lastFall>90){ lastFall=now; paintFall(); }
-  if(now-lastUi>100){ lastUi=now; applyUi(); paintHist(); }
+  if(view==='scope'){
+    paintSpec();
+    if(now-lastFall>90){ lastFall=now; paintFall(); }
+  }else if(view==='radar'){
+    paintRadar(dt);
+  }else{
+    paintArc();
+  }
+  if(now-lastUi>100){ lastUi=now; applyUi(); if(view==='scope') paintHist(); }
   requestAnimationFrame(frame);
+}
+function act(cmd){
+  if(!S.ctl) return;
+  var now=Date.now();
+  if(now-lastAct<320) return;
+  lastAct=now;
+  var x=new XMLHttpRequest();
+  x.open('POST','/api/action',true); x.send(cmd);
 }
 function setSoundUi(on){
   var b=$('tvsound');
@@ -354,6 +804,10 @@ $('tvsound').addEventListener('click',function(e){
   if(fromArrow()){ e.preventDefault(); return; }
   toggleTvSound();
 });
+$('c_vd').addEventListener('click',function(){act('volume_down');});
+$('c_vu').addEventListener('click',function(){act('volume_up');});
+$('c_sd').addEventListener('click',function(){act('step_down');});
+$('c_su').addEventListener('click',function(){act('step_up');});
 document.addEventListener('keydown',function(e){
   var code=e.keyCode||e.which;
   if(code===37||code===38||code===39||code===40||code===19||code===20||code===21||code===22||
@@ -371,5 +825,3 @@ try{ if(localStorage.getItem('orcsdr_tv_sound')==='1') setTimeout(startTvSound,1
 setTimeout(function(){ if(!linked) $('bootmsg').textContent='SEARCHING FOR TAB5'; },2500);
 tick(); setInterval(tick,1000); requestAnimationFrame(frame);
 </script>
-</body>
-</html>

@@ -267,16 +267,23 @@ whose later copies were stepped on.
 ## LAN web console
 
 Off by default. Enable from Settings → Companion or the serial commands
-below. The page returns no passwords or coordinates. It does provide basic
-receiver controls through `POST /api/action` and 16 kHz mono audio through
-`GET /api/audio.wav`. Those endpoints have no TLS or browser login, so enable
-the console only on a trusted LAN. Muting the Tab5 speaker does not mute the
-browser stream.
+below. The page returns no passwords and no coordinates -- aircraft are sent
+as range and bearing so the receiver's own position never leaves the device.
+
+**Serving the page and accepting commands are two separate permissions.**
+`POST /api/action` is refused with `403 control disabled` unless control is
+explicitly enabled, and it is refused at the server rather than hidden in the
+page -- a browser that never loaded our HTML can still POST. With control on
+there is no TLS and no browser login, so enable it only on a trusted LAN.
+
+`GET /api/audio.wav` serves 16 kHz mono audio. Muting the Tab5 speaker does
+not mute the browser stream.
 
 | Command | Auth | Reply |
 |---|---|---|
-| `RTL_WEB` / `RTL_WEB_STATUS` | no | `RTL_WEB_STATUS enabled=0\|1 listening=0\|1 url=http://…/\|offline` |
+| `RTL_WEB` / `RTL_WEB_STATUS` | no | `RTL_WEB_STATUS enabled=0\|1 control=0\|1 listening=0\|1 url=http://…/\|offline` |
 | `RTL_WEB ON\|OFF` | yes | `RTL_WEB_OK enabled=… listening=… url=…` |
+| `RTL_WEB CONTROL ON\|OFF` | yes | `RTL_WEB_CONTROL_OK control=0\|1` — whether visitors may retune and change volume. Persisted, off by default. |
 
 After flashing, the authenticated hardware check below verifies that the web
 stream still contains live samples while the local speaker is muted. It
