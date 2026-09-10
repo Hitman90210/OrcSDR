@@ -17,8 +17,7 @@ param(
   [int]$Seed = 0,
   [string]$LogPath,
   [switch]$SelfCheck,
-  [Alias('Driver079')]
-  [switch]$Driver080Rc1,
+  [switch]$Driver080Rc2,
   [switch]$ResetDevice,
   [switch]$WifiOnly,
   [switch]$WifiCoexistence,
@@ -768,8 +767,8 @@ function Invoke-SelfCheck {
 }
 
 if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
-if (@($Run, $Soak, $Driver080Rc1, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast).Where({ $_ }).Count -gt 1) {
-  throw 'Choose only one of -Run, -Soak, -Driver080Rc1, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, or -AmBroadcast.'
+if (@($Run, $Soak, $Driver080Rc2, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast).Where({ $_ }).Count -gt 1) {
+  throw 'Choose only one of -Run, -Soak, -Driver080Rc2, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, or -AmBroadcast.'
 }
 
 function Get-C6UpdateStatus {
@@ -993,11 +992,11 @@ function Invoke-AmBroadcastTest {
   }
 }
 
-function Invoke-Driver080Rc1Test {
+function Invoke-Driver080Rc2Test {
   Wait-DeviceReady
   Connect-Authenticated
   $selfCheck = Send-And-Wait 'RTL_DRIVER SELF_CHECK' '^RTL_DRIVER_SELF_CHECK '
-  if ($selfCheck -notmatch 'pass=1 version=0\.8\.0-rc1 profile=1 ') { throw "Driver self-check failed: $selfCheck" }
+  if ($selfCheck -notmatch 'pass=1 version=0\.8\.0-rc2 profile=1 ') { throw "Driver self-check failed: $selfCheck" }
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     $initial = Get-DriverStatus
@@ -1011,7 +1010,7 @@ function Invoke-Driver080Rc1Test {
       $initial.GainAutoCap -ne 1 -or $initial.RtlAgcCap -ne 1 -or
       $initial.GainCap -ne 1 -or $initial.BiasCap -ne 1 -or
       $initial.ShadowOk -ne 1 -or $initial.MetricsOk -ne 1) {
-    throw 'Required Blog V4 v0.8.0-rc1 profile, capability, or status getter is unavailable.'
+    throw 'Required Blog V4 v0.8.0-rc2 profile, capability, or status getter is unavailable.'
   }
 
   $last = $initial
@@ -1028,7 +1027,7 @@ function Invoke-Driver080Rc1Test {
     if ($next.Overruns -gt $initial.Overruns + 16 -or $next.Drops -gt $initial.Drops + 16) {
       throw "Drop counters grew excessively after $Command"
     }
-    Write-SoakLine "RTL_DRIVER_080_RC1_STEP command=$($Command.Replace(' ', '_')) pass=1 bytes=$($next.Bytes) effective_sps=$($next.EffectiveSps) overruns=$($next.Overruns) drops=$($next.Drops)"
+    Write-SoakLine "RTL_DRIVER_080_RC2_STEP command=$($Command.Replace(' ', '_')) pass=1 bytes=$($next.Bytes) effective_sps=$($next.EffectiveSps) overruns=$($next.Overruns) drops=$($next.Drops)"
     $script:last = $next
   }
 
@@ -1043,7 +1042,7 @@ function Invoke-Driver080Rc1Test {
       $target = 1 - $initial.Bias
       Test-Transition "RTL_DRIVER BIAS $(if ($target) { 'ON' } else { 'OFF' })" 'AUTO' 297 0
     }
-    Write-SoakLine "RTL_DRIVER_080_RC1_RESULT pass=1 version=$($initial.Version) profile=$($initial.ProfileName) bias_tested=$([int][bool]$TestBiasTee) evidence=request_acceptance+shadow+iq_continuity"
+    Write-SoakLine "RTL_DRIVER_080_RC2_RESULT pass=1 version=$($initial.Version) profile=$($initial.ProfileName) bias_tested=$([int][bool]$TestBiasTee) evidence=request_acceptance+shadow+iq_continuity"
   } finally {
     try {
       [void](Send-And-Wait "RTL_DRIVER GAIN $($initial.Gain)" '^RTL_DRIVER_RESULT ')
@@ -1132,7 +1131,7 @@ try {
 
   if ($ResetDevice) { Reset-DeviceBaseline }
 
-  if ($Driver080Rc1) { Invoke-Driver080Rc1Test; exit 0 }
+  if ($Driver080Rc2) { Invoke-Driver080Rc2Test; exit 0 }
   if ($WifiOnly) {
     Wait-DeviceReady 60 11000
     $initialUi = Get-UiState

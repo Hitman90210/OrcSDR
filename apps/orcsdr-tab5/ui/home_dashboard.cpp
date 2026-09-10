@@ -345,7 +345,7 @@ void footer_text(const char* value, int x, uint16_t color) {
 
 void draw_footer_receiver() {
   M5.Display.fillRect(30, 660, 136, 36, kPanel);
-  footer_text("RTL-SDR v4", 98, current.driver_ready ? kGreen : TFT_ORANGE);
+  footer_text(current.receiver, 98, current.driver_ready ? kGreen : TFT_ORANGE);
 }
 
 void draw_footer_sample() {
@@ -525,7 +525,8 @@ void update(const Snapshot& snapshot) {
   const bool tuner_changed = snapshot.tuner_revision != current.tuner_revision;
   const bool audio_changed = snapshot.audio_revision != current.audio_revision;
   const bool status_changed = snapshot.status_revision != current.status_revision;
-  const bool receiver_changed = snapshot.driver_ready != current.driver_ready;
+  const bool receiver_changed = snapshot.driver_ready != current.driver_ready ||
+                                strcmp(snapshot.receiver, current.receiver) != 0;
   const bool sample_changed = snapshot.effective_sps / 1000u != current.effective_sps / 1000u;
   const bool bandwidth_changed =
       snapshot.filter_bandwidth_hz != current.filter_bandwidth_hz;

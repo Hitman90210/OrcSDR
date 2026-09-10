@@ -86,7 +86,7 @@
 #include "esp_rtl_sdr.h"
 
 #if ESP_RTL_SDR_VERSION_NUMBER < 800
-#error "OrcSDR requires esp_rtl_sdr v0.8.0-rc1 or newer"
+#error "OrcSDR requires esp_rtl_sdr v0.8.0-rc2 or newer"
 #endif
 
 enum class SerialVerbosity : uint8_t { quiet = 0, normal = 1, debug = 2, trace = 3 };
@@ -2177,12 +2177,12 @@ void redraw_spectrum_panel();
 void draw_sdr_controls(RtlBand band, bool running);
 void handle_sdr_touch(int32_t x, int32_t y);
 void poll_sdr_touch(bool from_stream);
-void request_hot_retune(uint32_t frequency_hz);
+bool request_hot_retune(uint32_t frequency_hz);
 bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz);
 void set_radio_session_state(orcsdr::radio::ReceiverState state);
 uint32_t rtl_fm_command_lo_hz(uint32_t display_hz);
 uint32_t rtl_fm_sanitize_display_hz(uint32_t frequency_hz);
-void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
+bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
                             bool persist_navigation = true);
 void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume);
 void refresh_active_screen();
@@ -2364,6 +2364,15 @@ bool rtl_profile_is_provisional(esp_rtl_sdr_profile_t profile) {
          profile == ESP_RTL_SDR_PROFILE_NOOELEC_SMART_V5;
 }
 
+const char* rtl_receiver_label(esp_rtl_sdr_profile_t profile) {
+  switch (profile) {
+    case ESP_RTL_SDR_PROFILE_BLOG_V4: return "RTL V4";
+    case ESP_RTL_SDR_PROFILE_BLOG_V3: return "RTL V3 EXP";
+    case ESP_RTL_SDR_PROFILE_NOOELEC_SMART_V5: return "NOO V5 EXP";
+    default: return "RTL-SDR";
+  }
+}
+
 void set_rtl_profile_status(const char* state) {
   const auto profile = g_rtl_profile.load(std::memory_order_acquire);
   snprintf(rtl_sdr_status, sizeof(rtl_sdr_status), "RTL-SDR %s%s: %s",
@@ -2376,6 +2385,12 @@ void report_unsupported_frequency(uint32_t frequency_hz) {
   Serial.printf("RTL_TUNE_UNAVAILABLE profile=%u frequency_hz=%u reason=no_hf_upconverter\n",
                 static_cast<unsigned>(g_rtl_profile.load(std::memory_order_acquire)),
                 static_cast<unsigned>(frequency_hz));
+}
+
+bool validate_rtl_tune_frequency(uint32_t frequency_hz) {
+  if (rtl_frequency_supported(frequency_hz)) return true;
+  report_unsupported_frequency(frequency_hz);
+  return false;
 }
 #endif
 
@@ -10187,6 +10202,14 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
                                                        : 12500;
   strlcpy(snapshot.mode, demo ? "FM" : rtl_band_name(rtl_ui_band),
           sizeof(snapshot.mode));
+#if !RTL_USE_LEGACY_USB
+  strlcpy(snapshot.receiver,
+          demo ? "RTL V4"
+               : rtl_receiver_label(g_rtl_profile.load(std::memory_order_acquire)),
+          sizeof(snapshot.receiver));
+#else
+  strlcpy(snapshot.receiver, "RTL-SDR", sizeof(snapshot.receiver));
+#endif
   snapshot.battery_percent = demo ? 76 : device.battery_percent;
   snapshot.vbus_mv = demo ? 5000 : device.vbus_mv;
   snapshot.volume = demo ? 128 : rtl_live_volume.load(std::memory_order_acquire);
@@ -10231,6 +10254,7 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
       snapshot.vbus_mv != previous.vbus_mv ||
       snapshot.wifi_connected != previous.wifi_connected ||
       strcmp(snapshot.wifi_ip, previous.wifi_ip) != 0 ||
+      strcmp(snapshot.receiver, previous.receiver) != 0 ||
       snapshot.driver_ready != previous.driver_ready ||
       snapshot.receiving != previous.receiving ||
       snapshot.effective_sps != previous.effective_sps ||
@@ -11168,8 +11192,23 @@ bool point_in_button(int32_t x, int32_t y) {
          y >= kButtonY && y < kButtonY + kButtonHeight;
 }
 
-void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
+bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
                             bool persist_navigation) {
+#if RTL_USE_LEGACY_USB
+  if (rtl_sdr_device == nullptr) return false;
+#else
+  if (!g_rtl_device_ready.load(std::memory_order_acquire) || g_rtl == nullptr) return false;
+#endif
+  if (band == RtlBand::adsb) frequency_hz = kAdsbDefaultHz;
+  if (band == RtlBand::lora) {
+    load_lora_config();
+    if (orcsdr::lora_channel::selection().persisted) apply_lora_channel_selection();
+    if (frequency_hz == kLoraDefaultHz) frequency_hz = lora_config_frequency_hz;
+  }
+  frequency_hz = rtl_clamp_frequency(band, frequency_hz);
+#if !RTL_USE_LEGACY_USB
+  if (!validate_rtl_tune_frequency(frequency_hz)) return false;
+#endif
   if (orcsdr::am_finder::active()) {
     orcsdr::am_finder::cancel();
     rtl_rate_override_sps.store(0, std::memory_order_release);
@@ -11182,35 +11221,19 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   }
   if (!rtl_band_has_audio(band)) sync_rtl_audio_for_band(band);
   if (band == RtlBand::adsb) {
-    frequency_hz = kAdsbDefaultHz;
     if (!orcsdr::screens::owns(orcsdr::screens::Id::adsb))
       draw_sdr_screen(band, frequency_hz, rtl_live_volume.load(std::memory_order_acquire));
     else if (!orcsdr::adsb::active())
       orcsdr::adsb::enter(adsb_settings);
     Serial.println("RTL_ADSB_CAPTURE live_rf=true ui_data=live");
   }
-#if RTL_USE_LEGACY_USB
-  if (rtl_sdr_device == nullptr) return;
-#else
-  if (!g_rtl_device_ready.load(std::memory_order_acquire) || g_rtl == nullptr) return;
-#endif
   if (band == RtlBand::lora) {
-    load_lora_config();
-    if (orcsdr::lora_channel::selection().persisted) apply_lora_channel_selection();
     if (!lora_native_decoder_start())
       Serial.println("RTL_LORA_WARN native_decoder_unavailable dashboard=PHY_PENDING");
     lora_iq_reset_detector();
-    if (frequency_hz == kLoraDefaultHz) frequency_hz = lora_config_frequency_hz;
     rtl_filter_bandwidth_hz.store(lora_bandwidth_hz.load(std::memory_order_relaxed),
                                   std::memory_order_relaxed);
   }
-  frequency_hz = rtl_clamp_frequency(band, frequency_hz);
-#if !RTL_USE_LEGACY_USB
-  if (!rtl_frequency_supported(frequency_hz)) {
-    report_unsupported_frequency(frequency_hz);
-    return;
-  }
-#endif
   if (band == RtlBand::p25) {
     p25_control_frequency_hz = frequency_hz;
     p25_follow_state.store(P25FollowState::control, std::memory_order_release);
@@ -11296,6 +11319,7 @@ void queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
                    : band == RtlBand::adsb   ? "sdr_adsb"
                    : band == RtlBand::p25    ? "sdr_p25"
                                              : "sdr_fm");
+  return true;
 }
 
 void adjust_rtl_volume(int delta) {
@@ -11408,10 +11432,7 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   frequency_hz = rtl_clamp_frequency(rtl_ui_band, frequency_hz);
   if (frequency_hz == 0) return false;
 #if !RTL_USE_LEGACY_USB
-  if (!rtl_frequency_supported(frequency_hz)) {
-    report_unsupported_frequency(frequency_hz);
-    return false;
-  }
+  if (!validate_rtl_tune_frequency(frequency_hz)) return false;
 #endif
   const uint32_t ui_quant_hz = rtl_ui_band == RtlBand::am ? 100u : 1000u;
   uint32_t ui_hz = rtl_ui_band == RtlBand::p25
@@ -11451,9 +11472,9 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   return true;
 }
 
-void request_hot_retune(uint32_t frequency_hz) {
+bool request_hot_retune(uint32_t frequency_hz) {
   const auto session = radio_session.snapshot();
-  (void)request_hot_retune_for({session.owner, session.generation}, frequency_hz);
+  return request_hot_retune_for({session.owner, session.generation}, frequency_hz);
 }
 
 // Capture used to own M5.update() during radio UI because a second update
@@ -14205,11 +14226,11 @@ void process_command(char* command) {
       Serial.println("RTL_TUNE_INVALID unknown band (FM|AM|WX|CB|LORA|BROWSE|ADSB|P25)");
       return;
     }
-    if (band != RtlBand::adsb && !rtl_device_ready()) {
+    if (!rtl_device_ready()) {
       Serial.println("RTL_TUNE_UNAVAILABLE device not ready");
       return;
     }
-    queue_local_rtl_listen(band, static_cast<uint32_t>(freq_hz));
+    if (!queue_local_rtl_listen(band, static_cast<uint32_t>(freq_hz))) return;
     Serial.printf("RTL_TUNE_OK band=%s frequency_hz=%lu\n", rtl_band_name(band), freq_hz);
     return;
   }
@@ -14225,7 +14246,11 @@ void process_command(char* command) {
       Serial.println("RTL_FREQ_INVALID usage: RTL_FREQ <HZ>");
       return;
     }
-    request_hot_retune(static_cast<uint32_t>(freq_hz));
+    if (!request_hot_retune(static_cast<uint32_t>(freq_hz))) {
+      Serial.printf("RTL_FREQ_REJECTED band=%s frequency_hz=%lu\n",
+                    rtl_band_name(rtl_ui_band), freq_hz);
+      return;
+    }
     Serial.printf("RTL_FREQ_OK band=%s frequency_hz=%lu\n", rtl_band_name(rtl_ui_band), freq_hz);
     return;
   }
