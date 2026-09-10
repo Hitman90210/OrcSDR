@@ -1120,6 +1120,29 @@ accumulate, no early exit), and no secrets on the serial console.
 
 ---
 
+9. **Meshtastic 2.8 long interleaving is the largest functional gap.**
+   Headers with coding-rate 5-7 are detected and counted as `li_headers`
+   rather than misreported as RF failures, but the payloads need a
+   long-interleaver this fork does not have. LR11x0 and SX128x radios on 2.8
+   use it, so whether a neighbour decodes is decided by their firmware
+   version, not by signal. The DSP vector (5.7c) is the harness to build it
+   against; scope the interleaver before promising a timeline, because it is
+   thinly documented publicly.
+
+10. **The LoRa trigger margin drop is unmeasured.** `748dc1f` lowered
+    `kLoraTriggerMarginDb` from 9 dB to 4 dB, correctly -- the measured clean
+    LongFast signal sat only 5-6 dB above its floor and never reached the old
+    gate. But the false-trigger rate at 4 dB has not been measured, and every
+    false trigger costs 2-3 s of blind decode. 3c cut them from 24 to 3-6 per
+    180 s by adding the concentration gate; a 180 s run says whether 4 dB gave
+    that back.
+
+11. **The dashboard `Id` numbering has permanently diverged from upstream.**
+    This fork shipped `gmrs = 16` before upstream added `am`, and those values
+    are in NVS on real devices, so `am` is 17 here and 16 there. Two
+    `static_assert`s in `dashboard_registry.hpp` fail the build if a future
+    merge quietly adopts upstream's order. Do not "fix" them to match.
+
 ## 9. Map of the interesting files
 
 | File | What lives there |
