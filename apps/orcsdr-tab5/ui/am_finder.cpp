@@ -75,7 +75,7 @@ bool start(uint32_t spacing_hz) {
   if ((spacing_hz != 9000 && spacing_hz != 10000) || !rf_analysis::initialize())
     return false;
   g_latest = {};
-  (void)rf_analysis::copy_snapshot(&g_latest);
+  if (!rf_analysis::copy_snapshot(&g_latest)) return false;
   rf_analysis::Config config{};
   config.center_hz = kCenterHz;
   config.span_hz = kSampleRateSps;

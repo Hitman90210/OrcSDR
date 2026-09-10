@@ -846,6 +846,7 @@ function Invoke-AmBroadcastTest {
   $initial = $null
   $initialSignal = $null
   $initialDriver = $null
+  $initialAmGainAuto = $null
   $initialVerbosity = $null
   try {
     $verbosity = Send-And-Wait 'RTL_SERIAL VERBOSITY' '^RTL_SERIAL_VERBOSITY mode=(QUIET|NORMAL|DEBUG|TRACE)$'
@@ -866,6 +867,7 @@ function Invoke-AmBroadcastTest {
     }
     $driver = Get-DriverStatus
     $initialDriver = $driver
+    $initialAmGainAuto = (Send-And-Wait 'RTL_AM_GAIN STATUS' '^RTL_AM_GAIN_STATUS mode=(AUTO|MANUAL) ').Contains('mode=AUTO')
     if ($driver.State -ne 'STREAMING') {
       throw "AM test requires active IQ streaming; state=$($driver.State)"
     }
@@ -967,8 +969,8 @@ function Invoke-AmBroadcastTest {
         [void](Open-Ui 'AM' 'AM')
         [void](Set-AmFilter $initialSignal.FilterHz)
       }
-      if ($null -ne $initialDriver) {
-        if ($initialDriver.Mode -eq 'AUTO') {
+      if ($null -ne $initialDriver -and $null -ne $initialAmGainAuto) {
+        if ($initialAmGainAuto) {
           [void](Send-And-Wait 'RTL_UI ACTION AM GAIN_AUTO' '^RTL_UI_ACTION_OK$')
         } else {
           [void](Send-And-Wait "RTL_UI ACTION AM GAIN $($initialDriver.Gain)" '^RTL_UI_ACTION_OK$')
