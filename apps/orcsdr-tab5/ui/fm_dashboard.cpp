@@ -550,7 +550,6 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
   M5.Display.scroll(0, -1);
   M5.Display.pushImage(kSpectrumX, kWaterfallY + kWaterfallH - 2,
                        kSpectrumW, 1, g_waterfall_row);
-  M5.Display.drawFastVLine(center, kWaterfallY, kWaterfallH, kCyan);
   M5.Display.endWrite();
 }
 
