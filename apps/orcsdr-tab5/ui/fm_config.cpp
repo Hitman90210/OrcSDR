@@ -86,7 +86,9 @@ LoadResult load(orcsdr::storage::FileSystem& fs, const char* path, Config* confi
   File file = fs.open(path, FILE_READ);
   if (!file) { set_error(error, error_size, "cannot open config"); return LoadResult::io_error; }
   char text[1024]{};
-  const size_t bytes = file.readBytes(text, sizeof(text) - 1);
+  // text is zero-initialised and the read is capped one short of its size, so
+  // it is always NUL-terminated and the byte count carries no information.
+  (void)file.readBytes(text, sizeof(text) - 1);
   const bool truncated = file.available();
   file.close();
   if (truncated) { set_error(error, error_size, "config too large"); return LoadResult::invalid; }

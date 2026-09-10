@@ -19,6 +19,7 @@ endif()
 idf_component_register(
     SRCS
         "../ui/main.cpp"
+        "../ui/channel_plan.cpp"
         "../ui/orc_console.cpp"
         "../ui/orcsdr_splash.cpp"
         "../ui/orcsdr_storage.cpp"

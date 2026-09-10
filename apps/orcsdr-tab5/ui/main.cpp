@@ -51,6 +51,7 @@
 #include "atc_presets.hpp"
 #include "same_decoder.hpp"
 #include "catalog_sync.hpp"
+#include "channel_plan.hpp"
 #include "dashboard_audio_control.hpp"
 #include "dashboard_registry.hpp"
 #include "device_status_service.hpp"
@@ -532,9 +533,7 @@ constexpr uint32_t kRtlWxHz = 162400000;
 // The seven NOAA Weather Radio channels. The band used to be pinned to WX1:
 // clamp always returned kRtlWxHz and STEP was a no-op, so the other six were
 // unreachable. They are selectable channels now, like CB.
-constexpr uint32_t kRtlWxChannelsHz[] = {162400000, 162425000, 162450000,
-                                         162475000, 162500000, 162525000,
-                                         162550000};
+// The seven NOAA channels moved with the other plans.
 constexpr uint32_t kRtlBrowseMinHz = ESP_RTL_SDR_FREQ_MIN_HZ;
 constexpr uint32_t kRtlBrowseMaxHz = ESP_RTL_SDR_FREQ_MAX_HZ;
 constexpr uint32_t kRtlBrowseDefaultHz = 146520000;
@@ -583,88 +582,14 @@ constexpr double kRtlXtalHz = 28800000.0;
 using RtlBand = orcsdr::radio::Band;
 enum class CbMode : uint8_t { am, usb, lsb };
 
-// FRS/GMRS channel plan. 1-7 and 8-14 are the 462/467.5625 MHz interstitials,
-// 15-22 the 462.5500 MHz main channels, and R15-R22 the 467.5500 MHz repeater
-// *inputs* -- listening there hears the station uplinking rather than the
-// repeater output, which is what 15-22 already carry. Receive-only: this is
-// identification help, not authority to transmit (GMRS needs a licence).
-constexpr uint32_t kGmrsChannelsHz[] = {
-    462562500, 462587500, 462612500, 462637500, 462662500, 462687500,
-    462712500, 467562500, 467587500, 467612500, 467637500, 467662500,
-    467687500, 467712500, 462550000, 462575000, 462600000, 462625000,
-    462650000, 462675000, 462700000, 462725000, 467550000, 467575000,
-    467600000, 467625000, 467650000, 467675000, 467700000, 467725000};
-constexpr const char* kGmrsChannelNames[] = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13",
-    "14", "15", "16", "17", "18", "19", "20", "21", "22", "R15", "R16",
-    "R17", "R18", "R19", "R20", "R21", "R22"};
-static_assert(std::size(kGmrsChannelsHz) == std::size(kGmrsChannelNames));
-constexpr uint32_t kGmrsDefaultHz = 462562500;   // Channel 1.
-
-// US VHF marine channel plan, receive side. Two arithmetic series define the
-// band: channels 1-28 put ship transmit at 156.050 MHz + (n-1) x 50 kHz, and
-// channels 60-88 at 156.025 MHz + (n-60) x 50 kHz. Consecutive channel
-// *numbers* are 50 kHz apart; the two series interleave, so the closest two
-// frequencies in the band are 25 kHz apart (channel 5A at 156.250 and 65A at
-// 156.275), which is what the plan reports as its spacing. An "A" suffix is the US
-// simplex use of a channel that is duplex internationally -- you receive on
-// the ship frequency either way, which is what a receive-only scanner wants.
-//
-// This is the practical monitoring set: every US simplex/A working channel
-// plus 16 (distress and calling), 13 (bridge-to-bridge), 09 (boater calling)
-// and 22A (Coast Guard liaison and safety broadcasts). The duplex marine
-// operator channels (24-28, 84-86), which would be received 4.6 MHz up on the
-// coast side, are left out: they are near-dead in the US and would only slow
-// a scan down. channel_plan_self_check() re-derives anchors from the formulas
-// above so a mistyped digit cannot pass silently.
-constexpr uint32_t kMarineChannelsHz[] = {
-    156050000, 156250000, 156300000, 156350000, 156400000, 156450000,
-    156500000, 156550000, 156600000, 156650000, 156700000, 156750000,
-    156800000, 156850000, 156900000, 156950000, 157000000, 157050000,
-    157100000, 157150000, 156175000, 156275000, 156325000, 156375000,
-    156425000, 156475000, 156525000, 156575000, 156625000, 156675000,
-    156725000, 156875000, 156925000, 156975000, 157025000, 157075000,
-    157125000, 157175000, 157375000, 157425000};
-constexpr const char* kMarineChannelNames[] = {
-    "1A", "5A", "6", "7A", "8", "9", "10", "11", "12", "13", "14", "15",
-    "16", "17", "18A", "19A", "20A", "21A", "22A", "23A", "63A", "65A",
-    "66A", "67", "68", "69", "70", "71", "72", "73", "74", "77", "78A",
-    "79A", "80A", "81A", "82A", "83A", "87", "88"};
-static_assert(std::size(kMarineChannelsHz) == std::size(kMarineChannelNames));
-constexpr uint32_t kMarineDefaultHz = 156800000;  // Channel 16.
-
-// CB and weather channels are numbered by position, but the lockout CLI
-// addresses every band the same way -- by the name the dashboard shows -- so
-// each plan carries its own names rather than leaving two bands special.
-constexpr const char* kCbChannelNames[] = {
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14",
-    "15", "16", "17", "18", "19", "20", "21", "22", "23", "24", "25", "26",
-    "27", "28", "29", "30", "31", "32", "33", "34", "35", "36", "37", "38",
-    "39", "40"};
-constexpr const char* kWxChannelNames[] = {"WX1", "WX2", "WX3", "WX4",
-                                           "WX5", "WX6", "WX7"};
-
-
-constexpr uint32_t kCbChannelsHz[] = {
-    26965000, 26975000, 26985000, 27005000, 27015000, 27025000, 27035000,
-    27055000, 27065000, 27075000, 27085000, 27105000, 27115000, 27125000,
-    27135000, 27155000, 27165000, 27175000, 27185000, 27205000, 27215000,
-    27225000, 27255000, 27235000, 27245000, 27265000, 27275000, 27285000,
-    27295000, 27305000, 27315000, 27325000, 27335000, 27345000, 27355000,
-    27365000, 27375000, 27385000, 27395000, 27405000};
-static_assert(std::size(kCbChannelsHz) == 40);
-constexpr uint32_t kCbDefaultHz = kCbChannelsHz[18];
-constexpr bool cb_channel_plan_valid() {
-  if (kCbDefaultHz != 27185000) return false;
-  for (size_t i = 0; i < std::size(kCbChannelsHz); ++i) {
-    if (kCbChannelsHz[i] < 26965000 || kCbChannelsHz[i] > 27405000) return false;
-    for (size_t j = i + 1; j < std::size(kCbChannelsHz); ++j) {
-      if (kCbChannelsHz[i] == kCbChannelsHz[j]) return false;
-    }
-  }
-  return true;
-}
-static_assert(cb_channel_plan_valid(), "CB channel plan must contain 40 unique US channels");
+// The CB, GMRS, weather and marine channel plans live in channel_plan.cpp,
+// with the nearest / step / index operations that used to be written out once
+// per band here -- four times inside rtl_clamp_frequency, four more inside
+// rtl_step_frequency, and again in four index helpers beside a fifth generic
+// one. Only the defaults are needed at this level.
+constexpr uint32_t kGmrsDefaultHz = orcsdr::channel_plan::kGmrsDefaultHz;
+constexpr uint32_t kMarineDefaultHz = orcsdr::channel_plan::kMarineDefaultHz;
+constexpr uint32_t kCbDefaultHz = orcsdr::channel_plan::kCbDefaultHz;
 
 struct RfBandGuide {
   uint32_t low_hz;
@@ -2609,56 +2534,16 @@ float rtl_filter_alpha(RtlBand band) {
 }
 
 uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
-  if (band == RtlBand::cb) {
-    size_t best = 0;
-    uint32_t distance = UINT32_MAX;
-    for (size_t channel = 0; channel < std::size(kCbChannelsHz); ++channel) {
-      const uint32_t d = kCbChannelsHz[channel] > frequency_hz
-                             ? kCbChannelsHz[channel] - frequency_hz
-                             : frequency_hz - kCbChannelsHz[channel];
-      if (d < distance) {
-        best = channel;
-        distance = d;
-      }
-    }
-    return kCbChannelsHz[best];
-  }
+  // Channelised bands snap to their plan; the rest fall through to the ranges
+  // below. This replaced one hand-written nearest-channel search per band.
+  if (orcsdr::channel_plan::channelized(band))
+    return orcsdr::channel_plan::nearest(band, frequency_hz);
   if (band == RtlBand::lora) return constrain(frequency_hz, kLoraMinHz, kLoraMaxHz);
   switch (band) {
     case RtlBand::am:
       if (frequency_hz < kRtlAmMinHz) return kRtlAmMinHz;
       if (frequency_hz > kRtlAmMaxHz) return kRtlAmMaxHz;
       return frequency_hz;
-    case RtlBand::marine: {
-      uint32_t nearest = kMarineChannelsHz[0];
-      uint32_t best = UINT32_MAX;
-      for (const uint32_t channel : kMarineChannelsHz) {
-        const uint32_t distance = channel > frequency_hz ? channel - frequency_hz
-                                                         : frequency_hz - channel;
-        if (distance < best) { best = distance; nearest = channel; }
-      }
-      return nearest;
-    }
-    case RtlBand::gmrs: {
-      uint32_t nearest = kGmrsChannelsHz[0];
-      uint32_t best = UINT32_MAX;
-      for (const uint32_t channel : kGmrsChannelsHz) {
-        const uint32_t distance = channel > frequency_hz ? channel - frequency_hz
-                                                         : frequency_hz - channel;
-        if (distance < best) { best = distance; nearest = channel; }
-      }
-      return nearest;
-    }
-    case RtlBand::wx: {
-      uint32_t nearest = kRtlWxChannelsHz[0];
-      uint32_t best = UINT32_MAX;
-      for (const uint32_t channel : kRtlWxChannelsHz) {
-        const uint32_t distance = channel > frequency_hz ? channel - frequency_hz
-                                                         : frequency_hz - channel;
-        if (distance < best) { best = distance; nearest = channel; }
-      }
-      return nearest;
-    }
     case RtlBand::adsb:
       return kAdsbDefaultHz;
     case RtlBand::p25:
@@ -2708,39 +2593,9 @@ void persist_fm_presets() {
 }
 
 uint32_t rtl_step_frequency(RtlBand band, uint32_t frequency_hz, int direction) {
-  if (band == RtlBand::marine) {
-    const uint32_t current = rtl_clamp_frequency(band, frequency_hz);
-    constexpr int count = static_cast<int>(std::size(kMarineChannelsHz));
-    int channel = 0;
-    while (channel + 1 < count && kMarineChannelsHz[channel] != current) ++channel;
-    channel = direction < 0 ? (channel + count - 1) % count : (channel + 1) % count;
-    return kMarineChannelsHz[channel];
-  }
-  if (band == RtlBand::gmrs) {
-    const uint32_t current = rtl_clamp_frequency(band, frequency_hz);
-    constexpr int count = static_cast<int>(std::size(kGmrsChannelsHz));
-    int channel = 0;
-    while (channel + 1 < count && kGmrsChannelsHz[channel] != current) ++channel;
-    channel = direction < 0 ? (channel + count - 1) % count : (channel + 1) % count;
-    return kGmrsChannelsHz[channel];
-  }
-  if (band == RtlBand::wx) {
-    const uint32_t current = rtl_clamp_frequency(band, frequency_hz);
-    constexpr int count = static_cast<int>(std::size(kRtlWxChannelsHz));
-    int channel = 0;
-    while (channel + 1 < count && kRtlWxChannelsHz[channel] != current) ++channel;
-    channel = direction < 0 ? (channel + count - 1) % count : (channel + 1) % count;
-    return kRtlWxChannelsHz[channel];
-  }
-  if (band == RtlBand::cb) {
-    const uint32_t current = rtl_clamp_frequency(band, frequency_hz);
-    size_t channel = 0;
-    while (channel + 1 < std::size(kCbChannelsHz) && kCbChannelsHz[channel] != current) {
-      ++channel;
-    }
-    channel = direction < 0 ? (channel + 39) % 40 : (channel + 1) % 40;
-    return kCbChannelsHz[channel];
-  }
+  // One channel up or down, wrapping. Was four near-identical blocks.
+  if (orcsdr::channel_plan::channelized(band))
+    return orcsdr::channel_plan::step(band, frequency_hz, direction);
   if (band == RtlBand::lora) {
     constexpr uint32_t step = 125000;
     return direction < 0
@@ -2762,203 +2617,82 @@ uint32_t rtl_step_frequency(RtlBand band, uint32_t frequency_hz, int direction) 
   return rtl_clamp_frequency(band, frequency_hz + step);
 }
 
+// Thin adapters over channel_plan::index_of, keeping the fallbacks their
+// callers were written against. index_of only fails for a band with no plan,
+// so these are unreachable in practice.
 size_t marine_channel_index(uint32_t frequency_hz) {
-  const uint32_t snapped = rtl_clamp_frequency(RtlBand::marine, frequency_hz);
-  for (size_t channel = 0; channel < std::size(kMarineChannelsHz); ++channel)
-    if (kMarineChannelsHz[channel] == snapped) return channel;
-  return 0;
+  const size_t index = orcsdr::channel_plan::index_of(RtlBand::marine, frequency_hz);
+  return index == SIZE_MAX ? 0 : index;
 }
 
 size_t gmrs_channel_index(uint32_t frequency_hz) {
-  const uint32_t snapped = rtl_clamp_frequency(RtlBand::gmrs, frequency_hz);
-  for (size_t channel = 0; channel < std::size(kGmrsChannelsHz); ++channel)
-    if (kGmrsChannelsHz[channel] == snapped) return channel;
-  return 0;
+  const size_t index = orcsdr::channel_plan::index_of(RtlBand::gmrs, frequency_hz);
+  return index == SIZE_MAX ? 0 : index;
 }
 
 size_t wx_channel_index(uint32_t frequency_hz) {
-  const uint32_t snapped = rtl_clamp_frequency(RtlBand::wx, frequency_hz);
-  for (size_t channel = 0; channel < std::size(kRtlWxChannelsHz); ++channel)
-    if (kRtlWxChannelsHz[channel] == snapped) return channel;
-  return 0;
+  const size_t index = orcsdr::channel_plan::index_of(RtlBand::wx, frequency_hz);
+  return index == SIZE_MAX ? 0 : index;
 }
 
 size_t cb_channel_index(uint32_t frequency_hz) {
-  const uint32_t snapped = rtl_clamp_frequency(RtlBand::cb, frequency_hz);
-  for (size_t channel = 0; channel < std::size(kCbChannelsHz); ++channel) {
-    if (kCbChannelsHz[channel] == snapped) return channel;
-  }
-  return 18;
+  const size_t index = orcsdr::channel_plan::index_of(RtlBand::cb, frequency_hz);
+  return index == SIZE_MAX ? 18 : index;  // channel 19
 }
 
-// The published channel list for a band, or nullptr if the band is a
-// continuous dial. Also gives the scanner its adjacent-channel spacing, which
-// is what bounds how far off centre a peak may sit and still count as this
-// channel's: half a channel either way, so CB's 10 kHz plan tolerates 5 kHz
-// (about one 3.75 kHz spectrum bin) and GMRS's 25 kHz plan tolerates 12.5.
-struct ChannelPlan {
-  const uint32_t* channels_hz = nullptr;
-  const char* const* names = nullptr;
-  size_t count = 0;
-  uint32_t spacing_hz = 0;
-};
+// The channel plans, the lockout mask and their self-check moved to
+// channel_plan.cpp. These forwards keep the names the rest of this file was
+// written against, so the move did not have to touch every call site.
+using ChannelPlan = orcsdr::channel_plan::Plan;
+using ChannelLockMask = orcsdr::channel_plan::LockMask;
+constexpr size_t kMaxPlanChannels = orcsdr::channel_plan::kMaxChannels;
 
 ChannelPlan channel_plan_for(RtlBand band) {
-  switch (band) {
-    case RtlBand::cb:
-      return {kCbChannelsHz, kCbChannelNames, std::size(kCbChannelsHz), 10000};
-    // 12.5 kHz, not the 25 kHz a channel-number-to-channel-number step covers:
-    // the FRS interstitials (ch 1-7) sit exactly halfway between the main GMRS
-    // channels (ch 15-22), so 462.5500 and 462.5625 are the real neighbours.
-    // Using 25 kHz here would have let ch 15's carrier stop the scan on ch 1.
-    case RtlBand::gmrs:
-      return {kGmrsChannelsHz, kGmrsChannelNames, std::size(kGmrsChannelsHz), 12500};
-    case RtlBand::wx:
-      return {kRtlWxChannelsHz, kWxChannelNames, std::size(kRtlWxChannelsHz), 25000};
-    case RtlBand::marine:
-      return {kMarineChannelsHz, kMarineChannelNames, std::size(kMarineChannelsHz),
-              25000};
-    default: return {};
-  }
-}
-
-// Channel lockout. A scanner with no way to skip a channel is a scanner you
-// cannot leave running: one permanently busy channel -- a data burst, a stuck
-// carrier, a repeater sitting on a continuous tone -- and the sweep parks there
-// and never moves again. Locking it out is the standard answer, so each
-// channelized band carries a bitmask of channels the scan steps over.
-//
-// The mask is indexed by position in the band's plan, not by frequency, and is
-// persisted per band. Marine has the largest plan at 40 channels; the cap is
-// checked at compile time below so growing a plan past it cannot silently
-// truncate the mask.
-constexpr size_t kMaxPlanChannels = 64;
-using ChannelLockMask = uint64_t;
-
-struct BandLockout {
-  RtlBand band;
-  const char* key;   // NVS key, <= 15 chars
-  ChannelLockMask mask;
-};
-
-BandLockout g_channel_lockouts[] = {
-    {RtlBand::cb, "lock_cb", 0},
-    {RtlBand::gmrs, "lock_gmrs", 0},
-    {RtlBand::wx, "lock_wx", 0},
-    {RtlBand::marine, "lock_marine", 0},
-};
-
-BandLockout* lockout_for(RtlBand band) {
-  for (BandLockout& entry : g_channel_lockouts)
-    if (entry.band == band) return &entry;
-  return nullptr;
-}
-
-bool channel_is_locked(RtlBand band, size_t index) {
-  const BandLockout* entry = lockout_for(band);
-  if (entry == nullptr || index >= kMaxPlanChannels) return false;
-  return (entry->mask >> index) & 1u;
-}
-
-size_t channel_locked_count(RtlBand band) {
-  const BandLockout* entry = lockout_for(band);
-  if (entry == nullptr) return 0;
-  size_t locked = 0;
-  for (size_t i = 0; i < kMaxPlanChannels; ++i)
-    if ((entry->mask >> i) & 1u) ++locked;
-  return locked;
-}
-
-void persist_channel_lockout(RtlBand band);
-
-const char* channel_name_for(RtlBand band, size_t index) {
-  const ChannelPlan plan = channel_plan_for(band);
-  if (plan.names == nullptr || index >= plan.count) return "?";
-  return plan.names[index];
+  return orcsdr::channel_plan::for_band(band);
 }
 
 bool rtl_band_is_channelized(RtlBand band) {
-  return channel_plan_for(band).channels_hz != nullptr;
+  return orcsdr::channel_plan::channelized(band);
 }
 
-// A plan that outgrew the lockout mask would silently lose the ability to lock
-// its tail channels, so make it a build error instead.
-static_assert(std::size(kCbChannelsHz) <= kMaxPlanChannels);
-static_assert(std::size(kGmrsChannelsHz) <= kMaxPlanChannels);
-static_assert(std::size(kRtlWxChannelsHz) <= kMaxPlanChannels);
-static_assert(std::size(kMarineChannelsHz) <= kMaxPlanChannels);
+const char* channel_name_for(RtlBand band, size_t index) {
+  return orcsdr::channel_plan::name_for(band, index);
+}
 
-// Index of a frequency within its own band's plan, or SIZE_MAX.
+bool channel_is_locked(RtlBand band, size_t index) {
+  return orcsdr::channel_plan::locked(band, index);
+}
+
+size_t channel_locked_count(RtlBand band) {
+  return orcsdr::channel_plan::locked_count(band);
+}
+
 size_t channel_index_for(RtlBand band, uint32_t frequency_hz) {
-  const ChannelPlan plan = channel_plan_for(band);
-  if (plan.channels_hz == nullptr) return SIZE_MAX;
-  const uint32_t snapped = rtl_clamp_frequency(band, frequency_hz);
-  for (size_t i = 0; i < plan.count; ++i)
-    if (plan.channels_hz[i] == snapped) return i;
-  return SIZE_MAX;
+  return orcsdr::channel_plan::index_of(band, frequency_hz);
+}
+
+// NVS stays here: the module owns the mask, this file owns the storage.
+void persist_channel_lockout(RtlBand band) {
+  const char* key = orcsdr::channel_plan::key_for(band);
+  if (key == nullptr) return;
+  const ChannelLockMask value = orcsdr::channel_plan::mask(band);
+  preferences.put_bytes(key, &value, sizeof(value));
+}
+
+bool set_channel_locked(RtlBand band, size_t index, bool locked) {
+  if (!orcsdr::channel_plan::set_locked(band, index, locked)) return false;
+  persist_channel_lockout(band);
+  return true;
 }
 
 float channel_scan_min_snr_db(RtlBand band) {
   return band == RtlBand::cb ? kChannelScanMinSnrCbDb : kChannelScanMinSnrDb;
 }
 
-// The scanner's "is this channel busy" test rests on two things being true of
-// every plan: each channel must be its own nearest channel (so a hop lands
-// where the sweep meant to), and no two channels may sit closer together than
-// the +/- half-spacing window, or a neighbour's carrier would be credited to
-// the channel we are sitting on and the scan would stop on both.
-bool channel_plan_self_check() {
-  constexpr RtlBand bands[] = {RtlBand::cb, RtlBand::gmrs, RtlBand::wx,
-                               RtlBand::marine};
-  for (const RtlBand band : bands) {
-    const ChannelPlan plan = channel_plan_for(band);
-    if (plan.channels_hz == nullptr || plan.count == 0 || plan.spacing_hz == 0)
-      return false;
-    for (size_t i = 0; i < plan.count; ++i) {
-      if (rtl_clamp_frequency(band, plan.channels_hz[i]) != plan.channels_hz[i])
-        return false;
-      for (size_t j = i + 1; j < plan.count; ++j) {
-        const uint32_t gap = plan.channels_hz[i] > plan.channels_hz[j]
-                                 ? plan.channels_hz[i] - plan.channels_hz[j]
-                                 : plan.channels_hz[j] - plan.channels_hz[i];
-        if (gap <= plan.spacing_hz / 2) return false;
-      }
-    }
-  }
-  // Stepping wraps in both directions and visits every channel exactly once.
-  const ChannelPlan gmrs = channel_plan_for(RtlBand::gmrs);
-  uint32_t walk = gmrs.channels_hz[0];
-  for (size_t i = 0; i < gmrs.count; ++i) walk = rtl_step_frequency(RtlBand::gmrs, walk, 1);
-  if (walk != gmrs.channels_hz[0]) return false;
-  if (rtl_step_frequency(RtlBand::gmrs, gmrs.channels_hz[0], -1) !=
-      gmrs.channels_hz[gmrs.count - 1])
-    return false;
-  // Marine frequencies are two arithmetic series, so re-derive them from the
-  // formulas rather than trusting the table: channels 1-28 are
-  // 156.050 MHz + (n-1) x 50 kHz and channels 60-88 are
-  // 156.025 MHz + (n-60) x 50 kHz. A mistyped digit in a 40-entry table is
-  // invisible by inspection and would silently tune the wrong channel -- this
-  // check earned its keep immediately by catching a 25 kHz step here.
-  auto marine_hz = [](int number) -> uint32_t {
-    return number <= 28 ? 156050000u + static_cast<uint32_t>(number - 1) * 50000u
-                        : 156025000u + static_cast<uint32_t>(number - 60) * 50000u;
-  };
-  const ChannelPlan marine = channel_plan_for(RtlBand::marine);
-  for (size_t i = 0; i < marine.count; ++i) {
-    // Names are the channel number with an optional US-simplex "A" suffix.
-    const int number = atoi(kMarineChannelNames[i]);
-    if (number <= 0) return false;
-    if (marine.channels_hz[i] != marine_hz(number)) return false;
-  }
-  if (marine_channel_index(kMarineDefaultHz) != 12 ||          // channel 16
-      strcmp(kMarineChannelNames[12], "16") != 0 ||
-      kMarineChannelsHz[12] != 156800000u ||
-      std::size(kMarineChannelsHz) != std::size(kMarineChannelNames))
-    return false;
-
-  return gmrs_channel_index(kGmrsDefaultHz) == 0 &&
-         std::size(kGmrsChannelsHz) == std::size(kGmrsChannelNames);
-}
+// The plan invariants the scanner depends on -- each channel its own nearest,
+// no two closer than half the spacing, marine re-derived from its formulas --
+// are checked in channel_plan.cpp, beside the tables they describe.
+bool channel_plan_self_check() { return orcsdr::channel_plan::self_check(); }
 
 // Boot-time heap tripwire -- see docs/FORK_HANDOFF.md §3b.
 //
@@ -10556,22 +10290,13 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
           : 0;
   snapshot.channel_count =
       demo ? 0
-      : rtl_ui_band == RtlBand::cb ? static_cast<uint8_t>(std::size(kCbChannelsHz))
-      : rtl_ui_band == RtlBand::wx ? static_cast<uint8_t>(std::size(kRtlWxChannelsHz))
-      : rtl_ui_band == RtlBand::gmrs
-          ? static_cast<uint8_t>(std::size(kGmrsChannelsHz))
-      : rtl_ui_band == RtlBand::marine
-          ? static_cast<uint8_t>(std::size(kMarineChannelsHz))
-          : 0;
+           : static_cast<uint8_t>(channel_plan_for(rtl_ui_band).count);
   // GMRS numbering is not its index: channels 15-22 repeat as repeater inputs
   // R15-R22, so entry 23 is "R15", not channel 23. Give the card the real name.
-  if (!demo && rtl_ui_band == RtlBand::gmrs)
+  if (!demo && (rtl_ui_band == RtlBand::gmrs || rtl_ui_band == RtlBand::marine))
     strlcpy(snapshot.channel_label,
-            kGmrsChannelNames[gmrs_channel_index(rtl_ui_frequency_hz)],
-            sizeof(snapshot.channel_label));
-  else if (!demo && rtl_ui_band == RtlBand::marine)
-    strlcpy(snapshot.channel_label,
-            kMarineChannelNames[marine_channel_index(rtl_ui_frequency_hz)],
+            channel_name_for(rtl_ui_band, channel_index_for(rtl_ui_band,
+                                                            rtl_ui_frequency_hz)),
             sizeof(snapshot.channel_label));
   else
     snapshot.channel_label[0] = '\0';
@@ -11381,26 +11106,8 @@ void print_hex(const uint8_t* value, size_t size) {
   }
 }
 
-void persist_channel_lockout(RtlBand band) {
-  const BandLockout* entry = lockout_for(band);
-  if (entry == nullptr) return;
-  preferences.put_bytes(entry->key, &entry->mask, sizeof(entry->mask));
-}
-
-// Toggle one channel of a band's plan. Returns false for a band with no plan or
-// an index past its end, so callers can report rather than silently no-op.
-bool set_channel_locked(RtlBand band, size_t index, bool locked) {
-  BandLockout* entry = lockout_for(band);
-  const ChannelPlan plan = channel_plan_for(band);
-  if (entry == nullptr || plan.channels_hz == nullptr) return false;
-  if (index >= plan.count || index >= kMaxPlanChannels) return false;
-  const ChannelLockMask bit = ChannelLockMask{1} << index;
-  const ChannelLockMask next = locked ? (entry->mask | bit) : (entry->mask & ~bit);
-  if (next == entry->mask) return true;
-  entry->mask = next;
-  persist_channel_lockout(band);
-  return true;
-}
+// persist_channel_lockout and set_channel_locked are defined beside the other
+// channel-plan forwards, above.
 
 void persist_journal() {
   preferences.putBytes("journal", &journal, sizeof(journal));
@@ -11536,14 +11243,17 @@ void load_state() {
   rtl_ui_frequency_hz = rtl_saved_fm_hz;
   rtl_requested_frequency_hz.store(rtl_saved_fm_hz, std::memory_order_release);
   Serial.printf("RTL_FM_LOAD frequency_hz=%u\n", rtl_saved_fm_hz);
-  for (BandLockout& entry : g_channel_lockouts) {
-    entry.mask = 0;
-    if (preferences.getBytesLength(entry.key) == sizeof(entry.mask))
-      (void)preferences.getBytes(entry.key, &entry.mask, sizeof(entry.mask));
-    if (entry.mask != 0)
+  for (size_t i = 0; i < orcsdr::channel_plan::lockout_band_count(); ++i) {
+    const RtlBand band = orcsdr::channel_plan::lockout_band(i);
+    const char* key = orcsdr::channel_plan::key_for(band);
+    ChannelLockMask stored = 0;
+    if (key != nullptr && preferences.getBytesLength(key) == sizeof(stored))
+      (void)preferences.getBytes(key, &stored, sizeof(stored));
+    orcsdr::channel_plan::set_mask(band, stored);
+    if (stored != 0)
       Serial.printf("RTL_CHANNEL_LOCK_LOAD band=%s locked=%u\n",
-                    rtl_band_name(entry.band),
-                    static_cast<unsigned>(channel_locked_count(entry.band)));
+                    rtl_band_name(band),
+                    static_cast<unsigned>(channel_locked_count(band)));
   }
   orcsdr::lora_channel::load(preferences);
   if (orcsdr::lora_channel::selection().persisted) {
@@ -11826,8 +11536,9 @@ bool point_in_scope(int32_t x, int32_t y) {
 }
 
 void tune_cb_channel(size_t channel) {
-  channel %= std::size(kCbChannelsHz);
-  const uint32_t frequency = kCbChannelsHz[channel];
+  const ChannelPlan plan = channel_plan_for(RtlBand::cb);
+  channel %= plan.count;
+  const uint32_t frequency = plan.channels_hz[channel];
   if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running) {
     request_hot_retune(frequency);
   } else {
@@ -15161,12 +14872,11 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_CHANNEL_LOCK_CLEAR") == 0 && authenticated) {
-    BandLockout* entry = lockout_for(rtl_ui_band);
-    if (entry == nullptr) {
+    if (orcsdr::channel_plan::key_for(rtl_ui_band) == nullptr) {
       Serial.println("RTL_CHANNEL_LOCK_INVALID channelized bands only (CB|GMRS|WX|MARINE)");
       return;
     }
-    entry->mask = 0;
+    orcsdr::channel_plan::set_mask(rtl_ui_band, 0);
     persist_channel_lockout(rtl_ui_band);
     Serial.printf("RTL_CHANNEL_LOCK_CLEAR_OK band=%s\n", rtl_band_name(rtl_ui_band));
     return;
