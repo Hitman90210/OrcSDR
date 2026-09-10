@@ -366,6 +366,23 @@ Use decode time as the blind window instead. `RTL_LORA_TRIGGER_STATUS` reports
 level, noise, trigger, live channel excess and the threshold without needing
 TRACE.
 
+**AGC re-arm fix, measured 2026-09-09.** A clean boot on the same receiver
+learned an AGC idle floor of -23.1 dBFS. The old absolute -25 dBFS trigger
+ceiling, combined with 3 dB re-arm hysteresis, required the live level to fall
+below -28 dBFS; that is impossible with a -23 dBFS idle floor. The detector
+therefore remained disarmed indefinitely. The ceiling is now -3 dBFS, so the
+normal noise-relative threshold remains usable across the tuner's range, and
+successful gain-mode, manual-gain, or RTL-AGC changes reset the learned floor.
+Compile-time checks cover the -90 dBFS lower-bound case and the observed
+-23 dBFS AGC case.
+
+**Weak-signal gate fix, measured 2026-09-09.** At fixed 19.7 dB tuner gain,
+the same live LongFast packets measured -33 to -35.7 dBFS against a -39 dBFS
+floor and had excellent in-channel concentration (-1.7 to -2.0 dB). The old
+9 dB level rise rejected them before the concentration test could run, despite
+that test being the false-trigger safeguard. The rise is now 4 dB so the
+measured 5-6 dB packets reach the channel gate.
+
 **What a quiet result means.** Even at 95% coverage this is a receive-only
 monitor on one slot; absence of traffic is evidence about this location and
 this slot, not about the mesh generally.

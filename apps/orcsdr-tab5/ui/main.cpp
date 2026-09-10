@@ -1459,8 +1459,24 @@ constexpr size_t kOrciqHeaderBytes = 36;
 constexpr size_t kP25IqRecMaxBytes = 1024u * 1024u - kOrciqHeaderBytes;
 constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
-constexpr float kLoraTriggerMarginDb = 9.0f;
+// Channel concentration rejects out-of-channel ISM traffic, so the level gate
+// only needs to establish a real rise. The measured clean LongFast signal was
+// 5-6 dB above its floor and never reached the old 9 dB requirement.
+constexpr float kLoraTriggerMarginDb = 4.0f;
 constexpr float kLoraTriggerHysteresisDb = 3.0f;
+constexpr float kLoraTriggerMinDbfs = -78.0f;
+// Leave enough headroom for the hysteresis arm point below the strongest
+// possible (0 dBFS) input. A -25 dBFS ceiling made AGC noise floors above
+// -28 dBFS impossible to arm even though valid packets still had ample SNR.
+constexpr float kLoraTriggerMaxDbfs = -kLoraTriggerHysteresisDb;
+constexpr float lora_trigger_threshold(float noise_dbfs) {
+  const float candidate = noise_dbfs + kLoraTriggerMarginDb;
+  return candidate < kLoraTriggerMinDbfs
+             ? kLoraTriggerMinDbfs
+             : candidate > kLoraTriggerMaxDbfs ? kLoraTriggerMaxDbfs : candidate;
+}
+static_assert(lora_trigger_threshold(-90.0f) == -78.0f);
+static_assert(lora_trigger_threshold(-23.0f) == -19.0f);
 // How concentrated the energy must be inside the LoRa channel before a
 // capture is worth spending ~2.3 s of decode on.
 //
@@ -3927,7 +3943,11 @@ bool iq_rec_start() {
     Serial.println("RTL_IQ_ERROR no_psram_buffer");
     return false;
   }
-  iq_rec_begin(IqCaptureKind::lora, false, 0);
+  // Manual capture is commonly armed in response to a visible/serial level
+  // rise. Preserve the same pre-trigger context as automatic capture so the
+  // LoRa preamble is not lost to UI or host-control latency.
+  const size_t pre_roll = lora_copy_pre_roll();
+  iq_rec_begin(IqCaptureKind::lora, false, pre_roll);
   return true;
 }
 
@@ -4197,8 +4217,7 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
     lora_noise_dbfs.store(g_lora_noise_floor_dbfs, std::memory_order_relaxed);
     return;
   }
-  const float trigger =
-      constrain(g_lora_noise_floor_dbfs + kLoraTriggerMarginDb, -78.0f, -25.0f);
+  const float trigger = lora_trigger_threshold(g_lora_noise_floor_dbfs);
   lora_noise_dbfs.store(g_lora_noise_floor_dbfs, std::memory_order_relaxed);
   lora_trigger_dbfs.store(trigger, std::memory_order_relaxed);
   if (level < trigger - kLoraTriggerHysteresisDb) {
@@ -6113,6 +6132,15 @@ void service_rf_lab() {
       result = esp_rtl_sdr_set_rtl_agc(g_rtl, action.value != 0);
     } else if (action.kind == Kind::bias_tee) {
       result = esp_rtl_sdr_set_bias_tee(g_rtl, action.value != 0);
+    }
+    if (result == ESP_OK &&
+        (action.kind == Kind::gain_mode || action.kind == Kind::gain_tenth_db ||
+         action.kind == Kind::rtl_agc) &&
+        rtl_ui_band == RtlBand::lora) {
+      // Gain changes move both the signal and noise floors. Keeping the old
+      // learned floor can leave the energy detector permanently above its
+      // re-arm threshold, especially after switching from manual gain to AGC.
+      lora_iq_reset_detector();
     }
     Serial.printf("RTL_LAB_ACTION kind=%u value=%ld accepted=%d result=%s\n",
                   static_cast<unsigned>(action.kind), static_cast<long>(action.value),
@@ -13778,12 +13806,15 @@ void process_command(char* command) {
       return;
     }
     esp_err_t err = ESP_ERR_INVALID_ARG;
+    bool changes_rf_gain = false;
     const char* action = command + 11;
-    if (strcmp(action, "GAINMODE AUTO") == 0)
+    if (strcmp(action, "GAINMODE AUTO") == 0) {
       err = esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO);
-    else if (strcmp(action, "GAINMODE MANUAL") == 0)
+      changes_rf_gain = true;
+    } else if (strcmp(action, "GAINMODE MANUAL") == 0) {
       err = esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
-    else if (strncmp(action, "GAIN ", 5) == 0) {
+      changes_rf_gain = true;
+    } else if (strncmp(action, "GAIN ", 5) == 0) {
       char* end = nullptr;
       const long gain = strtol(action + 5, &end, 10);
       if (end == action + 5 || *end != '\0' || gain < 0 || gain > 496) {
@@ -13791,14 +13822,18 @@ void process_command(char* command) {
         return;
       }
       err = esp_rtl_sdr_set_tuner_gain(g_rtl, static_cast<int>(gain));
-    } else if (strcmp(action, "RTLAGC ON") == 0 || strcmp(action, "RTLAGC OFF") == 0)
+      changes_rf_gain = true;
+    } else if (strcmp(action, "RTLAGC ON") == 0 || strcmp(action, "RTLAGC OFF") == 0) {
       err = esp_rtl_sdr_set_rtl_agc(g_rtl, strcmp(action + 7, "ON") == 0);
-    else if (strcmp(action, "BIAS ON") == 0 || strcmp(action, "BIAS OFF") == 0)
+      changes_rf_gain = true;
+    } else if (strcmp(action, "BIAS ON") == 0 || strcmp(action, "BIAS OFF") == 0) {
       err = esp_rtl_sdr_set_bias_tee(g_rtl, strcmp(action + 5, "ON") == 0);
-    else {
+    } else {
       Serial.println("RTL_DRIVER_INVALID use STATUS|SELF_CHECK|GAINMODE AUTO|MANUAL|GAIN <0..496>|RTLAGC ON|OFF|BIAS ON|OFF");
       return;
     }
+    if (err == ESP_OK && changes_rf_gain && rtl_ui_band == RtlBand::lora)
+      lora_iq_reset_detector();
     Serial.printf("RTL_DRIVER_RESULT action=\"%s\" accepted=%d result=%s\n", action,
                   err == ESP_OK ? 1 : 0, esp_rtl_sdr_err_to_name(err));
     return;

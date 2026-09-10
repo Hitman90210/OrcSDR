@@ -218,6 +218,12 @@ mostly outside the channel -- an interferer. A capture needs both the level rise
 and `min_excess_db` of concentration, which stopped the trigger firing on ISM
 traffic that was never LoRa. See `docs/FORK_HANDOFF.md` 3c.
 
+The level trigger follows the learned noise floor by 4 dB and relearns after a
+tuner-gain or RTL-AGC change. Its upper bound is -3 dBFS, leaving room for the
+3 dB re-arm hysteresis even when tuner AGC raises the idle floor. Older builds
+used a -25 dBFS upper bound; an AGC floor above -28 dBFS could therefore never
+arm, making a clean boot appear deaf.
+
 ## SAME / EAS weather alerts
 
 NOAA Weather Radio prefixes every alert with a Specific Area Message Encoding
@@ -655,6 +661,10 @@ general-purpose IQ dumping). There is no live serial override for spreading
 factor or bandwidth yet — those load once from `/orcsdr/lora.cfg` at boot;
 tracked as follow-up work alongside POCSAG's `SET_BAUD`/`SET_POLARITY`
 precedent.
+
+Manual LoRa `RTL_IQ_START` includes the most recent 250 ms of IQ pre-roll. This
+allows a host or operator to start a retained diagnostic capture after seeing
+the level rise without cutting off the preamble.
 
 ## P25 validation and replay
 
