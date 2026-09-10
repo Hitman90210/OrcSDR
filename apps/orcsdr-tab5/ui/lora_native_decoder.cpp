@@ -957,7 +957,7 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
                                              spreading_factor, bandwidth_hz, frequency_hz,
                                              config, packets, packet_capacity, &candidate, 0.0f);
     candidate_millis = now_millis() - started;
-    if (found != 0 || candidate.preambles == 0 || candidate.header_failures != 0 ||
+    if (found != 0 || candidate.preambles != 0 || candidate.header_failures != 0 ||
         candidate.crc_ok != 0) {
       if (stats != nullptr) {
         *stats = candidate;
