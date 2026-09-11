@@ -43,6 +43,10 @@ $build = 'build-native-hosted3'
 $appBuild = Join-Path $app $build
 $dist = Join-Path $repo "dist\OrcSDR-Tab5-$Version"
 New-Item -ItemType Directory -Force -Path $dist | Out-Null
+$releaseNotesSource = Join-Path $repo "docs\releases\$Version.md"
+if (-not (Test-Path -LiteralPath $releaseNotesSource -PathType Leaf)) {
+  throw "Missing release notes: $releaseNotesSource"
+}
 $c6Dir = Join-Path $dist 'c6'
 & (Join-Path $PSScriptRoot 'build-hosted-c6.ps1') -OutputDirectory $c6Dir -IdfPath $IdfPath
 if ($LASTEXITCODE) { throw "ESP-Hosted C6 build failed ($LASTEXITCODE)." }
@@ -98,6 +102,8 @@ $manifest | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $dist 'm5burner
   'Normal upgrades: do not erase; this preserves OrcSDR settings and saved Wi-Fi profiles.',
   "SHA-256: $hash"
 ) | Set-Content -LiteralPath (Join-Path $dist 'README.txt')
+Copy-Item -LiteralPath $releaseNotesSource `
+  -Destination (Join-Path $dist 'RELEASE_NOTES.txt') -Force
 Copy-Item -LiteralPath (Join-Path $repo 'docs\images\OrcSDR-Main.png') `
   -Destination (Join-Path $dist 'OrcSDR-Main.png') -Force
 
@@ -112,6 +118,8 @@ Copy-Item -LiteralPath (Join-Path $appBuild 'orcsdr_tab5.bin') `
   -Destination (Join-Path $localFirmware 'orcsdr_tab5_0x10000.bin') -Force
 Copy-Item -LiteralPath (Join-Path $c6Dir 'c6-provenance.json') `
   -Destination (Join-Path $localRoot 'c6-provenance.json') -Force
+Copy-Item -LiteralPath $releaseNotesSource `
+  -Destination (Join-Path $localRoot 'RELEASE_NOTES.txt') -Force
 $localManifest = [ordered]@{
   name = "OrcSDR $Version"
   description = 'OrcSDR P4 application for private Tab5 testing. Do not erase for normal upgrades.'

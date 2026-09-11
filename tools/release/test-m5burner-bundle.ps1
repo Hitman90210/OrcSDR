@@ -38,7 +38,8 @@ $manifestPath = Join-Path $bundle 'm5burner-upload.json'
 $sumPath = Join-Path $bundle 'SHA256SUMS.txt'
 $coverPath = Join-Path $bundle 'OrcSDR-Main.png'
 $readmePath = Join-Path $bundle 'README.txt'
-foreach ($path in @($manifestPath, $sumPath, $coverPath, $readmePath)) {
+$releaseNotesPath = Join-Path $bundle 'RELEASE_NOTES.txt'
+foreach ($path in @($manifestPath, $sumPath, $coverPath, $readmePath, $releaseNotesPath)) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing bundle file: $path" }
 }
 
@@ -100,6 +101,9 @@ if ($Matches[1].ToLowerInvariant() -ne $actualHash -or $manifest.sha256 -ne $act
 if (-not $Bridge -and (Get-Content -LiteralPath $readmePath -Raw) -notmatch 'Firmware & Updates') {
   throw 'Bundle README is missing the in-app C6 update guidance.'
 }
+if (-not $Bridge -and [string]::IsNullOrWhiteSpace((Get-Content -LiteralPath $releaseNotesPath -Raw))) {
+  throw 'Bundle release notes are empty.'
+}
 
 $zip = Get-ChildItem -LiteralPath $bundle -Filter '*local-m5burner.zip' | Select-Object -First 1
 if (-not $zip) { throw 'Missing local M5Burner package zip.' }
@@ -114,6 +118,7 @@ try {
   if ($names -notcontains $appEntry) { throw "M5Burner zip missing $appEntry" }
   if (-not $Bridge) {
     if ($names -notcontains 'c6-provenance.json') { throw 'M5Burner zip is missing C6 provenance.' }
+    if ($names -notcontains 'RELEASE_NOTES.txt') { throw 'M5Burner zip is missing release notes.' }
     $provenanceReader = [IO.StreamReader]::new(($archive.Entries | Where-Object FullName -eq 'c6-provenance.json').Open())
     try { $zipProvenance = $provenanceReader.ReadToEnd() | ConvertFrom-Json }
     finally { $provenanceReader.Dispose() }
