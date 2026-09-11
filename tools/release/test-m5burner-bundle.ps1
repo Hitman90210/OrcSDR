@@ -111,8 +111,17 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($zip.FullName)
 try {
   $names = @($archive.Entries | ForEach-Object FullName)
-  foreach ($entry in @('m5burner.json', 'firmware/bootloader_0x2000.bin', 'firmware/partition-table_0x8000.bin')) {
+  foreach ($entry in @('m5burner.json', 'firmware/bootloader_0x2000.bin', 'firmware/partition-table_0x8000.bin', 'firmware/flash.sh')) {
     if ($names -notcontains $entry) { throw "M5Burner zip missing $entry" }
+  }
+  $flashEntry = $archive.Entries | Where-Object FullName -eq 'firmware/flash.sh'
+  $flashReader = [IO.BinaryReader]::new($flashEntry.Open())
+  try { $flashBytes = $flashReader.ReadBytes([int]$flashEntry.Length) }
+  finally { $flashReader.Dispose() }
+  if (($flashBytes.Length -ge 3 -and $flashBytes[0] -eq 0xef -and $flashBytes[1] -eq 0xbb -and $flashBytes[2] -eq 0xbf) -or
+      $flashBytes -contains [byte]13 -or
+      -not [Text.Encoding]::UTF8.GetString($flashBytes).StartsWith("#!/bin/bash`n")) {
+    throw 'M5Burner ZIP flash.sh must use UTF-8 without BOM and Linux LF line endings.'
   }
   $appEntry = if ($Bridge) { 'firmware/orcsdr_c6_bridge_0x10000.bin' } else { 'firmware/orcsdr_tab5_0x10000.bin' }
   if ($names -notcontains $appEntry) { throw "M5Burner zip missing $appEntry" }

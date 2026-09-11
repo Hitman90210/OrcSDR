@@ -140,14 +140,20 @@ $localManifest = [ordered]@{
   }
 }
 $localManifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $localRoot 'm5burner.json')
-@'
+$flashScript = @'
 #!/bin/bash
 esptool.py --chip esp32p4 --port /dev/${port} --baud 921600 --before default_reset --after hard_reset write_flash -z \
 --flash_mode dio --flash_freq 80m --flash_size 16MB \
 0x2000 bootloader_0x2000.bin \
 0x8000 partition-table_0x8000.bin \
 0x10000 orcsdr_tab5_0x10000.bin
-'@ | Set-Content -LiteralPath (Join-Path $localFirmware 'flash.sh') -NoNewline
+'@
+$flashScript = $flashScript.Replace("`r", '')
+[IO.File]::WriteAllText(
+  (Join-Path $localFirmware 'flash.sh'),
+  $flashScript,
+  [Text.UTF8Encoding]::new($false)
+)
 $localZip = Join-Path $dist "OrcSDR-Tab5-$Version-local-m5burner.zip"
 Compress-Archive -Path (Join-Path $localRoot '*') -DestinationPath $localZip -Force
 
