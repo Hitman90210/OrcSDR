@@ -369,11 +369,11 @@ bool Decoder::self_check_detail(char* detail, size_t detail_size) {
   auto fail = [&](const char* step) {
     if (detail != nullptr && detail_size > 0) {
       strncpy(detail, step, detail_size - 1);
-      detail[detail_size - 1] = ' ';
+      detail[detail_size - 1] = '\0';
     }
     return false;
   };
-  if (detail != nullptr && detail_size > 0) detail[0] = ' ';
+  if (detail != nullptr && detail_size > 0) detail[0] = '\0';
 
   // The shape of a real NWS tornado warning: two Virginia county FIPS codes,
   // 45 minutes of validity, issued on day 253 at 18:00 UTC.

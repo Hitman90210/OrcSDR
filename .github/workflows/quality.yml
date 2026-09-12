@@ -5,6 +5,16 @@ on:
     paths:
       - '**/*.py'
       - '**/*.ps1'
+      # Source hygiene reads the C/C++ and docs tree too, so a NUL byte or a
+      # BOM introduced there has to be able to trigger this workflow.
+      - '**/*.c'
+      - '**/*.cpp'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/*.md'
+      - '**/*.html'
+      - '**/*.json'
+      - '**/*.yml'
       - tools/release/hosted-c6-release.json
       - .github/workflows/quality.yml
   push:
@@ -12,6 +22,16 @@ on:
     paths:
       - '**/*.py'
       - '**/*.ps1'
+      # Source hygiene reads the C/C++ and docs tree too, so a NUL byte or a
+      # BOM introduced there has to be able to trigger this workflow.
+      - '**/*.c'
+      - '**/*.cpp'
+      - '**/*.h'
+      - '**/*.hpp'
+      - '**/*.md'
+      - '**/*.html'
+      - '**/*.json'
+      - '**/*.yml'
       - tools/release/hosted-c6-release.json
       - .github/workflows/quality.yml
   workflow_dispatch:
@@ -30,6 +50,7 @@ jobs:
       - run: pip install 'cryptography>=45,<47'
       - run: python tools/test_lora_serial_transfer.py
       - run: python tools/test_release_metadata.py
+      - run: python tools/test_source_hygiene.py
       - run: python tools/validate-help-docs.py
 
   powershell:
