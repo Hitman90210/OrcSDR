@@ -1237,12 +1237,14 @@ accumulate, no early exit), and no secrets on the serial console.
     The `snr_db` distribution matters more than the count. Over 900 s at a 4 dB
     gate against a ~-28.4 dBFS floor, every false trigger came in at **8.4 dB or
     above** — 8.4, 8.5, 8.5, 8.7, 8.7, 9.6, 9.6, 10.9, 11.1, 11.4, 14.1, 15.3,
-    15.6, 23.1, 23.3, 26.1, 26.7. **Nothing fired between 4 and 8.4 dB**, even
-    though the gate allowed it. The "noise brushing the gate" group that the
-    short sample showed at 4.1-5.3 dB did not recur at all. So these are not
-    marginal noise excursions; they are real emitters, and an 8 dB gate would
-    have removed **almost none of them** — independent confirmation that raising
-    the margin was the wrong lever.
+    15.6, 23.1, 23.3, 26.1, 26.7. Nothing fired between 4 and 8.4 dB in *that*
+    window, even though the gate allowed it — but do not read that as a floor:
+    a later spot check caught one at **6.3 dB**, and the first short sample was
+    full of them at 4.1-5.3 dB. What the long run establishes is the *mix*: on a
+    quiet band most false triggers are well clear of the gate, so raising the
+    margin to 8 dB would have removed a minority of them while cutting into real
+    packets. That is independent confirmation that the margin was the wrong
+    lever, without claiming the low group does not exist.
 
     **Why 8 dB did not fix it.** A quiet 200 s run at 8 dB looked convincing --
     2 captures, both false. Then a busy 70 s window

@@ -1446,18 +1446,20 @@ constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 // triggers a minute. (A 190 s sample first said 31%; it was a busy stretch and
 // is superseded. Do not size this from a three-minute window.)
 //
-// Every one of those false triggers came in at 8.4 dB SNR or above, against a
-// -28.4 dBFS floor. Nothing fired between 4 and 8.4 dB even though the gate
-// allowed it, so they are real emitters rather than noise brushing the gate.
+// Every one of those false triggers came in at 8.4 dB SNR or above against a
+// -28.4 dBFS floor -- not a floor of the distribution (a spot check later
+// caught one at 6.3 dB) but a statement about the mix: on a quiet band most
+// false triggers sit well clear of the gate, so raising it removes a minority
+// of them.
 //
 // 8 dB was tried on this evidence and reverted. It looked free -- every real
 // decode measured that day sat at 11.7 dB or above, and the quiet-channel rate
 // fell from 8 to 2 per ~195 s. Two things killed it:
 //
 //   * It does not remove the low group, it moves it. A busy window at 8 dB
-//     still triggered at 8.7, 8.8, 8.9 and 9.6 dB. The 900 s run then showed
-//     why: at 4 dB nothing fired below 8.4 dB anyway, so 8 dB would have
-//     rejected almost nothing while cutting into real packets.
+//     still triggered at 8.7, 8.8, 8.9 and 9.6 dB. The 900 s run showed why it
+//     buys little: most false triggers sit well above the gate whatever the
+//     gate is, so 8 dB rejects a minority while cutting into real packets.
 //   * 3c measured real LongFast packets at -33 to -35.7 dBFS against a -39 dBFS
 //     floor -- 3.3 to 6 dB -- and a 9 dB gate rejecting exactly those is why
 //     this constant was dropped to 4 in the first place. An 8 dB gate
