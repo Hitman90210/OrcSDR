@@ -17,6 +17,11 @@
 namespace orcsdr::lora_native {
 namespace {
 
+bool candidate_is_conclusive(size_t found, const Stats& stats) {
+  return found != 0 || stats.crc_ok != 0 ||
+         (!stats.truncated && (stats.preambles != 0 || stats.header_failures != 0));
+}
+
 constexpr uint32_t kDecodeRate = 500000;
 constexpr uint8_t kMinSf = 7;
 constexpr uint8_t kMaxSf = 12;
@@ -873,6 +878,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     }
     const size_t count = symbol_count(payload_len, coding_rate, has_crc, spreading_factor);
     if (count > std::size(symbols) || data_start + count * n > virtual_samples) {
+      if (stats != nullptr) stats->truncated = true;
       start = cursor + n;
       continue;
     }
@@ -957,8 +963,7 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
                                              spreading_factor, bandwidth_hz, frequency_hz,
                                              config, packets, packet_capacity, &candidate, 0.0f);
     candidate_millis = now_millis() - started;
-    if (found != 0 || candidate.preambles != 0 || candidate.header_failures != 0 ||
-        candidate.crc_ok != 0) {
+    if (candidate_is_conclusive(found, candidate)) {
       if (stats != nullptr) {
         *stats = candidate;
         stats->candidate_millis = candidate_millis;
@@ -1007,10 +1012,17 @@ bool self_check() {
                                'T', 'b', 'e', 'a', 'm', 0x1a, 0x04, 'H', 'c', 'M', 'e'};
   parse_node_info(node_info, sizeof(node_info), &node);
   const float sf11_skew_100ppm = static_cast<float>(1u << 12) * 100.0f / 1000000.0f;
+  Stats truncated_candidate{};
+  truncated_candidate.preambles = 1;
+  truncated_candidate.truncated = true;
+  Stats complete_candidate{};
+  complete_candidate.preambles = 1;
   return std::strstr(summary, "81%") != nullptr && std::strstr(summary, "4.12V") != nullptr &&
          std::strcmp(node.long_name, "hardcore_Tbeam") == 0 &&
          std::strcmp(node.short_name, "HcMe") == 0 &&
-         std::fabs(sf11_skew_100ppm - 0.4096f) < 0.0001f;
+         std::fabs(sf11_skew_100ppm - 0.4096f) < 0.0001f &&
+         !candidate_is_conclusive(0, truncated_candidate) &&
+         candidate_is_conclusive(0, complete_candidate);
 }
 
 }  // namespace orcsdr::lora_native

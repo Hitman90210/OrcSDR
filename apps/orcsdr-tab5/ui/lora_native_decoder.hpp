@@ -41,6 +41,7 @@ struct Stats {
   int16_t raw_cfo_tenths_hz = 0;
   int16_t cfo_tenths_hz = 0;
   int16_t clock_skew_ppm = 0;
+  bool truncated = false;
   bool ready = false;
 };
 
