@@ -98,8 +98,8 @@ void draw_header() {
                     : g_state.wifi_connecting ? "Wi-Fi connecting"
                     : g_state.wifi_scanning ? "Wi-Fi scanning" : "Wi-Fi offline",
             sizeof(status));
-  text(status, 1020, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
-  button("CLOSE", 1040, 13, 116, 46, TFT_MAROON);
+  text(status, 950, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
+  button("CLOSE", 970, 13, 116, 46, TFT_MAROON);
   audio_header::draw_mute_button(g_state.sound_default);
 }
 
@@ -254,11 +254,13 @@ void draw_location() {
 
 void draw_data_maps() {
   text("DATA & MAPS", 330, 115, kBlue, 3);
-  char catalog[112];
+  char catalog[112], catalog_action[32];
   snprintf(catalog, sizeof(catalog), "%s%s", g_state.catalog_ready ? "SIGNED CATALOG " : "NO CATALOG ",
            g_state.catalog_date[0] ? g_state.catalog_date : "CHECK MANUALLY");
   text(catalog, 330, 153, g_state.catalog_ready ? kGreen : kMuted, 2);
-  button(g_state.catalog_busy ? "WORKING..." : "CHECK FOR UPDATES", 940, 126, 278, 48,
+  snprintf(catalog_action, sizeof(catalog_action), g_state.catalog_busy ? "WORKING %u%%" : "CHECK FOR UPDATES",
+           static_cast<unsigned>(g_state.catalog_progress_percent));
+  button(catalog_action, 940, 126, 278, 48,
          g_state.catalog_busy ? TFT_DARKGREY : TFT_DARKCYAN);
   if (g_state.catalog_message[0]) text(g_state.catalog_message, 330, 180, kMuted, 2);
   for (uint8_t i = 0; i < 5; ++i) {
@@ -280,7 +282,7 @@ void draw_data_maps() {
     button(g_catalog_remove_armed == i ? "CONFIRM" : "REMOVE", 1072, y + 14, 126, 42,
            pack.installed && !g_state.catalog_busy ? TFT_MAROON : TFT_DARKGREY);
   }
-  text("Manual only. Downloads keep reception active.", 330, 688, TFT_LIGHTGREY, 1);
+  text("Manual only. Reception pauses and resumes after downloads.", 330, 688, TFT_LIGHTGREY, 1);
 }
 
 void draw_display_audio() {
@@ -314,9 +316,15 @@ void draw_radio_defaults() {
   snprintf(value, sizeof(value), "%.3f MHz", g_state.fm_frequency_hz / 1000000.0);
   value_row("FM FREQUENCY", value, 325);
   value_row("GRAPHICS DEFAULT", g_state.graphics_default ? "ON" : "OFF", 375);
-  value_row("GAIN / BIAS-TEE / CAL", "UNAVAILABLE", 425, kMuted);
-  button("TOGGLE AUTO-START", 330, 500, 260, 50, TFT_DARKCYAN);
-  button("TOGGLE GRAPHICS", 620, 500, 240, 50, TFT_DARKCYAN);
+  if (g_state.rtl_usb_safe_mode) {
+    value_row("USB RECEIVER", "SAFE MODE AFTER REPEATED CRASHES", 425, TFT_ORANGE);
+    text("Unplug the RTL-SDR before retrying.", 330, 480, TFT_LIGHTGREY, 2);
+    button("UNPLUGGED - RETRY", 330, 515, 280, 50, TFT_MAROON);
+  } else {
+    value_row("GAIN / BIAS-TEE / CAL", "UNAVAILABLE", 425, kMuted);
+    button("TOGGLE AUTO-START", 330, 500, 260, 50, TFT_DARKCYAN);
+    button("TOGGLE GRAPHICS", 620, 500, 240, 50, TFT_DARKCYAN);
+  }
 }
 
 void draw_storage() {
@@ -660,6 +668,7 @@ void update(const State& state_value) {
                               strcmp(g_state.charging_state, state_value.charging_state) != 0);
   const bool catalog_changed = g_section == Section::data_maps &&
       (g_state.catalog_ready != state_value.catalog_ready || g_state.catalog_busy != state_value.catalog_busy ||
+       g_state.catalog_progress_percent != state_value.catalog_progress_percent ||
        strcmp(g_state.catalog_message, state_value.catalog_message) != 0 ||
        strcmp(g_state.catalog_date, state_value.catalog_date) != 0 ||
        memcmp(g_state.catalog_packs, state_value.catalog_packs, sizeof(g_state.catalog_packs)) != 0);
@@ -697,7 +706,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (g_edit != EditField::none) return handle_keypad(x, y);
   if (audio_header::mute_hit(x, y))
     return {ActionKind::sound_changed, g_state.sound_default ? 0 : 1};
-  if (hit(x, y, 1040, 13, 116, 46)) {
+  if (hit(x, y, 970, 13, 116, 46)) {
     g_active = false;
     return {ActionKind::close, 0};
   }
@@ -822,6 +831,11 @@ Action handle_touch(int32_t x, int32_t y) {
       return {ActionKind::rotation_changed, g_state.rotation};
     }
   } else if (g_section == Section::radio_defaults) {
+    if (g_state.rtl_usb_safe_mode) {
+      if (hit(x, y, 330, 515, 280, 50))
+        return {ActionKind::rtl_usb_safe_mode_reset, 0};
+      return {};
+    }
     if (hit(x, y, 330, 500, 260, 50)) {
       g_state.auto_start_reception = !g_state.auto_start_reception;
       draw_content();
@@ -935,11 +949,15 @@ bool self_check() {
   const bool c6_ready_routes = handle_touch(331, 446).kind == ActionKind::c6_update_confirm;
   strlcpy(g_state.wifi_c6_update_state, "current", sizeof(g_state.wifi_c6_update_state));
   const bool c6_current_blocks = handle_touch(331, 446).kind == ActionKind::none;
+  g_section = Section::radio_defaults;
+  g_state.rtl_usb_safe_mode = true;
+  const bool usb_recovery_routes =
+      handle_touch(331, 516).kind == ActionKind::rtl_usb_safe_mode_reset;
   g_state = saved_state;
   g_section = saved_section;
   g_active = saved_active;
   if (!symbols_ok || !credentials_ok || !empty_location_ok || !location_ok ||
-      !c6_ready_routes || !c6_current_blocks) return false;
+      !c6_ready_routes || !c6_current_blocks || !usb_recovery_routes) return false;
   return true;
 }
 

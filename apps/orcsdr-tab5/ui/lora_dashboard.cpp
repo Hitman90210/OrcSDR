@@ -590,8 +590,11 @@ void draw_dynamic() {
     const int width = g_view == View::overview ? 250 : 242;
     button(scan_x, 578, width, 48, scan_label,
            g_snapshot.survey_active ? kGreen : kCyan, g_snapshot.survey_active);
-    button(record_x, 578, width, 48,
-           g_snapshot.iq_recording ? "CAPTURING IQ" : "RECORD IQ",
+    const char* record_label = g_snapshot.iq_recording ? "CAPTURING IQ"
+                               : g_snapshot.iq_busy ? "DECODING IQ"
+                               : g_snapshot.iq_ready ? "SAVE IQ"
+                                                     : "RECORD IQ";
+    button(record_x, 578, width, 48, record_label,
            g_snapshot.iq_recording ? kGreen : kCyan, g_snapshot.iq_recording);
   }
 }

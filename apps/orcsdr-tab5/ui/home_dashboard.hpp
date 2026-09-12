@@ -28,6 +28,7 @@ struct Snapshot {
   bool receiving = false;
   bool sound_enabled = true;
   char wifi_ip[16]{};
+  char receiver[12] = "RTL-SDR";
   char mode[12]{};
   char clock[12]{};
   char date[20]{};

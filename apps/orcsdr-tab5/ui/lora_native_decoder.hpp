@@ -12,7 +12,7 @@ constexpr size_t kPacketTextBytes = 112;
 struct Config {
   const uint8_t* authorized_psk = nullptr;
   size_t authorized_psk_bytes = 0;
-  uint32_t preamble_search_ms = 0;
+  size_t candidate_samples = 0;
 };
 
 struct Packet {
@@ -36,9 +36,12 @@ struct Stats {
   uint32_t crc_ok = 0;
   uint32_t crc_failures = 0;
   uint32_t encrypted = 0;
+  uint32_t candidate_millis = 0;
   uint32_t decode_millis = 0;
   int16_t raw_cfo_tenths_hz = 0;
   int16_t cfo_tenths_hz = 0;
+  int16_t clock_skew_ppm = 0;
+  bool truncated = false;
   bool ready = false;
 };
 

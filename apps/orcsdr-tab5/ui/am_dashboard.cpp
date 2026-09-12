@@ -875,6 +875,8 @@ uint8_t prepare_scan_results(uint32_t start_hz, uint32_t step_hz,
 
 void clear_scan_results() { reset_scan_results(); }
 
+bool scan_prompt_active() { return g_scan_prompt; }
+
 bool auto_gain_should_advance(float level_dbfs, size_t step, size_t step_count) {
   return step + 1 < step_count && level_dbfs < kAutoGainTargetDbfs;
 }
@@ -895,7 +897,9 @@ void populate_presets(Snapshot& snapshot) {
 }
 
 bool self_check() {
-  const float scan_levels[] = {-80.0f, -70.0f, -80.0f, -60.0f, -80.0f};
+  const float scan_levels[] = {
+      -80.0f, -70.0f, -80.0f, -60.0f, -80.0f, -50.0f, -80.0f};
+  const float quiet_levels[] = {-80.0f, -80.0f, -80.0f};
   ScanCandidate candidates[2]{};
   float baseline = 0.0f;
   uint32_t presets[] = {590000, 1050000, 1280000};
@@ -906,7 +910,9 @@ bool self_check() {
          kTabsY < 720 && audio_header::self_check() &&
           select_scan_candidates(scan_levels, std::size(scan_levels), candidates,
                                  std::size(candidates), &baseline) == 2 &&
-          baseline == -80.0f && candidates[0].index == 1 && candidates[1].index == 3 &&
+          baseline == -80.0f && candidates[0].index == 3 && candidates[1].index == 5 &&
+          select_scan_candidates(quiet_levels, std::size(quiet_levels), candidates,
+                                 std::size(candidates), nullptr) == 0 &&
           auto_gain_should_advance(-30.0f, 0, 3) &&
           !auto_gain_should_advance(kAutoGainTargetDbfs, 0, 3) &&
           !auto_gain_should_advance(-30.0f, 2, 3) &&
