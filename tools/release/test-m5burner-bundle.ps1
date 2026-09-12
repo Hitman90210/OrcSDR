@@ -123,9 +123,14 @@ try {
   $flashReader = [IO.BinaryReader]::new($flashEntry.Open())
   try { $flashBytes = $flashReader.ReadBytes([int]$flashEntry.Length) }
   finally { $flashReader.Dispose() }
+  $utf8 = [Text.UTF8Encoding]::new($false, $true)
+  try { $flashText = $utf8.GetString($flashBytes) }
+  catch [Text.DecoderFallbackException] {
+    throw 'M5Burner ZIP flash.sh must use valid UTF-8 without BOM and Linux LF line endings.'
+  }
   if (($flashBytes.Length -ge 3 -and $flashBytes[0] -eq 0xef -and $flashBytes[1] -eq 0xbb -and $flashBytes[2] -eq 0xbf) -or
       $flashBytes -contains [byte]13 -or
-      -not [Text.Encoding]::UTF8.GetString($flashBytes).StartsWith("#!/bin/bash`n")) {
+      -not $flashText.StartsWith("#!/bin/bash`n")) {
     throw 'M5Burner ZIP flash.sh must use UTF-8 without BOM and Linux LF line endings.'
   }
   $appEntry = if ($Bridge) { 'firmware/orcsdr_c6_bridge_0x10000.bin' } else { 'firmware/orcsdr_tab5_0x10000.bin' }
