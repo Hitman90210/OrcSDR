@@ -1440,29 +1440,31 @@ constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 // 5-6 dB above its floor and never reached the old 9 dB requirement.
 //
 // Measured at 4 dB over 190 s of quiet channel (snr_db on RTL_LORA_NATIVE_DONE
-// makes this a direct readout): 9 captures, 1 real packet, 8 false triggers --
-// worse than the 3-6 per 180 s that the concentration gate had bought, and at
-// ~7.4 s of blind decode each rather than the 2-3 s assumed, which is 31% of
-// the window spent decoding nothing. The false triggers split evenly:
+// makes this a direct readout): over 900 s of quiet channel, 16 triggers and
+// 17 decodes, zero real packets, at ~7.1 s of blind decode each rather than the
+// 2-3 s assumed -- 13.4% of the window spent decoding nothing, about 1.1 false
+// triggers a minute. (A 190 s sample first said 31%; it was a busy stretch and
+// is superseded. Do not size this from a three-minute window.)
 //
-//   4.1, 4.1, 4.9, 5.3 dB   noise brushing a 4 dB gate      30.5 s
-//   13.5, 22.8, 23.3, 23.3  strong in-channel non-LoRa      28.8 s
+// Every one of those false triggers came in at 8.4 dB SNR or above, against a
+// -28.4 dBFS floor. Nothing fired between 4 and 8.4 dB even though the gate
+// allowed it, so they are real emitters rather than noise brushing the gate.
 //
 // 8 dB was tried on this evidence and reverted. It looked free -- every real
 // decode measured that day sat at 11.7 dB or above, and the quiet-channel rate
 // fell from 8 to 2 per ~195 s. Two things killed it:
 //
-//   * It does not remove that first group, it moves it. A later busy window
-//     triggered at 8.7, 8.8, 8.9 and 9.6 dB, because the level metric's upper
-//     tail follows whatever threshold is set. The gain is a lower rate in
-//     comparable conditions, not elimination, and it varies with the band.
+//   * It does not remove the low group, it moves it. A busy window at 8 dB
+//     still triggered at 8.7, 8.8, 8.9 and 9.6 dB. The 900 s run then showed
+//     why: at 4 dB nothing fired below 8.4 dB anyway, so 8 dB would have
+//     rejected almost nothing while cutting into real packets.
 //   * 3c measured real LongFast packets at -33 to -35.7 dBFS against a -39 dBFS
 //     floor -- 3.3 to 6 dB -- and a 9 dB gate rejecting exactly those is why
 //     this constant was dropped to 4 in the first place. An 8 dB gate
 //     reinstates most of that fault. Today's decodes were all 11.7 dB or better
 //     because the tuner was on automatic gain; 3c's were at a fixed 19.7 dB.
 //
-// So the trade is losing 31% of the window to blind decodes against losing
+// So the trade is losing ~13% of the window to blind decodes against losing
 // every packet under the gate outright, and which is worse depends on how much
 // weak traffic is really out there -- which nobody has measured. 4 dB keeps the
 // receiver sensitive and pays in wasted decodes, which is the safer way to be

@@ -1223,20 +1223,29 @@ accumulate, no early exit), and no secrets on the serial console.
     wrong in different ways, and the entry below is the evidence for picking the
     one that fails safe.
 
-    **The cost of 4 dB.** 190 s of quiet channel: **9 captures, 1 real packet,
-    8 false triggers**, at **~7.4 s of blind decode each** rather than the 2-3 s
-    once assumed. That is **31% of the window spent decoding nothing**, deaf to
-    real traffic throughout -- and worse than the 3-6 per 180 s the
-    concentration gate had bought. The false triggers split in half, and only
-    one half is a level problem:
+    **The cost of 4 dB, measured over 15 minutes.** 900 s of quiet channel:
+    **16 triggers, 17 decodes, zero real packets**, at **~7.1 s of blind decode
+    each**. That is **13.4% of the window spent decoding nothing**, deaf to real
+    traffic throughout — about **1.1 false triggers per minute**.
 
-    | Group | `snr_db` | Cost / 190 s |
-    |---|---|---|
-    | Noise brushing the gate | 4.1, 4.1, 4.9, 5.3 | 30.5 s |
-    | Strong in-channel non-LoRa | 13.5, 22.8, 23.3, 23.3 | 28.8 s |
+    A 190 s sample taken first said 8 in 190 s and **31%** blind. That number is
+    superseded: it was an unusually busy stretch, and the 15-minute figure is
+    2.3× lower. **Do not size this from a three-minute window** — the emitter
+    population on 915 ISM is bursty enough that short samples mislead by more
+    than a factor of two, in whichever direction they happen to land.
+
+    The `snr_db` distribution matters more than the count. Over 900 s at a 4 dB
+    gate against a ~-28.4 dBFS floor, every false trigger came in at **8.4 dB or
+    above** — 8.4, 8.5, 8.5, 8.7, 8.7, 9.6, 9.6, 10.9, 11.1, 11.4, 14.1, 15.3,
+    15.6, 23.1, 23.3, 26.1, 26.7. **Nothing fired between 4 and 8.4 dB**, even
+    though the gate allowed it. The "noise brushing the gate" group that the
+    short sample showed at 4.1-5.3 dB did not recur at all. So these are not
+    marginal noise excursions; they are real emitters, and an 8 dB gate would
+    have removed **almost none of them** — independent confirmation that raising
+    the margin was the wrong lever.
 
     **Why 8 dB did not fix it.** A quiet 200 s run at 8 dB looked convincing --
-    2 captures, both false, blind time 31% -> 7.4%. Then a busy 70 s window
+    2 captures, both false. Then a busy 70 s window
     produced 9 false triggers including four at **8.7, 8.8, 8.9 and 9.6 dB**,
     sitting 0.7-1.6 dB above the new gate. The noise-brushing group was not
     removed; it **moved**. The level metric's upper tail follows whatever
@@ -1253,7 +1262,7 @@ accumulate, no early exit), and no secrets on the serial console.
     decode cleared 11.7 dB. Reception itself was fine at 8 dB -- two texts sent,
     two decoded -- but that only proves strong local traffic still works.
 
-    So the trade is **31% of the window lost to blind decodes** against
+    So the trade is **~13% of the window lost to blind decodes** against
     **every packet under the gate lost outright**, and which is worse depends on
     how much weak traffic is really out there, which nobody has measured on this
     fork. 4 dB keeps the receiver sensitive and pays in wasted decodes, which is
@@ -1268,17 +1277,22 @@ accumulate, no early exit), and no secrets on the serial console.
     gate can stay wide open, at which point sensitivity is free. That is the
     work worth doing here, and it is a project rather than a constant.
 
-    **Still open: are some captures duplicates?** One busy window produced four
-    strong captures for two sent messages -- the two that decoded, plus 26.0 dB
-    at -2.2 dBFS and 26.2 dB at -2.0 dBFS that found no preamble. Those extra
-    two may be the re-arm catching the tail of a transmission it just decoded,
-    or neighbours rebroadcasting, or the node's own acks. `RTL_LORA_NATIVE_DONE`
-    now carries `trigger_ms` and `gap_ms` to settle it: **a gap near
-    `elapsed_ms` means a duplicate; a gap well beyond it means a separate
-    event.** A 260 s idle run showed gaps of 116.3 s and 13.7 s against ~7 s
-    decodes, so all three were distinct -- the question needs a window with
-    traffic in it. Worth answering before optimising the preamble search, since
-    not capturing the same packet twice would be the cheaper win.
+    **Confirmed, and rarer than feared: one trigger can produce two decodes.**
+    The timestamps added for this caught it in the 900 s run — two
+    `RTL_LORA_NATIVE_DONE` lines sharing `trigger_ms=231725 gap_ms=2218` and
+    differing only in `elapsed_ms` (6596 and 7258). One trigger, two decode
+    jobs, 13.9 s of blind time for a single event. **17 decodes for 16 triggers
+    over 15 minutes**, so roughly 6% — real, worth fixing, but not the main
+    cost. Note the latch is global and read at print time, so both lines report
+    the same trigger; that is a limit of the instrument, not a second trigger.
+
+    **Nothing was transmitting.** Fifteen minutes on the LongFast slot with the
+    bench node idle produced **zero preambles** — not one mesh frame from any
+    neighbour. Worth keeping in view when reading 8.9: "we cannot decode the
+    neighbours" and "the neighbours are not transmitting" look identical from
+    here, and on this bench, at this hour, it was the second. Any claim about
+    long interleaving in the field needs a window that contains real traffic
+    before it means anything.
 
 11. **The dashboard `Id` numbering has permanently diverged from upstream.**
     This fork shipped `gmrs = 16` before upstream added `am`, and those values
