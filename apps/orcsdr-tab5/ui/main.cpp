@@ -519,6 +519,8 @@ constexpr uint32_t kRtlScopeSpanMaxHz = 960000;
  * Broadcast FM with 19/38/57 kHz MPX needs ~±130 kHz. */
 constexpr uint32_t kRtlFmFilterDefaultHz = 260000;
 constexpr uint32_t kRtlAmFilterDefaultHz = 10000;
+// The 12.5 kHz GMRS interstitials (channels 8-14); see gmrs_channel_is_narrowband.
+constexpr uint32_t kGmrsNarrowFilterHz = 12500;
 constexpr uint32_t kRtlWxFilterDefaultHz = 25000;
 static_assert(kRtlScopeSpanMinHz < kRtlScopeSpanMaxHz);
 /* Display/nominal FM channel. LO is biased separately (this dongle sat
@@ -2649,6 +2651,12 @@ uint32_t rtl_filter_default_hz(RtlBand band, uint32_t frequency_hz) {
   if (band == RtlBand::am || band == RtlBand::cb ||
       band_demodulates_am(band, frequency_hz))
     return kRtlAmFilterDefaultHz;
+  // GMRS 8-14 are the 467 MHz interstitials, 12.5 kHz by 47 CFR 95.1773, and
+  // they sit 12.5 kHz either side of a 467 main channel. The 25 kHz default
+  // below reaches both of those neighbours, so a repeater input keying up next
+  // door captures the receiver away from the channel the user selected.
+  if (band == RtlBand::gmrs && gmrs_channel_is_narrowband(frequency_hz))
+    return kGmrsNarrowFilterHz;
   if (band == RtlBand::p25) return kP25StepHz;
   if (band == RtlBand::wx || band == RtlBand::browse || band == RtlBand::adsb ||
       band == RtlBand::pocsag || band == RtlBand::gmrs ||
@@ -7382,9 +7390,18 @@ static void on_rtl_driver_event(esp_rtl_sdr_event_t event, const void *payload, 
       const auto *hz = static_cast<const uint32_t *>(payload);
       /* FM UI is the channel. Payload is the commanded LO (display + 13 kHz
        * + nudge). Writing it back is why Home showed 96.113 after a lock. */
+      /* Channelised bands are the same story for a different reason: the user
+       * picked a channel, and the payload is wherever the tuner's PLL could
+       * actually land -- 467.5620 for GMRS channel 8, 500 Hz below the
+       * 467.5625 centre. Writing that back made a correct tune look like a
+       * tuning error and, worse, stopped the frequency matching any entry in
+       * the channel plan. Snap it back to the channel it belongs to. */
       if (hz != nullptr && g_stream_band != RtlBand::fm) {
-        rtl_ui_frequency_hz = *hz;
-        rtl_requested_frequency_hz.store(*hz, std::memory_order_release);
+        const uint32_t shown = orcsdr::channel_plan::channelized(g_stream_band)
+                                   ? rtl_clamp_frequency(g_stream_band, *hz)
+                                   : *hz;
+        rtl_ui_frequency_hz = shown;
+        rtl_requested_frequency_hz.store(shown, std::memory_order_release);
       }
       break;
     }
@@ -11815,13 +11832,41 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   if (!radio_session.owns(token) || rtl_ui_band == RtlBand::adsb) return false;
   frequency_hz = rtl_clamp_frequency(rtl_ui_band, frequency_hz);
   if (frequency_hz == 0) return false;
+  // A channelised band has already been snapped to an exact channel centre by
+  // rtl_clamp_frequency above, so quantising afterwards can only move it off.
+  // GMRS is where that showed: 14 of its 30 channels sit on 12.5 kHz offsets
+  // ending in 2500 or 7500 Hz, so the 1 kHz UI grid truncated the *display* by
+  // 500 Hz and the 5 kHz LO grid below tuned 2.5 kHz low -- a fifth of a
+  // 12.5 kHz channel, on the narrowest channels we receive. P25 was already
+  // exempt for the same reason; this generalises that to the channel plans.
+  const bool exact_tuning = rtl_ui_band == RtlBand::p25 ||
+                            orcsdr::channel_plan::channelized(rtl_ui_band);
   const uint32_t ui_quant_hz = rtl_ui_band == RtlBand::am ? 100u : 1000u;
-  uint32_t ui_hz = rtl_ui_band == RtlBand::p25
-                       ? frequency_hz
-                       : (frequency_hz / ui_quant_hz) * ui_quant_hz;
+  uint32_t ui_hz = exact_tuning ? frequency_hz
+                                : (frequency_hz / ui_quant_hz) * ui_quant_hz;
   if (rtl_ui_band == RtlBand::fm) ui_hz = rtl_fm_sanitize_display_hz(ui_hz);
   if (!radio_session.retuned(token, ui_hz)) return false;
   const bool ui_changed = (ui_hz != rtl_ui_frequency_hz);
+  // Stepping inside GMRS crosses between 20 kHz and 12.5 kHz channels, so the
+  // filter has to follow the channel rather than the band -- until now it was
+  // staged once on band entry and kept whatever width that channel wanted.
+  //
+  // Only restage it when the correct default actually changes *and* the current
+  // value is still that old default: a bandwidth the operator set by hand is
+  // theirs to keep, and this is the whole of the "has the user overridden it"
+  // test -- no extra state to get out of step.
+  if (ui_changed) {
+    // Snap the outgoing frequency to its channel before asking what its width
+    // was: the tuner's PLL cannot always hit a 12.5 kHz centre exactly, and an
+    // un-snapped 467.5620 matches no channel, so the "is this still the
+    // default" test would compare against the wrong band width.
+    const uint32_t was_default = rtl_filter_default_hz(
+        rtl_ui_band, rtl_clamp_frequency(rtl_ui_band, rtl_ui_frequency_hz));
+    const uint32_t now_default = rtl_filter_default_hz(rtl_ui_band, ui_hz);
+    if (now_default != was_default &&
+        rtl_filter_bandwidth_hz.load(std::memory_order_relaxed) == was_default)
+      rtl_filter_bandwidth_hz.store(now_default, std::memory_order_relaxed);
+  }
   if (ui_changed && rtl_ui_band == RtlBand::am &&
       rtl_am_gain_auto_enabled.load(std::memory_order_relaxed))
     rtl_am_gain_auto_restart.store(true, std::memory_order_release);
@@ -11834,7 +11879,7 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
       persist_fm_frequency(ui_hz);
     }
   }
-  const uint32_t lo_hz = rtl_ui_band == RtlBand::p25
+  const uint32_t lo_hz = exact_tuning
                              ? frequency_hz
                              : rtl_ui_band == RtlBand::am
                                    ? ui_hz
