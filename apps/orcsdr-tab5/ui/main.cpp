@@ -1264,6 +1264,13 @@ static std::atomic<float> lora_trigger_dbfs{-75.0f};
 // spread across the whole 960 kHz the tuner hears. 0 dB is flat noise;
 // positive means energy is concentrated where the slot actually is.
 static std::atomic<float> lora_channel_excess{0.0f};
+// Latched at the moment a capture is triggered, so the decode result can be
+// read against the link that produced it. A CRC failure on a 25 dB signal is a
+// decoder defect; the same failure at 5 dB is just a marginal link, and without
+// these two numbers the log line cannot tell them apart.
+static std::atomic<float> lora_capture_level_dbfs{0.0f};
+static std::atomic<float> lora_capture_noise_dbfs{0.0f};
+static std::atomic<float> lora_capture_excess_db{0.0f};
 static std::atomic<uint32_t> lora_messages{0};
 static uint8_t lora_selected_node = 0;
 static uint32_t lora_favorite_node_id = 0;
@@ -3881,7 +3888,14 @@ void lora_native_decode_task(void*) {
       strlcpy(packet.long_name, decoded[i].long_name, sizeof(packet.long_name));
       lora_store_packet(packet);
     }
-    Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu li_headers=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f elapsed_ms=%lu\n",
+    // snr_db is the capture's own link margin: the level that tripped the
+    // trigger, less the tracked noise floor. The explicit LoRa header is always
+    // coded at 4/5..4/8 with its own CRC while the payload uses the negotiated
+    // rate, so "header_failures=0 crc_failures=1" is the expected shape of a
+    // marginal link -- snr_db is what separates that from a decoder defect.
+    const float capture_level = lora_capture_level_dbfs.load(std::memory_order_relaxed);
+    const float capture_noise = lora_capture_noise_dbfs.load(std::memory_order_relaxed);
+    Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu li_headers=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f level_dbfs=%.1f snr_db=%.1f excess_db=%.1f elapsed_ms=%lu\n",
                   static_cast<unsigned>(count),
                   static_cast<unsigned long>(stats.preambles),
                   static_cast<unsigned long>(stats.header_failures),
@@ -3891,6 +3905,9 @@ void lora_native_decode_task(void*) {
                   static_cast<unsigned long>(stats.encrypted),
                   static_cast<double>(stats.raw_cfo_tenths_hz) / 10.0,
                   static_cast<double>(stats.cfo_tenths_hz) / 10.0,
+                  static_cast<double>(capture_level),
+                  static_cast<double>(capture_level - capture_noise),
+                  static_cast<double>(lora_capture_excess_db.load(std::memory_order_relaxed)),
                   static_cast<unsigned long>(stats.decode_millis));
     lora_native_decode_busy.store(false, std::memory_order_release);
     (void)queue_lora_auto_decode();
@@ -4035,6 +4052,9 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
   if (excess < kLoraChannelExcessMinDb) return;
 
   g_lora_trigger_armed = false;
+  lora_capture_level_dbfs.store(level, std::memory_order_relaxed);
+  lora_capture_noise_dbfs.store(g_lora_noise_floor_dbfs, std::memory_order_relaxed);
+  lora_capture_excess_db.store(excess, std::memory_order_relaxed);
   const size_t pre_roll = lora_copy_pre_roll();
   lora_rf_events.fetch_add(1, std::memory_order_relaxed);
   iq_rec_begin(IqCaptureKind::lora, true, pre_roll);

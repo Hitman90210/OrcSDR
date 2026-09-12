@@ -161,9 +161,17 @@ bool mount_tab5_sd() {
   const esp_err_t mount_result = esp_vfs_fat_sdmmc_mount("/sd", &host, &slot, &mount, &g_card);
   g_mounted = mount_result == ESP_OK;
   if (g_mounted) {
-    // Card name, capacity and bus speed in the boot log: the cheapest way to
-    // tell a slow or undersized card from a genuine fault in a user's report.
-    sdmmc_card_print_info(stdout, g_card);
+    // Card name, capacity and bus speed: the cheapest way to tell a slow or
+    // undersized card from a genuine fault in a user's report. Upstream calls
+    // sdmmc_card_print_info(stdout, ...) here, which prints nothing on this
+    // build -- the visible console is the ESP_LOG path, not raw stdout, which
+    // is why a failed mount is legible and that call is not.
+    const uint64_t bytes =
+        static_cast<uint64_t>(g_card->csd.capacity) * g_card->csd.sector_size;
+    ESP_LOGI("orcsdr_storage",
+             "SD ready name=%s size_mb=%llu bus_khz=%d width=%d",
+             g_card->cid.name, bytes / (1024ULL * 1024ULL), g_card->max_freq_khz,
+             g_card->host.get_bus_width(g_card->host.slot));
   } else {
     snprintf(g_last_mount_error, sizeof(g_last_mount_error), "mount:%s",
              esp_err_to_name(mount_result));
