@@ -257,7 +257,9 @@ Two shapes worth recognising:
   LoRa. See `FORK_HANDOFF.md` §8.10 for the measured rate and why the
   concentration gate cannot reject the in-channel ones.
 
-The level trigger follows the learned noise floor by 4 dB and relearns after a
+The level trigger follows the learned noise floor by 4 dB (`kLoraTriggerMarginDb`;
+deliberately low so 3-6 dB packets still reach the concentration gate — see
+`FORK_HANDOFF.md` §8.10 for what that costs) and relearns after a
 tuner-gain or RTL-AGC change. Its upper bound is -3 dBFS, leaving room for the
 3 dB re-arm hysteresis even when tuner AGC raises the idle floor. Older builds
 used a -25 dBFS upper bound; an AGC floor above -28 dBFS could therefore never

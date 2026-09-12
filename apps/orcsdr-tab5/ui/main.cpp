@@ -1448,19 +1448,28 @@ constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 //   4.1, 4.1, 4.9, 5.3 dB   noise brushing a 4 dB gate      30.5 s
 //   13.5, 22.8, 23.3, 23.3  strong in-channel non-LoRa      28.8 s
 //
-// 8 dB costs no observed real packet -- the real decodes measured 11.7, 13.7,
-// 19.3, 19.3, 21.6, 23.1 and 26.2 dB, so the nearest is 3.7 dB clear -- and cut
-// the quiet-channel rate from 8 to 2 per ~195 s. It does not *remove* the first
-// group: a later busy window still triggered at 8.7-9.6 dB, because the level
-// metric's upper tail follows whatever threshold is set and any fixed margin
-// gets brushed by it. And it cannot touch the second group at all, which are
-// genuine emitters inside the channel slot that no level gate distinguishes
-// from a packet. What it buys is a lower rate, which is still worth having.
+// 8 dB was tried on this evidence and reverted. It looked free -- every real
+// decode measured that day sat at 11.7 dB or above, and the quiet-channel rate
+// fell from 8 to 2 per ~195 s. Two things killed it:
 //
-// The risk is the 5-6 dB figure above. Nothing in this run came close to it,
-// but that measurement and this one disagree, and if a distant node that used
-// to decode goes quiet this constant is the first thing to put back to 4.
-constexpr float kLoraTriggerMarginDb = 8.0f;
+//   * It does not remove that first group, it moves it. A later busy window
+//     triggered at 8.7, 8.8, 8.9 and 9.6 dB, because the level metric's upper
+//     tail follows whatever threshold is set. The gain is a lower rate in
+//     comparable conditions, not elimination, and it varies with the band.
+//   * 3c measured real LongFast packets at -33 to -35.7 dBFS against a -39 dBFS
+//     floor -- 3.3 to 6 dB -- and a 9 dB gate rejecting exactly those is why
+//     this constant was dropped to 4 in the first place. An 8 dB gate
+//     reinstates most of that fault. Today's decodes were all 11.7 dB or better
+//     because the tuner was on automatic gain; 3c's were at a fixed 19.7 dB.
+//
+// So the trade is losing 31% of the window to blind decodes against losing
+// every packet under the gate outright, and which is worse depends on how much
+// weak traffic is really out there -- which nobody has measured. 4 dB keeps the
+// receiver sensitive and pays in wasted decodes, which is the safer way to be
+// wrong. The real fix is neither number: it is a chirp-specific screen cheap
+// enough to run before committing 7 s, so a false trigger costs milliseconds.
+// See FORK_HANDOFF.md 8.10.
+constexpr float kLoraTriggerMarginDb = 4.0f;
 constexpr float kLoraTriggerHysteresisDb = 3.0f;
 constexpr float kLoraTriggerMinDbfs = -78.0f;
 // Leave enough headroom for the hysteresis arm point below the strongest

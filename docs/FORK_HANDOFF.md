@@ -381,7 +381,9 @@ the same live LongFast packets measured -33 to -35.7 dBFS against a -39 dBFS
 floor and had excellent in-channel concentration (-1.7 to -2.0 dB). The old
 9 dB level rise rejected them before the concentration test could run, despite
 that test being the false-trigger safeguard. The rise is now 4 dB so the
-measured 5-6 dB packets reach the channel gate.
+measured 5-6 dB packets reach the channel gate. (Raising it again was tried and
+reverted for exactly this reason -- see 8.10, which measures what the 4 dB gate
+costs in false triggers and why paying that is still the better trade.)
 
 **Capture alignment fix, measured 2026-09-09.** A retained fixed-gain capture
 triggered from the serial level rise was unclipped, but the old 250 ms pre-roll
@@ -1214,7 +1216,7 @@ accumulate, no early exit), and no secrets on the serial console.
    `smittix/intercept` (aggregates rtl_433/dump1090/etc.; its Meshtastic
    integration is not demodulation).
 
-10. **Resolved: the LoRa trigger margin is measured, and is now 8 dB.**
+10. **Measured: the LoRa trigger margin's cost is known. It stays at 4 dB.**
     `748dc1f` had lowered `kLoraTriggerMarginDb` from 9 dB to 4 dB without
     measuring what it cost. Adding `snr_db` to `RTL_LORA_NATIVE_DONE` made the
     answer a direct readout. **190 s of quiet channel at 4 dB: 9 captures, 1
@@ -1277,12 +1279,33 @@ accumulate, no early exit), and no secrets on the serial console.
     adding before anyone optimises the preamble search on the strength of a
     hunch.
 
-    One caveat carried forward: `748dc1f`'s comment records a clean LongFast
-    signal at only **5-6 dB** above its floor. Nothing in this run came close
-    to that, but the two measurements disagree, and the noise floor is an EMA
-    that rises during busy periods and compresses SNR, which could explain it.
-    **If a distant node that used to decode goes quiet, put this constant back
-    to 4 first.**
+    **Reverted to 4 dB.** 8 dB shipped briefly and was put back on two grounds,
+    the second decisive:
+
+    1. It does not remove the noise-brushing group, it *moves* it — the busy
+       window above proves that. The level metric's upper tail follows whatever
+       threshold is set, so no fixed margin escapes it.
+    2. **3c measured real LongFast packets at -33 to -35.7 dBFS against a
+       -39 dBFS floor — 3.3 to 6 dB** — and a 9 dB gate rejecting exactly those
+       is why this constant was dropped to 4 in the first place. An 8 dB gate
+       reinstates most of that fault. The measurements are not in conflict: 3c's
+       were taken at a **fixed 19.7 dB tuner gain**, today's at **automatic**,
+       which is why today's floor sat at -28 dBFS and every decode cleared
+       11.7 dB.
+
+    So the real trade is losing **31% of the window to blind decodes** against
+    losing **every packet under the gate outright**, and which is worse depends
+    on how much weak traffic is actually out there — which nobody has measured
+    on this fork. 4 dB keeps the receiver sensitive and pays in wasted decodes,
+    which is the safer way to be wrong, and it is the setting the weak-signal
+    fix in 3c was written for.
+
+    **Neither number is the answer.** A false trigger costs ~7.4 s because the
+    preamble search runs over the whole buffer before giving up. Make that
+    screen cheap — a chirp-rate test over a short prefix that either sees CSS or
+    does not — and a false trigger costs milliseconds, at which point the gate
+    can stay wide open and sensitivity costs nothing. That is the work worth
+    doing here.
 
 11. **The dashboard `Id` numbering has permanently diverged from upstream.**
     This fork shipped `gmrs = 16` before upstream added `am`, and those values
