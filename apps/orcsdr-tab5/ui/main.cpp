@@ -1271,6 +1271,13 @@ static std::atomic<float> lora_channel_excess{0.0f};
 static std::atomic<float> lora_capture_level_dbfs{0.0f};
 static std::atomic<float> lora_capture_noise_dbfs{0.0f};
 static std::atomic<float> lora_capture_excess_db{0.0f};
+// When the trigger fired, and how long since the one before it. A decode takes
+// 7-9 s, so the time the result is printed says nothing about when the energy
+// arrived -- and without that, two captures of a single transmission and two
+// separate transmissions produce identical log lines.
+static std::atomic<uint32_t> lora_capture_trigger_ms{0};
+static std::atomic<uint32_t> lora_capture_gap_ms{0};
+static uint32_t g_lora_last_trigger_ms = 0;
 static std::atomic<uint32_t> lora_messages{0};
 static uint8_t lora_selected_node = 0;
 static uint32_t lora_favorite_node_id = 0;
@@ -3667,6 +3674,10 @@ void lora_iq_reset_detector() {
   g_lora_noise_floor_dbfs = -90.0f;
   g_lora_noise_samples = 0;
   g_lora_trigger_armed = false;
+  // Gaps are only meaningful within one detector session; a retune restarts
+  // the clock rather than reporting the span across it.
+  g_lora_last_trigger_ms = 0;
+  lora_capture_gap_ms.store(0, std::memory_order_relaxed);
   lora_noise_dbfs.store(-90.0f, std::memory_order_relaxed);
   lora_trigger_dbfs.store(-75.0f, std::memory_order_relaxed);
   if (!lora_iq_ensure_buffers()) Serial.println("RTL_IQ_ERROR no_psram_buffer");
@@ -3921,7 +3932,7 @@ void lora_native_decode_task(void*) {
     // marginal link -- snr_db is what separates that from a decoder defect.
     const float capture_level = lora_capture_level_dbfs.load(std::memory_order_relaxed);
     const float capture_noise = lora_capture_noise_dbfs.load(std::memory_order_relaxed);
-    Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu li_headers=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f level_dbfs=%.1f snr_db=%.1f excess_db=%.1f elapsed_ms=%lu\n",
+    Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu li_headers=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f level_dbfs=%.1f snr_db=%.1f excess_db=%.1f trigger_ms=%lu gap_ms=%lu elapsed_ms=%lu\n",
                   static_cast<unsigned>(count),
                   static_cast<unsigned long>(stats.preambles),
                   static_cast<unsigned long>(stats.header_failures),
@@ -3934,6 +3945,10 @@ void lora_native_decode_task(void*) {
                   static_cast<double>(capture_level),
                   static_cast<double>(capture_level - capture_noise),
                   static_cast<double>(lora_capture_excess_db.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long>(
+                      lora_capture_trigger_ms.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long>(
+                      lora_capture_gap_ms.load(std::memory_order_relaxed)),
                   static_cast<unsigned long>(stats.decode_millis));
     lora_native_decode_busy.store(false, std::memory_order_release);
     (void)queue_lora_auto_decode();
@@ -4078,9 +4093,15 @@ void lora_iq_offer(const uint8_t* iq, size_t bytes) {
   if (excess < kLoraChannelExcessMinDb) return;
 
   g_lora_trigger_armed = false;
+  const uint32_t trigger_ms = millis();
   lora_capture_level_dbfs.store(level, std::memory_order_relaxed);
   lora_capture_noise_dbfs.store(g_lora_noise_floor_dbfs, std::memory_order_relaxed);
   lora_capture_excess_db.store(excess, std::memory_order_relaxed);
+  lora_capture_trigger_ms.store(trigger_ms, std::memory_order_relaxed);
+  lora_capture_gap_ms.store(
+      g_lora_last_trigger_ms == 0 ? 0 : trigger_ms - g_lora_last_trigger_ms,
+      std::memory_order_relaxed);
+  g_lora_last_trigger_ms = trigger_ms;
   const size_t pre_roll = lora_copy_pre_roll();
   lora_rf_events.fetch_add(1, std::memory_order_relaxed);
   iq_rec_begin(IqCaptureKind::lora, true, pre_roll);
