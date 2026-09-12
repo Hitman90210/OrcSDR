@@ -2528,9 +2528,68 @@ constexpr uint32_t kAirbandMaxHz = 137000000;
 constexpr bool frequency_is_airband(uint32_t frequency_hz) {
   return frequency_hz >= kAirbandMinHz && frequency_hz <= kAirbandMaxHz;
 }
-constexpr bool band_demodulates_am(RtlBand band, uint32_t frequency_hz) {
-  return band == RtlBand::browse && frequency_is_airband(frequency_hz);
+// The whole aeronautical allocation is AM, not just the voice half: 108-117.975
+// is VOR and ILS localiser, whose identifier and voice are amplitude-modulated
+// too. The band guide lists that as AIR NAV. Demodulation follows the wider
+// range; the AIRBAND *tile* still owns only 118-137, so dashboard routing is
+// unchanged.
+constexpr uint32_t kAeroAmMinHz = 108000000;
+constexpr bool frequency_is_aeronautical_am(uint32_t frequency_hz) {
+  return frequency_hz >= kAeroAmMinHz && frequency_hz <= kAirbandMaxHz;
 }
+constexpr bool band_demodulates_am(RtlBand band, uint32_t frequency_hz) {
+  return band == RtlBand::browse && frequency_is_aeronautical_am(frequency_hz);
+}
+static_assert(band_demodulates_am(RtlBand::browse, 113000000), "VOR/ILS is AM");
+static_assert(band_demodulates_am(RtlBand::browse, kAeroAmMinHz), "108.000 included");
+static_assert(!band_demodulates_am(RtlBand::browse, 107900000), "below 108 is not aero");
+static_assert(!frequency_is_airband(113000000), "AIR NAV is not the AIRBAND tile");
+
+// "NFM" means different things to a scanner and to an amateur operator, and the
+// amateur reading is the right one on these bands. Scanner software calls
+// everything that is not broadcast FM "NFM"; on the air, amateur VHF/UHF FM is
+// +/-5 kHz deviation -- plain "FM" -- while "NFM" is the +/-2.5 kHz narrowbanded
+// mode. Land mobile, marine, GMRS and NOAA weather really are narrowband, so
+// they keep NFM; the amateur allocations do not.
+//
+// 10 m (28.000-29.700) is deliberately absent: it is overwhelmingly SSB and CW,
+// with FM only in a sliver near 29.600, so labelling the whole band FM would be
+// wrong more often than right.
+constexpr bool frequency_is_amateur_fm(uint32_t frequency_hz) {
+  return (frequency_hz >= 50000000u && frequency_hz <= 54000000u) ||     // 6 m
+         (frequency_hz >= 144000000u && frequency_hz <= 148000000u) ||   // 2 m
+         (frequency_hz >= 222000000u && frequency_hz <= 225000000u) ||   // 1.25 m
+         (frequency_hz >= 420000000u && frequency_hz <= 450000000u);     // 70 cm
+}
+static_assert(frequency_is_amateur_fm(146520000), "2 m national calling is FM");
+static_assert(frequency_is_amateur_fm(52525000), "6 m calling is FM");
+static_assert(frequency_is_amateur_fm(446000000), "70 cm is FM");
+static_assert(!frequency_is_amateur_fm(155000000), "VHF business stays NFM");
+static_assert(!frequency_is_amateur_fm(162400000), "NOAA weather stays NFM");
+static_assert(!frequency_is_amateur_fm(121500000), "airband is AM, not FM");
+static_assert(!frequency_is_amateur_fm(29600000), "10 m is mostly SSB/CW, not labelled FM");
+
+// GMRS is the one band of ours that is genuinely split, and 47 CFR 95.1773 is
+// the authority: 20 kHz on the 462 MHz main channels, the 467 MHz main channels
+// *and* the 462 MHz interstitials -- 12.5 kHz only on the 467 MHz interstitials.
+// So 23 of our 30 GMRS channels are wideband and 7 are not, and calling the
+// whole band NFM was wrong for most of it.
+//
+// The 467 interstitials sit 12.5 kHz above each 467 main channel, which is also
+// why they are the narrow ones: channels 8-14 of FRS/GMRS, 0.5 W, handheld only.
+constexpr uint32_t kGmrs467InterstitialFirstHz = 467562500;
+constexpr uint32_t kGmrs467InterstitialLastHz = 467712500;
+constexpr bool gmrs_channel_is_narrowband(uint32_t frequency_hz) {
+  return frequency_hz >= kGmrs467InterstitialFirstHz &&
+         frequency_hz <= kGmrs467InterstitialLastHz &&
+         (frequency_hz - kGmrs467InterstitialFirstHz) % 25000u == 0;
+}
+static_assert(gmrs_channel_is_narrowband(467562500), "GMRS 8 is 12.5 kHz");
+static_assert(gmrs_channel_is_narrowband(467712500), "GMRS 14 is 12.5 kHz");
+static_assert(!gmrs_channel_is_narrowband(467550000), "R15 is a 20 kHz main channel");
+static_assert(!gmrs_channel_is_narrowband(467725000), "R22 is a 20 kHz main channel");
+static_assert(!gmrs_channel_is_narrowband(462562500), "462 interstitials are 20 kHz");
+static_assert(!gmrs_channel_is_narrowband(462725000), "462 mains are 20 kHz");
 static_assert(band_demodulates_am(RtlBand::browse, 121500000), "121.5 is airband");
 static_assert(band_demodulates_am(RtlBand::browse, kAirbandMinHz), "lower edge included");
 static_assert(band_demodulates_am(RtlBand::browse, kAirbandMaxHz), "upper edge included");
@@ -2541,15 +2600,19 @@ const char* rtl_mode_name(RtlBand band, uint32_t frequency_hz) {
   if (band_demodulates_am(band, frequency_hz)) return "AM";
   switch (band) {
     case RtlBand::am: return "AM";
-    case RtlBand::wx: return "NFM";
-    case RtlBand::gmrs: return "NFM";
-    case RtlBand::marine: return "NFM";
+    // NOAA Weather Radio is 16K0F3E in 25 kHz channels at +/-5 kHz deviation,
+    // and marine VHF is 16K0G3E, 16 kHz occupied, same deviation. Both are
+    // wideband by the only measure that matters on air; neither is narrowband.
+    case RtlBand::wx: return "FM";
+    case RtlBand::marine: return "FM";
+    case RtlBand::gmrs:
+      return gmrs_channel_is_narrowband(frequency_hz) ? "NFM" : "FM";
     case RtlBand::cb:
       return cb_mode.load(std::memory_order_relaxed) == CbMode::usb ? "USB"
              : cb_mode.load(std::memory_order_relaxed) == CbMode::lsb ? "LSB"
                                                                       : "AM";
     case RtlBand::lora: return "CSS";
-    case RtlBand::browse: return "NFM";
+    case RtlBand::browse: return frequency_is_amateur_fm(frequency_hz) ? "FM" : "NFM";
     case RtlBand::adsb: return "1090";
     case RtlBand::p25: return "P25 C4FM";
     case RtlBand::pocsag:
