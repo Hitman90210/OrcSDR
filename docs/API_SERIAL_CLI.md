@@ -218,6 +218,45 @@ mostly outside the channel -- an interferer. A capture needs both the level rise
 and `min_excess_db` of concentration, which stopped the trigger firing on ISM
 traffic that was never LoRa. See `docs/FORK_HANDOFF.md` 3c.
 
+### Reading `RTL_LORA_NATIVE_DONE`
+
+Emitted unprompted after every triggered capture finishes decoding. This is the
+line to read when asking why something did or did not decode — it carries both
+the decode outcome and the link that produced it.
+
+```
+RTL_LORA_NATIVE_DONE packets=1 preambles=1 header_failures=0 li_headers=0
+  crc_ok=1 crc_failures=0 encrypted=1 raw_cfo_hz=-1831.1 cfo_hz=-1831.1
+  level_dbfs=-2.0 snr_db=26.2 excess_db=-1.1 trigger_ms=234172 gap_ms=13671
+  elapsed_ms=9079
+```
+
+| Field | Meaning |
+|---|---|
+| `packets` | Meshtastic frames recovered and stored |
+| `preambles` | LoRa preambles found in the capture. `0` with a real signal present means the trigger fired on something that was not LoRa |
+| `header_failures` | Preamble found, header would not parse |
+| `li_headers` | Headers with coding rate 5-7, i.e. **long interleaving**. These are counted and skipped, never fed to the legacy deinterleaver — see `FORK_HANDOFF.md` §8.9 |
+| `crc_ok` / `crc_failures` | Header parsed and payload decoded; whether its CRC matched |
+| `encrypted` | Frames that were still encrypted after decode (no matching key) |
+| `raw_cfo_hz` / `cfo_hz` | Measured carrier offset, and the correction applied. Equal means the first pass succeeded; `cfo_hz=0.0` with a non-zero `raw_cfo_hz` means the CFO-corrected retry is what you are reading |
+| `level_dbfs` | The level that tripped the trigger, latched at trigger time |
+| `snr_db` | `level_dbfs` less the tracked noise floor — **the capture's link margin** |
+| `excess_db` | In-channel concentration at trigger time (same scale as above) |
+| `trigger_ms` | Uptime when the trigger fired |
+| `gap_ms` | Since the previous trigger. A gap near `elapsed_ms` means the re-arm caught the tail of what it just decoded; well beyond it means a separate event. `0` on the first capture after a retune |
+| `elapsed_ms` | Decode time. Typically 7-9 s, during which the receiver is blind |
+
+Two shapes worth recognising:
+
+- `preambles=1 header_failures=0 crc_failures=1` — the header decoded and the
+  payload did not. The explicit LoRa header carries its own CRC and is coded
+  independently of the payload, so this is equally the signature of a marginal
+  link and of a decoder defect. **`snr_db` is what separates them.**
+- `preambles=0` with a healthy `snr_db` — a false trigger. Real RF, but not
+  LoRa. See `FORK_HANDOFF.md` §8.10 for the measured rate and why the
+  concentration gate cannot reject the in-channel ones.
+
 The level trigger follows the learned noise floor by 4 dB and relearns after a
 tuner-gain or RTL-AGC change. Its upper bound is -3 dBFS, leaving room for the
 3 dB re-arm hysteresis even when tuner AGC raises the idle floor. Older builds
