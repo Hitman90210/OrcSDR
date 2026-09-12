@@ -1395,6 +1395,27 @@ accumulate, no early exit), and no secrets on the serial console.
       does not). Host tools also need checking for any new line they could
       mistake for an expected reply, and `PING` and `ACK` must stay silent.
 
+17. **Fixes offered to upstream (2026-09-12).** There are two branches on this
+    fork. Each is based on upstream `main` at `c5b3423`, carries exactly one
+    fix, and was built with upstream's own build steps (0 errors, no new
+    warnings). Neither has been flashed.
+    - `fix/72-airband-am` (`d4f73c4`): BROWSE demodulates AM from 108 to
+      137 MHz (issue #72). It covers #72 only; this fork's WX, marine and
+      amateur label changes and its GMRS handling are not included.
+    - `fix/rf-analysis-raw-capture-fft` (`ba4bde8`): the FFT is windowed from
+      the raw capture, which removes upstream's 1024-point cap.
+
+    Opening the pull requests is the owner's decision. The compare pages are at
+    `https://github.com/hardcoreerik/OrcSDR/compare/main...Hitman90210:OrcSDR:<branch>`.
+
+    The #87 catalog guard was **not** offered. Upstream's own PR #88 makes the
+    same change and has passed the maintainer's hardware regression.
+
+    Building upstream on this machine needs this fork's ESP-IDF environment
+    setup. Upstream's `build-tab5-idf.ps1` hardcodes
+    `C:\Espressif\frameworks\esp-idf-v5.5.4` and a `python_env` path, and
+    neither exists here.
+
 ## 9. Map of the interesting files
 
 | File | What lives there |
