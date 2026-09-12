@@ -1026,9 +1026,27 @@ Verification completed on 2026-09-12: the web-console contract,
 source-hygiene, UI-layout, help-documentation, LoRa serial-transfer, and
 release-metadata tests passed; `git diff --check` passed; and a full ESP-IDF
 5.5.4 build completed with `orcsdr_tab5.bin` at `0x24f300` bytes and 42%
-application-partition space free. This change set has not yet been flashed or
-checked in a live browser against the Tab5, so that remains the next hardware
-verification step.
+application-partition space free.
+
+Hardware verification, 2026-09-12, Tab5 on COM3 with a live antenna. The running
+firmware emitted the new `alt_ok`/`spd_ok`/`hdg_ok`/`vr_ok` fields, so it was
+this change set. With Wi-Fi and the Companion up and the receiver parked on
+ADS-B, 5 of 5 `/api/status` requests returned HTTP 200 with valid JSON. The 14
+targets published across them (up to 4 at once) all carried boolean `alt_ok`,
+`spd_ok`, `hdg_ok`, `vr_ok` and `pos`, and the largest body was 1480 bytes
+against the 6144-byte capacity. A target with altitude but no position fix was
+published with `pos=false`, as it should be. Two things were not covered on
+hardware: the `adsb.located=false` branch, because this receiver has a location
+configured (that half is covered only by `tools/test_web_console_contract.py`),
+and the browser's rendering, since only the JSON was checked.
+
+Testing note, because it cost a false diagnosis: an authenticated serial session
+ends `kSessionTimeoutMs` (5 s) after the last command, and `process_command()`
+sends nothing back for an unknown command, or for a gated command such as
+`RTL_TUNE` or `RTL_WEB ON` once the session has lapsed. A script that waits
+longer than 5 s between commands without sending `PING` sees what looks like the
+device dropping commands. The verbosity command is `RTL_SERIAL VERBOSITY`, with a
+space; the underscore spelling is not a command.
 
 ## 5.8 Dead code and build
 
@@ -1361,6 +1379,21 @@ accumulate, no early exit), and no secrets on the serial console.
     upstream has not merged to `main` and this fork does not carry. `#82` (C6
     firmware update on beta5/6) has no reproduction here. Both are theirs to
     resolve first. See §5.7e for why the 0.8.0 line is not simply taken.
+
+16. **Unauthenticated and unknown serial commands get no reply.**
+    `process_command()` has no fallback. A gated handler written as
+    `... == 0 && authenticated` does nothing when the session has lapsed, and a
+    typo does the same, so a host gets silence in both cases.
+    - Sessions lapse `kSessionTimeoutMs` (5 s) after the last command, so any
+      host that pauses without sending `PING` runs into this. On 2026-09-12 it
+      produced a false "commands dropped on the ADS-B screen" diagnosis (§5.7f).
+    - Some handlers already reply `..._ERROR auth_required`: `RTL_SERIAL
+      VERBOSITY`, `RTL_UI ACTION` and `RTL_WIFI_CONNECT_SAVED`. The rest should
+      do the same.
+    - It is not a one-line fix. A catch-all at the end of the function would
+      also fire after handlers that do not `return` (at least the `ACK` branch
+      does not). Host tools also need checking for any new line they could
+      mistake for an expected reply, and `PING` and `ACK` must stay silent.
 
 ## 9. Map of the interesting files
 
