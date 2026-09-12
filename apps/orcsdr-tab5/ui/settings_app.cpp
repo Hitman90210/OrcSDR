@@ -98,8 +98,8 @@ void draw_header() {
                     : g_state.wifi_connecting ? "Wi-Fi connecting"
                     : g_state.wifi_scanning ? "Wi-Fi scanning" : "Wi-Fi offline",
             sizeof(status));
-  text(status, 1020, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
-  button("CLOSE", 1040, 13, 116, 46, TFT_MAROON);
+  text(status, 950, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
+  button("CLOSE", 970, 13, 116, 46, TFT_MAROON);
   audio_header::draw_mute_button(g_state.sound_default);
 }
 
@@ -316,9 +316,15 @@ void draw_radio_defaults() {
   snprintf(value, sizeof(value), "%.3f MHz", g_state.fm_frequency_hz / 1000000.0);
   value_row("FM FREQUENCY", value, 325);
   value_row("GRAPHICS DEFAULT", g_state.graphics_default ? "ON" : "OFF", 375);
-  value_row("GAIN / BIAS-TEE / CAL", "UNAVAILABLE", 425, kMuted);
-  button("TOGGLE AUTO-START", 330, 500, 260, 50, TFT_DARKCYAN);
-  button("TOGGLE GRAPHICS", 620, 500, 240, 50, TFT_DARKCYAN);
+  if (g_state.rtl_usb_safe_mode) {
+    value_row("USB RECEIVER", "SAFE MODE AFTER REPEATED CRASHES", 425, TFT_ORANGE);
+    text("Unplug the RTL-SDR before retrying.", 330, 480, TFT_LIGHTGREY, 2);
+    button("UNPLUGGED - RETRY", 330, 515, 280, 50, TFT_MAROON);
+  } else {
+    value_row("GAIN / BIAS-TEE / CAL", "UNAVAILABLE", 425, kMuted);
+    button("TOGGLE AUTO-START", 330, 500, 260, 50, TFT_DARKCYAN);
+    button("TOGGLE GRAPHICS", 620, 500, 240, 50, TFT_DARKCYAN);
+  }
 }
 
 void draw_storage() {
@@ -700,7 +706,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (g_edit != EditField::none) return handle_keypad(x, y);
   if (audio_header::mute_hit(x, y))
     return {ActionKind::sound_changed, g_state.sound_default ? 0 : 1};
-  if (hit(x, y, 1040, 13, 116, 46)) {
+  if (hit(x, y, 970, 13, 116, 46)) {
     g_active = false;
     return {ActionKind::close, 0};
   }
@@ -825,6 +831,11 @@ Action handle_touch(int32_t x, int32_t y) {
       return {ActionKind::rotation_changed, g_state.rotation};
     }
   } else if (g_section == Section::radio_defaults) {
+    if (g_state.rtl_usb_safe_mode) {
+      if (hit(x, y, 330, 515, 280, 50))
+        return {ActionKind::rtl_usb_safe_mode_reset, 0};
+      return {};
+    }
     if (hit(x, y, 330, 500, 260, 50)) {
       g_state.auto_start_reception = !g_state.auto_start_reception;
       draw_content();
@@ -938,11 +949,15 @@ bool self_check() {
   const bool c6_ready_routes = handle_touch(331, 446).kind == ActionKind::c6_update_confirm;
   strlcpy(g_state.wifi_c6_update_state, "current", sizeof(g_state.wifi_c6_update_state));
   const bool c6_current_blocks = handle_touch(331, 446).kind == ActionKind::none;
+  g_section = Section::radio_defaults;
+  g_state.rtl_usb_safe_mode = true;
+  const bool usb_recovery_routes =
+      handle_touch(331, 516).kind == ActionKind::rtl_usb_safe_mode_reset;
   g_state = saved_state;
   g_section = saved_section;
   g_active = saved_active;
   if (!symbols_ok || !credentials_ok || !empty_location_ok || !location_ok ||
-      !c6_ready_routes || !c6_current_blocks) return false;
+      !c6_ready_routes || !c6_current_blocks || !usb_recovery_routes) return false;
   return true;
 }
 

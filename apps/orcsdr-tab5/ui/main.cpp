@@ -1456,6 +1456,13 @@ enum class RtlCaptureState : uint8_t {
   failed,
 };
 
+constexpr bool rtl_should_resume_after_disconnect(RtlCaptureState state) {
+  return state == RtlCaptureState::queued || state == RtlCaptureState::running;
+}
+static_assert(rtl_should_resume_after_disconnect(RtlCaptureState::queued));
+static_assert(rtl_should_resume_after_disconnect(RtlCaptureState::running));
+static_assert(!rtl_should_resume_after_disconnect(RtlCaptureState::ready));
+
 struct JournalEntry {
   uint32_t sequence;
   char kind[20];
@@ -1617,6 +1624,7 @@ static inline bool rtl_device_ready() {
 #endif
 std::atomic<RtlCaptureState> rtl_capture_state{RtlCaptureState::disconnected};
 std::atomic<bool> rtl_capture_requested{false};
+std::atomic<bool> rtl_hotplug_resume_pending{false};
 // The RTL task may request a screen handoff, but only the UI loop may draw it.
 std::atomic<bool> rtl_screen_transition_requested{false};
 std::atomic<RtlBand> rtl_requested_band{RtlBand::fm};
@@ -7635,13 +7643,22 @@ static void on_rtl_driver_event(esp_rtl_sdr_event_t event, const void *payload, 
                                     : orcsdr::radio::ReceiverState::failed);
       set_rtl_profile_status(ready ? "ready" : "stream unavailable");
       Serial.printf("RTL_SDR_PROBE_OK profile=%u profile_name=\"%s\" provisional=%d "
-                    "device_caps=0x%08x driver=esp_rtl_sdr v%s ready=%d\n",
+                    "device_caps=0x%08x driver=esp_rtl_sdr v%s ready=%d resume_pending=%d\n",
                     static_cast<unsigned>(profile), esp_rtl_sdr_profile_to_name(profile),
                     rtl_profile_is_provisional(profile) ? 1 : 0,
-                    static_cast<unsigned>(caps), esp_rtl_sdr_get_version_string(), ready ? 1 : 0);
+                    static_cast<unsigned>(caps), esp_rtl_sdr_get_version_string(), ready ? 1 : 0,
+                    rtl_hotplug_resume_pending.load(std::memory_order_acquire) ? 1 : 0);
       break;
     }
-    case ESP_RTL_SDR_EVT_DISCONNECTED:
+    case ESP_RTL_SDR_EVT_DISCONNECTED: {
+      const auto previous = rtl_capture_state.exchange(RtlCaptureState::disconnected,
+                                                       std::memory_order_acq_rel);
+      const bool resume = rtl_should_resume_after_disconnect(previous);
+      if (resume) {
+        rtl_hotplug_resume_pending.store(true, std::memory_order_release);
+        rtl_restart_requested.store(false, std::memory_order_release);
+        rtl_stop_requested.store(true, std::memory_order_release);
+      }
       g_rtl_device_ready.store(false, std::memory_order_release);
       g_rtl_profile.store(ESP_RTL_SDR_PROFILE_UNKNOWN, std::memory_order_release);
       g_rtl_device_capabilities.store(0, std::memory_order_release);
@@ -7650,11 +7667,15 @@ static void on_rtl_driver_event(esp_rtl_sdr_event_t event, const void *payload, 
       rtl_am_scan_cancel.store(false, std::memory_order_release);
       rtl_am_scan_active.store(false, std::memory_order_release);
       rtl_rate_override_sps.store(0, std::memory_order_release);
-      rtl_capture_state.store(RtlCaptureState::disconnected, std::memory_order_release);
       set_radio_session_state(orcsdr::radio::ReceiverState::disconnected);
       set_rtl_sdr_status("RTL-SDR: disconnected");
-      Serial.println("RTL_SDR_DISCONNECTED");
+      Serial.printf("RTL_SDR_DISCONNECTED previous=%u resume_pending=%d band=%s frequency_hz=%u\n",
+                    static_cast<unsigned>(previous), resume ? 1 : 0,
+                    rtl_band_name(rtl_requested_band.load(std::memory_order_acquire)),
+                    static_cast<unsigned>(
+                        rtl_requested_frequency_hz.load(std::memory_order_acquire)));
       break;
+    }
     case ESP_RTL_SDR_EVT_IQ_BLOCK: {
       const auto *iq = static_cast<const esp_rtl_sdr_iq_block_t *>(payload);
       if (iq == nullptr || iq->data == nullptr || iq->bytes == 0) break;
@@ -7814,6 +7835,15 @@ static void rtl_driver_app_task(void *) {
     if (g_sd_transfer_active.load(std::memory_order_acquire)) {
       vTaskDelay(pdMS_TO_TICKS(20));
       continue;
+    }
+    if (g_rtl != nullptr && g_rtl_device_ready.load(std::memory_order_acquire) &&
+        rtl_hotplug_resume_pending.exchange(false, std::memory_order_acq_rel)) {
+      const RtlBand band = rtl_requested_band.load(std::memory_order_acquire);
+      const uint32_t frequency_hz = rtl_requested_frequency_hz.load(std::memory_order_acquire);
+      rtl_stop_requested.store(false, std::memory_order_release);
+      const bool queued = queue_local_rtl_listen(band, frequency_hz, false);
+      Serial.printf("RTL_HOTPLUG_RESUME band=%s frequency_hz=%u queued=%d\n",
+                    rtl_band_name(band), static_cast<unsigned>(frequency_hz), queued ? 1 : 0);
     }
     if (g_rtl != nullptr && g_rtl_device_ready.load(std::memory_order_acquire) &&
         rtl_capture_requested.exchange(false, std::memory_order_acq_rel)) {
@@ -8304,7 +8334,9 @@ void initialize_rtl_sdr_host() {
   err = esp_rtl_sdr_install(&cfg, &g_rtl);
   if (err != ESP_OK) {
     Serial.printf("RTL_INSTALL %s\n", esp_rtl_sdr_err_to_name(err));
-    set_rtl_sdr_status("RTL-SDR: install failed");
+    set_rtl_sdr_status(err == ESP_RTL_SDR_ERR_USB_SAFE_MODE
+                           ? "RTL-SDR safe mode: unplug receiver, then retry in Radio Defaults"
+                           : "RTL-SDR: install failed");
     return;
   }
   Serial.printf("RTL_INSTALL ok v%s caps=0x%08x delivery=callback xfer=%ux%u usb_core=%u\n",
@@ -10233,6 +10265,7 @@ const orcsdr::settings::State& global_settings_state() {
   state.sound_default = rtl_audio_user_enabled.load(std::memory_order_acquire);
   state.auto_start_reception = settings_auto_start_reception;
   state.graphics_default = settings_graphics_default;
+  state.rtl_usb_safe_mode = esp_rtl_sdr_usb_safe_mode_active();
   strlcpy(state.default_band, rtl_band_name(rtl_ui_band), sizeof(state.default_band));
   state.fm_frequency_hz = rtl_saved_fm_hz;
   state.sd_ready = g_sd_ready;
@@ -10608,6 +10641,18 @@ void close_global_settings() {
   orcsdr::navigation::close_settings();
 }
 
+void reset_rtl_usb_safe_mode_and_restart() {
+  if (!esp_rtl_sdr_usb_safe_mode_active()) {
+    Serial.println("RTL_USB_SAFE_MODE_RESET_REJECTED not_active");
+    return;
+  }
+  const esp_err_t err = esp_rtl_sdr_usb_fault_guard_reset();
+  Serial.printf("RTL_USB_SAFE_MODE_RESET result=%s\n", esp_rtl_sdr_err_to_name(err));
+  if (err != ESP_OK) return;
+  delay(25);
+  esp_restart();
+}
+
 void handle_global_settings_action(const orcsdr::settings::Action& action) {
   switch (action.kind) {
     case orcsdr::settings::ActionKind::close:
@@ -10774,6 +10819,9 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
     case orcsdr::settings::ActionKind::graphics_changed:
       settings_graphics_default = action.value != 0;
       preferences.putBool("set_gfx", settings_graphics_default);
+      break;
+    case orcsdr::settings::ActionKind::rtl_usb_safe_mode_reset:
+      reset_rtl_usb_safe_mode_and_restart();
       break;
     case orcsdr::settings::ActionKind::web_console_changed:
       settings_web_console_enabled = action.value != 0;
@@ -13733,6 +13781,7 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_STOP") == 0 && (authenticated || ORC_LORA_TEST_BUILD)) {
+    rtl_hotplug_resume_pending.store(false, std::memory_order_release);
     rtl_restart_requested.store(false, std::memory_order_release);
     rtl_stop_requested.store(true, std::memory_order_release);
     Serial.println("RTL_STOPPING");
@@ -13800,6 +13849,14 @@ void process_command(char* command) {
     Serial.printf("RTL_SDR_STATUS connected=%s vid=%04x pid=%04x speed=%s serial=\"%s\"\n",
                   rtl_device_ready() ? "true" : "false", rtl_sdr_vid, rtl_sdr_pid,
                   rtl_sdr_speed, rtl_sdr_serial);
+    return;
+  }
+  if (strcmp(command, "RTL_HOTPLUG_STATUS") == 0) {
+    Serial.printf("RTL_HOTPLUG_STATUS pending=%d ready=%d state=%s band=%s frequency_hz=%u\n",
+                  rtl_hotplug_resume_pending.load(std::memory_order_acquire) ? 1 : 0,
+                  rtl_device_ready() ? 1 : 0,
+                  rtl_capture_state_name(rtl_capture_state.load(std::memory_order_acquire)),
+                  rtl_band_name(rtl_ui_band), rtl_ui_frequency_hz);
     return;
   }
   if (strcmp(command, "RTL_ADSB STATUS") == 0) {
@@ -13903,11 +13960,14 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_HELP") == 0) {
     Serial.println("RTL_HELP_BEGIN");
     Serial.println("RTL_STATUS                    - device connection info");
+    Serial.println("RTL_HOTPLUG_STATUS            - receiver replacement and resume state");
     Serial.println("RTL_ADSB STATUS               - ADS-B stream, queue and decoder counters");
     Serial.println("RTL_DRIVER STATUS|SELF_CHECK  - driver capabilities, shadows and stream metrics");
     Serial.println("RTL_DRIVER GAINMODE AUTO|MANUAL | GAIN <0..496> | RTLAGC ON|OFF | BIAS ON|OFF (auth)");
     Serial.println("RTL_HEALTH                    - heap, task and reset diagnostics");
     Serial.println("RTL_RESET                     - authenticated software reset");
+    Serial.println("RTL_USB_SAFE_MODE_STATUS      - USB crash-guard state");
+    Serial.println("RTL_USB_SAFE_MODE_RESET CONFIRM - unplug receiver, then clear guard and restart (auth)");
     Serial.println("RTL_SERIAL VERBOSITY [QUIET|NORMAL|DEBUG|TRACE] - query/set persistent logging (set auth)");
     Serial.println("RTL_SCREEN_STATUS             - active screen ownership diagnostics");
     Serial.println("RTL_UI_REGRESSION CHECK|RUN   - passive checks or Home->screen restore test");
@@ -13974,6 +14034,19 @@ void process_command(char* command) {
     Serial.println("RTL_RESETTING");
     delay(25);
     esp_restart();
+  }
+  if (strcmp(command, "RTL_USB_SAFE_MODE_STATUS") == 0) {
+    Serial.printf("RTL_USB_SAFE_MODE_STATUS active=%d\n",
+                  esp_rtl_sdr_usb_safe_mode_active() ? 1 : 0);
+    return;
+  }
+  if (strcmp(command, "RTL_USB_SAFE_MODE_RESET CONFIRM") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_USB_SAFE_MODE_RESET_ERROR auth_required");
+      return;
+    }
+    reset_rtl_usb_safe_mode_and_restart();
+    return;
   }
   if (strcmp(command, "RTL_P25_IQ_START") == 0) {
     if (!authenticated) {

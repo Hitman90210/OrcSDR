@@ -87,6 +87,7 @@ struct State {
   bool sound_default = true;
   bool auto_start_reception = true;
   bool graphics_default = true;
+  bool rtl_usb_safe_mode = false;
   char default_band[16]{};
   uint32_t fm_frequency_hz = 0;
 
@@ -142,6 +143,7 @@ enum class ActionKind : uint8_t {
   ,catalog_install
   ,catalog_remove
   ,web_console_changed
+  ,rtl_usb_safe_mode_reset
 };
 
 struct Action {
