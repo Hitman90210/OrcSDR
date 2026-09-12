@@ -10,6 +10,17 @@ constexpr size_t kSpectrumBins = 64;
 // it tracks. A browser has room for more, and the tracker holds 64.
 constexpr size_t kAircraftSlots = 16;
 
+// A decoded aircraft position is not enough to place a target on our relative
+// radar. Range and bearing also require the receiver's own configured location.
+constexpr bool relative_position_available(bool aircraft_has_position,
+                                           bool receiver_location_configured) {
+  return aircraft_has_position && receiver_location_configured;
+}
+static_assert(relative_position_available(true, true));
+static_assert(!relative_position_available(true, false));
+static_assert(!relative_position_available(false, true));
+static_assert(!relative_position_available(false, false));
+
 // Range and bearing rather than latitude and longitude, deliberately. It is
 // what a radar display needs, and it keeps the receiver's own position on the
 // device -- absolute aircraft positions plus a centred display would give it
@@ -28,6 +39,7 @@ struct Aircraft {
   bool has_altitude = false;
   bool has_speed = false;
   bool has_heading = false;
+  bool has_vertical_rate = false;
 };
 
 struct Snapshot {

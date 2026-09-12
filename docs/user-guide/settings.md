@@ -23,7 +23,7 @@ The page follows whatever the receiver is doing:
 
 | Band | What the page shows |
 | --- | --- |
-| ADS-B | A radar scope with range rings and a sweep, aircraft plotted by range and bearing with heading vectors, plus a nearest-traffic list |
+| ADS-B | A radar scope with range rings and a sweep, up to 16 nearest aircraft plotted by range and bearing with heading vectors, plus a nearest-traffic list |
 | CB, GMRS, marine, weather | A radio faceplate: large channel readout, RX and BUSY lamps, signal gauge and the channel plan |
 | Everything else | Frequency, signal meter and history, live spectrum and waterfall |
 
@@ -35,6 +35,10 @@ password and no TLS, so turn it on only on a network you trust.
 
 The page never receives the receiver's coordinates. Aircraft are sent as range
 and bearing, which is what a radar needs and what keeps your position on the
-device.
+device. Relative positions are provided only when both the aircraft fix and the
+receiver location are available; until a receiver location is configured,
+aircraft can appear in the list but are not falsely plotted at the center. Valid
+zero values (including 0 ft, 0 kt, 0 degrees, and level vertical rate) remain
+distinct from unavailable measurements.
 
 Muting the Tab5 speaker does not mute the browser stream; they are separate.

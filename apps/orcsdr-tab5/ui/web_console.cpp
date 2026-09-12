@@ -35,12 +35,22 @@ constexpr size_t kAudioClip = 4800;
 constexpr size_t kAudioMin = 1600;
 constexpr uint32_t kAudioRate = 16000;
 constexpr uint32_t kAudioDemandHoldMs = 2000;
+constexpr size_t kAircraftJsonItemCapacity = 224;
+// One opening bracket, sixteen worst-case records (including their commas),
+// one closing bracket, and the terminating NUL. Deriving this from the public
+// slot count keeps the serializer's capacity aligned with what the API claims.
+constexpr size_t kAircraftJsonCapacity =
+    3 + kAircraftSlots * (kAircraftJsonItemCapacity - 1);
+constexpr size_t kSpectrumJsonCapacity = 259;
+constexpr size_t kStatusJsonCapacity = 6144;
+static_assert(kStatusJsonCapacity >=
+              kAircraftJsonCapacity + kSpectrumJsonCapacity + 2048);
 EXT_RAM_BSS_ATTR int16_t g_audio_ring[kAudioRing]{};
 EXT_RAM_BSS_ATTR int16_t g_audio_clip[kAudioClip]{};
 EXT_RAM_BSS_ATTR uint8_t g_wav_out[44 + kAudioClip * sizeof(int16_t)]{};
-EXT_RAM_BSS_ATTR char g_status_json[4096]{};
-EXT_RAM_BSS_ATTR char g_status_air[1280]{};
-EXT_RAM_BSS_ATTR char g_status_spec[259]{};
+EXT_RAM_BSS_ATTR char g_status_json[kStatusJsonCapacity]{};
+EXT_RAM_BSS_ATTR char g_status_air[kAircraftJsonCapacity]{};
+EXT_RAM_BSS_ATTR char g_status_spec[kSpectrumJsonCapacity]{};
 uint32_t g_wifi_up_ms = 0;
 std::atomic<uint32_t> g_audio_w{0};
 std::atomic<uint32_t> g_audio_r{0};
@@ -133,24 +143,34 @@ esp_err_t handle_status(httpd_req_t* req) {
       const Aircraft& a = snap.aircraft[i];
       char label[20];
       json_escape(label, sizeof(label), a.label);
-      char item[176];
+      char item[kAircraftJsonItemCapacity];
       const int n = snprintf(
           item, sizeof(item),
           "%s{\"id\":\"%s\",\"rng\":%.1f,\"brg\":%u,\"alt\":%ld,\"spd\":%d,"
-          "\"hdg\":%d,\"vr\":%d,\"sig\":%d,\"age\":%u,\"pos\":%s}",
+          "\"hdg\":%d,\"vr\":%d,\"sig\":%d,\"age\":%u,\"pos\":%s,"
+          "\"alt_ok\":%s,\"spd_ok\":%s,\"hdg_ok\":%s,\"vr_ok\":%s}",
           i ? "," : "", label, static_cast<double>(a.range_tenths_nm) / 10.0,
           static_cast<unsigned>(a.bearing_deg), static_cast<long>(a.altitude_ft),
           static_cast<int>(a.speed_kts), static_cast<int>(a.heading_deg),
           static_cast<int>(a.vertical_rate_fpm), static_cast<int>(a.signal_dbfs),
-          static_cast<unsigned>(a.age_seconds), a.has_position ? "true" : "false");
-      if (n < 0 || used + static_cast<size_t>(n) + 2 >= sizeof(g_status_air)) break;
+          static_cast<unsigned>(a.age_seconds), a.has_position ? "true" : "false",
+          a.has_altitude ? "true" : "false", a.has_speed ? "true" : "false",
+          a.has_heading ? "true" : "false",
+          a.has_vertical_rate ? "true" : "false");
+      if (n < 0 || static_cast<size_t>(n) >= sizeof(item) ||
+          used + static_cast<size_t>(n) + 2 >= sizeof(g_status_air)) {
+        ESP_LOGE(kLogTag, "ADS-B status JSON capacity exhausted at target %u",
+                 static_cast<unsigned>(i));
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                   "ADS-B status overflow");
+      }
       memcpy(air + used, item, static_cast<size_t>(n));
       used += static_cast<size_t>(n);
     }
   }
   memcpy(air + used, "]", 2);
 
-  snprintf(g_status_json, sizeof(g_status_json),
+  const int status_bytes = snprintf(g_status_json, sizeof(g_status_json),
            "{\"wifi_ip\":\"%s\",\"wifi_connected\":%s,\"usb_connected\":%s,"
            "\"rtl_ready\":%s,\"receiving\":%s,\"sound_enabled\":%s,\"stereo\":%s,"
            "\"rds_carrier\":%s,\"rds_locked\":%s,\"program_service\":\"%s\","
@@ -189,6 +209,12 @@ esp_err_t handle_status(httpd_req_t* req) {
            static_cast<unsigned>(snap.aircraft_tracked),
            snap.location_configured ? "true" : "false", air,
            g_control.load(std::memory_order_relaxed) ? "true" : "false");
+
+  if (status_bytes < 0 || static_cast<size_t>(status_bytes) >= sizeof(g_status_json)) {
+    ESP_LOGE(kLogTag, "Companion status JSON capacity exhausted");
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                               "status overflow");
+  }
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");

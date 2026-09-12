@@ -1001,6 +1001,35 @@ upstream's own main, not merely unmerged. Left behind, deliberately:
   but a scan that finds nothing would then pass. `Step -eq Total` still guards
   completion, so it is defensible — just not adopted silently.
 
+### 5.7f Companion ADS-B response integrity (2026-09-12)
+
+An audit of the Companion ADS-B path found three connected correctness
+problems:
+
+- Aircraft with a valid fix could be published at the radar center when the
+  receiver location had not been configured.
+- The JSON response buffer was too small for the advertised 16-target maximum
+  and could silently truncate the response.
+- The browser treated numeric zero as missing, hiding valid northbound heading,
+  sea-level altitude, stopped speed, and level-flight vertical rate.
+  Vertical-rate validity was also not carried through the complete snapshot
+  path.
+
+The implementation now uses one shared relative-position availability check
+for sorting and publication, derives JSON capacity from the 16-target limit,
+and fails closed with HTTP 500 if serialization exceeds that capacity. Explicit
+`alt_ok`, `spd_ok`, `hdg_ok`, and `vr_ok` flags are carried from the receiver
+snapshot through JSON to the browser. `tools/test_web_console_contract.py`
+protects these contracts in the quality workflow.
+
+Verification completed on 2026-09-12: the web-console contract,
+source-hygiene, UI-layout, help-documentation, LoRa serial-transfer, and
+release-metadata tests passed; `git diff --check` passed; and a full ESP-IDF
+5.5.4 build completed with `orcsdr_tab5.bin` at `0x24f300` bytes and 42%
+application-partition space free. This change set has not yet been flashed or
+checked in a live browser against the Tab5, so that remains the next hardware
+verification step.
+
 ## 5.8 Dead code and build
 
 - 705 lines of `RTL_USE_LEGACY_USB` blocks removed. The resulting binary was

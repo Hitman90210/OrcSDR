@@ -311,6 +311,14 @@ Off by default. Enable from Settings → Companion or the serial commands
 below. The page returns no passwords and no coordinates -- aircraft are sent
 as range and bearing so the receiver's own position never leaves the device.
 
+`GET /api/status` returns at most 16 entries in `adsb.targets`. A target's
+`pos` field is true only when both its aircraft position and the configured
+receiver location are valid. Consumers must use `alt_ok`, `spd_ok`, `hdg_ok`,
+and `vr_ok` to determine whether the corresponding numeric measurements are
+available; zero is a valid value, not a missing-value sentinel. The response
+capacity is sized from the target limit, and serialization failure returns HTTP
+500 instead of a partial or malformed JSON response.
+
 **Serving the page and accepting commands are two separate permissions.**
 `POST /api/action` is refused with `403 control disabled` unless control is
 explicitly enabled, and it is refused at the server rather than hidden in the

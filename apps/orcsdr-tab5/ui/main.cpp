@@ -16234,6 +16234,7 @@ void loop() {
             bool has_altitude;
             bool has_speed;
             bool has_heading;
+            bool has_vertical_rate;
           };
           static WebTrack staged[kAdsbTrackCount];
           size_t staged_count = 0;
@@ -16257,6 +16258,7 @@ void loop() {
             out.has_altitude = track.has_altitude;
             out.has_speed = track.has_speed;
             out.has_heading = track.has_heading;
+            out.has_vertical_rate = track.has_vertical_rate;
           }
           portEXIT_CRITICAL(&adsb_tracks_mux);
 
@@ -16270,7 +16272,8 @@ void loop() {
           for (size_t i = 0; i < staged_count; ++i) {
             float range_nm = 0.0f;
             int bearing_deg = 0;
-            if (staged[i].has_position && adsb_settings.location_configured) {
+            if (orcsdr::web_console::relative_position_available(
+                    staged[i].has_position, adsb_settings.location_configured)) {
               orcsdr::adsb::relative_position(adsb_settings.latitude_e7,
                                               adsb_settings.longitude_e7,
                                               staged[i].latitude, staged[i].longitude,
@@ -16282,8 +16285,12 @@ void loop() {
           // a radar with no range for a target has nowhere to draw it.
           std::sort(scored, scored + scored_count,
                     [&](const Scored& a, const Scored& b) {
-                      const bool pa = staged[a.index].has_position;
-                      const bool pb = staged[b.index].has_position;
+                      const bool pa = orcsdr::web_console::relative_position_available(
+                          staged[a.index].has_position,
+                          adsb_settings.location_configured);
+                      const bool pb = orcsdr::web_console::relative_position_available(
+                          staged[b.index].has_position,
+                          adsb_settings.location_configured);
                       if (pa != pb) return pa;
                       return a.range_nm < b.range_nm;
                     });
@@ -16312,10 +16319,12 @@ void loop() {
                 std::clamp(static_cast<int>(src.signal) / 10 - 90, -128, 127));
             out.age_seconds = static_cast<uint8_t>(
                 std::min<uint32_t>((now_ms - src.last_seen_ms) / 1000u, 255u));
-            out.has_position = src.has_position;
+            out.has_position = orcsdr::web_console::relative_position_available(
+                src.has_position, adsb_settings.location_configured);
             out.has_altitude = src.has_altitude;
             out.has_speed = src.has_speed;
             out.has_heading = src.has_heading;
+            out.has_vertical_rate = src.has_vertical_rate;
           }
         }
 

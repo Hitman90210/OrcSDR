@@ -512,7 +512,7 @@ SD health, free space, and on-demand sizes for databases, maps, and recordings. 
        width="100%">
 </p>
 
-Companion is optional. There is a LAN web console intended for something like an Android TV. It shows receiver telemetry, streams audio independently of the Tab5 speaker mute, and offers basic tuning, volume, and screen controls. It never exposes saved passwords or coordinates, but it has no TLS or web login, so enable it only on a trusted LAN. Phone connection is optional. Bluetooth speaker audio is not available on the Tab5 C6. **OrcSDR remains fully usable with no phone, BLE, GPS, or extra host software.**
+Companion is optional. There is a LAN web console intended for something like an Android TV. It shows receiver telemetry, streams audio independently of the Tab5 speaker mute, and offers basic tuning, volume, and screen controls. On ADS-B it carries up to 16 nearest targets, plots relative positions only after the receiver location is configured, and preserves valid zero-valued altitude, speed, heading, and vertical-rate measurements. It never exposes saved passwords or coordinates, but it has no TLS or web login, so enable it only on a trusted LAN. Phone connection is optional. Bluetooth speaker audio is not available on the Tab5 C6. **OrcSDR remains fully usable with no phone, BLE, GPS, or extra host software.**
 
 #### System
 

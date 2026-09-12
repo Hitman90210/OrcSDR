@@ -522,7 +522,7 @@ function paintRadar(dt){
     var al=glow*age;
     g.fillStyle='rgba(107,255,0,'+al.toFixed(3)+')';
     g.beginPath(); g.arc(x,y,Math.max(3,f*0.22),0,Math.PI*2); g.fill();
-    if(t.hdg){
+    if(t.hdg_ok){
       var hd=t.hdg*Math.PI/180, L=f*1.1;
       g.strokeStyle='rgba(107,255,0,'+(al*0.7).toFixed(3)+')'; g.lineWidth=1.5;
       g.beginPath(); g.moveTo(x,y); g.lineTo(x+Math.sin(hd)*L, y-Math.cos(hd)*L); g.stroke();
@@ -530,7 +530,7 @@ function paintRadar(dt){
     g.font='700 '+(f*0.66)+'px sans-serif'; g.textAlign='left'; g.textBaseline='bottom';
     g.fillStyle='rgba(232,242,251,'+(al*0.92).toFixed(3)+')';
     g.fillText(t.id, x+f*0.4, y-f*0.24);
-    if(t.alt){
+    if(t.alt_ok){
       g.font='600 '+(f*0.56)+'px sans-serif'; g.textBaseline='top';
       g.fillStyle='rgba(0,188,255,'+(al*0.8).toFixed(3)+')';
       g.fillText(Math.round(t.alt/100)+'', x+f*0.4, y+f*0.1);
@@ -598,12 +598,12 @@ function renderStrips(){
   if(!list.length){ host.innerHTML='<div class="empty">NO TRAFFIC DECODED</div>'; return; }
   for(var i=0;i<list.length&&i<9;i++){
     var t=list[i];
-    var sm=t.pos?(Math.round(t.brg)+'° · '+(t.spd?t.spd+' kt':'—')):'NO POSITION';
+    var sm=t.pos?(Math.round(t.brg)+'° · '+(t.spd_ok?t.spd+' kt':'—')):'NO POSITION';
     var rg=t.pos?t.rng.toFixed(1)+' NM':'—';
-    var al=t.alt?(Math.round(t.alt/100)*100).toLocaleString():'—';
+    var al=t.alt_ok?(Math.round(t.alt/100)*100).toLocaleString():'—';
     // Climb and descent: a contact at 3000 ft going up is a different thing
     // from one coming down through it.
-    if(t.vr>64) al+=' \u25B2'; else if(t.vr<-64) al+=' \u25BC';
+    if(t.vr_ok&&t.vr>64) al+=' \u25B2'; else if(t.vr_ok&&t.vr<-64) al+=' \u25BC';
     out+='<div class="strip'+(t.pos?'':' nopos')+'"><div><div class="cs">'+esc(t.id)+
          '</div><div class="sm">'+esc(sm)+'</div></div><div class="rg">'+esc(rg)+
          '</div><div class="al">'+esc(al)+'</div></div>';

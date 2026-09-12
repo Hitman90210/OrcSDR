@@ -52,6 +52,7 @@ jobs:
       - run: python tools/test_release_metadata.py
       - run: python tools/test_source_hygiene.py
       - run: python tools/test_ui_layout.py
+      - run: python tools/test_web_console_contract.py
       - run: python tools/validate-help-docs.py
 
   powershell:
