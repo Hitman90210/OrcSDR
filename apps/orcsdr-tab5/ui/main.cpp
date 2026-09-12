@@ -2632,7 +2632,27 @@ bool rtl_band_from_name(const char* name, RtlBand* out_band) {
   return false;
 }
 
-const char* rtl_mode_name(RtlBand band) {
+// VHF aviation voice is double-sideband AM -- ICAO Annex 10 fixes that for
+// 118-137 MHz -- and 108-117.975 MHz VOR/ILS is AM as well. The AIRBAND tile
+// tunes BROWSE to 121.5 MHz and dashboard_for_band() routes 118-137 MHz to it,
+// but BROWSE ran an FM discriminator everywhere, which on an AM carrier gives
+// noise rather than speech (issue #72). BROWSE is the one band whose
+// demodulator depends on where it is tuned. The AIRBAND tile still owns only
+// 118-137 MHz, so dashboard routing is unchanged.
+constexpr uint32_t kAeroAmMinHz = 108000000;
+constexpr uint32_t kAeroAmMaxHz = 137000000;
+constexpr bool band_demodulates_am(RtlBand band, uint32_t frequency_hz) {
+  return band == RtlBand::browse && frequency_hz >= kAeroAmMinHz &&
+         frequency_hz <= kAeroAmMaxHz;
+}
+static_assert(band_demodulates_am(RtlBand::browse, 121500000), "121.5 is airband");
+static_assert(band_demodulates_am(RtlBand::browse, 113000000), "VOR/ILS is AM");
+static_assert(band_demodulates_am(RtlBand::browse, kAeroAmMaxHz), "137.000 included");
+static_assert(!band_demodulates_am(RtlBand::browse, 146520000), "2 m stays FM");
+static_assert(!band_demodulates_am(RtlBand::fm, 121500000), "only BROWSE depends on frequency");
+
+const char* rtl_mode_name(RtlBand band, uint32_t frequency_hz) {
+  if (band_demodulates_am(band, frequency_hz)) return "AM";
   switch (band) {
     case RtlBand::am: return "AM";
     case RtlBand::wx: return "NFM";
@@ -2666,9 +2686,13 @@ uint32_t rtl_band_default_frequency(RtlBand band) {
   }
 }
 
-uint32_t rtl_filter_default_hz(RtlBand band) {
+uint32_t rtl_filter_default_hz(RtlBand band, uint32_t frequency_hz) {
   if (band == RtlBand::lora) return lora_bandwidth_hz.load(std::memory_order_relaxed);
-  if (band == RtlBand::am || band == RtlBand::cb) return kRtlAmFilterDefaultHz;
+  // Airband channels are 25 kHz (8.33 kHz in Europe) carrying about 6 kHz of
+  // audio; the 25 kHz NFM default below is far too wide for a DSB-AM carrier.
+  if (band == RtlBand::am || band == RtlBand::cb ||
+      band_demodulates_am(band, frequency_hz))
+    return kRtlAmFilterDefaultHz;
   if (band == RtlBand::p25) return kP25StepHz;
   if (band == RtlBand::wx || band == RtlBand::browse || band == RtlBand::adsb ||
       band == RtlBand::pocsag)
@@ -5847,7 +5871,8 @@ void service_visualizer() {
   runtime.audio_rate_sps = 48000;
   runtime.audio_demod = rtl_ui_band == RtlBand::am ||
                                 (rtl_ui_band == RtlBand::cb &&
-                                 cb_mode.load(std::memory_order_relaxed) == CbMode::am)
+                                 cb_mode.load(std::memory_order_relaxed) == CbMode::am) ||
+                                band_demodulates_am(rtl_ui_band, rtl_ui_frequency_hz)
                             ? orcsdr::visualizer::AudioDemod::am
                             : (rtl_ui_band == RtlBand::fm || rtl_ui_band == RtlBand::wx ||
                                rtl_ui_band == RtlBand::browse)
@@ -7811,7 +7836,13 @@ static void rtl_dsp_task(void *) {
         } else {
           rtl_audio_play_count = 0;
         }
-      } else if (block.band == RtlBand::am) {
+      } else if (block.band == RtlBand::am ||
+                 band_demodulates_am(
+                     block.band,
+                     rtl_requested_frequency_hz.load(std::memory_order_acquire))) {
+        // The BROWSE half of that test is the aeronautical band. Read the
+        // tuned frequency per block, so a hot retune across 108 or 137 MHz
+        // switches demodulator on the very next block.
         demodulate_am(block.data, block.bytes, block.audio_scale);
       } else if (block.band != RtlBand::adsb) {
         demodulate_fm(block.data, block.bytes, block.audio_scale, block.band == RtlBand::fm);
@@ -11251,7 +11282,7 @@ void load_state() {
       } else if (stored_band == RtlBand::am) {
         rtl_ui_frequency_hz = orcsdr::am::saved_frequency();
         rtl_requested_frequency_hz.store(rtl_ui_frequency_hz, std::memory_order_release);
-        rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(stored_band),
+        rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(stored_band, rtl_ui_frequency_hz),
                                       std::memory_order_relaxed);
       }
       Serial.printf("RTL_BAND_RESTORE band=%s\n", rtl_band_name(stored_band));
@@ -11389,7 +11420,7 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     g_iq_rec_export_pending.store(true, std::memory_order_release);
   }
   if (band != rtl_ui_band) {
-    rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(band), std::memory_order_relaxed);
+    rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(band, frequency_hz), std::memory_order_relaxed);
   }
 #if !RTL_USE_LEGACY_USB
   if (rtl_ui_band == RtlBand::am && band != RtlBand::am) {
@@ -11586,6 +11617,18 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   if (rtl_ui_band == RtlBand::fm) ui_hz = rtl_fm_sanitize_display_hz(ui_hz);
   if (!radio_session.retuned(token, ui_hz)) return false;
   const bool ui_changed = (ui_hz != rtl_ui_frequency_hz);
+  // A retune inside BROWSE can cross 108 or 137 MHz, where the correct
+  // default filter changes between the AM and NFM widths. Only restage it
+  // when that default changes *and* the current value is still the old
+  // default, so a width set by hand is kept.
+  if (ui_changed) {
+    const uint32_t was_default = rtl_filter_default_hz(
+        rtl_ui_band, rtl_clamp_frequency(rtl_ui_band, rtl_ui_frequency_hz));
+    const uint32_t now_default = rtl_filter_default_hz(rtl_ui_band, ui_hz);
+    if (now_default != was_default &&
+        rtl_filter_bandwidth_hz.load(std::memory_order_relaxed) == was_default)
+      rtl_filter_bandwidth_hz.store(now_default, std::memory_order_relaxed);
+  }
   if (ui_changed && rtl_ui_band == RtlBand::am &&
       rtl_am_gain_auto_enabled.load(std::memory_order_relaxed))
     rtl_am_gain_auto_restart.store(true, std::memory_order_release);
@@ -14438,7 +14481,7 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_FREQ") == 0) {
     Serial.printf("RTL_FREQ_STATUS band=%s frequency_hz=%u mode=%s\n",
                   rtl_band_name(rtl_ui_band), rtl_ui_frequency_hz,
-                  rtl_mode_name(rtl_ui_band));
+                  rtl_mode_name(rtl_ui_band, rtl_ui_frequency_hz));
     return;
   }
   if (strncmp(command, "RTL_FREQ ", 9) == 0 && authenticated) {
