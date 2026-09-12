@@ -1302,6 +1302,37 @@ accumulate, no early exit), and no secrets on the serial console.
     `static_assert`s in `dashboard_registry.hpp` fail the build if a future
     merge quietly adopts upstream's order. Do not "fix" them to match.
 
+12. **`VIEW RAW` in the LoRa traffic view is a button for a feature that does
+    not exist.** It is drawn at (386, 592, 202, 42) and has no touch handler,
+    while the three beside it — SAVE LOG, FILTER TYPE, CLEAR EVENTS — all work.
+    There is no `view_raw` in `ActionKind` and no raw view in `View`, so this is
+    not a wiring mistake: either build the view or remove the button. Found by
+    comparing every `button(...)` rectangle against every `hit(...)` rectangle;
+    it was the only unexplained one in the tree.
+
+13. **The false-trigger cost is in the preamble search, not the gate.** §8.10
+    settles that no level or concentration threshold separates in-channel
+    non-LoRa from LoRa. What would is a chirp-specific screen — a CSS test over
+    a short prefix, cheap enough to run before committing the ~7 s a full
+    decode takes. Make a false trigger cost milliseconds and the gate can stay
+    wide open, at which point sensitivity is free. This is the highest-value
+    LoRa work left and it is a project, not a constant.
+
+14. **Reception claims that are still only bench-verified.** The modulation and
+    filter work of 2026-09-12 was verified by reading back mode and filter
+    across every band, which proves the *decisions*, not the *audio*. Nothing
+    below has met a real transmitter:
+    - airband AM against a live aircraft or tower;
+    - the GMRS 12.5 kHz filter against a handheld on channels 8-14;
+    - amateur FM on 2 m or 70 cm against a repeater.
+    See also item 5, which covers the channel scanner's accept half.
+
+15. **Upstream issues this fork cannot act on.** `#77` (Nooelec RTL-SDR v5)
+    needs the profile support that only exists on the 0.8.0 driver line, which
+    upstream has not merged to `main` and this fork does not carry. `#82` (C6
+    firmware update on beta5/6) has no reproduction here. Both are theirs to
+    resolve first. See §5.7e for why the 0.8.0 line is not simply taken.
+
 ## 9. Map of the interesting files
 
 | File | What lives there |
