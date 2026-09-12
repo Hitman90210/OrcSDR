@@ -15,7 +15,7 @@ blunt rather than flattering.
 |---|---|---|
 | FM receive, stereo audio, presets, health | Implemented | Live hardware verified |
 | FM RDS decoding | Implemented | Sequential A–B–C–D groups, confirmed PS, voted PTY, Radio Text. Needs a 260 kHz FM filter. This dongle uses a +13 kHz LO bias that is not shown as the channel. |
-| AM broadcast dashboard | Implemented | From upstream: channel-aware tuning, bounded gain, presets, and a wideband station finder. Restores its own saved frequency on band change. |
+| AM broadcast dashboard | Implemented | From upstream: channel-aware tuning, bounded gain, presets, and a wideband station finder. Restores its own saved frequency on band change. **Bench-verified 2026-09-12**: 12/12 samples across 3 frequencies × 4 filters, entry/gain/AM-to-FM-transition regressions all pass, and the 2.4 MS/s wideband finder swept 119 channels and returned 6 real stations — 0 overruns, 0 drops throughout. |
 | ADS-B 1090 dashboard and aircraft database | Implemented | Live hardware verified; coverage depends on antenna, location, and valid position messages |
 | P25 control and clear voice following | WIP | Phase I clear voice verified; wider system compatibility in progress. Encrypted voice is not decoded. Phase II audio is not implemented. |
 | POCSAG paging | Experimental | Decoder and store verified against synthetic vectors; live traffic depends on a local transmitter |
@@ -46,7 +46,7 @@ blunt rather than flattering.
 | Global on-device Settings | Implemented | Wi-Fi and Companion remain optional |
 | Companion LAN console | Implemented | Mode-aware: ADS-B radar with climb/descent arrows, a channel faceplate for CB/GMRS/marine/weather, spectrum with RDS station name and Radio Text elsewhere. **View-and-listen by default**; visitor control is a separate opt-in switch and is refused at the server (403) when off. No TLS and no login either way, so trusted networks only. |
 | Android TV viewer | Experimental | Sideload `apps/orcsdr-tv` on Android 9 TV. Unplug the PC flash/JTAG USB cable after flashing — that cable, not general power, is the bench brownout trigger. |
-| Signed data packs | Implemented | See [maps and data](maps-and-data.md) |
+| Signed data packs | Implemented | See [maps and data](maps-and-data.md). **Bench-verified 2026-09-12**: catalog fetched over Wi-Fi, P-256 signature verified, manifest parsed, all five packs enumerated with correct installed state. Offline, a catalog check is now refused with "Connect Wi-Fi before downloading" instead of starting a download that cannot succeed. |
 | Offline maps | Implemented (build your own) | The catalog's only map is upstream's home county. `apps/orcsdr-tab5/tools/build_orcmap.py` builds one for your area from OpenStreetMap; the device prefers it. See [maps and data](maps-and-data.md). |
 | Battery operation | Implemented, with a caveat | A boot loop on battery was traced to heap corruption in the hosted SDIO path and is **masked, not fixed** (`CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK`, plus a longer C6 boot delay). See `FORK_HANDOFF.md` §3b. |
 | Bluetooth speaker audio | Unavailable | The Tab5's C6 supports BLE, not Classic Bluetooth A2DP output |
