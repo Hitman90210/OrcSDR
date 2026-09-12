@@ -1214,13 +1214,45 @@ accumulate, no early exit), and no secrets on the serial console.
    `smittix/intercept` (aggregates rtl_433/dump1090/etc.; its Meshtastic
    integration is not demodulation).
 
-10. **The LoRa trigger margin drop is unmeasured.** `748dc1f` lowered
-    `kLoraTriggerMarginDb` from 9 dB to 4 dB, correctly -- the measured clean
-    LongFast signal sat only 5-6 dB above its floor and never reached the old
-    gate. But the false-trigger rate at 4 dB has not been measured, and every
-    false trigger costs 2-3 s of blind decode. 3c cut them from 24 to 3-6 per
-    180 s by adding the concentration gate; a 180 s run says whether 4 dB gave
-    that back.
+10. **Resolved: the LoRa trigger margin is measured, and is now 8 dB.**
+    `748dc1f` had lowered `kLoraTriggerMarginDb` from 9 dB to 4 dB without
+    measuring what it cost. Adding `snr_db` to `RTL_LORA_NATIVE_DONE` made the
+    answer a direct readout. **190 s of quiet channel at 4 dB: 9 captures, 1
+    real packet, 8 false triggers** -- worse than the 3-6 per 180 s the
+    concentration gate had bought, and at **~7.4 s each** rather than the 2-3 s
+    assumed. That is **31% of the window spent decoding nothing**, during which
+    the receiver is blind to real traffic.
+
+    The false triggers split in half, and only one half is a level problem:
+
+    | Group | snr_db | Cost / 190 s |
+    |---|---|---|
+    | Noise brushing a 4 dB gate | 4.1, 4.1, 4.9, 5.3 | 30.5 s |
+    | Strong in-channel non-LoRa | 13.5, 22.8, 23.3, 23.3 | 28.8 s |
+
+    8 dB removes the first group and no observed real packet: the five real
+    decodes measured 11.7, 13.7, 19.3, 19.3 and 21.6 dB, leaving 3.7 dB of
+    clearance. **It cannot touch the second group.** Those emitters sit in the
+    channel slot with concentration indistinguishable from a packet -- the real
+    decode read `excess_db=-3.2` while false triggers read -1.4 to -3.8, so the
+    concentration gate straddles them. No level or concentration threshold
+    separates in-channel non-LoRa from LoRa; only a cheaper *chirp*-specific
+    screen would, and the preamble search that would do it is the 7 s being
+    spent. That is the next real optimisation, and it is a project.
+
+    **Confirmed at 8 dB**, same quiet channel, 200 s: **2 captures, both false,
+    at 13.4 and 12.5 dB** -- the in-channel group, exactly as predicted. False
+    triggers 8 -> 2, blind time **31% -> 7.4%**. The four 22-23 dB emitters from
+    the first run did not recur, so that population is intermittent and the
+    residual rate will vary with what else is on the band; the reduction is
+    real but 2-vs-8 is across two windows, not a controlled A/B.
+
+    One caveat carried forward: `748dc1f`'s comment records a clean LongFast
+    signal at only **5-6 dB** above its floor. Nothing in this run came close
+    to that, but the two measurements disagree, and the noise floor is an EMA
+    that rises during busy periods and compresses SNR, which could explain it.
+    **If a distant node that used to decode goes quiet, put this constant back
+    to 4 first.**
 
 11. **The dashboard `Id` numbering has permanently diverged from upstream.**
     This fork shipped `gmrs = 16` before upstream added `am`, and those values

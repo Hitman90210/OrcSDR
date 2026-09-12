@@ -1431,7 +1431,26 @@ constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 // Channel concentration rejects out-of-channel ISM traffic, so the level gate
 // only needs to establish a real rise. The measured clean LongFast signal was
 // 5-6 dB above its floor and never reached the old 9 dB requirement.
-constexpr float kLoraTriggerMarginDb = 4.0f;
+//
+// Measured at 4 dB over 190 s of quiet channel (snr_db on RTL_LORA_NATIVE_DONE
+// makes this a direct readout): 9 captures, 1 real packet, 8 false triggers --
+// worse than the 3-6 per 180 s that the concentration gate had bought, and at
+// ~7.4 s of blind decode each rather than the 2-3 s assumed, which is 31% of
+// the window spent decoding nothing. The false triggers split evenly:
+//
+//   4.1, 4.1, 4.9, 5.3 dB   noise brushing a 4 dB gate      30.5 s
+//   13.5, 22.8, 23.3, 23.3  strong in-channel non-LoRa      28.8 s
+//
+// 8 dB removes the first group and no observed real packet -- the five real
+// decodes measured 11.7, 13.7, 19.3, 19.3 and 21.6 dB, so the nearest is
+// 3.7 dB clear. It cannot touch the second group: those are genuine emitters
+// sitting in the channel slot, and no level gate distinguishes them from a
+// packet. Halving the blind time is still worth it.
+//
+// The risk is the 5-6 dB figure above. Nothing in this run came close to it,
+// but that measurement and this one disagree, and if a distant node that used
+// to decode goes quiet this constant is the first thing to put back to 4.
+constexpr float kLoraTriggerMarginDb = 8.0f;
 constexpr float kLoraTriggerHysteresisDb = 3.0f;
 constexpr float kLoraTriggerMinDbfs = -78.0f;
 // Leave enough headroom for the hysteresis arm point below the strongest
@@ -1444,8 +1463,12 @@ constexpr float lora_trigger_threshold(float noise_dbfs) {
              ? kLoraTriggerMinDbfs
              : candidate > kLoraTriggerMaxDbfs ? kLoraTriggerMaxDbfs : candidate;
 }
-static_assert(lora_trigger_threshold(-90.0f) == -78.0f);
-static_assert(lora_trigger_threshold(-23.0f) == -19.0f);
+// Written against the constants rather than against arithmetic done by hand,
+// so tuning the margin does not turn a deliberate change into a build failure
+// that says nothing about whether the clamps still hold.
+static_assert(lora_trigger_threshold(-90.0f) == kLoraTriggerMinDbfs);
+static_assert(lora_trigger_threshold(-23.0f) == -23.0f + kLoraTriggerMarginDb);
+static_assert(lora_trigger_threshold(0.0f) == kLoraTriggerMaxDbfs);
 // How concentrated the energy must be inside the LoRa channel before a
 // capture is worth spending ~2.3 s of decode on.
 //
