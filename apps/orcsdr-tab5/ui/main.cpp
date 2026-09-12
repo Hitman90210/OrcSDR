@@ -2420,7 +2420,9 @@ void set_rtl_profile_status(const char* state) {
 }
 
 void report_unsupported_frequency(uint32_t frequency_hz) {
-  set_rtl_profile_status("below 24 MHz unavailable");
+  if (rtl_capture_state.load(std::memory_order_acquire) != RtlCaptureState::running) {
+    set_rtl_profile_status("below 24 MHz unavailable");
+  }
   Serial.printf("RTL_TUNE_UNAVAILABLE profile=%u frequency_hz=%u reason=no_hf_upconverter\n",
                 static_cast<unsigned>(g_rtl_profile.load(std::memory_order_acquire)),
                 static_cast<unsigned>(frequency_hz));
