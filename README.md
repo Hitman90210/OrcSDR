@@ -155,7 +155,7 @@ OrcSDR is under active development. Stable behavior is protected around the RTL-
 
 ## License
 
-OrcSDR is released under the [MIT License](LICENSE).
+OrcSDR is licensed under [GNU AGPL-3.0-only](LICENSE), with separate commercial licensing available as described in [LICENSING.md](LICENSING.md).
 
 ---
 
