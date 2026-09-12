@@ -1247,6 +1247,28 @@ accumulate, no early exit), and no secrets on the serial console.
     residual rate will vary with what else is on the band; the reduction is
     real but 2-vs-8 is across two windows, not a controlled A/B.
 
+    **Then corrected by a busy window.** A 70 s run with one Meshtastic text
+    sent produced **2 real decodes (23.1 and 26.2 dB, CFO -1831 Hz) and 9 false
+    triggers** -- among them four at **8.7, 8.8, 8.9 and 9.6 dB**, sitting
+    0.7-1.6 dB above the new gate at a noise floor of -28.2 dBFS. So 8 dB did
+    **not** remove the noise-brushing class; it moved which excursions clear
+    it. The level metric's upper tail simply follows the threshold, and any
+    fixed margin will be brushed by it. What 8 dB bought is a **lower rate in
+    comparable conditions**, not elimination -- and the quiet and busy windows
+    are not comparable to each other, so do not read 2-per-200 s against
+    9-per-70 s as a regression.
+
+    The real decodes are the point of that run: **8 dB does not break
+    reception**, which was the open risk when it was raised.
+
+    Also visible there and not yet explained: one sent message yielded two
+    decodes with an identical -1831.1 Hz CFO plus two more strong captures
+    (26.0 and 26.2 dB) that found no preamble. Mesh rebroadcast would explain
+    repeats from *other* nodes, but a shared CFO points at one transmitter, so
+    the re-arm may be taking two captures of a single transmission and paying
+    ~8 s for the second. Worth a look before optimising the preamble search,
+    since it would be a cheaper win.
+
     One caveat carried forward: `748dc1f`'s comment records a clean LongFast
     signal at only **5-6 dB** above its floor. Nothing in this run came close
     to that, but the two measurements disagree, and the noise floor is an EMA

@@ -1441,11 +1441,14 @@ constexpr size_t kLoraQuietTailBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
 //   4.1, 4.1, 4.9, 5.3 dB   noise brushing a 4 dB gate      30.5 s
 //   13.5, 22.8, 23.3, 23.3  strong in-channel non-LoRa      28.8 s
 //
-// 8 dB removes the first group and no observed real packet -- the five real
-// decodes measured 11.7, 13.7, 19.3, 19.3 and 21.6 dB, so the nearest is
-// 3.7 dB clear. It cannot touch the second group: those are genuine emitters
-// sitting in the channel slot, and no level gate distinguishes them from a
-// packet. Halving the blind time is still worth it.
+// 8 dB costs no observed real packet -- the real decodes measured 11.7, 13.7,
+// 19.3, 19.3, 21.6, 23.1 and 26.2 dB, so the nearest is 3.7 dB clear -- and cut
+// the quiet-channel rate from 8 to 2 per ~195 s. It does not *remove* the first
+// group: a later busy window still triggered at 8.7-9.6 dB, because the level
+// metric's upper tail follows whatever threshold is set and any fixed margin
+// gets brushed by it. And it cannot touch the second group at all, which are
+// genuine emitters inside the channel slot that no level gate distinguishes
+// from a packet. What it buys is a lower rate, which is still worth having.
 //
 // The risk is the 5-6 dB figure above. Nothing in this run came close to it,
 // but that measurement and this one disagree, and if a distant node that used
