@@ -1171,6 +1171,49 @@ accumulate, no early exit), and no secrets on the serial console.
    against; scope the interleaver before promising a timeline, because it is
    thinly documented publicly.
 
+   **Surveyed the field (2026-09-12) — nobody has a software long-interleaver.**
+   Checked the two projects that work in our layer and the library everyone
+   cites:
+
+   - [`alphafox02/meshtastic-sniffer`](https://github.com/alphafox02/meshtastic-sniffer)
+     — passive Meshtastic receive from raw IQ, in C, RTL-SDR supported, with
+     LongFast/LongTurbo/ShortTurbo presets. Its bit path (`hard-decode Hamming,
+     deinterleave, gray, dewhiten, preamble-mode-vote`) is ported from
+     **gr-lora_sdr** (EPFL) and stated verified bit-exact. No mention of long
+     interleaving, Meshtastic 2.8, LR11x0 or SX128x.
+   - [SDRangel `demodmeshtastic`](https://github.com/f4exb/sdrangel/blob/master/plugins/channelrx/demodmeshtastic/readme.md)
+     — CSS from IQ, SF7–12, decrypts Meshtastic frames. Maps only CR 4/5–4/8 to
+     FEC 1–4; **5/6 and 5/7 are absent**, i.e. the same wall.
+   - [RadioLib](https://github.com/jgromes/RadioLib) `setCodingRate(cr,
+     longInterleave)` — MIT, and the licence would suit us, but it is a *chip
+     driver*: the flag sets a register and the SX126x/LR11x0 silicon does the
+     interleaving. There is no software algorithm there to port. Semtech does
+     not publish one either — the RadioLib maintainer notes the manuals now
+     "refer to their drivers for the calculation", and could not find it for
+     SX126x ([discussion #1584](https://github.com/jgromes/RadioLib/discussions/1584)).
+
+   So this is original reverse-engineering, not a port. Two consequences:
+
+   - **Licence.** Both SDR-layer projects are GPL-3.0-or-later. This project is
+     AGPL-3.0-only **with commercial licensing offered** (LICENSING.md), so
+     copying their code would poison that option. Read them and test against
+     them; do not lift source. gr-lora_sdr's **test vectors** are the clean
+     thing to harvest — data, not code, and they drop straight into the 5.7c
+     harness.
+   - **Verify the diagnosis before spending on it.** We infer LI from the
+     header CR, and the counter already exists. Park on a busy channel and read
+     `RTL_LORA_NATIVE_DONE`: if `li_headers` climbs, the diagnosis holds and
+     this is a research project. If `li_headers` stays 0 while
+     `header_failures` climbs, the blocker is ours — deinterleaver or CFO — and
+     gr-lora_sdr's vectors settle it in an afternoon. That test costs minutes
+     and decides between an afternoon and a month.
+
+   Not in our layer, nothing to learn from for the PHY (all consume packets a
+   Meshtastic node already decoded): `Yeraze/meshmonitor` (TCP/serial/BLE/MQTT
+   → web dashboard), `filipsPL/meshmqttmonitor` (MQTT → terminal),
+   `smittix/intercept` (aggregates rtl_433/dump1090/etc.; its Meshtastic
+   integration is not demodulation).
+
 10. **The LoRa trigger margin drop is unmeasured.** `748dc1f` lowered
     `kLoraTriggerMarginDb` from 9 dB to 4 dB, correctly -- the measured clean
     LongFast signal sat only 5-6 dB above its floor and never reached the old
