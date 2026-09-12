@@ -51,6 +51,14 @@ int fit_fft_size(int requested, size_t available) {
   return requested >= 256 ? requested : 0;
 }
 
+// analyze_iq only ever fills kMaxIqPoints of Snapshot::iq_i/iq_q, so sizing the
+// transform against the raw sample count let a 2048- or 4096-point request walk
+// off the end of those arrays and window whatever followed them in the struct.
+// Clamp to what actually gets filled.
+int fit_iq_fft_size(int requested, size_t bytes) {
+  return fit_fft_size(requested, std::min(bytes / 2, kMaxIqPoints));
+}
+
 size_t append_audio_window(int16_t* destination, size_t capacity, size_t used,
                            const int16_t* source, size_t count) {
   if (!destination || !capacity || !source || !count) return used;
@@ -189,7 +197,7 @@ void analyze_audio(Snapshot* next, float* work, int16_t* local_audio,
 bool analyze_iq(const uint8_t* iq, size_t bytes, Snapshot* next, float* work,
                 float* scratch, const Config& config) {
   if (!iq || !next || !work || !scratch || bytes < 512) return false;
-  const int n = fit_fft_size(config.fft_size, bytes / 2);
+  const int n = fit_iq_fft_size(config.fft_size, bytes);
   if (!n) return false;
   const size_t iq_points = std::min<size_t>(kMaxIqPoints, bytes / 2);
   float sum_i = 0, sum_q = 0, sum_i2 = 0, sum_q2 = 0;
@@ -477,8 +485,11 @@ void clear_average() {
 }
 
 bool self_check() {
+  // The last case is the one that regressed: RF Lab asks for 2048 and Doppler
+  // for up to 8192, but only kMaxIqPoints samples are ever written.
   if (fit_fft_size(1024, 372) != 256 || fit_fft_size(2048, 1024) != 1024 ||
-      fit_fft_size(256, 128) != 0)
+      fit_fft_size(256, 128) != 0 ||
+      fit_iq_fft_size(8192, kIqBytes) != static_cast<int>(kMaxIqPoints))
     return false;
   int16_t audio_window[4] = {1, 2, 3, 4};
   const int16_t audio_tail[3] = {5, 6, 7};
