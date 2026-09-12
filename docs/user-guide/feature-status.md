@@ -26,6 +26,7 @@ blunt rather than flattering.
 | Marine VHF (40 channel) | Experimental | Channel plan verified against the 50 kHz channel-number step; Ch 16 not yet listened to on air |
 | Channel scanner with lockout | Implemented | Stops on a busy channel using in-channel peak offset, not raw level. 400 ms dwell with a freshness counter. Lockouts persist per band. |
 | Shortwave / Browse | Experimental | Shared radio/scope/capture foundation |
+| VHF airband (118–137 MHz) | Implemented | The AIRBAND tile tunes Browse to 121.5 MHz. Browse demodulates **AM inside 118–137 MHz** and NFM everywhere else, because aviation voice is double-sideband AM (ICAO Annex 10) — before this it ran an FM discriminator across the whole band and produced noise. Filter narrows to 10 kHz in the airband, 25 kHz outside. **Bench-verified 2026-09-12** across the boundary: 118.000, 121.500, 134.000 and 137.000 MHz report AM/10 kHz; 146.520 (Browse's own default) and 155.000 stay NFM/25 kHz. Reception against a live aircraft or tower is still untested. |
 | Wi-Fi Analysis (2.4 GHz) | Experimental | Survey only |
 
 ## LoRa / Meshtastic
