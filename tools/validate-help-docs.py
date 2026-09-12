@@ -46,6 +46,17 @@ def main() -> None:
                 continue
             resolved = (markdown.parent / target.split("#", 1)[0]).resolve()
             assert resolved.exists(), f"Broken local link: {markdown} -> {target}"
+            # mkdocs.yml sets docs_dir to docs/user-guide, so the published site
+            # contains only the guide. A guide page linking outside that tree
+            # resolves on disk -- which is why this check used to pass it -- but
+            # fails `mkdocs build --strict` with "target is not found among
+            # documentation files", and the guide stops publishing. The house
+            # style for those is a backticked filename, not a link.
+            if markdown.is_relative_to(DOCS):
+                assert resolved.is_relative_to(DOCS), (
+                    f"User-guide page links outside the published site: {markdown} -> {target}. "
+                    "mkdocs only builds docs/user-guide; name the file in backticks instead."
+                )
     clean = DOCS / "assets" / "screenshots" / "clean"
     if clean.exists():
         hashes = {}
