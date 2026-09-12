@@ -39,7 +39,9 @@ $sumPath = Join-Path $bundle 'SHA256SUMS.txt'
 $coverPath = Join-Path $bundle 'OrcSDR-Main.png'
 $readmePath = Join-Path $bundle 'README.txt'
 $releaseNotesPath = Join-Path $bundle 'RELEASE_NOTES.txt'
-foreach ($path in @($manifestPath, $sumPath, $coverPath, $readmePath, $releaseNotesPath)) {
+$requiredPaths = @($manifestPath, $sumPath, $coverPath, $readmePath)
+if (-not $Bridge) { $requiredPaths += $releaseNotesPath }
+foreach ($path in $requiredPaths) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Missing bundle file: $path" }
 }
 
@@ -91,9 +93,12 @@ if (-not $Bridge) {
   finally { $sha.Dispose() }
   if ($embeddedHash -ne $provenance.sha256) { throw 'Embedded C6 hash does not match provenance.' }
 }
-$sumLine = (Get-Content -LiteralPath $sumPath -Raw).Trim()
-if ($sumLine -notmatch '^([0-9a-fA-F]{64}) \*(.+)$') { throw 'SHA256SUMS.txt must contain one SHA-256 entry.' }
-if ($Matches[2] -ne $manifest.firmware) { throw 'SHA256SUMS filename does not match the manifest.' }
+$firmwareName = [regex]::Escape($manifest.firmware)
+$sumLine = @(Get-Content -LiteralPath $sumPath |
+  Where-Object { $_ -match "^[0-9a-fA-F]{64} \*$firmwareName$" })
+if ($sumLine.Count -ne 1 -or $sumLine[0] -notmatch '^([0-9a-fA-F]{64}) \*(.+)$') {
+  throw 'SHA256SUMS.txt must contain exactly one entry for the declared firmware.'
+}
 $actualHash = Get-Sha256 $imagePath
 if ($Matches[1].ToLowerInvariant() -ne $actualHash -or $manifest.sha256 -ne $actualHash) {
   throw 'Firmware SHA-256 does not match the manifest and checksum file.'
