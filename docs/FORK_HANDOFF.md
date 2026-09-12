@@ -1216,96 +1216,69 @@ accumulate, no early exit), and no secrets on the serial console.
    `smittix/intercept` (aggregates rtl_433/dump1090/etc.; its Meshtastic
    integration is not demodulation).
 
-10. **Measured: the LoRa trigger margin's cost is known. It stays at 4 dB.**
-    `748dc1f` had lowered `kLoraTriggerMarginDb` from 9 dB to 4 dB without
-    measuring what it cost. Adding `snr_db` to `RTL_LORA_NATIVE_DONE` made the
-    answer a direct readout. **190 s of quiet channel at 4 dB: 9 captures, 1
-    real packet, 8 false triggers** -- worse than the 3-6 per 180 s the
-    concentration gate had bought, and at **~7.4 s each** rather than the 2-3 s
-    assumed. That is **31% of the window spent decoding nothing**, during which
-    the receiver is blind to real traffic.
+10. **Measured: what the 4 dB LoRa trigger margin costs. It stays at 4 dB.**
+    `748dc1f` lowered `kLoraTriggerMarginDb` from 9 dB to 4 dB without measuring
+    the cost. Adding `snr_db` to `RTL_LORA_NATIVE_DONE` made it a direct
+    readout. Raising it to 8 dB was then tried and reverted; both numbers are
+    wrong in different ways, and the entry below is the evidence for picking the
+    one that fails safe.
 
-    The false triggers split in half, and only one half is a level problem:
+    **The cost of 4 dB.** 190 s of quiet channel: **9 captures, 1 real packet,
+    8 false triggers**, at **~7.4 s of blind decode each** rather than the 2-3 s
+    once assumed. That is **31% of the window spent decoding nothing**, deaf to
+    real traffic throughout -- and worse than the 3-6 per 180 s the
+    concentration gate had bought. The false triggers split in half, and only
+    one half is a level problem:
 
-    | Group | snr_db | Cost / 190 s |
+    | Group | `snr_db` | Cost / 190 s |
     |---|---|---|
-    | Noise brushing a 4 dB gate | 4.1, 4.1, 4.9, 5.3 | 30.5 s |
+    | Noise brushing the gate | 4.1, 4.1, 4.9, 5.3 | 30.5 s |
     | Strong in-channel non-LoRa | 13.5, 22.8, 23.3, 23.3 | 28.8 s |
 
-    8 dB removes the first group and no observed real packet: the five real
-    decodes measured 11.7, 13.7, 19.3, 19.3 and 21.6 dB, leaving 3.7 dB of
-    clearance. **It cannot touch the second group.** Those emitters sit in the
-    channel slot with concentration indistinguishable from a packet -- the real
-    decode read `excess_db=-3.2` while false triggers read -1.4 to -3.8, so the
-    concentration gate straddles them. No level or concentration threshold
-    separates in-channel non-LoRa from LoRa; only a cheaper *chirp*-specific
-    screen would, and the preamble search that would do it is the 7 s being
-    spent. That is the next real optimisation, and it is a project.
+    **Why 8 dB did not fix it.** A quiet 200 s run at 8 dB looked convincing --
+    2 captures, both false, blind time 31% -> 7.4%. Then a busy 70 s window
+    produced 9 false triggers including four at **8.7, 8.8, 8.9 and 9.6 dB**,
+    sitting 0.7-1.6 dB above the new gate. The noise-brushing group was not
+    removed; it **moved**. The level metric's upper tail follows whatever
+    threshold is set, so no fixed margin escapes it. (Do not read 2-per-200 s
+    against 9-per-70 s as a regression -- quiet and busy windows are not
+    comparable.)
 
-    **Confirmed at 8 dB**, same quiet channel, 200 s: **2 captures, both false,
-    at 13.4 and 12.5 dB** -- the in-channel group, exactly as predicted. False
-    triggers 8 -> 2, blind time **31% -> 7.4%**. The four 22-23 dB emitters from
-    the first run did not recur, so that population is intermittent and the
-    residual rate will vary with what else is on the band; the reduction is
-    real but 2-vs-8 is across two windows, not a controlled A/B.
+    **Why 8 dB was actively unsafe.** 3c measured real LongFast packets at
+    -33 to -35.7 dBFS against a -39 dBFS floor -- **3.3 to 6 dB** -- and a 9 dB
+    gate rejecting exactly those is why this constant went to 4 in the first
+    place. An 8 dB gate reinstates most of that fault. The measurements do not
+    conflict: 3c's were at a **fixed 19.7 dB tuner gain**, the recent ones at
+    **automatic**, which is why the recent floor sat at -28 dBFS and every
+    decode cleared 11.7 dB. Reception itself was fine at 8 dB -- two texts sent,
+    two decoded -- but that only proves strong local traffic still works.
 
-    **Then corrected by a busy window.** A 70 s run with **two** Meshtastic
-    texts sent produced **2 real decodes (23.1 and 26.2 dB, CFO -1831 Hz) --
-    one per message, a 2-for-2 -- and 9 false
-    triggers** -- among them four at **8.7, 8.8, 8.9 and 9.6 dB**, sitting
-    0.7-1.6 dB above the new gate at a noise floor of -28.2 dBFS. So 8 dB did
-    **not** remove the noise-brushing class; it moved which excursions clear
-    it. The level metric's upper tail simply follows the threshold, and any
-    fixed margin will be brushed by it. What 8 dB bought is a **lower rate in
-    comparable conditions**, not elimination -- and the quiet and busy windows
-    are not comparable to each other, so do not read 2-per-200 s against
-    9-per-70 s as a regression.
+    So the trade is **31% of the window lost to blind decodes** against
+    **every packet under the gate lost outright**, and which is worse depends on
+    how much weak traffic is really out there, which nobody has measured on this
+    fork. 4 dB keeps the receiver sensitive and pays in wasted decodes, which is
+    the safer way to be wrong.
 
-    The real decodes are the point of that run: **8 dB does not break
-    reception**, which was the open risk when it was raised. Two texts sent,
-    two decoded, both with the same -1831.1 Hz CFO because both came from the
-    same node. Nothing was missed.
+    **Neither number is the answer.** The concentration gate cannot separate the
+    second group either: a real decode read `excess_db=-3.2` while false
+    triggers read -1.4 to -3.8, so it straddles them. No level or concentration
+    threshold distinguishes in-channel non-LoRa from LoRa. What would is a
+    **chirp-specific screen** -- a CSS test over a short prefix, cheap enough to
+    run before committing 7 s. Make a false trigger cost milliseconds and the
+    gate can stay wide open, at which point sensitivity is free. That is the
+    work worth doing here, and it is a project rather than a constant.
 
-    A weaker open question remains from that window. Alongside the two decodes
-    were two more strong captures -- 26.0 dB at -2.2 dBFS and 26.2 dB at
-    -2.0 dBFS -- that found no preamble, so four strong captures served two
-    messages. That *may* be the re-arm taking a second capture of a
-    transmission whose preamble has already passed, paying ~8 s for nothing;
-    it may equally be neighbours rebroadcasting, or the node's own acks and
-    telemetry. **The evidence does not separate those**, and an earlier reading
-    of it here -- that one message had produced two decodes -- was simply wrong
-    about how many were sent. Settling it needs timestamps on the capture
-    lines, which `RTL_LORA_NATIVE_DONE` does not carry. Cheap to add, and worth
-    adding before anyone optimises the preamble search on the strength of a
-    hunch.
-
-    **Reverted to 4 dB.** 8 dB shipped briefly and was put back on two grounds,
-    the second decisive:
-
-    1. It does not remove the noise-brushing group, it *moves* it — the busy
-       window above proves that. The level metric's upper tail follows whatever
-       threshold is set, so no fixed margin escapes it.
-    2. **3c measured real LongFast packets at -33 to -35.7 dBFS against a
-       -39 dBFS floor — 3.3 to 6 dB** — and a 9 dB gate rejecting exactly those
-       is why this constant was dropped to 4 in the first place. An 8 dB gate
-       reinstates most of that fault. The measurements are not in conflict: 3c's
-       were taken at a **fixed 19.7 dB tuner gain**, today's at **automatic**,
-       which is why today's floor sat at -28 dBFS and every decode cleared
-       11.7 dB.
-
-    So the real trade is losing **31% of the window to blind decodes** against
-    losing **every packet under the gate outright**, and which is worse depends
-    on how much weak traffic is actually out there — which nobody has measured
-    on this fork. 4 dB keeps the receiver sensitive and pays in wasted decodes,
-    which is the safer way to be wrong, and it is the setting the weak-signal
-    fix in 3c was written for.
-
-    **Neither number is the answer.** A false trigger costs ~7.4 s because the
-    preamble search runs over the whole buffer before giving up. Make that
-    screen cheap — a chirp-rate test over a short prefix that either sees CSS or
-    does not — and a false trigger costs milliseconds, at which point the gate
-    can stay wide open and sensitivity costs nothing. That is the work worth
-    doing here.
+    **Still open: are some captures duplicates?** One busy window produced four
+    strong captures for two sent messages -- the two that decoded, plus 26.0 dB
+    at -2.2 dBFS and 26.2 dB at -2.0 dBFS that found no preamble. Those extra
+    two may be the re-arm catching the tail of a transmission it just decoded,
+    or neighbours rebroadcasting, or the node's own acks. `RTL_LORA_NATIVE_DONE`
+    now carries `trigger_ms` and `gap_ms` to settle it: **a gap near
+    `elapsed_ms` means a duplicate; a gap well beyond it means a separate
+    event.** A 260 s idle run showed gaps of 116.3 s and 13.7 s against ~7 s
+    decodes, so all three were distinct -- the question needs a window with
+    traffic in it. Worth answering before optimising the preamble search, since
+    not capturing the same packet twice would be the cheaper win.
 
 11. **The dashboard `Id` numbering has permanently diverged from upstream.**
     This fork shipped `gmrs = 16` before upstream added `am`, and those values
