@@ -25,6 +25,37 @@ constexpr int kRailW = 286;
 constexpr int kRailY = 82;
 constexpr int kRailRowH = 64;
 constexpr uint8_t kSettingsMinTextSize = 2;
+// Data-pack row geometry. Named because draw_data_maps() and handle_touch()
+// each repeated these as literals, which is how a button ends up drawn in one
+// place and pressed in another.
+constexpr int kPackRowX = 330;
+constexpr int kPackRowW = 888;
+constexpr int kPackTextX = 350;
+constexpr int kPackButtonY = 14;   // relative to the row's top
+constexpr int kPackButtonH = 42;
+// 150 px because "UNAVAILABLE" is 11 characters, and every label here is drawn
+// at size 2 = 12 px per character: 132 px of text in the old 132 px button sat
+// flush against both rounded corners.
+constexpr int kPackInstallX = 912;
+constexpr int kPackInstallW = 150;
+constexpr int kPackRemoveX = 1072;
+constexpr int kPackRemoveW = 126;
+// What the title and detail lines may use before they run under the buttons.
+constexpr int kPackTextBudget = kPackInstallX - kPackTextX - 12;
+// 12 px per character at size 2, which is what every label in this file is
+// drawn at. Asserted rather than trusted: the row is laid out by hand, and the
+// only reason the overflow above was ever found was someone looking at it.
+constexpr int kSize2CharPx = 12;
+static_assert(kPackInstallX + kPackInstallW <= kPackRemoveX,
+              "install and remove buttons overlap");
+static_assert(kPackRemoveX + kPackRemoveW <= kPackRowX + kPackRowW,
+              "remove button runs past the row panel");
+static_assert(11 * kSize2CharPx < kPackInstallW,
+              "\"UNAVAILABLE\" does not fit the install button");
+static_assert(7 * kSize2CharPx < kPackRemoveW,
+              "\"CONFIRM\" does not fit the remove button");
+static_assert(kPackTextBudget > 0 && kPackTextX >= kPackRowX,
+              "pack text does not start inside the row");
 constexpr uint16_t kRanges[] = {10, 25, 50, 100};
 constexpr uint16_t kTimeouts[] = {0, 30, 60, 120, 300};
 constexpr const char* kLabels[] = {
@@ -101,6 +132,26 @@ void switch_row(const char* label, int y, bool on) {
   text(label, 330, y, kMuted, 2);
   toggle_switch(y, on);
   M5.Display.drawFastHLine(330, y + 31, 888, 0x2945);
+}
+
+// Draw `value` left-aligned, truncating with an ellipsis at `budget` pixels.
+// Catalog fields are variable length -- a pack version of "0.2.0-beta.6" with a
+// 2026 source date and three-digit megabytes already reaches 600 px, which ran
+// the detail line under the install button. Measured rather than counted
+// characters, because text() clamps to kSettingsMinTextSize and the caller's
+// requested size is not always what gets drawn.
+void text_clipped(const char* value, int x, int y, int budget, uint16_t color,
+                  uint8_t size = 2) {
+  char line[128];
+  snprintf(line, sizeof(line), "%s", value);
+  M5.Display.setTextSize(std::max(size, kSettingsMinTextSize));
+  if (M5.Display.textWidth(line) > budget) {
+    size_t length = std::strlen(line);
+    const int ellipsis = M5.Display.textWidth("...");
+    while (length && M5.Display.textWidth(line) + ellipsis > budget) line[--length] = '\0';
+    if (length + 4 <= sizeof(line)) std::strcat(line, "...");
+  }
+  text(line, x, y, color, size, middle_left);
 }
 
 void button(const char* label, int x, int y, int w, int h, uint16_t fill) {
@@ -325,24 +376,27 @@ void draw_data_maps() {
   for (uint8_t i = 0; i < 5; ++i) {
     const auto& pack = g_state.catalog_packs[i];
     const int y = 185 + i * 96;
-    M5.Display.fillRoundRect(330, y, 888, 88, 8, kPanel);
-    M5.Display.drawRoundRect(330, y, 888, 88, 8, kBlue);
-    text(pack.title[0] ? pack.title : "DATA PACK", 350, y + 24, kBlue, 3);
+    M5.Display.fillRoundRect(kPackRowX, y, kPackRowW, 88, 8, kPanel);
+    M5.Display.drawRoundRect(kPackRowX, y, kPackRowW, 88, 8, kBlue);
+    text_clipped(pack.title[0] ? pack.title : "DATA PACK", kPackTextX, y + 24,
+                 kPackTextBudget, kBlue, 3);
     char detail[96];
     snprintf(detail, sizeof(detail), "v%s  source %s  %.1f + %.1f MB",
              pack.version[0] ? pack.version : "--", pack.source_date[0] ? pack.source_date : "--",
              pack.runtime_bytes / 1048576.0, pack.archive_bytes / 1048576.0);
-    text(detail, 350, y + 47, TFT_WHITE, 1);
-    text(pack.status[0] ? pack.status : "CHECK CATALOG", 350, y + 70,
-         pack.installed ? kGreen : kMuted, 1);
+    text_clipped(detail, kPackTextX, y + 47, kPackTextBudget, TFT_WHITE, 1);
+    text_clipped(pack.status[0] ? pack.status : "CHECK CATALOG", kPackTextX, y + 70,
+                 kPackTextBudget, pack.installed ? kGreen : kMuted, 1);
     const char* install =
         g_state.catalog_ready && !pack.available ? "UNAVAILABLE"
         : pack.installed ? (pack.update_available ? "UPDATE" : "REINSTALL")
                          : "INSTALL";
     const bool can_install =
         pack.available && g_state.catalog_ready && !g_state.catalog_busy;
-    button(install, 930, y + 14, 132, 42, can_install ? TFT_DARKCYAN : TFT_DARKGREY);
-    button(g_catalog_remove_armed == i ? "CONFIRM" : "REMOVE", 1072, y + 14, 126, 42,
+    button(install, kPackInstallX, y + kPackButtonY, kPackInstallW, kPackButtonH,
+           can_install ? TFT_DARKCYAN : TFT_DARKGREY);
+    button(g_catalog_remove_armed == i ? "CONFIRM" : "REMOVE", kPackRemoveX,
+           y + kPackButtonY, kPackRemoveW, kPackButtonH,
            pack.installed && !g_state.catalog_busy ? TFT_MAROON : TFT_DARKGREY);
   }
   // Downloading 34 MB over the C6 link is the least reliable way to get
@@ -890,10 +944,12 @@ Action handle_touch(int32_t x, int32_t y) {
       return {ActionKind::catalog_check, 0};
     for (uint8_t i = 0; i < 5; ++i) {
       const int row_y = 185 + i * 96;
-      if (hit(x, y, 930, row_y + 14, 132, 42) && g_state.catalog_ready &&
+      if (hit(x, y, kPackInstallX, row_y + kPackButtonY, kPackInstallW, kPackButtonH) &&
+          g_state.catalog_ready &&
           !g_state.catalog_busy && g_state.catalog_packs[i].available)
         return {ActionKind::catalog_install, i};
-      if (hit(x, y, 1072, row_y + 14, 126, 42) && g_state.catalog_packs[i].installed && !g_state.catalog_busy) {
+      if (hit(x, y, kPackRemoveX, row_y + kPackButtonY, kPackRemoveW, kPackButtonH) &&
+          g_state.catalog_packs[i].installed && !g_state.catalog_busy) {
         if (g_catalog_remove_armed == i) {
           g_catalog_remove_armed = -1;
           return {ActionKind::catalog_remove, i};
