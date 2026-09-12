@@ -1046,7 +1046,8 @@ sends nothing back for an unknown command, or for a gated command such as
 `RTL_TUNE` or `RTL_WEB ON` once the session has lapsed. A script that waits
 longer than 5 s between commands without sending `PING` sees what looks like the
 device dropping commands. The verbosity command is `RTL_SERIAL VERBOSITY`, with a
-space; the underscore spelling is not a command.
+space; the underscore spelling is not a command. (Both silences are gone now: see
+item 16 below and `docs/API_SERIAL_CLI.md`. Older builds still behave this way.)
 
 ## 5.8 Dead code and build
 
@@ -1380,20 +1381,44 @@ accumulate, no early exit), and no secrets on the serial console.
     firmware update on beta5/6) has no reproduction here. Both are theirs to
     resolve first. See §5.7e for why the 0.8.0 line is not simply taken.
 
-16. **Unauthenticated and unknown serial commands get no reply.**
-    `process_command()` has no fallback. A gated handler written as
-    `... == 0 && authenticated` does nothing when the session has lapsed, and a
-    typo does the same, so a host gets silence in both cases.
-    - Sessions lapse `kSessionTimeoutMs` (5 s) after the last command, so any
-      host that pauses without sending `PING` runs into this. On 2026-09-12 it
-      produced a false "commands dropped on the ADS-B screen" diagnosis (§5.7f).
-    - Some handlers already reply `..._ERROR auth_required`: `RTL_SERIAL
-      VERBOSITY`, `RTL_UI ACTION` and `RTL_WIFI_CONNECT_SAVED`. The rest should
-      do the same.
-    - It is not a one-line fix. A catch-all at the end of the function would
-      also fire after handlers that do not `return` (at least the `ACK` branch
-      does not). Host tools also need checking for any new line they could
-      mistake for an expected reply, and `PING` and `ACK` must stay silent.
+16. **Unauthenticated and unknown serial commands used to get no reply (fixed
+    2026-09-12).** Sessions lapse `kSessionTimeoutMs` (5 s) after the last
+    command. A handler written as `... == 0 && authenticated` then did nothing,
+    and so did a typo, which produced a false "commands dropped on the ADS-B
+    screen" diagnosis (§5.7f). Now:
+    - Every gated handler checks the session inside its own branch and answers
+      `<FAMILY>_ERROR auth_required`. 29 handlers that used to be silent now do
+      this; the full table is in `docs/API_SERIAL_CLI.md`. `AUTH` before `PAIR` answers
+      `AUTH_ERROR not_paired`, and `RTL_ADSB_STOP` off the ADS-B band answers
+      `RTL_ADSB_STOP_ERROR not_adsb` instead of falling through.
+    - The function ends in a fallback, `CMD_ERROR unknown_command verb=<VERB>`.
+      It echoes the verb only, since arguments can hold key hex. Lines starting
+      with `{` stay unanswered.
+    - The fallback is safe only because every top-level branch returns. Two did
+      not: the `ACK` branch and the `UI_DOC_*` block, whose unknown subcommands
+      now answer `UI_DOC_ERROR unknown_command`. A brace-aware audit of all 153
+      top-level branches found no remaining fall-through.
+    - `PING` and `ACK` stay silent with or without a session.
+      `run-tab5-ui-regression.ps1` sends `PING` every second while it waits.
+    - Host parsers checked: `help_media.py`, `screenshot_tab5.py`,
+      `capture_visualizers.py`, `capture_landing_dashboards.py`,
+      `lora_rf_test_suite.py`, `decode_orciq.py`, `tab5_serial_auth.ps1` and the
+      UI, P25, POCSAG and web-audio validation scripts. All of them anchor on a
+      command-specific prefix, and none can take a new line for success.
+      `lora_rf_test_suite.py` logs any `RTL_STOP*` line as a fault, but it never
+      sends `RTL_STOP`. The OrcLink host (`orclinkd`) lives in another repo and
+      was not checked.
+    - Hardware, COM3. Before flashing, the build already on the device (it
+      reports `v0.2.0`, as does every build) printed nothing for unauthenticated
+      `RTL_TUNE LORA 906875000`, `RTL_WEB ON`, `TEST_PRESSURE` or an unknown
+      command.
+    - After flashing, the new build answered `RTL_TUNE_ERROR auth_required` and
+      the other new replies, and the band did not move. It still answered
+      `RTL_TUNE_OK` with a session and kept `PING`/`ACK` silent in both states
+      (23/23). It also passed `RTL_UI_REGRESSION CHECK` and the `-SelfCheck`
+      host test. Band, screen and `TRACE` verbosity were restored afterwards.
+    - Not changed: `RTL_P25_SCAN` with a session prints no reply of its own; its
+      survey start line is the only sign it ran.
 
 17. **Fixes offered to upstream (2026-09-12).** There are two branches on this
     fork. Each is based on upstream `main` at `c5b3423`, carries exactly one

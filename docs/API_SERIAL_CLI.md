@@ -14,11 +14,13 @@ is already doing live.
 
 Send one command per line. Most commands reply with one or more lines
 prefixed by the command's own name (e.g. `RTL_TUNE ...` replies
-`RTL_TUNE_OK ...` or `RTL_TUNE_INVALID ...`). A command that doesn't match
-anything produces no reply at all — there is no error line for "unknown
-command," so typos fail silently. `RTL_HELP` is authoritative for the exact
-command set; this document explains what each one does and how to use them
-together.
+`RTL_TUNE_OK ...` or `RTL_TUNE_INVALID ...`). A line that matches no command
+gets `CMD_ERROR unknown_command verb=<VERB>`, and a command that needs a session
+sent without one gets `<FAMILY>_ERROR auth_required`; see
+[Unauthenticated and unknown commands](#unauthenticated-and-unknown-commands).
+`PING` and `ACK` are the exceptions and are never answered. `RTL_HELP` is
+authoritative for the exact command set; this document explains what each one
+does and how to use them together.
 
 Every operator-facing control must expose a matching serial command or record
 why it cannot. `RTL_SCREEN_STATUS` is the read-only render-ownership diagnostic:
@@ -135,6 +137,98 @@ receiver diagnostics remain available for bring-up:
 The pairing key is stored in NVS after first pair and persists across reboots.
 The supported PowerShell transfer and validation tools perform this handshake
 from the untracked `.orclink/ui-doc.key`; do not hand-roll proofs in shell one-liners.
+
+### Unauthenticated and unknown commands
+
+A session ends `kSessionTimeoutMs` (5 s) after the host's last command. Any
+line refreshes it, so a host that may pause longer should send `PING` about
+once a second; after a lapse it has to `PAIR`/`AUTH` again. A gated command sent
+without a session does nothing and answers with one line:
+
+| Command sent without a session | Reply |
+|---|---|
+| `RTL_TUNE <BAND> <HZ>` | `RTL_TUNE_ERROR auth_required` |
+| `RTL_FREQ <HZ>` | `RTL_FREQ_ERROR auth_required` |
+| `RTL_CAPTURE [...]`, `RTL_LISTEN <BAND>` | `RTL_CAPTURE_ERROR auth_required` |
+| `RTL_STOP` | `RTL_STOP_ERROR auth_required` (the `ORC_LORA_TEST_BUILD` bench build still stops without a session) |
+| `RTL_VOLUME <0-32>` | `RTL_VOLUME_ERROR auth_required` |
+| `RTL_SQUELCH <dBFS>` | `RTL_SQUELCH_ERROR auth_required` |
+| `RTL_WEB ON\|OFF` | `RTL_WEB_ERROR auth_required` |
+| `RTL_WEB CONTROL ON\|OFF` | `RTL_WEB_CONTROL_ERROR auth_required` |
+| `RTL_PRESET_SCAN` / `RTL_PRESET_TUNE <n>` | `RTL_PRESET_SCAN_ERROR` / `RTL_PRESET_TUNE_ERROR auth_required` |
+| `RTL_CHANNEL_SCAN` / `RTL_CHANNEL_SCAN_STOP` | `RTL_CHANNEL_SCAN_ERROR` / `RTL_CHANNEL_SCAN_STOP_ERROR auth_required` |
+| `RTL_CHANNEL_LOCK <name>`, `RTL_CHANNEL_UNLOCK <name>` | `RTL_CHANNEL_LOCK_ERROR auth_required` |
+| `RTL_CHANNEL_LOCK_CLEAR` | `RTL_CHANNEL_LOCK_CLEAR_ERROR auth_required` |
+| `RTL_LORA_TUNE <HZ>` | `RTL_LORA_TUNE_ERROR auth_required` |
+| `RTL_LORA_MODEM <sf> <bw>` | `RTL_LORA_MODEM_ERROR auth_required` |
+| `RTL_LORA_AUTO ON\|OFF` | `RTL_LORA_AUTO_ERROR auth_required` |
+| `RTL_POCSAG_SCAN`, `_SCAN_STOP`, `_SET_BAUD`, `_SET_POLARITY`, `_TUNE` | the same name plus `_ERROR auth_required`, e.g. `RTL_POCSAG_TUNE_ERROR auth_required` |
+| `RTL_P25_SCAN` / `RTL_P25_CONFIG_RELOAD` | `RTL_P25_SCAN_ERROR` / `RTL_P25_CONFIG_RELOAD_ERROR auth_required` |
+| `RTL_P25_IQ_START`, `RTL_P25_IQ_STOP` | `RTL_P25_IQ_ERROR auth_required` |
+| `RTL_P25_REPLAY`, `RTL_P25_MODULATION <mode>`, `RTL_P25_PHASE2_TRACE ON\|OFF` | `RTL_P25_REPLAY_ERROR`, `RTL_P25_MODULATION_ERROR`, `RTL_P25_PHASE2_TRACE_ERROR auth_required` |
+| `RTL_P25_PROFILE_SELECT\|IMPORT\|EXPORT\|RENAME\|DELETE` | `RTL_P25_PROFILE_ERROR auth_required` |
+| `RTL_ADSB_START` / `RTL_ADSB_STOP` / `RTL_ADSB_LOCATION` | `RTL_ADSB_START_ERROR` / `RTL_ADSB_STOP_ERROR` / `RTL_ADSB_LOCATION_ERROR auth_required` |
+| `RTL_DRIVER GAINMODE\|GAIN\|RTLAGC\|BIAS ...` | `RTL_DRIVER_ERROR auth_required` |
+| `RTL_RESET` | `RTL_RESET_ERROR auth_required` |
+| `RTL_SERIAL VERBOSITY <level>` | `RTL_SERIAL_VERBOSITY_ERROR auth_required` |
+| `RTL_UI OPEN` / `RTL_UI ACTION` / `RTL_RF24_PAGE` | `RTL_UI_OPEN_ERROR` / `RTL_UI_ACTION_ERROR` / `RTL_RF24_PAGE_ERROR auth_required` |
+| `RTL_UI_REGRESSION RUN` | `RTL_UI_REGRESSION_RESULT mode=RUN pass=0 reason=unauthenticated` |
+| `RTL_LAB` / `RTL_VIS` commands that change state | `RTL_LAB_ERROR` / `RTL_VIS_ERROR auth_required` |
+| `UI_DOC_*`, `UI_CAPTURE <slug>` / `UI_SNAPSHOT <slug>` | `UI_DOC_ERROR` / `UI_SNAPSHOT_ERROR auth_required` |
+| `RTL_WIFI_SCAN`, `_RESULTS`, `_PROFILES`, `_DISCONNECT`, `_RESET_LINK` | the same name plus `_ERROR auth_required` |
+| `RTL_WIFI_CONNECT_SAVED [PAUSE\|LIVE]` | `RTL_WIFI_CONNECT_ERROR auth_required` |
+| `RTL_WIFI_C6_UPDATE CONFIRM` | `RTL_WIFI_C6_UPDATE_ERROR auth_required` |
+| `RTL_CATALOG_CHECK\|FETCH\|INSTALL\|REMOVE` | `RTL_CATALOG_ERROR auth_required` |
+| `RTL_LOCATION STATUS\|IP\|LOOKUP\|CONFIRM` | `RTL_LOCATION_ERROR auth_required` |
+| `SD_LIST` / `SD_REMOVE` | `SD_LIST_ERROR` / `SD_REMOVE_ERROR auth_required` |
+| `SD_GET_BEGIN`, `SD_GET_CHUNK` / `SD_PUT_BEGIN`, `SD_PUT_CHUNK` | `SD_GET_ERROR` / `SD_PUT_ERROR auth_required`; a transfer already in progress aborts with reason `auth_expired` instead |
+| `SET_WIFI` | `WIFI_ERROR auth_required` |
+| `PREPARE_FLASH` | `FLASH_ERROR auth_required` |
+| `INSTALL_STATUS` | `WORKFLOW_ERROR auth_required` |
+| `ROTATE_KEY` | `ROTATE_ERROR auth_required` |
+| `TEST_PRESSURE`, `PRESSURE_ACK` | `PRESSURE_ERROR auth_required` |
+
+The rest of the protocol's edge cases:
+
+- **`PING` and `ACK <seq>` are never answered**, with or without a session.
+  Hosts send them on a timer while waiting for other replies, so an answer
+  would only be noise.
+- **`AUTH` before any `PAIR`** answers `AUTH_ERROR not_paired`.
+- **`RTL_ADSB_STOP` with a session while the band is not ADS-B** answers
+  `RTL_ADSB_STOP_ERROR not_adsb`.
+- **An unrecognised `UI_DOC_*` subcommand with a session** answers
+  `UI_DOC_ERROR unknown_command`.
+- **Any other line that no command claims** answers
+  `CMD_ERROR unknown_command verb=<VERB>`. `<VERB>` is the first word of the
+  line, at most 32 characters, with anything outside `[A-Za-z0-9_]` shown as
+  `?`. Arguments are never echoed, because they can carry key or password hex.
+  The reply is the same with or without a session, so it cannot tell you
+  whether you are authenticated; a gated command's `auth_required` can.
+- **A line starting with `{`** is a JSON frame, not a command, and gets no reply.
+- A command that is handled but has nothing to report still prints nothing (for
+  example `RTL_TOOL SCOPE`). The fallback only answers lines no handler claimed.
+
+Firmware built before 2026-09-12 printed nothing at all in these cases, so on an
+older build silence usually means a lapsed session or a typo, not a dropped
+command:
+
+- an unknown command, an unknown `UI_DOC_*` subcommand, or `AUTH` before `PAIR`;
+- without a session: `RTL_TUNE`, `RTL_FREQ <HZ>`, `RTL_CAPTURE`/`RTL_LISTEN`,
+  `RTL_STOP`, `RTL_VOLUME <n>`, `RTL_SQUELCH <dBFS>`, `RTL_WEB ON|OFF`,
+  `RTL_WEB CONTROL`, `RTL_PRESET_SCAN`, `RTL_PRESET_TUNE`, `RTL_CHANNEL_SCAN`,
+  `RTL_CHANNEL_SCAN_STOP`, `RTL_CHANNEL_LOCK_CLEAR`, `RTL_LORA_TUNE`,
+  `RTL_LORA_MODEM <sf> <bw>`, `RTL_LORA_AUTO`, the five `RTL_POCSAG_*` controls,
+  `RTL_P25_SCAN`, `RTL_P25_CONFIG_RELOAD`, `SET_WIFI`, `PREPARE_FLASH`,
+  `INSTALL_STATUS`, `ROTATE_KEY`, `TEST_PRESSURE` and `PRESSURE_ACK`;
+- `RTL_ADSB_STOP` while the band was not ADS-B, with or without a session.
+
+Treat an `_ERROR` line as that command's final answer, and match the complete
+reply token anchored at the start of the line rather than a shorter stem. Two of
+the error lines share a stem with other output: `RTL_STOP_ERROR` with
+`RTL_STOP_RESULT` and `RTL_STOP bytes=`, and `RTL_LORA_AUTO_ERROR` with the
+`RTL_LORA_AUTO ON|OFF` success line. So wait for `^RTL_STOPPING$` or
+`^RTL_LORA_AUTO (ON|OFF)$`, not for anything starting with `RTL_STOP` or
+`RTL_LORA_AUTO`.
 
 ## Tuning and band control
 

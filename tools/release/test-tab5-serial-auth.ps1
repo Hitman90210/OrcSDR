@@ -41,7 +41,10 @@ foreach ($marker in @('SD_LIST_ERROR auth_required', 'SD_GET_ERROR auth_required
                        'RTL_WIFI_RESULTS_ERROR auth_required',
                        'RTL_WIFI_PROFILES_ERROR auth_required',
                        'RTL_ADSB_LOCATION_ERROR auth_required',
-                       'RTL_LOCATION_ERROR auth_required')) {
+                       'RTL_LOCATION_ERROR auth_required',
+                       'RTL_TUNE_ERROR auth_required',
+                       'RTL_WEB_ERROR auth_required',
+                       'CMD_ERROR unknown_command')) {
     if (-not $firmwareText.Contains($marker)) {
         throw "Firmware SD authentication guard is missing: $marker"
     }

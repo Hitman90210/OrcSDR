@@ -13398,6 +13398,8 @@ void process_command(char* command) {
       Serial.println("UI_DOC_EXIT_DONE restored=true");
       return;
     }
+    Serial.println("UI_DOC_ERROR unknown_command");
+    return;
   }
   if (strncmp(command, "UI_SNAPSHOT ", 12) == 0) {
     // Unlike UI_CAPTURE, this needs no prior UI_DOC_SHOW staging: it grabs
@@ -13918,8 +13920,9 @@ void process_command(char* command) {
     Serial.println("RTL_ADSB_LOCATION_OK");
     return;
   }
-  if (strcmp(command, "RTL_ADSB_STOP") == 0 && rtl_ui_band == RtlBand::adsb) {
+  if (strcmp(command, "RTL_ADSB_STOP") == 0) {
     if (!authenticated) { Serial.println("RTL_ADSB_STOP_ERROR auth_required"); return; }
+    if (rtl_ui_band != RtlBand::adsb) { Serial.println("RTL_ADSB_STOP_ERROR not_adsb"); return; }
     rtl_stop_requested.store(true, std::memory_order_release);
     Serial.println("RTL_ADSB_STOPPING");
     return;
@@ -14042,7 +14045,8 @@ void process_command(char* command) {
   // Meshtastic presets differ in both spreading factor and bandwidth, and a
   // receiver on the wrong pair hears nothing at all. These were touch-only
   // controls, which left no way to match a node over serial.
-  if (strncmp(command, "RTL_LORA_MODEM ", 15) == 0 && authenticated) {
+  if (strncmp(command, "RTL_LORA_MODEM ", 15) == 0) {
+    if (!authenticated) { Serial.println("RTL_LORA_MODEM_ERROR auth_required"); return; }
     unsigned sf = 0;
     unsigned bandwidth = 0;
     if (sscanf(command + 15, "%u %u", &sf, &bandwidth) != 2) {
@@ -14141,15 +14145,16 @@ void process_command(char* command) {
                     static_cast<unsigned>(orcsdr::lora_channel::default_slot(i)));
     return;
   }
-  if ((strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
-       strcmp(command, "RTL_LORA_AUTO OFF") == 0) &&
-      authenticated) {
+  if (strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
+      strcmp(command, "RTL_LORA_AUTO OFF") == 0) {
+    if (!authenticated) { Serial.println("RTL_LORA_AUTO_ERROR auth_required"); return; }
     const bool enabled = command[14] == 'O' && command[15] == 'N';
     lora_detector_enabled.store(enabled, std::memory_order_release);
     Serial.printf("RTL_LORA_AUTO %s\n", enabled ? "ON" : "OFF");
     return;
   }
-  if (strncmp(command, "RTL_LORA_TUNE ", 14) == 0 && authenticated) {
+  if (strncmp(command, "RTL_LORA_TUNE ", 14) == 0) {
+    if (!authenticated) { Serial.println("RTL_LORA_TUNE_ERROR auth_required"); return; }
     char* end = nullptr;
     const unsigned long requested = strtoul(command + 14, &end, 10);
     if (end == command + 14 || *end != '\0' || requested < kLoraMinHz ||
@@ -14297,7 +14302,11 @@ void process_command(char* command) {
     Serial.printf("RTL_TOOL_STATUS tool=%s\n", orc_tool_name(orc_tool_current()));
     return;
   }
-  if (strcmp(command, "RTL_STOP") == 0 && (authenticated || ORC_LORA_TEST_BUILD)) {
+  if (strcmp(command, "RTL_STOP") == 0) {
+    if (!authenticated && !ORC_LORA_TEST_BUILD) {
+      Serial.println("RTL_STOP_ERROR auth_required");
+      return;
+    }
     rtl_restart_requested.store(false, std::memory_order_release);
     rtl_stop_requested.store(true, std::memory_order_release);
     Serial.println("RTL_STOPPING");
@@ -14315,7 +14324,8 @@ void process_command(char* command) {
                           strcmp(command, "RTL_LISTEN AM") == 0;
   const bool lora_capture = strcmp(command, "RTL_CAPTURE LORA") == 0 ||
                             strcmp(command, "RTL_LISTEN LORA") == 0;
-  if ((kzel_capture || noaa_capture || am_capture || lora_capture) && authenticated) {
+  if (kzel_capture || noaa_capture || am_capture || lora_capture) {
+    if (!authenticated) { Serial.println("RTL_CAPTURE_ERROR auth_required"); return; }
     const RtlBand band =
         noaa_capture ? RtlBand::wx
         : am_capture ? RtlBand::am
@@ -14346,7 +14356,8 @@ void process_command(char* command) {
                   rtl_requested_volume.load(std::memory_order_acquire));
     return;
   }
-  if (strncmp(command, "RTL_VOLUME ", 11) == 0 && authenticated) {
+  if (strncmp(command, "RTL_VOLUME ", 11) == 0) {
+    if (!authenticated) { Serial.println("RTL_VOLUME_ERROR auth_required"); return; }
     const int value = atoi(command + 11);
     if (value < kRtlVolumeMin || value > kRtlVolumeMax) {
       Serial.println("RTL_VOLUME_INVALID");
@@ -14889,7 +14900,8 @@ void process_command(char* command) {
     Serial.printf("RTL_P25_PROFILE_OK operation=delete id=\"%s\"\n", id);
     return;
   }
-  if (strcmp(command, "RTL_P25_CONFIG_RELOAD") == 0 && authenticated) {
+  if (strcmp(command, "RTL_P25_CONFIG_RELOAD") == 0) {
+    if (!authenticated) { Serial.println("RTL_P25_CONFIG_RELOAD_ERROR auth_required"); return; }
     cancel_p25_survey();
     load_p25_config();
     if (rtl_ui_band == RtlBand::p25 && p25_config.control_channel_count > 0)
@@ -14899,14 +14911,16 @@ void process_command(char* command) {
     Serial.printf("RTL_P25_CONFIG_RELOAD status=\"%s\"\n", p25_config_status);
     return;
   }
-  if (strcmp(command, "RTL_P25_SCAN") == 0 && authenticated) {
+  if (strcmp(command, "RTL_P25_SCAN") == 0) {
+    if (!authenticated) { Serial.println("RTL_P25_SCAN_ERROR auth_required"); return; }
     if (rtl_ui_band != RtlBand::p25)
       queue_local_rtl_listen(RtlBand::p25, p25_control_frequency_hz);
     if (!p25_survey_active.load(std::memory_order_relaxed))
       handle_p25_dashboard_action({orcsdr::p25::ActionKind::survey_toggle});
     return;
   }
-  if (strncmp(command, "RTL_TUNE ", 9) == 0 && authenticated) {
+  if (strncmp(command, "RTL_TUNE ", 9) == 0) {
+    if (!authenticated) { Serial.println("RTL_TUNE_ERROR auth_required"); return; }
     char band_name[16] = {0};
     unsigned long freq_hz = 0;
     if (sscanf(command + 9, "%15s %lu", band_name, &freq_hz) != 2) {
@@ -14939,7 +14953,8 @@ void process_command(char* command) {
                   rtl_mode_name(rtl_ui_band, rtl_ui_frequency_hz));
     return;
   }
-  if (strncmp(command, "RTL_FREQ ", 9) == 0 && authenticated) {
+  if (strncmp(command, "RTL_FREQ ", 9) == 0) {
+    if (!authenticated) { Serial.println("RTL_FREQ_ERROR auth_required"); return; }
     const unsigned long freq_hz = strtoul(command + 9, nullptr, 10);
     if (freq_hz == 0) {
       Serial.println("RTL_FREQ_INVALID usage: RTL_FREQ <HZ>");
@@ -14982,9 +14997,9 @@ void process_command(char* command) {
                   url[0] ? url : "offline");
     return;
   }
-  if ((strcmp(command, "RTL_WEB CONTROL ON") == 0 ||
-       strcmp(command, "RTL_WEB CONTROL OFF") == 0) &&
-      authenticated) {
+  if (strcmp(command, "RTL_WEB CONTROL ON") == 0 ||
+      strcmp(command, "RTL_WEB CONTROL OFF") == 0) {
+    if (!authenticated) { Serial.println("RTL_WEB_CONTROL_ERROR auth_required"); return; }
     settings_web_control_enabled = strcmp(command + 16, "ON") == 0;
     preferences.putBool("set_web_ctrl", settings_web_control_enabled);
     orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
@@ -14993,8 +15008,8 @@ void process_command(char* command) {
     if (orcsdr::settings::active()) update_global_settings();
     return;
   }
-  if ((strcmp(command, "RTL_WEB ON") == 0 || strcmp(command, "RTL_WEB OFF") == 0) &&
-      authenticated) {
+  if (strcmp(command, "RTL_WEB ON") == 0 || strcmp(command, "RTL_WEB OFF") == 0) {
+    if (!authenticated) { Serial.println("RTL_WEB_ERROR auth_required"); return; }
     settings_web_console_enabled = command[8] == 'O' && command[9] == 'N';
     preferences.putBool("set_web_console", settings_web_console_enabled);
     orcsdr::web_console::set_enabled(settings_web_console_enabled);
@@ -15050,7 +15065,8 @@ void process_command(char* command) {
         rtl_fm_lo_nudge_hz.load(std::memory_order_relaxed));
     return;
   }
-  if (strcmp(command, "RTL_PRESET_SCAN") == 0 && authenticated) {
+  if (strcmp(command, "RTL_PRESET_SCAN") == 0) {
+    if (!authenticated) { Serial.println("RTL_PRESET_SCAN_ERROR auth_required"); return; }
     if (rtl_ui_band != RtlBand::fm) {
       Serial.println("RTL_PRESET_SCAN_INVALID FM band only");
       return;
@@ -15059,7 +15075,8 @@ void process_command(char* command) {
     Serial.println("RTL_PRESET_SCAN_QUEUED");
     return;
   }
-  if (strcmp(command, "RTL_CHANNEL_SCAN") == 0 && authenticated) {
+  if (strcmp(command, "RTL_CHANNEL_SCAN") == 0) {
+    if (!authenticated) { Serial.println("RTL_CHANNEL_SCAN_ERROR auth_required"); return; }
     if (!rtl_band_is_channelized(rtl_ui_band)) {
       Serial.println("RTL_CHANNEL_SCAN_INVALID channelized bands only (CB|GMRS|WX)");
       return;
@@ -15068,7 +15085,8 @@ void process_command(char* command) {
     Serial.println("RTL_CHANNEL_SCAN_QUEUED");
     return;
   }
-  if (strcmp(command, "RTL_CHANNEL_SCAN_STOP") == 0 && authenticated) {
+  if (strcmp(command, "RTL_CHANNEL_SCAN_STOP") == 0) {
+    if (!authenticated) { Serial.println("RTL_CHANNEL_SCAN_STOP_ERROR auth_required"); return; }
     channel_scan_cancel.store(true, std::memory_order_release);
     Serial.println("RTL_CHANNEL_SCAN_STOP_QUEUED");
     return;
@@ -15126,7 +15144,8 @@ void process_command(char* command) {
     Serial.println("RTL_CHANNEL_LOCK_LIST_END");
     return;
   }
-  if (strcmp(command, "RTL_CHANNEL_LOCK_CLEAR") == 0 && authenticated) {
+  if (strcmp(command, "RTL_CHANNEL_LOCK_CLEAR") == 0) {
+    if (!authenticated) { Serial.println("RTL_CHANNEL_LOCK_CLEAR_ERROR auth_required"); return; }
     if (orcsdr::channel_plan::key_for(rtl_ui_band) == nullptr) {
       Serial.println("RTL_CHANNEL_LOCK_INVALID channelized bands only (CB|GMRS|WX|MARINE)");
       return;
@@ -15220,7 +15239,8 @@ void process_command(char* command) {
                   static_cast<unsigned long>(kChannelScanDwellMs));
     return;
   }
-  if (strncmp(command, "RTL_SQUELCH ", 12) == 0 && authenticated) {
+  if (strncmp(command, "RTL_SQUELCH ", 12) == 0) {
+    if (!authenticated) { Serial.println("RTL_SQUELCH_ERROR auth_required"); return; }
     const long value = strtol(command + 12, nullptr, 10);
     // Up to 0 dBFS: a strong local NOAA transmitter reads about -2 dBFS
     // wideband, so a ceiling of -20 could not express "tighter than that" and
@@ -15245,7 +15265,8 @@ void process_command(char* command) {
     print_pocsag_status();
     return;
   }
-  if (strcmp(command, "RTL_POCSAG_SCAN") == 0 && authenticated) {
+  if (strcmp(command, "RTL_POCSAG_SCAN") == 0) {
+    if (!authenticated) { Serial.println("RTL_POCSAG_SCAN_ERROR auth_required"); return; }
     if (rtl_ui_band != RtlBand::pocsag) {
       Serial.println("RTL_POCSAG_SCAN_INVALID POCSAG band only");
       return;
@@ -15254,12 +15275,14 @@ void process_command(char* command) {
     Serial.println("RTL_POCSAG_SCAN_QUEUED");
     return;
   }
-  if (strcmp(command, "RTL_POCSAG_SCAN_STOP") == 0 && authenticated) {
+  if (strcmp(command, "RTL_POCSAG_SCAN_STOP") == 0) {
+    if (!authenticated) { Serial.println("RTL_POCSAG_SCAN_STOP_ERROR auth_required"); return; }
     pocsag_scan_cancel_requested.store(true, std::memory_order_release);
     Serial.println("RTL_POCSAG_SCAN_STOP_QUEUED");
     return;
   }
-  if (strncmp(command, "RTL_POCSAG_SET_BAUD ", 20) == 0 && authenticated) {
+  if (strncmp(command, "RTL_POCSAG_SET_BAUD ", 20) == 0) {
+    if (!authenticated) { Serial.println("RTL_POCSAG_SET_BAUD_ERROR auth_required"); return; }
     const char* arg = command + 20;
     uint16_t baud_bps;
     if (strcasecmp(arg, "AUTO") == 0) baud_bps = 0;
@@ -15275,7 +15298,8 @@ void process_command(char* command) {
     Serial.printf("RTL_POCSAG_SET_BAUD_OK baud=%s\n", baud_bps == 0 ? "AUTO" : arg);
     return;
   }
-  if (strncmp(command, "RTL_POCSAG_SET_POLARITY ", 24) == 0 && authenticated) {
+  if (strncmp(command, "RTL_POCSAG_SET_POLARITY ", 24) == 0) {
+    if (!authenticated) { Serial.println("RTL_POCSAG_SET_POLARITY_ERROR auth_required"); return; }
     const char* arg = command + 24;
     uint8_t mode;
     if (strcasecmp(arg, "AUTO") == 0) mode = 0;
@@ -15291,7 +15315,8 @@ void process_command(char* command) {
                   mode == 0 ? "AUTO" : mode == 1 ? "NORMAL" : "INVERTED");
     return;
   }
-  if (strncmp(command, "RTL_POCSAG_TUNE ", 16) == 0 && authenticated) {
+  if (strncmp(command, "RTL_POCSAG_TUNE ", 16) == 0) {
+    if (!authenticated) { Serial.println("RTL_POCSAG_TUNE_ERROR auth_required"); return; }
     char* end = nullptr;
     const unsigned long parsed = strtoul(command + 16, &end, 10);
     if (end == command + 16 || parsed == 0) {
@@ -15319,7 +15344,8 @@ void process_command(char* command) {
     Serial.println("RTL_PRESET_LIST_END");
     return;
   }
-  if (strncmp(command, "RTL_PRESET_TUNE ", 17) == 0 && authenticated) {
+  if (strncmp(command, "RTL_PRESET_TUNE ", 17) == 0) {
+    if (!authenticated) { Serial.println("RTL_PRESET_TUNE_ERROR auth_required"); return; }
     const int index = atoi(command + 17) - 1;
     if (index < 0 || index >= fm_preset_count) {
       Serial.println("RTL_PRESET_TUNE_INVALID index out of range");
@@ -15404,7 +15430,8 @@ void process_command(char* command) {
     Serial.println(difference == 0 ? "PAIR_OK" : "PAIR_LOCKED");
     return;
   }
-  if (strncmp(command, "AUTH ", 5) == 0 && paired) {
+  if (strncmp(command, "AUTH ", 5) == 0) {
+    if (!paired) { Serial.println("AUTH_ERROR not_paired"); return; }
     uint8_t nonce[16];
     uint8_t host_proof[32];
     uint8_t expected_host_proof[32];
@@ -15455,11 +15482,14 @@ void process_command(char* command) {
     set_online();
     return;
   }
-  if (strcmp(command, "PING") == 0 && authenticated) {
-    last_ping_ms = millis();
+  // Hosts send PING on a timer while they wait for other replies, so it is never
+  // answered -- not even once the session has lapsed.
+  if (strcmp(command, "PING") == 0) {
+    if (authenticated) last_ping_ms = millis();
     return;
   }
-  if (strncmp(command, "PREPARE_FLASH ", 14) == 0 && authenticated) {
+  if (strncmp(command, "PREPARE_FLASH ", 14) == 0) {
+    if (!authenticated) { Serial.println("FLASH_ERROR auth_required"); return; }
     uint8_t digest[32];
     if (!decode_hex(command + 14, digest, sizeof(digest))) {
       Serial.println("FLASH_INVALID");
@@ -15474,7 +15504,8 @@ void process_command(char* command) {
     emit_pending_journal();
     return;
   }
-  if (strncmp(command, "SET_WIFI ", 9) == 0 && authenticated) {
+  if (strncmp(command, "SET_WIFI ", 9) == 0) {
+    if (!authenticated) { Serial.println("WIFI_ERROR auth_required"); return; }
     char* ssid_hex = command + 9;
     char* password_hex = strchr(ssid_hex, ' ');
     if (password_hex == nullptr) {
@@ -15524,7 +15555,8 @@ void process_command(char* command) {
     emit_pending_journal();
     return;
   }
-  if (strncmp(command, "INSTALL_STATUS ", 15) == 0 && authenticated) {
+  if (strncmp(command, "INSTALL_STATUS ", 15) == 0) {
+    if (!authenticated) { Serial.println("WORKFLOW_ERROR auth_required"); return; }
     char* revision_text = command + 15;
     char* max_runs_text = strchr(revision_text, ' ');
     if (max_runs_text == nullptr) {
@@ -15564,7 +15596,8 @@ void process_command(char* command) {
     emit_pending_journal();
     return;
   }
-  if (strncmp(command, "ROTATE_KEY ", 11) == 0 && authenticated) {
+  if (strncmp(command, "ROTATE_KEY ", 11) == 0) {
+    if (!authenticated) { Serial.println("ROTATE_ERROR auth_required"); return; }
     char* key_text = command + 11;
     char* signature_text = strchr(key_text, ' ');
     if (signature_text == nullptr) {
@@ -15597,24 +15630,41 @@ void process_command(char* command) {
     draw_session_state("Credential rotated - host reconnect required", TFT_YELLOW);
     return;
   }
-  if (strcmp(command, "TEST_PRESSURE") == 0 && authenticated) {
+  if (strcmp(command, "TEST_PRESSURE") == 0) {
+    if (!authenticated) { Serial.println("PRESSURE_ERROR auth_required"); return; }
     for (int index = 0; index < 10; ++index) append_journal("pressure_test");
     Serial.printf("PRESSURE_OK %lu\n", static_cast<unsigned long>(journal.dropped_events));
     emit_identity();
     emit_pending_journal();
     return;
   }
-  if (strcmp(command, "PRESSURE_ACK") == 0 && authenticated) {
+  if (strcmp(command, "PRESSURE_ACK") == 0) {
+    if (!authenticated) { Serial.println("PRESSURE_ERROR auth_required"); return; }
     journal.dropped_events = 0;
     persist_journal();
     Serial.println("PRESSURE_CLEARED");
     emit_identity();
     return;
   }
-  if (strncmp(command, "ACK ", 4) == 0 && authenticated) {
+  // Journal ACKs are fire-and-forget like PING, and likewise never answered.
+  if (strncmp(command, "ACK ", 4) == 0) {
+    if (!authenticated) return;
     const uint32_t sequence = strtoul(command + 4, nullptr, 10);
     if (sequence <= journal.next_sequence) acknowledge_journal(sequence);
+    return;
   }
+  // Every handler above returns, so nothing claimed this line. Say so: a silent
+  // drop looks exactly like a lost command. Echo only the verb, since arguments
+  // can carry key or password hex, and leave JSON frames unanswered as before.
+  if (command[0] == '{') return;
+  char verb[33]{};
+  for (size_t i = 0; i < sizeof(verb) - 1 && command[i] != '\0' && command[i] != ' '; ++i) {
+    const char c = command[i];
+    const bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                       (c >= '0' && c <= '9') || c == '_';
+    verb[i] = plain ? c : '?';
+  }
+  Serial.printf("CMD_ERROR unknown_command verb=%s\n", verb);
 }
 
 void poll_serial() {
