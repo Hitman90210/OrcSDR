@@ -463,6 +463,12 @@ a CRC-valid stream, while native decoded a CRC-valid encrypted packet after its
 CFO retry in 50.791 seconds and 2,391 FFTs. The -24 dB result is therefore a
 native robustness observation, not a host/native sensitivity comparison.
 
+The complete ten-capture corpus was replayed again after enabling recovery.
+Classification remained A=7, B=0, C=3, D=0, unknown=0. Every clean positive
+used zero recovery attempts; single-packet positives used one CFO/clock
+hypothesis, while the two-packet whip power capture used two. Known negatives
+remained zero-preamble. Native runtimes ranged from 12.281 to 12.892 seconds.
+
 During this phase firmware was built and flashed to COM17 for measurement. The
 separate one-line PSRAM placement fix for the home spectrum buffer preserves the
 tracked 40 KiB internal DMA reserve and restored boot with the default native
