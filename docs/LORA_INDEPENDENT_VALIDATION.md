@@ -317,6 +317,45 @@ decoding after `RTL_IQ_DONE`, so the host watcher received
 `RTL_IQ_RETRIEVE_ERROR capture_not_ready`. Manual capture was used for the
 matched pair. No automatic capture was represented as retained IQ.
 
+### Corpus manifest and host/native differential baseline
+
+`tools/lora_lab/corpus_manifest.json` assigns content-bound IDs to all ten
+useful captures. It records SHA-256, ORCIQ metadata, ground truth, packet ID and
+plaintext where controlled, reference/host/native results, setup, and evidence
+provenance. Raw IQ remains only in the ignored local directory
+`artifacts/lora_validation/corpus/`; it is not committed to Git. The verifier
+checks every hash and header before host replay and writes its generated report
+to `artifacts/lora_validation/corpus/differential_report.json`.
+
+Current corpus composition is six controlled positives, one uncontrolled
+background-LoRa positive, and three confirmed no-preamble negatives. Current
+host replay recovered all six exact controlled packets and the unrelated
+position packet. Native evidence is classified only when a durable sidecar or
+specific engineering record supports it:
+
+| Capture ID | Ground truth / packet ID | Host | Native | Class | Native stage | Host ms | Native ms |
+|---|---|---|---|:---:|---|---:|---:|
+| `orciq-7c6f476e9a8b6740` | controlled / `0xda4f1809` | pass | unknown | ? | unknown | 2999.573 | 12445 |
+| `orciq-38e1d39b93c2ab9e` | no-preamble negative | fail | unknown | ? | unknown | 977.024 | unknown |
+| `orciq-1d46413a2605eba5` | no-preamble negative | fail | fail | C | preamble search | 972.570 | unknown |
+| `orciq-0f4812e88b88bd75` | controlled / `0xfb7a31ca` | pass | CRC fail | B | payload CRC | 2115.400 | 73665 |
+| `orciq-f91ff779153ca577` | controlled / `0x6b7b15cc` | pass | CRC fail | B | payload CRC | 2058.937 | 73738 |
+| `orciq-66028e4a1e83f433` | controlled / `0xa30f7cb9` | pass | unknown | ? | payload CRC evidence incomplete | 4352.008 | 72252 |
+| `orciq-072fbd6a17a2924e` | no-preamble negative | fail | unknown | ? | unknown | 973.991 | unknown |
+| `orciq-582e2fe308339967` | background LoRa / `0x55ebab82` | pass | unknown | ? | unknown | 2041.718 | unknown |
+| `orciq-d9f355473ea17c15` | controlled / `0xeca065e3` | pass | pass | A | complete | 1989.679 | 12485 |
+| `orciq-d3d7b68a288edd7a` | controlled / `0xc6c8e1e5` | pass | pass | A | complete | 4109.583 | 12638 |
+
+Totals are A=2, B=2, C=1, D=0, and unknown=5. The two Class B MLA-30+
+captures are the highest-priority permanent regression vectors: COM16 and the
+host recovered the exact controlled payload, while native parsing passed the
+explicit header and failed payload CRC after 73.665 and 73.738 seconds. The
+first divergence is therefore currently bounded to payload symbol extraction,
+clock/CFO correction, deinterleaving/FEC, or CRC input; the exact earlier stage
+is not yet known. The 72.252-second whip capture is also pathological, but its
+native packet outcome is not recorded precisely enough for A/B classification
+and must be replayed rather than guessed.
+
 No firmware was built or flashed. No trigger or DSP production code changed.
 The next milestone can benchmark independently designed early-candidate
 detector instrumentation against this measured upstream baseline without

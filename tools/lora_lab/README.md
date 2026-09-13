@@ -93,3 +93,16 @@ python tools/lora_lab/candidate_detector.py `
 ```
 
 Lower `--target-rms` when stronger noise would clip the quantized CU8 samples.
+
+Verify the checked-in corpus manifest and replay every locally available IQ
+capture through the host decoder:
+
+```powershell
+python tools/lora_lab/corpus_manifest.py `
+  --manifest tools/lora_lab/corpus_manifest.json `
+  --corpus-root artifacts/lora_validation/corpus `
+  --output artifacts/lora_validation/corpus/differential_report.json
+```
+
+The manifest is tracked metadata; raw IQ and the generated report remain local
+under the ignored artifact directory.
