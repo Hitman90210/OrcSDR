@@ -356,7 +356,42 @@ is not yet known. The 72.252-second whip capture is also pathological, but its
 native packet outcome is not recorded precisely enough for A/B classification
 and must be replayed rather than guessed.
 
-No firmware was built or flashed. No trigger or DSP production code changed.
-The next milestone can benchmark independently designed early-candidate
-detector instrumentation against this measured upstream baseline without
-depending on multi-megabyte IQ retrieval.
+### On-device deterministic replay and phase isolation
+
+The Tab5 now has a laboratory-only replay path that accepts a content-bound
+ORCIQ payload over the authenticated COM17 session, verifies its SHA-256, and
+decodes it directly from PSRAM. Live RTL-SDR reception is stopped during the
+upload and replay because both paths own the same IQ buffer. This proves native
+decoder behavior for fixed input; it does not replace live capture-to-decode
+acceptance, where the radio must remain active.
+
+Replaying Class B capture `orciq-0f4812e88b88bd75` reproduced the historical
+failure deterministically: one preamble, a valid explicit header, zero packets,
+and one payload CRC failure. Three baseline runs completed in 61.683-61.898
+seconds. Phase counters attribute about 43.3 seconds to 28 payload-symbol
+hypotheses, about 9.9 seconds to preamble search, 5.6 seconds to filtering, and
+2.3 seconds to resampling. This narrows the performance problem to repeated
+payload demodulation rather than FEC, CRC, or Meshtastic parsing.
+
+The host and native paths selected the same payload start sample (1,306,387)
+with no native timing adjustment and produced 118 symbols. Their raw symbol
+streams matched through zero-based index 13. The other 64 differences were
+exactly one bin high on native; no difference exceeded one bin. Host CFO was
+292.96875 Hz, while the first native pass reported 244.1 Hz. All traced native
+FFT peaks lay exactly on its four-times FFT grid. These observations place the
+first proven divergence in preprocessing or payload symbol estimation, before
+FEC and CRC.
+
+Two candidate explanations were tested and rejected. Changing fractional CFO
+rounding did not change the CRC result, and parabolic refinement of the native
+preamble peak produced a zero fractional offset and the identical 118-symbol
+stream. Neither experiment remains as a decoder change. The next step is to
+compare host preprocessing with the native filter and linear, quantized
+resampler, then retain only the smallest change that makes the archived Class B
+capture pass without regressing the Class A and negative corpus vectors.
+
+During this phase firmware was built and flashed to COM17 for measurement. The
+separate one-line PSRAM placement fix for the home spectrum buffer preserves the
+tracked 40 KiB internal DMA reserve and restored boot with the default native
+configuration. No production trigger threshold has been enabled, and no
+decoder DSP correction has yet been accepted.
