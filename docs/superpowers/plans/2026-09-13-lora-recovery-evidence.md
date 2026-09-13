@@ -99,17 +99,17 @@ docs(lora): verify recovery corpus regression
 - Consumes: MLA-30+ and whip controlled ORCIQ captures, identical deterministic seeds, and replay JSON.
 - Produces: one row per capture/seed/SNR with host validity, native result, symbol/alternate evidence, hypotheses, FFTs, runtime, and packet identity.
 
-- [ ] **Step 1: Write a failing aggregation test with literal expected rows**
+- [x] **Step 1: Write a failing aggregation test with literal expected rows**
 
 Run: `python -m unittest tools/test_run_lora_native_matrix.py`
 
-- [ ] **Step 2: Implement the smallest sequential matrix runner**
+- [x] **Step 2: Implement the smallest sequential matrix runner**
 
 Use -21, -22, and -23 dB for both captures. Run -24 dB only as a labeled non-comparative observation when the host oracle fails.
 
-- [ ] **Step 3: Run the matrix and classify every host-pass/native-fail row A-E**
+- [x] **Step 3: Run the matrix and classify every host-pass/native-fail row A-E**
 
-- [ ] **Step 4: Commit and push the evidence checkpoint without changing recovery**
+- [x] **Step 4: Commit and push the evidence checkpoint without changing recovery**
 
 ```text
 test(lora): map weak-signal recovery matrix

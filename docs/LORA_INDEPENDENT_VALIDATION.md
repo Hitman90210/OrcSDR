@@ -510,6 +510,46 @@ target-RMS 0.02 vector remained CRC-valid in 12.949 seconds with exactly one
 candidate tested and one recovery success. It used 480 FFTs and did not enter a
 clock or CFO sweep.
 
+A deterministic comparison matrix then replayed the MLA-30+ and indoor-whip
+15 dBm captures at -21, -22, and -23 dB with the same five seeds, 90500-90504.
+Only rows where the host oracle returned the expected packet ID count below:
+
+| Capture | SNR | Host-valid rows | Native exact among host-valid |
+| --- | ---: | ---: | ---: |
+| MLA-30+ | -21 dB | 5 | 5 |
+| MLA-30+ | -22 dB | 5 | 5 |
+| MLA-30+ | -23 dB | 2 | 2 |
+| Indoor 915 MHz whip | -21 dB | 5 | 4 |
+| Indoor 915 MHz whip | -22 dB | 4 | 3 |
+| Indoor 915 MHz whip | -23 dB | 3 | 2 |
+
+All native passes matched the expected packet ID. Two additional MLA-30+ rows
+at -23 dB produced that native packet while the host oracle failed; they remain
+native-only observations and are excluded from comparison. The useful mixed
+boundary was therefore present without adding -24 dB rows. All 30 native runs
+finished between 12.952 and 13.032 seconds.
+
+The three host-valid/native-fail rows were indoor-whip seed 90501 at -21 dB and
+seed 90504 at -22 and -23 dB. Each found a valid header and had exactly one
+wrong primary payload symbol. The correct symbol was the strongest distinct
+one-bin-lower alternate in every case, with primary/alternate ratios 1.000,
+1.016, and 1.033. They are Class A adjacent-bin ambiguities, not missing
+candidates, synchronization/CFO failures, or header failures.
+
+The trace also explains why the existing collective candidate failed. It
+corrected the one wrong symbol but changed 11, 12, and 14 symbols respectively,
+creating 10, 11, and 13 collateral changes to symbols that already matched the
+host. CRC rejected each candidate. Telemetry reported one candidate tested,
+zero recovery successes, and `recovery_exhausted=1`; every run stopped near 13
+seconds with one clock/CFO hypothesis and 481 FFTs. This is evidence for later
+selective-candidate design, not permission to expand recovery during this
+phase.
+
+Across the matrix the smallest recorded internal and DMA largest blocks were
+both 32,768 bytes, decoder PSRAM peaked at 8,390,464 bytes, and decoder-task
+stack high-water remained at least 556 after the latest flash/reboot. Normal
+live scanning was restored at 906.875 MHz after the matrix.
+
 During this phase firmware was built and flashed to COM17 for measurement. The
 separate one-line PSRAM placement fix for the home spectrum buffer preserves the
 tracked 40 KiB internal DMA reserve and restored boot with the default native
