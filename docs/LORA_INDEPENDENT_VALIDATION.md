@@ -277,6 +277,23 @@ every point, so this range does not establish a host-decoder failure boundary
 or justify a production candidate threshold. These are deterministic synthetic
 algorithm results, not calibrated RF sensitivity or antenna-performance data.
 
+A coarse extension using the same 0.05 RMS target failed at -25 dB but clipped
+about 21% of samples, so that apparent boundary was rejected. A refined scan
+used the new `--target-rms 0.02` control. Five deterministic seeds per receive
+setup were then run at each transition point (90500-90514 for MLA-30+ and
+90515-90529 for the whip):
+
+| SNR (dB) | MLA host decode | Whip host decode | MLA chirps | Whip chirps |
+|---:|---:|---:|---:|---:|
+| -21 | 5/5 | 5/5 | 13-17 | 16-17 |
+| -23 | 3/5 | 4/5 | 5-16 | 9-16 |
+| -25 | 1/5 | 0/5 | 3-9 | 3-10 |
+
+Maximum clipping was 0% at -21 dB, 0.000234% at -23 dB, and 0.014844% at
+-25 dB. This bounds the synthetic transition but still does not justify a
+production threshold: the corpus has only one confirmed no-preamble negative
+and does not yet cover non-LoRa interference classes.
+
 No firmware was built or flashed. No trigger or DSP production code changed.
 The next milestone can benchmark independently designed early-candidate
 detector instrumentation against this measured upstream baseline without

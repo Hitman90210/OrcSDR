@@ -1,11 +1,27 @@
+import io
+import sys
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
-from candidate_detector import _resample, chirp_metrics, downchirp, impair_awgn
+from candidate_detector import _resample, chirp_metrics, downchirp, impair_awgn, main
 
 
 class CandidateDetectorTests(unittest.TestCase):
+    @patch("candidate_detector.capture_metrics", return_value={})
+    @patch("candidate_detector.impairment_metrics", return_value={})
+    def test_cli_passes_target_rms_to_impairment(self, impairment, _capture):
+        arguments = [
+            "candidate_detector.py", "--snr-db", "-25", "--target-rms", "0.02", "capture.orciq"
+        ]
+
+        with patch.object(sys, "argv", arguments), patch("sys.stdout", new=io.StringIO()):
+            self.assertEqual(main(), 0)
+
+        impairment.assert_called_once_with(Path("capture.orciq"), -25.0, 90210, 0.02)
+
     def test_awgn_impairment_is_seeded_and_meets_requested_snr(self):
         signal = np.ones(200_000, dtype=np.complex64)
 

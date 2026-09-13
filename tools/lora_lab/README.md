@@ -87,6 +87,9 @@ decoder; only the JSON results are retained:
 ```powershell
 python tools/lora_lab/candidate_detector.py `
   --snr-db "10,5,0,-5,-10,-15,-20" --seed 90210 `
+  --target-rms 0.05 `
   --output artifacts/lora_validation/corpus/impairment_benchmark.json `
   <controlled-mla-capture> <controlled-whip-capture>
 ```
+
+Lower `--target-rms` when stronger noise would clip the quantized CU8 samples.

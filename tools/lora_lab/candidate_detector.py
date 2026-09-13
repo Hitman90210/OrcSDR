@@ -116,13 +116,17 @@ def capture_metrics(path: Path) -> dict:
     }
 
 
-def impairment_metrics(path: Path, snr_db: float, seed: int) -> dict:
+def impairment_metrics(
+    path: Path, snr_db: float, seed: int, target_active_rms: float = 0.05
+) -> dict:
     rate, _, sf, bandwidth, raw = read_capture(path)
     values = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 2).astype(np.float32)
     signal = ((values[:, 0] - 127.5) + 1j * (values[:, 1] - 127.5)) / 127.5
     blocks = signal[: signal.size // 4096 * 4096].reshape(-1, 4096)
     active_rms = float(np.percentile(np.sqrt(np.mean(np.abs(blocks) ** 2, axis=1)), 95))
-    impaired, details = impair_awgn(signal, active_rms, snr_db, seed)
+    impaired, details = impair_awgn(
+        signal, active_rms, snr_db, seed, target_active_rms
+    )
     clipped = (np.abs(impaired.real) > 1) | (np.abs(impaired.imag) > 1)
     encoded = np.empty((impaired.size, 2), dtype=np.uint8)
     encoded[:, 0] = np.clip(np.rint(impaired.real * 127.5 + 127.5), 0, 255)
@@ -148,7 +152,7 @@ def impairment_metrics(path: Path, snr_db: float, seed: int) -> dict:
         "snr_db": snr_db,
         "seed": seed,
         "active_rms_p95": round(active_rms, 6),
-        "target_active_rms": 0.05,
+        "target_active_rms": target_active_rms,
         "signal_scale": details["scale"],
         "noise_rms": details["noise_rms"],
         "measured_snr_db": round(float(details["measured_snr_db"]), 3),
@@ -175,7 +179,10 @@ def main() -> int:
         help="comma-separated deterministic AWGN levels; runs the full host decoder",
     )
     parser.add_argument("--seed", type=int, default=90210)
+    parser.add_argument("--target-rms", type=float, default=0.05)
     args = parser.parse_args()
+    if args.target_rms <= 0:
+        parser.error("--target-rms must be positive")
     captures = [capture_metrics(path) for path in args.captures]
     report = {"captures": captures}
     if args.snr_db:
@@ -188,6 +195,7 @@ def main() -> int:
                         path,
                         level,
                         args.seed + capture_index * len(levels) + level_index,
+                        args.target_rms,
                     )
                     for level_index, level in enumerate(levels)
                 ],
