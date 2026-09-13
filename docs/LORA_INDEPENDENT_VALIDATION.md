@@ -291,8 +291,31 @@ setup were then run at each transition point (90500-90514 for MLA-30+ and
 
 Maximum clipping was 0% at -21 dB, 0.000234% at -23 dB, and 0.014844% at
 -25 dB. This bounds the synthetic transition but still does not justify a
-production threshold: the corpus has only one confirmed no-preamble negative
-and does not yet cover non-LoRa interference classes.
+production threshold because the corpus does not yet cover non-LoRa
+interference classes.
+
+### Matched receive-only negative pair
+
+One additional manual four-second receive-only capture was collected on each
+antenna setup without a controlled transmission. Both host decodes reported no
+LoRa preamble. Direct PSRAM-to-PC transfer completed without an SD write or
+device reboot, and automatic capture remained enabled afterward.
+
+| Receive setup | Power RMS p95 | In-channel ratio p95 | Consecutive chirps | Peak / median FFT | SHA-256 |
+|---|---:|---:|---:|---:|---|
+| MLA-30+, outdoor, ~50 ft | 0.048597 | 0.290769 | 2 | 3.368 | `38e1d39b93c2ab9e6e47b0bf6d3e395061268ff9b86e2b438424554cbda16a8f` |
+| 915 MHz whip, indoor, ~10 ft | 0.149974 | 0.272990 | 2 | 3.457 | `072fbd6a17a2924e1630c965dd61df8b13aa5d3698891e82a2ee1c5d1b20771c` |
+
+Together with the earlier MLA-30+ control, the corpus now has three confirmed
+no-preamble captures across both receive setups. The higher whip power did not
+produce repeated-chirp evidence. This remains too small to estimate a field
+false-positive rate.
+
+The first attempt to retain an automatic energy-triggered capture exposed a
+current ownership boundary: firmware hands that buffer directly to native
+decoding after `RTL_IQ_DONE`, so the host watcher received
+`RTL_IQ_RETRIEVE_ERROR capture_not_ready`. Manual capture was used for the
+matched pair. No automatic capture was represented as retained IQ.
 
 No firmware was built or flashed. No trigger or DSP production code changed.
 The next milestone can benchmark independently designed early-candidate
