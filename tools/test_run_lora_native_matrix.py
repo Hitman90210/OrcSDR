@@ -35,7 +35,9 @@ class MatrixRowTests(unittest.TestCase):
             },
             "traces": [
                 "RTL_LORA_NATIVE_ALTERNATES sequence=1 count=2 "
-                "values=10:100:1.025,11:200:1.400"
+                "values=10:100:1.025,11:200:1.400",
+                "RTL_LORA_NATIVE_SYMBOLS sequence=1 count=12 "
+                "values=0,0,0,0,0,0,0,0,0,0,101,202",
             ],
             "memory": [],
         }
@@ -49,6 +51,8 @@ class MatrixRowTests(unittest.TestCase):
         self.assertEqual(row["recovered"], [
             {"index": 10, "symbol": 100, "ratio": 1.025},
         ])
+        self.assertEqual(row["candidate_changed_indices"], [10])
+        self.assertEqual(row["candidate_collateral_indices"], [])
         self.assertEqual(row["recovery_candidates_tested"], 1)
         self.assertTrue(row["recovery_exhausted"])
         self.assertEqual(row["expected_packet_id"], 42)

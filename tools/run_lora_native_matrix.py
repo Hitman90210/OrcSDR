@@ -32,6 +32,16 @@ def _build_row(capture, snr_db, seed, report):
     alternate_line = next((line for line in report.get("traces", [])
                            if line.startswith("RTL_LORA_NATIVE_ALTERNATES ")), None)
     alternates = replay_lora_orciq._parse_symbol_alternates(alternate_line)
+    symbol_line = next((line for line in report.get("traces", [])
+                        if line.startswith("RTL_LORA_NATIVE_SYMBOLS ")), None)
+    native_symbols = ([int(value) for value in symbol_line.split("values=", 1)[1].split(",")]
+                      if symbol_line else [])
+    bins = 1 << int(capture.get("spreading_factor", 11))
+    candidate_changed_indices = [
+        index for index, alternate in alternates.items()
+        if index < len(native_symbols) and
+        (alternate["symbol"] + 1) % bins == native_symbols[index]
+    ]
     recovered = [
         {"index": index, "symbol": alternates[index]["symbol"],
          "ratio": alternates[index]["ratio"]}
@@ -70,6 +80,9 @@ def _build_row(capture, snr_db, seed, report):
         "primary_symbol_errors": int(difference.get("different", 0)),
         "primary_error_indices": error_indices,
         "recovered": recovered,
+        "candidate_changed_indices": candidate_changed_indices,
+        "candidate_collateral_indices": [index for index in candidate_changed_indices
+                                         if index not in error_indices],
         "recovery_attempted": int(profile.get("recovery_attempted", 0)),
         "recovery_symbols_considered": int(profile.get("recovery_symbols_considered", 0)),
         "recovery_candidates_tested": int(profile.get("recovery_candidates_tested", 0)),
