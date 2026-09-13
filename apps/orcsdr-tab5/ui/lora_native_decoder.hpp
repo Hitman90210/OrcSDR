@@ -119,8 +119,12 @@ bool initialize();
 size_t psram_bytes();
 size_t fft_table_bytes();
 size_t recovery_workspace_bytes();
+size_t task_workspace_bytes();
 bool fft_table_in_psram();
 bool recovery_workspace_in_psram();
+bool task_workspace_in_psram();
+Packet* task_packets();
+Stats* task_stats();
 
 // Decodes an immutable CU8 capture. This function is intentionally task-only:
 // it may take milliseconds and must never run from the RTL IQ callback.

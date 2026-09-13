@@ -595,3 +595,52 @@ CRC-valid captures that range was 4.491-10.728 seconds on MLA-30+, about
 disturbance interval. Full-window capture time is included. Separate CRC-valid
 and UI-publication timestamps are not present, so these values are not proven
 transmit-to-screen latency.
+
+### Decoder task stack gate
+
+`RTL_LORA_MEMORY` calls `uxTaskGetStackHighWaterMark()` for the task named
+`lora_native`, created by `xTaskCreatePinnedToCore()` with a 12,288-byte stack.
+The exact ESP-IDF 5.5.4 SMP implementation counts untouched stack bytes and
+divides by `sizeof(StackType_t)`. The ESP32-P4 RISC-V port defines
+`StackType_t` as `uint8_t`, so the reported value is bytes. It is the minimum
+free stack observed since that task was created, not its instantaneous free
+space.
+
+The 76-byte result was already the historical minimum at the start of the MLA
+interval and did not decline during it. A later task lifetime started at 1,268
+bytes, declined to 428 after the first full whip packet path, then to 140 after
+additional live paths. The antenna disturbance interval started and ended at
+140 bytes. The exact operation that first produced 76 bytes was therefore not
+captured, but compiler stack-use output identifies the structural cause:
+
+| Compiled frame | Automatic stack bytes before fix |
+| --- | ---: |
+| `lora_native_decode_task` | 3,568 |
+| `decode_capture` | 4,832 |
+| `decode_capture_pass` | 1,696 |
+| `decode_symbols` | 1,264 |
+
+The task frame contained eight 180-byte packet records plus a 1,572-byte
+`Stats` object. `decode_capture` also creates multiple 1,572-byte `Stats`
+temporaries whose replay trace arrays exist even during normal live decoding.
+Those nested automatic frames explain why the nominal 12 KiB task stack could
+approach exhaustion without recursion or a broad hypothesis search.
+
+The narrow fix keeps the task stack allocation at 12,288 bytes and moves only
+the task-owned packet array and `Stats` object into the existing fixed PSRAM
+allocation path. The allocator-rounded workspace is 3,072 bytes, reports
+`task_workspace=PSRAM`, and is included in `decoder_psram`. Allocation still
+fails closed through the existing injected PSRAM-failure self-check and never
+falls back to internal RAM. The compiled task frame fell from 3,568 to 576
+bytes; no stack-size increase or decoder behavior change was made.
+
+On the flashed build, the clean capture remained an exact 118/118-symbol,
+CRC-valid decode in 12.976 seconds with one clock/CFO hypothesis and zero
+recovery. The representative -21 dB seed-90500 replay retained the expected
+packet identity in 13.001 seconds with 480 FFTs and exactly one successful
+recovery candidate. Both ended with 3,560 bytes of remaining stack. A
+three-minute automatic live check then completed two full zero-preamble
+captures with the same 3,560-byte minimum, stable 32,768-byte largest
+internal/DMA blocks, and normal scanning restored at 906.875 MHz. Internal
+free memory remained about 75 KiB and the unchanged task allocation added no
+measured internal-RAM cost.

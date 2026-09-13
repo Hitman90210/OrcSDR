@@ -83,7 +83,13 @@ constexpr uint8_t kDefaultPsk[] = {
     0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01,
 };
 
+struct TaskWorkspace {
+  Packet packets[kMaxPacketsPerCapture]{};
+  Stats stats{};
+};
+
 struct Scratch {
+  TaskWorkspace* task = nullptr;
   float* fft = nullptr;
   float* downchirp = nullptr;
   float* twiddle = nullptr;
@@ -115,10 +121,12 @@ bool recovery_budget_available(uint32_t candidates_tested) {
 
 void free_fixed_scratch(Scratch* scratch) {
   if (scratch == nullptr) return;
+  heap_caps_free(scratch->task);
   heap_caps_free(scratch->fft);
   heap_caps_free(scratch->downchirp);
   heap_caps_free(scratch->twiddle);
   heap_caps_free(scratch->recovery_alternates);
+  scratch->task = nullptr;
   scratch->fft = nullptr;
   scratch->downchirp = nullptr;
   scratch->twiddle = nullptr;
@@ -129,8 +137,13 @@ bool allocate_fixed_scratch(Scratch* scratch, ScratchAllocator allocator) {
   if (scratch == nullptr || allocator == nullptr) return false;
   free_fixed_scratch(scratch);
   constexpr uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+  scratch->task = static_cast<TaskWorkspace*>(allocator(sizeof(TaskWorkspace), caps));
+  if (scratch->task == nullptr) return false;
   scratch->fft = static_cast<float*>(allocator(sizeof(float) * kMaxFft * 2, caps));
-  if (scratch->fft == nullptr) return false;
+  if (scratch->fft == nullptr) {
+    free_fixed_scratch(scratch);
+    return false;
+  }
   scratch->downchirp = static_cast<float*>(allocator(sizeof(float) * kMaxFft * 2, caps));
   if (scratch->downchirp == nullptr) {
     free_fixed_scratch(scratch);
@@ -143,7 +156,8 @@ bool allocate_fixed_scratch(Scratch* scratch, ScratchAllocator allocator) {
   }
   scratch->recovery_alternates = static_cast<SymbolAlternateTracePoint*>(allocator(
       sizeof(SymbolAlternateTracePoint) * kRecoveryAlternateCapacity, caps));
-  if (scratch->recovery_alternates == nullptr || !esp_ptr_external_ram(scratch->fft) ||
+  if (scratch->recovery_alternates == nullptr || !esp_ptr_external_ram(scratch->task) ||
+      !esp_ptr_external_ram(scratch->fft) ||
       !esp_ptr_external_ram(scratch->downchirp) || !esp_ptr_external_ram(scratch->twiddle) ||
       !esp_ptr_external_ram(scratch->recovery_alternates)) {
     free_fixed_scratch(scratch);
@@ -908,7 +922,8 @@ bool initialize() {
 }
 
 size_t psram_bytes() {
-  return allocated_bytes(g_scratch.fft) + allocated_bytes(g_scratch.downchirp) +
+  return allocated_bytes(g_scratch.task) + allocated_bytes(g_scratch.fft) +
+         allocated_bytes(g_scratch.downchirp) +
          allocated_bytes(g_scratch.twiddle) + allocated_bytes(g_scratch.resampled) +
          allocated_bytes(g_scratch.recovery_alternates);
 }
@@ -916,6 +931,8 @@ size_t psram_bytes() {
 size_t fft_table_bytes() { return allocated_bytes(g_scratch.twiddle); }
 
 size_t recovery_workspace_bytes() { return allocated_bytes(g_scratch.recovery_alternates); }
+
+size_t task_workspace_bytes() { return allocated_bytes(g_scratch.task); }
 
 bool fft_table_in_psram() {
   return g_scratch.twiddle != nullptr && esp_ptr_external_ram(g_scratch.twiddle);
@@ -925,6 +942,16 @@ bool recovery_workspace_in_psram() {
   return g_scratch.recovery_alternates != nullptr &&
          esp_ptr_external_ram(g_scratch.recovery_alternates);
 }
+
+bool task_workspace_in_psram() {
+  return g_scratch.task != nullptr && esp_ptr_external_ram(g_scratch.task);
+}
+
+Packet* task_packets() {
+  return g_scratch.task == nullptr ? nullptr : g_scratch.task->packets;
+}
+
+Stats* task_stats() { return g_scratch.task == nullptr ? nullptr : &g_scratch.task->stats; }
 
 static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
                                   uint8_t spreading_factor, uint32_t bandwidth_hz,
@@ -1341,7 +1368,8 @@ bool self_check() {
   if (allocate_fixed_scratch(&failed_scratch, fail_scratch_allocation) ||
       g_failed_allocation_calls != 1 ||
       g_failed_allocation_caps != (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) ||
-      failed_scratch.fft != nullptr || failed_scratch.downchirp != nullptr ||
+      failed_scratch.task != nullptr || failed_scratch.fft != nullptr ||
+      failed_scratch.downchirp != nullptr ||
       failed_scratch.twiddle != nullptr || failed_scratch.recovery_alternates != nullptr)
     return false;
   Stats first_profile{};

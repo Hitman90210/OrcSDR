@@ -2875,6 +2875,7 @@ void log_lora_memory(const char* stage) {
       "RTL_LORA_MEMORY stage=%s internal_free=%lu internal_largest=%lu dma_free=%lu "
       "dma_largest=%lu psram_free=%lu psram_largest=%lu decoder_psram=%u "
       "fft_table=%s fft_bytes=%u recovery=%s recovery_bytes=%u "
+      "task_workspace=%s task_workspace_bytes=%u "
       "task_stack_hwm=%lu reserve_int=%d\n",
       stage,
       static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
@@ -2893,6 +2894,10 @@ void log_lora_memory(const char* stage) {
           ? "UNALLOCATED"
           : (orcsdr::lora_native::recovery_workspace_in_psram() ? "PSRAM" : "INVALID"),
       static_cast<unsigned>(orcsdr::lora_native::recovery_workspace_bytes()),
+      orcsdr::lora_native::task_workspace_bytes() == 0
+          ? "UNALLOCATED"
+          : (orcsdr::lora_native::task_workspace_in_psram() ? "PSRAM" : "INVALID"),
+      static_cast<unsigned>(orcsdr::lora_native::task_workspace_bytes()),
       static_cast<unsigned long>(lora_native_decode_task_handle == nullptr
                                      ? 0
                                      : uxTaskGetStackHighWaterMark(lora_native_decode_task_handle)),
@@ -3965,11 +3970,13 @@ void iq_rec_append(const uint8_t* iq, size_t bytes) {
 }
 
 void lora_native_decode_task(void*) {
+  auto* decoded = orcsdr::lora_native::task_packets();
+  auto* stats_storage = orcsdr::lora_native::task_stats();
   for (;;) {
     LoraNativeDecodeWork work{};
     if (xQueueReceive(lora_native_decode_queue, &work, portMAX_DELAY) != pdTRUE) continue;
-    orcsdr::lora_native::Packet decoded[orcsdr::lora_native::kMaxPacketsPerCapture]{};
-    orcsdr::lora_native::Stats stats{};
+    *stats_storage = orcsdr::lora_native::Stats{};
+    auto& stats = *stats_storage;
     const size_t candidate_samples = work.automatic
                                          ? min(work.bytes / 2,
                                                work.trigger_offset_samples +
@@ -3983,7 +3990,7 @@ void lora_native_decode_task(void*) {
     const size_t count = orcsdr::lora_native::decode_capture(
         work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
         work.frequency_hz, config,
-        decoded, std::size(decoded), &stats);
+        decoded, orcsdr::lora_native::kMaxPacketsPerCapture, &stats);
     if (!work.automatic && work.sequence != 0) log_lora_memory("replay_after");
     lora_native_crc_ok.fetch_add(stats.crc_ok, std::memory_order_relaxed);
     lora_native_encrypted.fetch_add(stats.encrypted, std::memory_order_relaxed);
@@ -4146,6 +4153,11 @@ bool lora_native_decoder_start() {
   if (!orcsdr::lora_native::initialize()) {
     Serial.println("RTL_LORA_NATIVE_INIT_FAIL stage=psram");
     log_lora_memory("init_failed");
+    return false;
+  }
+  if (orcsdr::lora_native::task_packets() == nullptr ||
+      orcsdr::lora_native::task_stats() == nullptr) {
+    Serial.println("RTL_LORA_NATIVE_INIT_FAIL stage=task_workspace");
     return false;
   }
   lora_native_decode_queue = xQueueCreate(1, sizeof(LoraNativeDecodeWork));

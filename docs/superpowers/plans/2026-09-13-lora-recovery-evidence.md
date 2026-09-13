@@ -137,3 +137,21 @@ docs(lora): record live recovery soak
 ```
 
 - [ ] **Step 5: Review readiness without opening or merging a PR**
+
+### Task 5: Close the decoder stack gate
+
+**Files:**
+- Modify: `apps/orcsdr-tab5/ui/lora_native_decoder.hpp`
+- Modify: `apps/orcsdr-tab5/ui/lora_native_decoder.cpp`
+- Modify: `apps/orcsdr-tab5/ui/main.cpp`
+- Update: `docs/LORA_INDEPENDENT_VALIDATION.md`
+
+- [x] **Step 1: Verify the ESP-IDF 5.5.4 / ESP32-P4 high-water unit**
+
+- [x] **Step 2: Measure the compiled nested decoder frames**
+
+- [x] **Step 3: Move task-owned packet/statistics storage to fixed PSRAM without changing the task stack size**
+
+- [x] **Step 4: Build, flash, and run clean, weak-recovery, and automatic-live checks**
+
+- [x] **Step 5: Commit and push the isolated stack checkpoint**
