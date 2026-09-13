@@ -185,8 +185,23 @@ and reboot to Home at 906.875 MHz. No IQ file was retained.
 The boot-time reset reason was not captured, so this is recorded only as an
 unclassified reboot during sustained IQ retrieval. It is not attributed to a
 watchdog, brownout, USB fault, or another cause. The same retrieval path should
-not be repeated on hardware until transfer behavior is bounded and the reset
-reason can be retained or queried after startup.
+not be repeated with multiple outstanding chunk requests.
+
+The host transfer was subsequently changed to keep exactly one 2 KiB chunk
+request outstanding and to tolerate transient empty serial reads within a
+bounded deadline. No firmware or SD-card write was required. Two matched manual
+captures then transferred directly from PSRAM to the PC without retry or reboot:
+
+| Receive setup | Raw IQ | Transfer | SHA-256 | Host decode |
+|---|---:|---:|---|---|
+| MLA-30+, outdoor, ~50 ft | 7,680,000 bytes | 46.752 s | `7c6f476e9a8b6740f69b44ba985a19626f88ab1a7fad0ddb03dae2ed134767b7` | `ORC-IQ-MLA30-20260912-192454` |
+| 915 MHz whip, indoor, ~10 ft | 7,680,000 bytes | 46.535 s | `66028e4a1e83f4337b025480f0f3d890823572dbe0e0cca2ff86de64cd2ce9d3` | `ORC-IQ-WHIP915-20260912-192815` |
+
+The Tab5 native decoder completed the MLA-30+ capture in 12.445 seconds and the
+whip capture in 72.252 seconds. The latter found two preambles and one CRC
+failure; offline host decoding still recovered the labeled CRC-valid packet.
+These timings are capture-specific performance evidence, not an antenna-only
+comparison.
 
 No firmware was built or flashed. No trigger or DSP production code changed.
 The next milestone can benchmark independently designed early-candidate
