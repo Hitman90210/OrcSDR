@@ -335,26 +335,22 @@ specific engineering record supports it:
 
 | Capture ID | Ground truth / packet ID | Host | Native | Class | Native stage | Host ms | Native ms |
 |---|---|---|---|:---:|---|---:|---:|
-| `orciq-7c6f476e9a8b6740` | controlled / `0xda4f1809` | pass | unknown | ? | unknown | 2999.573 | 12445 |
-| `orciq-38e1d39b93c2ab9e` | no-preamble negative | fail | unknown | ? | unknown | 977.024 | unknown |
-| `orciq-1d46413a2605eba5` | no-preamble negative | fail | fail | C | preamble search | 972.570 | unknown |
-| `orciq-0f4812e88b88bd75` | controlled / `0xfb7a31ca` | pass | CRC fail | B | payload CRC | 2115.400 | 73665 |
-| `orciq-f91ff779153ca577` | controlled / `0x6b7b15cc` | pass | CRC fail | B | payload CRC | 2058.937 | 73738 |
-| `orciq-66028e4a1e83f433` | controlled / `0xa30f7cb9` | pass | unknown | ? | payload CRC evidence incomplete | 4352.008 | 72252 |
-| `orciq-072fbd6a17a2924e` | no-preamble negative | fail | unknown | ? | unknown | 973.991 | unknown |
-| `orciq-582e2fe308339967` | background LoRa / `0x55ebab82` | pass | unknown | ? | unknown | 2041.718 | unknown |
-| `orciq-d9f355473ea17c15` | controlled / `0xeca065e3` | pass | pass | A | complete | 1989.679 | 12485 |
-| `orciq-d3d7b68a288edd7a` | controlled / `0xc6c8e1e5` | pass | pass | A | complete | 4109.583 | 12638 |
+| `orciq-7c6f476e9a8b6740` | controlled / `0xda4f1809` | pass | pass | A | complete | 2999.573 | 12747 |
+| `orciq-38e1d39b93c2ab9e` | no-preamble negative | fail | fail | C | preamble search | 977.024 | 12641 |
+| `orciq-1d46413a2605eba5` | no-preamble negative | fail | fail | C | preamble search | 972.570 | 12640 |
+| `orciq-0f4812e88b88bd75` | controlled / `0xfb7a31ca` | pass | pass | A | complete | 2115.400 | 12804 |
+| `orciq-f91ff779153ca577` | controlled / `0x6b7b15cc` | pass | pass | A | complete | 2058.937 | 12806 |
+| `orciq-66028e4a1e83f433` | controlled / `0xa30f7cb9` | pass | pass | A | complete | 4352.008 | 13095 |
+| `orciq-072fbd6a17a2924e` | no-preamble negative | fail | fail | C | preamble search | 973.991 | 12637 |
+| `orciq-582e2fe308339967` | background LoRa / `0x55ebab82` | pass | pass | A | complete | 2041.718 | 12762 |
+| `orciq-d9f355473ea17c15` | controlled / `0xeca065e3` | pass | pass | A | complete | 1989.679 | 12742 |
+| `orciq-d3d7b68a288edd7a` | controlled / `0xc6c8e1e5` | pass | pass (2 packets) | A | complete | 4109.583 | 12888 |
 
-Totals are A=2, B=2, C=1, D=0, and unknown=5. The two Class B MLA-30+
-captures are the highest-priority permanent regression vectors: COM16 and the
-host recovered the exact controlled payload, while native parsing passed the
-explicit header and failed payload CRC after 73.665 and 73.738 seconds. The
-first divergence is therefore currently bounded to payload symbol extraction,
-clock/CFO correction, deinterleaving/FEC, or CRC input; the exact earlier stage
-is not yet known. The 72.252-second whip capture is also pathological, but its
-native packet outcome is not recorded precisely enough for A/B classification
-and must be replayed rather than guessed.
+Final totals are A=7, B=0, C=3, D=0, and unknown=0. The seven Class A files are
+the six controlled positives plus the unrelated background-LoRa packet in the
+whip control window. The latter is not a false positive: it has a valid PHY CRC
+and agrees with the host decoder, but its transmitter is not controlled. The
+three Class C files are the MLA-30+ control and the two matched ambient repeats.
 
 ### On-device deterministic replay and phase isolation
 
@@ -365,33 +361,70 @@ upload and replay because both paths own the same IQ buffer. This proves native
 decoder behavior for fixed input; it does not replace live capture-to-decode
 acceptance, where the radio must remain active.
 
-Replaying Class B capture `orciq-0f4812e88b88bd75` reproduced the historical
-failure deterministically: one preamble, a valid explicit header, zero packets,
-and one payload CRC failure. Three baseline runs completed in 61.683-61.898
-seconds. Phase counters attribute about 43.3 seconds to 28 payload-symbol
-hypotheses, about 9.9 seconds to preamble search, 5.6 seconds to filtering, and
-2.3 seconds to resampling. This narrows the performance problem to repeated
-payload demodulation rather than FEC, CRC, or Meshtastic parsing.
+Replaying Class B capture `orciq-0f4812e88b88bd75` first reproduced the
+historical failure deterministically: one preamble, a valid explicit header,
+zero packets, and one payload CRC failure. Three baseline runs completed in
+61.683-62.076 seconds. About 43.3 seconds was spent on 28 payload-symbol
+hypotheses, about 9.9 seconds on preamble search, 5.6 seconds on filtering, and
+2.3 seconds on resampling. FEC, CRC, and Meshtastic parsing were not the
+bottleneck.
 
-The host and native paths selected the same payload start sample (1,306,387)
-with no native timing adjustment and produced 118 symbols. Their raw symbol
-streams matched through zero-based index 13. The other 64 differences were
-exactly one bin high on native; no difference exceeded one bin. Host CFO was
-292.96875 Hz, while the first native pass reported 244.1 Hz. All traced native
-FFT peaks lay exactly on its four-times FFT grid. These observations place the
-first proven divergence in preprocessing or payload symbol estimation, before
-FEC and CRC.
+The host and native paths selected payload sample 1,306,387 on the failing
+pass and produced 118 symbols. Their raw streams matched through zero-based
+index 13; 64 later values were exactly one bin high on native. Selected raw,
+filtered, and resampled CU8 values matched a float32 host reproduction, and
+float-preserving, quantized-linear, and polyphase host variants all produced
+the same 118-symbol reference stream. Preprocessing precision and resampler
+choice were therefore not retained as fixes.
 
-Two candidate explanations were tested and rejected. Changing fractional CFO
-rounding did not change the CRC result, and parabolic refinement of the native
-preamble peak produced a zero fractional offset and the identical 118-symbol
-stream. Neither experiment remains as a decoder change. The next step is to
-compare host preprocessing with the native filter and linear, quantized
-resampler, then retain only the smallest change that makes the archived Class B
-capture pass without regressing the Class A and negative corpus vectors.
+The first material divergence was the FFT output. The ESP32-P4 optimized
+`dsps_fft2r_fc32_arp4_` path produced peaks only on four-bin boundaries with
+near-zero interpolated neighbors. For example, symbol 14 selected bin 7148
+with adjacent magnitude 0 while the next competing LoRa bin was 7144. Using a
+decoder-local, correctly sized twiddle table with the same optimized routine
+did not change any magnitude or symbol, rejecting the shared-table-size
+hypothesis. The ANSI reference FFT with the same local table produced the
+expected interpolated spectrum, selected bin 7148 with substantial energy in
+bins 7147 and 7149, and recovered the host's CRC-valid symbol stream.
+
+The retained fix calls ESP-DSP's ANSI radix-2 implementation only inside the
+LoRa decoder. It adds one 128 KiB PSRAM twiddle buffer and no dependency. The
+rest of OrcSDR may continue using the configured optimized ESP-DSP path. This
+is independently derived from captured IQ and on-device traces. ESP-DSP is
+Apache-2.0 licensed; no external decoder code was copied. A current Espressif
+[ESP32-P4 HWLOOP issue](https://github.com/espressif/esp-idf/issues/19025)
+reports that task switches can corrupt the optimized P4 assembly FFT and names
+the ANSI implementation as its workaround. That issue corroborates the
+observed failure mode but was found after the local A/B result.
+
+With the retained path, all ten captures completed in 12.637-13.095 seconds.
+Every positive finished in one full pass with one clock hypothesis and one CFO
+hypothesis per accepted packet. Both controlled MLA-30+ captures changed from
+CRC failure at about 62 seconds to CRC-valid completion at 12.804 and 12.806
+seconds. The three no-preamble captures exhausted one search pass without a
+header or CRC failure. Replay-only hashes, intermediate samples, FFT bins, and
+symbol lists are gated off for normal automatic/live decoding.
+
+The synchronization structure remains deliberately small. The existing
+repeated-upchirp detector, downchirp alignment, explicit-header gate, and CRC
+acceptance now pass the complete captured corpus. More advanced fractional
+CFO/STO and SFO estimators are documented in the EPFL
+[open-source LoRa PHY paper](https://arxiv.org/abs/2002.08208) and the GNU Radio
+[receiver design paper](https://events.gnuradio.org/event/24/contributions/641/attachments/192/478/paper_tapparel.pdf).
+They are not implemented here because no retained capture requires them; add
+them only if a new weak-signal or long-frame regression fails with a correct
+FFT.
+
+Rejected hypotheses were CFO rounding, parabolic preamble interpolation,
+eight-times FFT padding, a decoder-local table on the optimized FFT, float
+preservation, and replacing linear resampling with host polyphase resampling.
+The replay command was also made repeatable: `RTL_STOP` now acknowledges an
+already-stopped receiver, and no-preamble replays no longer wait for symbol
+traces that cannot exist.
 
 During this phase firmware was built and flashed to COM17 for measurement. The
 separate one-line PSRAM placement fix for the home spectrum buffer preserves the
 tracked 40 KiB internal DMA reserve and restored boot with the default native
-configuration. No production trigger threshold has been enabled, and no
-decoder DSP correction has yet been accepted.
+configuration. No production trigger threshold has been enabled. Live
+capture-to-decode acceptance remains a separate final gate after flashing the
+trace-gated image and restarting normal LoRa reception.

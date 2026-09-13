@@ -1537,6 +1537,18 @@ struct IqGetState {
   mbedtls_sha256_context sha;
 };
 IqGetState g_iq_get;
+struct LoraReplayPutState {
+  bool active = false;
+  size_t expected = 0;
+  size_t received = 0;
+  uint32_t rate = 0;
+  uint32_t frequency_hz = 0;
+  uint32_t bandwidth_hz = 0;
+  uint8_t sf = 0;
+  uint8_t expected_sha[32]{};
+  mbedtls_sha256_context sha;
+};
+LoraReplayPutState g_lora_replay_put;
 uint8_t g_sd_put_chunk[kSdPutChunkBytes];
 bool wifi_station_ready = false;
 bool wifi_hosted_versions_match = false;
@@ -3935,7 +3947,8 @@ void lora_native_decode_task(void*) {
                                                    kLoraCandidateAfterTriggerSamples)
                                          : 0;
     const orcsdr::lora_native::Config config{
-        lora_authorized_key, lora_authorized_key_bytes, candidate_samples};
+        lora_authorized_key, lora_authorized_key_bytes, candidate_samples,
+        !work.automatic && work.sequence != 0};
     const uint32_t queue_millis = millis() - work.queued_ms;
     const size_t count = orcsdr::lora_native::decode_capture(
         work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
@@ -4019,6 +4032,46 @@ void lora_native_decode_task(void*) {
         static_cast<unsigned long>(stats.full_capture_passes),
         static_cast<unsigned long>(stats.full_fallbacks),
         static_cast<unsigned long>(stats.cfo_retry_passes));
+    if (!work.automatic && work.sequence != 0 && stats.trace_symbol_count != 0) {
+      Serial.printf("RTL_LORA_NATIVE_TRACE sequence=%lu data_start=%lu timing_adjustment=%d preamble_peak=%u preprocess_fnv1a=%08lx\n",
+                    static_cast<unsigned long>(work.sequence),
+                    static_cast<unsigned long>(stats.trace_data_start),
+                    static_cast<int>(stats.trace_timing_adjustment),
+                    static_cast<unsigned>(stats.trace_preamble_peak),
+                    static_cast<unsigned long>(stats.trace_preprocess_fnv1a));
+      for (size_t i = 0; i < stats.trace_preprocess_count; ++i) {
+        const auto& point = stats.trace_preprocess[i];
+        Serial.printf(
+            "RTL_LORA_NATIVE_PREPROCESS sequence=%lu output=%lu source=%lu remainder=%lu "
+            "raw=%u,%u,%u,%u filtered=%u,%u,%u,%u filtered_valid=%u resampled=%u,%u\n",
+            static_cast<unsigned long>(work.sequence),
+            static_cast<unsigned long>(point.output_index),
+            static_cast<unsigned long>(point.source_index),
+            static_cast<unsigned long>(point.source_remainder), point.raw[0], point.raw[1],
+            point.raw[2], point.raw[3], point.filtered[0], point.filtered[1],
+            point.filtered[2], point.filtered[3], point.filtered_valid ? 1u : 0u,
+            point.resampled[0], point.resampled[1]);
+      }
+      for (size_t i = 0; i < stats.trace_fft_count; ++i) {
+        const auto& point = stats.trace_fft[i];
+        Serial.printf(
+            "RTL_LORA_NATIVE_FFT sequence=%lu symbol=%u best_bin=%u second_bin=%u "
+            "best=%.3f second=%.3f ratio=%.6f neighbors=%.3f,%.3f,%.3f,%.3f,%.3f\n",
+            static_cast<unsigned long>(work.sequence), point.symbol_index, point.best_bin,
+            point.second_bin, point.best_magnitude, point.second_magnitude,
+            point.second_magnitude > 0 ? point.best_magnitude / point.second_magnitude : 0,
+            point.neighbors[0], point.neighbors[1], point.neighbors[2],
+            point.neighbors[3], point.neighbors[4]);
+      }
+      Serial.printf("RTL_LORA_NATIVE_SYMBOLS sequence=%lu count=%u values=",
+                    static_cast<unsigned long>(work.sequence),
+                    static_cast<unsigned>(stats.trace_symbol_count));
+      for (size_t i = 0; i < stats.trace_symbol_count; ++i) {
+        if (i != 0) Serial.print(',');
+        Serial.printf("%u", static_cast<unsigned>(stats.trace_symbols[i]));
+      }
+      Serial.println();
+    }
     lora_native_decode_busy.store(false, std::memory_order_release);
     (void)queue_lora_auto_decode();
     bump_rtl_ui();
@@ -5168,6 +5221,114 @@ void iq_get_chunk() {
   print_hex(digest, sizeof(digest));
   Serial.println();
   g_iq_get = {};
+}
+
+void lora_replay_put_reset() {
+  if (g_lora_replay_put.active) mbedtls_sha256_free(&g_lora_replay_put.sha);
+  g_lora_replay_put = {};
+}
+
+void lora_replay_put_abort(const char* reason) {
+  lora_replay_put_reset();
+  Serial.printf("RTL_LORA_REPLAY_ERROR %s\n", reason ? reason : "aborted");
+}
+
+void lora_replay_put_begin(const char* arguments) {
+  unsigned bytes = 0, rate = 0, frequency_hz = 0, sf = 0, bandwidth_hz = 0;
+  char sha_text[65]{};
+  char trailing = 0;
+  if (g_lora_replay_put.active ||
+      sscanf(arguments, "%u %64s %u %u %u %u %c", &bytes, sha_text, &rate,
+             &frequency_hz, &sf, &bandwidth_hz, &trailing) != 6 ||
+      bytes == 0 || bytes > kIqRecMaxBytes || (bytes & 1u) != 0 ||
+      rate != kRtlSampleRateSps || sf < 7 || sf > 12 || bandwidth_hz == 0 ||
+      !decode_hex(sha_text, g_lora_replay_put.expected_sha,
+                  sizeof(g_lora_replay_put.expected_sha))) {
+    Serial.println("RTL_LORA_REPLAY_ERROR invalid_begin");
+    return;
+  }
+  if (sd_transfer_radio_busy() || g_iq_rec_active.load(std::memory_order_acquire) ||
+      lora_native_decode_busy.load(std::memory_order_acquire)) {
+    Serial.println("RTL_LORA_REPLAY_ERROR radio_or_decoder_busy");
+    return;
+  }
+  if (!lora_iq_ensure_buffers() || !lora_native_decoder_start()) {
+    Serial.println("RTL_LORA_REPLAY_ERROR decoder_unavailable");
+    return;
+  }
+  g_lora_replay_put.expected = bytes;
+  g_lora_replay_put.rate = rate;
+  g_lora_replay_put.frequency_hz = frequency_hz;
+  g_lora_replay_put.sf = static_cast<uint8_t>(sf);
+  g_lora_replay_put.bandwidth_hz = bandwidth_hz;
+  mbedtls_sha256_init(&g_lora_replay_put.sha);
+  if (mbedtls_sha256_starts(&g_lora_replay_put.sha, 0) != 0) {
+    g_lora_replay_put.active = true;
+    lora_replay_put_abort("sha_start");
+    return;
+  }
+  g_lora_replay_put.active = true;
+  Serial.printf("RTL_LORA_REPLAY_READY chunk=%u bytes=%u\n",
+                static_cast<unsigned>(kSdPutChunkBytes), bytes);
+}
+
+void lora_replay_put_chunk(const char* length_text) {
+  if (!g_lora_replay_put.active) {
+    Serial.println("RTL_LORA_REPLAY_ERROR not_active");
+    return;
+  }
+  const size_t length = static_cast<size_t>(strtoul(length_text, nullptr, 10));
+  if (length == 0 || length > kSdPutChunkBytes ||
+      g_lora_replay_put.received + length > g_lora_replay_put.expected) {
+    lora_replay_put_abort("invalid_chunk");
+    return;
+  }
+  Serial.println("RTL_LORA_REPLAY_DATA");
+  uint8_t* destination = g_iq_rec_buf + g_lora_replay_put.received;
+  const size_t got = Serial.readBytes(destination, length, 5000);
+  if (got != length ||
+      mbedtls_sha256_update(&g_lora_replay_put.sha, destination, length) != 0) {
+    lora_replay_put_abort(got != length ? "chunk_timeout" : "sha_update");
+    return;
+  }
+  g_lora_replay_put.received += length;
+  if (g_lora_replay_put.received != g_lora_replay_put.expected) {
+    Serial.printf("RTL_LORA_REPLAY_ACK bytes=%u\n",
+                  static_cast<unsigned>(g_lora_replay_put.received));
+    return;
+  }
+
+  uint8_t digest[32];
+  if (mbedtls_sha256_finish(&g_lora_replay_put.sha, digest) != 0) {
+    lora_replay_put_abort("sha_finish");
+    return;
+  }
+  uint8_t difference = 0;
+  for (size_t i = 0; i < sizeof(digest); ++i)
+    difference |= digest[i] ^ g_lora_replay_put.expected_sha[i];
+  if (difference != 0) {
+    lora_replay_put_abort("sha_mismatch");
+    return;
+  }
+  const LoraNativeDecodeWork work{
+      g_iq_rec_buf, g_lora_replay_put.received, g_lora_replay_put.sf,
+      g_lora_replay_put.bandwidth_hz, g_lora_replay_put.frequency_hz, false,
+      lora_capture_sequence.fetch_add(1, std::memory_order_relaxed) + 1,
+      millis(), millis(), 0};
+  bool idle = false;
+  if (!lora_native_decode_busy.compare_exchange_strong(
+          idle, true, std::memory_order_acq_rel)) {
+    lora_replay_put_abort("queue_failed");
+    return;
+  }
+  if (xQueueSend(lora_native_decode_queue, &work, 0) != pdTRUE) {
+    lora_native_decode_busy.store(false, std::memory_order_release);
+    lora_replay_put_abort("queue_failed");
+    return;
+  }
+  const size_t queued = g_lora_replay_put.received;
+  lora_replay_put_reset();
+  Serial.printf("RTL_LORA_REPLAY_QUEUED bytes=%u\n", static_cast<unsigned>(queued));
 }
 
 void sd_remove(const char* path_hex) {
@@ -13732,6 +13893,30 @@ void process_command(char* command) {
     Serial.println("LORA_MESSAGE_CLEARED");
     return;
   }
+  if (strncmp(command, "RTL_LORA_REPLAY_BEGIN ", 22) == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_LORA_REPLAY_ERROR auth_required");
+    } else {
+      lora_replay_put_begin(command + 22);
+    }
+    return;
+  }
+  if (strncmp(command, "RTL_LORA_REPLAY_CHUNK ", 22) == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_LORA_REPLAY_ERROR auth_required");
+    } else {
+      lora_replay_put_chunk(command + 22);
+    }
+    return;
+  }
+  if (strcmp(command, "RTL_LORA_REPLAY_ABORT") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_LORA_REPLAY_ERROR auth_required");
+    } else {
+      lora_replay_put_abort("host_abort");
+    }
+    return;
+  }
   if (strcmp(command, "RTL_IQ_RETRIEVE_BEGIN") == 0) {
     if (g_iq_rec_active.load(std::memory_order_acquire) ||
         lora_native_decode_busy.load(std::memory_order_acquire) || g_iq_rec_buf == nullptr ||
@@ -13816,6 +14001,12 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_STOP") == 0 && (authenticated || ORC_LORA_TEST_BUILD)) {
+    if (!rtl_should_resume_after_disconnect(
+            rtl_capture_state.load(std::memory_order_acquire))) {
+      rtl_stop_requested.store(false, std::memory_order_release);
+      Serial.println("RTL_STOP_RESULT ESP_OK");
+      return;
+    }
     rtl_hotplug_resume_pending.store(false, std::memory_order_release);
     rtl_restart_requested.store(false, std::memory_order_release);
     rtl_stop_requested.store(true, std::memory_order_release);
@@ -14044,6 +14235,7 @@ void process_command(char* command) {
     Serial.println("RTL_P25_SCAN                   - survey configured control-channel candidates (auth)");
     Serial.println("RTL_P25_IQ_START|STOP|STATUS   - bounded control-channel IQ capture (mutations auth)");
     Serial.println("RTL_P25_REPLAY <path.orciq>    - replay a stopped-radio P25 capture (auth)");
+    Serial.println("RTL_LORA_REPLAY_*              - replay host IQ from PSRAM (auth, stopped)");
     Serial.println("RTL_REC_START/STOP/STATUS/SAVE - audio capture-to-WAV control");
     Serial.println("RTL_TOOL [RADIO|SCOPE|CAPTURE] - query/switch active tool tab");
     Serial.println("RTL_CAPTURE|RTL_LISTEN [FM|AM|WX|LORA] - one-shot/continuous band capture (auth)");

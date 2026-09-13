@@ -13,6 +13,7 @@ struct Config {
   const uint8_t* authorized_psk = nullptr;
   size_t authorized_psk_bytes = 0;
   size_t candidate_samples = 0;
+  bool trace = false;
 };
 
 struct Packet {
@@ -27,6 +28,25 @@ struct Packet {
   char short_name[8]{};
   char long_name[32]{};
   char text[kPacketTextBytes]{};
+};
+
+struct PreprocessTracePoint {
+  uint32_t output_index = 0;
+  uint32_t source_index = 0;
+  uint32_t source_remainder = 0;
+  uint8_t raw[4]{};
+  uint8_t filtered[4]{};
+  uint8_t resampled[2]{};
+  bool filtered_valid = false;
+};
+
+struct FftTracePoint {
+  uint16_t symbol_index = 0;
+  uint16_t best_bin = 0;
+  uint16_t second_bin = 0;
+  float best_magnitude = 0;
+  float second_magnitude = 0;
+  float neighbors[5]{};
 };
 
 struct Stats {
@@ -61,6 +81,16 @@ struct Stats {
   uint32_t full_capture_passes = 0;
   uint32_t full_fallbacks = 0;
   uint32_t cfo_retry_passes = 0;
+  uint16_t trace_symbols[128]{};
+  uint16_t trace_symbol_count = 0;
+  uint32_t trace_data_start = 0;
+  int8_t trace_timing_adjustment = 0;
+  uint16_t trace_preamble_peak = 0;
+  uint32_t trace_preprocess_fnv1a = 0;
+  PreprocessTracePoint trace_preprocess[8]{};
+  uint8_t trace_preprocess_count = 0;
+  FftTracePoint trace_fft[5]{};
+  uint8_t trace_fft_count = 0;
   bool candidate_accepted = false;
   bool candidate_rejected = false;
   bool candidate_truncated = false;

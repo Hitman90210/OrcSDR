@@ -78,6 +78,7 @@ constexpr uint8_t kDefaultPsk[] = {
 struct Scratch {
   float* fft = nullptr;
   float* downchirp = nullptr;
+  float* twiddle = nullptr;
   uint8_t* resampled = nullptr;
   size_t resampled_capacity = 0;
   uint8_t sf = 0;
@@ -457,7 +458,8 @@ bool phy_crc_matches(const uint8_t* data, size_t payload_len, const uint8_t* phy
 }
 
 bool configure_chirp(uint8_t sf, uint32_t bandwidth_hz) {
-  if (sf < kMinSf || sf > kMaxSf || bandwidth_hz != 250000 || g_scratch.downchirp == nullptr)
+  if (sf < kMinSf || sf > kMaxSf || bandwidth_hz != 250000 ||
+      g_scratch.downchirp == nullptr || g_scratch.twiddle == nullptr)
     return false;
   const size_t symbol_samples = 1u << (sf + 1u);
   const size_t fft_size = symbol_samples * kFftPadding;
@@ -473,6 +475,9 @@ bool configure_chirp(uint8_t sf, uint32_t bandwidth_hz) {
     g_scratch.downchirp[i * 2] = cosf(phase);
     g_scratch.downchirp[i * 2 + 1] = sinf(phase);
   }
+  if (dsps_gen_w_r2_fc32(g_scratch.twiddle, static_cast<int>(fft_size)) != ESP_OK ||
+      dsps_bit_rev_fc32_ansi(g_scratch.twiddle, static_cast<int>(fft_size / 2)) != ESP_OK)
+    return false;
   g_scratch.sf = sf;
   g_scratch.symbol_samples = symbol_samples;
   g_scratch.fft_size = fft_size;
@@ -604,7 +609,7 @@ bool dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size
     g_scratch.fft[i * 2] = real * chirp_real - imaginary * chirp_imag;
     g_scratch.fft[i * 2 + 1] = real * chirp_imag + imaginary * chirp_real;
   }
-  if (dsps_fft2r_fc32(g_scratch.fft, static_cast<int>(n)) != ESP_OK ||
+  if (dsps_fft2r_fc32_ansi_(g_scratch.fft, static_cast<int>(n), g_scratch.twiddle) != ESP_OK ||
       dsps_bit_rev_fc32(g_scratch.fft, static_cast<int>(n)) != ESP_OK) return false;
   const size_t bin_count = n / 2;
   float best = -1.0f;
@@ -631,20 +636,21 @@ uint16_t peak_to_symbol(uint16_t peak, uint16_t preamble_peak, size_t fft_bins, 
   return static_cast<uint16_t>(((delta + kFftPadding / 2) / kFftPadding) % bins);
 }
 
+float folded_fft_magnitude(size_t bin, size_t fft_bins) {
+  const float a_real = g_scratch.fft[bin * 2];
+  const float a_imaginary = g_scratch.fft[bin * 2 + 1];
+  const float b_real = g_scratch.fft[(bin + fft_bins) * 2];
+  const float b_imaginary = g_scratch.fft[(bin + fft_bins) * 2 + 1];
+  return sqrtf(a_real * a_real + a_imaginary * a_imaginary) +
+         sqrtf(b_real * b_real + b_imaginary * b_imaginary);
+}
+
 float refined_cfo_hz(uint16_t peak, size_t fft_bins, uint32_t bandwidth_hz) {
   if (g_scratch.fft == nullptr || fft_bins == 0) return 0.0f;
-  const auto magnitude = [fft_bins](size_t bin) {
-    const float a_real = g_scratch.fft[bin * 2];
-    const float a_imaginary = g_scratch.fft[bin * 2 + 1];
-    const float b_real = g_scratch.fft[(bin + fft_bins) * 2];
-    const float b_imaginary = g_scratch.fft[(bin + fft_bins) * 2 + 1];
-    return sqrtf(a_real * a_real + a_imaginary * a_imaginary) +
-           sqrtf(b_real * b_real + b_imaginary * b_imaginary);
-  };
   const size_t center = peak;
-  const float left = magnitude((center + fft_bins - 1) % fft_bins);
-  const float middle = magnitude(center);
-  const float right = magnitude((center + 1) % fft_bins);
+  const float left = folded_fft_magnitude((center + fft_bins - 1) % fft_bins, fft_bins);
+  const float middle = folded_fft_magnitude(center, fft_bins);
+  const float right = folded_fft_magnitude((center + 1) % fft_bins, fft_bins);
   const float denominator = left - 2.0f * middle + right;
   const float fraction = fabsf(denominator) < 1.0e-6f
                              ? 0.0f
@@ -710,6 +716,26 @@ bool decode_symbols(const uint16_t* raw_symbols, size_t raw_count, uint8_t sf, u
   return true;
 }
 
+void record_fft_trace(Stats* stats, uint16_t symbol_index, uint16_t best_bin,
+                      size_t fft_bins) {
+  if (stats == nullptr || stats->trace_fft_count >= std::size(stats->trace_fft)) return;
+  auto& trace = stats->trace_fft[stats->trace_fft_count++];
+  trace.symbol_index = symbol_index;
+  trace.best_bin = best_bin;
+  trace.best_magnitude = folded_fft_magnitude(best_bin, fft_bins);
+  for (size_t bin = 0; bin < fft_bins; ++bin) {
+    if (bin == best_bin) continue;
+    const float magnitude = folded_fft_magnitude(bin, fft_bins);
+    if (magnitude > trace.second_magnitude) {
+      trace.second_magnitude = magnitude;
+      trace.second_bin = static_cast<uint16_t>(bin);
+    }
+  }
+  for (int offset = -2; offset <= 2; ++offset)
+    trace.neighbors[offset + 2] = folded_fft_magnitude(
+        (best_bin + fft_bins + offset) % fft_bins, fft_bins);
+}
+
 bool measured_dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size_t start,
                            bool input_is_up, uint16_t* peak, float* height, float cfo_hz,
                            Stats* stats) {
@@ -757,13 +783,16 @@ bool decode_mesh(const uint8_t* data, size_t size, const Config& config, Packet*
 }  // namespace
 
 bool initialize() {
-  if (g_scratch.fft != nullptr && g_scratch.downchirp != nullptr)
+  if (g_scratch.fft != nullptr && g_scratch.downchirp != nullptr && g_scratch.twiddle != nullptr)
     return rf_analysis::initialize_fft();
   g_scratch.fft = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft * 2,
                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   g_scratch.downchirp = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft * 2,
                                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (g_scratch.fft == nullptr || g_scratch.downchirp == nullptr) return false;
+  g_scratch.twiddle = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft,
+                                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (g_scratch.fft == nullptr || g_scratch.downchirp == nullptr || g_scratch.twiddle == nullptr)
+    return false;
   return rf_analysis::initialize_fft();
 }
 
@@ -798,6 +827,11 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
   decode_cu8 = resampled_cu8;
   samples = resampled_samples;
   decode_rate = kDecodeRate;
+  if (stats != nullptr && config.trace) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < samples * 2; ++i) hash = (hash ^ decode_cu8[i]) * 16777619u;
+    stats->trace_preprocess_fnv1a = hash;
+  }
   // Dechirping linearly selects the 500 kS/s CSS grid from the original source.
   const size_t n = g_scratch.symbol_samples;
   const size_t fft_bins = g_scratch.fft_size / 2;
@@ -922,6 +956,11 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
                                            &has_crc)) {
         data_start = candidate;
         header_found = true;
+        if (stats != nullptr && stats->trace_data_start == 0) {
+          stats->trace_data_start = static_cast<uint32_t>(data_start);
+          stats->trace_timing_adjustment = static_cast<int8_t>(adjustment);
+          stats->trace_preamble_peak = preamble_peak;
+        }
       }
       vTaskDelay(1);
       }
@@ -932,12 +971,38 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       start = cursor + n;
       continue;
     }
+    const size_t count = symbol_count(payload_len, coding_rate, has_crc, spreading_factor);
     if (stats != nullptr) {
       stats->raw_cfo_tenths_hz =
           static_cast<int16_t>(lroundf((phase_cfo_hz + correction_cfo_hz) * 10.0f));
       stats->cfo_tenths_hz = static_cast<int16_t>(lroundf(correction_cfo_hz * 10.0f));
+      if (config.trace && stats->trace_preprocess_count == 0) {
+        const size_t trace_indices[] = {
+            sync - 4 * n, sync, data_start, data_start + 13 * n,
+            data_start + 14 * n, data_start + 15 * n, data_start + 50 * n,
+            data_start + (count - 1) * n,
+        };
+        for (size_t output_index : trace_indices) {
+          if (output_index >= samples || stats->trace_preprocess_count >=
+                                              std::size(stats->trace_preprocess)) continue;
+          const uint64_t scaled = static_cast<uint64_t>(output_index) * sample_rate_sps;
+          const size_t source_index = static_cast<size_t>(scaled / kDecodeRate);
+          if (source_index + 1 >= bytes / 2) continue;
+          auto& point = stats->trace_preprocess[stats->trace_preprocess_count++];
+          point.output_index = static_cast<uint32_t>(output_index);
+          point.source_index = static_cast<uint32_t>(source_index);
+          point.source_remainder = static_cast<uint32_t>(scaled % kDecodeRate);
+          std::memcpy(point.raw, cu8 + source_index * 2, sizeof(point.raw));
+          point.filtered_valid = source_index >= resampled_samples &&
+                                 source_index + 1 < filtered_samples;
+          if (point.filtered_valid)
+            std::memcpy(point.filtered, filtered_cu8 + source_index * 2,
+                        sizeof(point.filtered));
+          std::memcpy(point.resampled, decode_cu8 + output_index * 2,
+                      sizeof(point.resampled));
+        }
+      }
     }
-    const size_t count = symbol_count(payload_len, coding_rate, has_crc, spreading_factor);
     if (count > std::size(symbols) || data_start + count * n > virtual_samples) {
       if (stats != nullptr) stats->truncated = true;
       start = cursor + n;
@@ -983,6 +1048,9 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
           break;
         }
         symbols[i] = peak_to_symbol(peak, payload_preamble_peak, fft_bins, bins);
+        if (config.trace && phase_retry == 0 && payload_clock_ppm == 0 &&
+            (i == 13 || i == 14 || i == 15 || i == 50 || i + 1 == count))
+          record_fft_trace(stats, static_cast<uint16_t>(i), peak, fft_bins);
       }
       if (stats != nullptr) {
         stats->payload_symbols_millis += now_millis() - symbols_started;
@@ -997,6 +1065,12 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
           corrected %= static_cast<int32_t>(bins);
           symbols[i] = static_cast<uint16_t>(corrected < 0 ? corrected + bins : corrected);
         }
+      }
+      if (stats != nullptr && config.trace && stats->trace_symbol_count == 0 && symbols_ok) {
+        stats->trace_symbol_count =
+            static_cast<uint16_t>(std::min(count, std::size(stats->trace_symbols)));
+        std::memcpy(stats->trace_symbols, symbols,
+                    stats->trace_symbol_count * sizeof(stats->trace_symbols[0]));
       }
       uint8_t decoded[kMaxBytes]{};
       size_t decoded_size = 0;
