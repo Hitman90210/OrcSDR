@@ -7,6 +7,8 @@ import argparse
 import csv
 import importlib.metadata
 import json
+import math
+import random
 import re
 import sys
 import threading
@@ -207,7 +209,7 @@ def validate_pair(tx, reference, transport: str, ota_confirmed: bool):
         raise RuntimeError("OTA runs require --confirm-local-ota-legal")
 
 
-def correlate(transmissions: list[dict], events: list[dict], reference_tokens: set[str], window: float):
+def correlate(slots: list[dict], events: list[dict], reference_tokens: set[str], window: float):
     captures = [
         event
         for event in events
@@ -223,9 +225,9 @@ def correlate(transmissions: list[dict], events: list[dict], reference_tokens: s
     ]
     decodes_by_sequence = {event.get("sequence"): event for event in decodes}
     rows = []
-    for index, tx in enumerate(transmissions):
-        end = transmissions[index + 1]["monotonic"] if index + 1 < len(transmissions) else tx["monotonic"] + window
-        matched_captures = [event for event in captures if tx["monotonic"] <= event["monotonic"] < end]
+    for index, slot in enumerate(slots):
+        end = slots[index + 1]["monotonic"] if index + 1 < len(slots) else slot["monotonic"] + window
+        matched_captures = [event for event in captures if slot["monotonic"] <= event["monotonic"] < end]
         matched_decodes = [
             decodes_by_sequence[event.get("sequence")]
             for event in matched_captures
@@ -238,16 +240,23 @@ def correlate(transmissions: list[dict], events: list[dict], reference_tokens: s
         )
         rows.append(
             {
-                "sequence": tx["sequence"],
-                "token": tx["token"],
-                "packet_id": tx.get("packet_id"),
-                "reference_received": tx["token"] in reference_tokens,
+                "slot_index": slot["slot_index"],
+                "slot_type": slot["slot_type"],
+                "sequence": slot.get("sequence"),
+                "token": slot.get("token"),
+                "packet_id": slot.get("packet_id"),
+                "reference_received": (
+                    slot["token"] in reference_tokens if slot["slot_type"] == "tx" else None
+                ),
                 "orcsdr_rf_events": len(matched_captures),
                 "orcsdr_decode_attempts": len(matched_decodes),
                 "orcsdr_preambles": sum(int(item.get("preambles", 0)) for item in matched_decodes),
                 "orcsdr_header_failures": sum(int(item.get("header_failures", 0)) for item in matched_decodes),
                 "orcsdr_crc_ok": sum(int(item.get("crc_ok", 0)) for item in matched_decodes),
                 "orcsdr_packets": sum(int(item.get("packets", 0)) for item in matched_decodes),
+                "orcsdr_zero_preamble_attempts": sum(
+                    int(item.get("preambles", 0)) == 0 for item in matched_decodes
+                ),
                 "extra_decode_attempts": max(0, len(matched_decodes) - 1),
                 "decode_latency_seconds": (
                     round(best["monotonic"] - best_capture["monotonic"], 3)
@@ -293,6 +302,11 @@ def quiet_window_events(events: list[dict], start: float, end: float) -> list[di
     ]
 
 
+def nearest_rank(values: list[float], percentile: float) -> float | None:
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(len(ordered) * percentile) - 1)] if ordered else None
+
+
 def write_results(
     run_dir: Path, rows: list[dict], quiet_events: list[dict], all_events: list[dict], duration: float
 ):
@@ -302,19 +316,26 @@ def write_results(
         writer.writeheader()
         writer.writerows(rows)
     quiet_capture_count, false_triggers, unresolved_quiet = quiet_trigger_counts(quiet_events)
-    requested = len(rows)
+    tx_rows = [row for row in rows if row["slot_type"] == "tx"]
+    control_rows = [row for row in rows if row["slot_type"] == "control"]
+    requested = len(tx_rows)
     ratio = lambda count: round(count / requested, 4) if requested else None
-    reference_received = sum(row["reference_received"] for row in rows)
-    rf_detected = sum(row["orcsdr_rf_events"] > 0 for row in rows)
-    preamble_detected = sum(row["orcsdr_preambles"] > 0 for row in rows)
+    control_ratio = lambda count: round(count / len(control_rows), 4) if control_rows else None
+    reference_received = sum(row["reference_received"] for row in tx_rows)
+    rf_detected = sum(row["orcsdr_rf_events"] > 0 for row in tx_rows)
+    preamble_detected = sum(row["orcsdr_preambles"] > 0 for row in tx_rows)
     header_succeeded = sum(
-        row["orcsdr_preambles"] > row["orcsdr_header_failures"] for row in rows
+        row["orcsdr_preambles"] > row["orcsdr_header_failures"] for row in tx_rows
     )
-    crc_succeeded = sum(row["orcsdr_crc_ok"] > 0 for row in rows)
-    mesh_decoded = sum(row["orcsdr_packets"] > 0 for row in rows)
-    extra_decode_attempts = sum(row["extra_decode_attempts"] for row in rows)
+    crc_succeeded = sum(row["orcsdr_crc_ok"] > 0 for row in tx_rows)
+    mesh_decoded = sum(row["orcsdr_packets"] > 0 for row in tx_rows)
+    extra_decode_attempts = sum(row["extra_decode_attempts"] for row in tx_rows)
+    control_rf = sum(row["orcsdr_rf_events"] > 0 for row in control_rows)
+    control_preambles = sum(row["orcsdr_preambles"] > 0 for row in control_rows)
+    control_crc = sum(row["orcsdr_crc_ok"] > 0 for row in control_rows)
+    control_zero_preamble = sum(row["orcsdr_zero_preamble_attempts"] for row in control_rows)
     latencies = sorted(
-        row["decode_latency_seconds"] for row in rows
+        row["decode_latency_seconds"] for row in tx_rows
         if row["decode_latency_seconds"] is not None
     )
     results = {
@@ -334,8 +355,16 @@ def write_results(
         "extra_decode_attempts": extra_decode_attempts,
         "extra_decode_attempt_rate": ratio(extra_decode_attempts),
         "duplicate_rate": None,
+        "control_slots": len(control_rows),
+        "control_slots_with_rf": control_rf,
+        "control_rf_rate": control_ratio(control_rf),
+        "control_slots_with_preamble": control_preambles,
+        "control_preamble_rate": control_ratio(control_preambles),
+        "control_slots_with_crc": control_crc,
+        "control_crc_rate": control_ratio(control_crc),
+        "control_zero_preamble_attempts": control_zero_preamble,
         "average_decode_latency_seconds": round(sum(latencies) / len(latencies), 3) if latencies else None,
-        "p95_decode_latency_seconds": latencies[max(0, int(len(latencies) * 0.95) - 1)] if latencies else None,
+        "p95_decode_latency_seconds": nearest_rank(latencies, 0.95),
         "quiet_seconds": duration,
         "quiet_rf_captures": quiet_capture_count,
         "false_triggers": false_triggers,
@@ -368,6 +397,9 @@ def write_results(
         f"- OrcSDR Meshtastic decodes: {results['orcsdr_meshtastic_decoded']}/{requested} ({results['meshtastic_decode_rate']})",
         f"- Extra decode attempts in TX windows: {results['extra_decode_attempts']}",
         "- Duplicate packet rate: not measurable without OrcSDR payload identity",
+        f"- Control slots with RF: {results['control_slots_with_rf']}/{results['control_slots']}",
+        f"- Control slots with preambles: {results['control_slots_with_preamble']}/{results['control_slots']}",
+        f"- Control slots with CRC: {results['control_slots_with_crc']}/{results['control_slots']}",
         f"- Quiet-window false triggers: {false_triggers} in {duration:.1f}s",
         f"- Quiet captures without a completed decode: {unresolved_quiet}",
         "- Correlation boundary: OrcSDR events are associated by a non-overlapping host-time window.",
@@ -382,14 +414,19 @@ def self_check():
         "crc_failures=0 elapsed_ms=44 sequence=7"
     )
     assert sample and sample["crc_ok"] == 1 and sample["sequence"] == 7
-    tx = [{"sequence": 1, "token": TOKEN_PREFIX + "000001", "packet_id": 9, "monotonic": 10.0}]
+    slots = [
+        {"slot_index": 1, "slot_type": "tx", "sequence": 1, "token": TOKEN_PREFIX + "000001", "packet_id": 9, "monotonic": 10.0},
+        {"slot_index": 2, "slot_type": "control", "monotonic": 20.0},
+    ]
     events = [
         {"kind": "orcsdr", "line_type": "RTL_IQ_START", "mode": "energy", "sequence": 7, "monotonic": 10.1},
         {"kind": "orcsdr", "line_type": "RTL_LORA_NATIVE_DONE", "sequence": 7, "preambles": 1, "crc_ok": 1, "packets": 1, "monotonic": 10.8},
     ]
-    row = correlate(tx, events, {TOKEN_PREFIX + "000001"}, 8)[0]
+    row, control = correlate(slots, events, {TOKEN_PREFIX + "000001"}, 8)
     assert row["reference_received"] and row["orcsdr_crc_ok"] == 1
     assert row["decode_latency_seconds"] == 0.7 and row["extra_decode_attempts"] == 0
+    assert control["reference_received"] is None and control["orcsdr_rf_events"] == 0
+    assert nearest_rank(list(range(1, 11)), 0.95) == 10
     assert quiet_trigger_counts(events) == (1, 0, 0)
     assert quiet_trigger_counts(quiet_window_events(events, 10.0, 10.2)) == (1, 0, 0)
     events[-1]["preambles"] = 0
@@ -403,7 +440,10 @@ def parse_args():
     parser.add_argument("--reference-port")
     parser.add_argument("--orcsdr-port")
     parser.add_argument("--count", type=int, default=10)
+    parser.add_argument("--control-count", type=int, default=0)
+    parser.add_argument("--schedule-seed", type=int, default=90210)
     parser.add_argument("--interval-seconds", type=float, default=8)
+    parser.add_argument("--settle-seconds", type=float, default=20)
     parser.add_argument("--quiet-seconds", type=float, default=180)
     parser.add_argument("--transport", choices=("OTA", "SHIELDED_RF", "CABLED_RF"), default="OTA")
     parser.add_argument("--confirm-local-ota-legal", action="store_true")
@@ -419,8 +459,11 @@ def main() -> int:
     if args.self_check:
         self_check()
         return 0
-    if args.count < 1 or args.interval_seconds < 4 or args.quiet_seconds < 0:
-        raise SystemExit("count must be positive, interval >= 4s, and quiet >= 0s")
+    if (
+        args.count < 1 or args.control_count < 0 or args.interval_seconds < 4
+        or args.quiet_seconds < 0 or args.settle_seconds < 0
+    ):
+        raise SystemExit("count must be positive; control, quiet, and settle must be nonnegative; interval >= 4s")
     run_dir = args.output_root / datetime.now().strftime("%Y%m%d-%H%M%S")
     run_dir.mkdir(parents=True)
     inventory = {
@@ -539,7 +582,7 @@ def main() -> int:
             reference_log.flush()
 
     orc = OrcConsole(args.orcsdr_port, run_dir / "orcsdr.log", events)
-    transmissions = []
+    slots = []
     pub.subscribe(on_receive, "meshtastic.receive")
     try:
         orc.open()
@@ -559,9 +602,14 @@ def main() -> int:
         interfaces["reference"] = SerialInterface(devPath=args.reference_port, timeout=60)
         interfaces["tx"] = SerialInterface(devPath=args.tx_port, timeout=60)
         validate_pair(interfaces["tx"], interfaces["reference"], args.transport, args.confirm_local_ota_legal)
+        schedule = ["tx"] * args.count + ["control"] * args.control_count
+        random.Random(args.schedule_seed).shuffle(schedule)
         configuration = {
             "transport": args.transport,
             "ota_legality_confirmed_by_operator": args.confirm_local_ota_legal,
+            "schedule_seed": args.schedule_seed,
+            "schedule": schedule,
+            "slot_seconds": args.interval_seconds,
             "transmitter": mesh_snapshot(interfaces["tx"]),
             "reference_receiver": mesh_snapshot(interfaces["reference"]),
             "orcsdr": {
@@ -582,23 +630,31 @@ def main() -> int:
         events.add("quiet_end")
 
         tx_interface = interfaces["tx"]
-        for sequence in range(1, args.count + 1):
-            token = f"{TOKEN_PREFIX}{sequence:06d}"
-            sent_at = time.monotonic()
-            packet = tx_interface.sendText(token, destinationId="^all", wantAck=False, channelIndex=0)
-            record = events.add(
-                "mesh_tx", sequence=sequence, token=token,
-                packet_id=packet_id(packet), transport=args.transport,
-                monotonic=sent_at,
-            )
-            transmissions.append(record)
-            tx_log.write(json.dumps(record, separators=(",", ":")) + "\n")
-            tx_log.flush()
-            time.sleep(args.interval_seconds)
-        time.sleep(4)
+        sequence = 0
+        for slot_index, slot_type in enumerate(schedule, 1):
+            slot_start = time.monotonic()
+            if slot_type == "tx":
+                sequence += 1
+                token = f"{TOKEN_PREFIX}{sequence:06d}"
+                packet = tx_interface.sendText(token, destinationId="^all", wantAck=False, channelIndex=0)
+                record = events.add(
+                    "mesh_tx", slot_index=slot_index, slot_type=slot_type,
+                    sequence=sequence, token=token, packet_id=packet_id(packet),
+                    transport=args.transport, monotonic=slot_start,
+                )
+                tx_log.write(json.dumps(record, separators=(",", ":")) + "\n")
+                tx_log.flush()
+            else:
+                record = events.add(
+                    "control_slot", slot_index=slot_index, slot_type=slot_type,
+                    monotonic=slot_start,
+                )
+            slots.append(record)
+            time.sleep(max(0, slot_start + args.interval_seconds - time.monotonic()))
+        time.sleep(args.settle_seconds)
         all_events = events.snapshot()
         quiet_events = quiet_window_events(all_events, quiet_start, quiet_end)
-        rows = correlate(transmissions, all_events, reference_tokens, args.interval_seconds + 4)
+        rows = correlate(slots, all_events, reference_tokens, args.interval_seconds)
         results = write_results(run_dir, rows, quiet_events, all_events, quiet_end - quiet_start)
         events.add("suite_complete", results=results)
         print(json.dumps(results, indent=2))

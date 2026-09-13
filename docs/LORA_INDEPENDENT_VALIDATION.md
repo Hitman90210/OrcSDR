@@ -134,6 +134,31 @@ not calibrated RF power measurements. The observed result does not support a
 simple closer-is-better conclusion and should be repeated before assigning a
 cause.
 
+### Randomized TX/control-slot comparison
+
+To account for uncontrolled LoRa traffic, the next paired experiment used the
+same deterministic randomized schedule for both receive setups: ten TX slots,
+ten no-TX control slots, 20 seconds per slot, and seed `90210`. Meshtastic and
+OrcSDR configuration snapshots match across the pair.
+
+| Receive setup | Reference RX | TX RF | TX preamble | TX CRC | Control RF / preamble / CRC | Zero-preamble TX attempts | Drops | Average / p95 decode |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| 915 MHz whip, indoor, ~10 ft | 10/10 | 10/10 | 2/10 | 1/10 | 0/10 / 0/10 / 0/10 | 9 | 0 | 7.609 / 15.665 s |
+| MLA-30+, outdoor, ~50 ft | 10/10 | 10/10 | 10/10 | 5/10 | 3/10 / 3/10 / 0/10 | 2 | 2 | 5.613 / 13.334 s |
+
+The whip's no-TX controls were empty, while all ten TX slots triggered OrcSDR.
+This makes unrelated traffic an unlikely explanation for its nine
+zero-preamble attempts in this run. The MLA-30+ observed RF/preambles in three
+control slots, proving that its TX-window activity can be contaminated by
+uncontrolled traffic; none of those control slots reached CRC.
+
+The paired result favors the MLA-30+ setup for preamble and CRC yield, but it
+does not isolate antenna performance: antenna type, placement, distance, and
+test time differ. OrcSDR still lacks payload identity, so randomized controls
+support statistical comparison rather than exact attribution of every
+CRC-valid packet. A second counterbalanced pair is required before assigning a
+physical cause.
+
 OrcSDR does not yet emit decoded payload identity. Association to a numbered
 TX therefore remains a non-overlapping host-time-window estimate. In the first
 controlled run, two extra decode attempts occurred inside TX windows, but they
@@ -147,6 +172,8 @@ Raw local evidence:
 - `artifacts/lora_validation/20260912-174945/`
 - `artifacts/lora_validation/20260912-175758/`
 - `artifacts/lora_validation/20260912-180909/`
+- `artifacts/lora_validation/20260912-182146/`
+- `artifacts/lora_validation/20260912-183330/`
 
 No firmware was built or flashed. No trigger or DSP production code changed.
 The next milestone can now benchmark independently designed early-candidate

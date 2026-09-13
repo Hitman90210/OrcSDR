@@ -42,6 +42,21 @@ python tools/lora_lab/run_suite.py `
   --confirm-local-ota-legal
 ```
 
+Interleave deterministic no-transmit controls when uncontrolled LoRa traffic
+may be present:
+
+```powershell
+python tools/lora_lab/run_suite.py `
+  --tx-port COM24 --reference-port COM16 --orcsdr-port COM17 `
+  --transport OTA --confirm-local-ota-legal `
+  --count 10 --control-count 10 --interval-seconds 20 `
+  --schedule-seed 90210
+```
+
+The saved CSV labels every slot as `tx` or `control`. OrcSDR activity in control
+slots estimates background contamination; it is not silently attributed to a
+controlled packet.
+
 Use `SHIELDED_RF` or `CABLED_RF` only when the physical setup actually provides
 that isolation. The harness intentionally has no switch that bypasses this
 transport distinction.
