@@ -456,6 +456,13 @@ no-preamble control remained negative in 12.628 seconds. This establishes a
 specific improvement on one seeded -21 dB boundary, not a general sensitivity
 limit; broader seeded impairment and live OTA validation remain open.
 
+Two follow-on points used the same capture and seed. At -22 dB native again
+decoded a CRC-valid encrypted packet on the first hypothesis in 12.600 seconds
+with one alternate-recovery attempt. At -24 dB the host reference did not find
+a CRC-valid stream, while native decoded a CRC-valid encrypted packet after its
+CFO retry in 50.791 seconds and 2,391 FFTs. The -24 dB result is therefore a
+native robustness observation, not a host/native sensitivity comparison.
+
 During this phase firmware was built and flashed to COM17 for measurement. The
 separate one-line PSRAM placement fix for the home spectrum buffer preserves the
 tracked 40 KiB internal DMA reserve and restored boot with the default native
