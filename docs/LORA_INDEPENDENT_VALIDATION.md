@@ -229,6 +229,27 @@ LoRa-positive captures. It is not yet sufficient to choose a production
 threshold or claim a false-positive rate. More negative interference classes
 and weak-signal positives are required before firmware gating is enabled.
 
+### Configured transmit-power pair
+
+The Heltec was then configured for 15 dBm and 2 dBm for one controlled capture
+on each receive setup. COM16 received all four exact tokens, and offline host
+decoding recovered all four from their saved IQ. The Heltec was verified back
+at 30 dBm and OrcSDR automatic capture was verified on afterward.
+
+| Receive setup | Configured TX | Reference / host | Native result | Native time | Consecutive chirps |
+|---|---:|---|---|---:|---:|
+| MLA-30+, outdoor, ~50 ft | 15 dBm | exact / exact | preamble, CRC failure | 73.665 s | 17 |
+| MLA-30+, outdoor, ~50 ft | 2 dBm | exact / exact | preamble, CRC failure | 73.738 s | 16 |
+| 915 MHz whip, indoor, ~10 ft | 15 dBm | exact / exact | CRC valid | 12.485 s | 16 |
+| 915 MHz whip, indoor, ~10 ft | 2 dBm | exact / exact | two CRC-valid packets in window | 12.638 s | 17 |
+
+Power RMS p95 remained between 1.186538 and 1.196592 across these captures.
+Thus the configured power change did not create a calibrated weak-signal series
+at the SDR input in this setup. These files are useful positive vectors but
+must not be presented as receiver-sensitivity evidence. Reproducible host-side
+attenuation/noise impairment or a physically attenuated RF path is required for
+that measurement.
+
 No firmware was built or flashed. No trigger or DSP production code changed.
 The next milestone can benchmark independently designed early-candidate
 detector instrumentation against this measured upstream baseline without
