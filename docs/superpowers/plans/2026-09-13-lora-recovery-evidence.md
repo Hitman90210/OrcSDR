@@ -124,13 +124,13 @@ test(lora): map weak-signal recovery matrix
 - Consumes: satisfactory memory, corpus, and matrix checkpoints.
 - Produces: trigger, preamble, CRC, runtime, recovery, zero-preamble, drop/blind-time, heap, and stack observations.
 
-- [ ] **Step 1: Restore automatic LongFast scanning at 906.875 MHz**
+- [x] **Step 1: Restore automatic LongFast scanning at 906.875 MHz**
 
-- [ ] **Step 2: Observe an extended receive interval on the connected MLA-30+ antenna**
+- [x] **Step 2: Observe an extended receive interval on the connected MLA-30+ antenna**
 
-- [ ] **Step 3: Repeat the same interval after the user swaps to the indoor 915 MHz whip**
+- [x] **Step 3: Repeat the same interval after the user swaps to the indoor 915 MHz whip**
 
-- [ ] **Step 4: Record evidence, restore the requested antenna state, commit, and push**
+- [x] **Step 4: Record evidence, restore the requested antenna state, commit, and push**
 
 ```text
 docs(lora): record live recovery soak

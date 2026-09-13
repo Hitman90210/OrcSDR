@@ -556,3 +556,42 @@ tracked 40 KiB internal DMA reserve and restored boot with the default native
 configuration. No production trigger threshold has been enabled. Normal LoRa
 reception was restarted at 906.875 MHz after replay; a newly observed live OTA
 packet on this image remains a separate acceptance gate.
+
+### Live antenna observations
+
+Three uninterrupted ten-minute intervals observed automatic LongFast reception
+at 906.875 MHz. The third interval is the **antenna disturbance test with the
+915 MHz whip**: the user moved the indoor whip to about twice its prior distance
+from the indoor LoRa devices. Its substantially different starting noise floor
+means it is a live stability observation, not a controlled distance or
+sensitivity experiment.
+
+| Interval | Approximate setup | Start noise | RF captures | Preambles | CRC valid | Zero preamble | Header / CRC failures | Recovery attempt / success / exhausted | New drops | Valid decoder runtime | Stack minimum | Resets during interval |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MLA-30+ | Outdoors, about 50 ft from nodes | -29.1 dBFS | 3 | 2 | 2 | 1 | 0 / 0 | 0 / 0 / 0 | 0 | 3.609-9.438 s | 76 | 0 |
+| Indoor 915 MHz whip | Indoors, about 10 ft from nodes | -33.9 dBFS | 8 | 5 | 3 | 4 | 0 / 2 | 2 / 0 / 2 | 2 | 17.199-17.530 s | 140 | 0 |
+| Antenna disturbance, 915 MHz whip | Indoors, about twice the prior distance | -23.4 dBFS | 5 | 3 | 3 | 2 | 0 / 0 | 0 / 0 / 0 | 1 | 3.473-17.883 s | 140 | 0 |
+
+The whip intervals saw more full four-second captures and busy-trigger drops
+than the MLA interval. The first whip interval also supplied two live
+CRC-failure paths: both tested exactly one recovery candidate, reported
+`recovery_exhausted=1`, and stopped in 17.159 seconds or less without adding
+clock/CFO hypotheses. Internal free memory remained about 75 KiB, DMA-capable
+free memory about 35 KiB, both largest internal/DMA blocks 32,768 bytes, PSRAM
+free about 2.22 MiB with a 2.16 MiB largest block, and decoder PSRAM 8,390,464
+bytes. Uptime increased monotonically within every interval and normal live
+scanning remained active afterward.
+
+These measurements prove bounded live behavior, packet reception, and stable
+memory in the observed environments. Stronger local energy, changing ambient
+traffic, near-field effects, or overload are plausible explanations for the
+different trigger patterns. They do not prove that distance or antenna choice
+caused the differences, do not establish RF sensitivity or range, and do not
+identify the ambient packets as the user's nodes.
+
+The existing timestamps provide only a trigger-to-decode-completion proxy. For
+CRC-valid captures that range was 4.491-10.728 seconds on MLA-30+, about
+20.950-21.279 seconds for the first whip, and 7.222-21.631 seconds for the
+disturbance interval. Full-window capture time is included. Separate CRC-valid
+and UI-publication timestamps are not present, so these values are not proven
+transmit-to-screen latency.
