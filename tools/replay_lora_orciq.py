@@ -14,13 +14,26 @@ from pathlib import Path
 import decode_orciq
 
 
-def _wait_line(connection, prefixes, timeout=15):
+def _wait_line(connection, prefixes, timeout=15, observed=None):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         line = connection.readline().decode("utf-8", "replace").strip()
         if any(line.startswith(prefix) for prefix in prefixes):
             return line
+        if line and observed is not None:
+            observed.append(line)
     raise TimeoutError(f"Timed out waiting for {prefixes}")
+
+
+def _parse_fields(line):
+    fields = {}
+    for key, value in re.findall(r"\b([a-z_]+)=([^\s]+)", line):
+        try:
+            value = int(value)
+        except ValueError:
+            pass
+        fields[key] = value
+    return fields
 
 
 def _upload_iq(connection, iq, *, rate, frequency_hz, sf, bandwidth_hz):
@@ -184,8 +197,9 @@ def main():
             raise RuntimeError(stopped)
         _upload_iq(tab5.serial, iq, rate=rate, frequency_hz=frequency_hz, sf=sf,
                    bandwidth_hz=bandwidth_hz)
-        done = _wait_line(tab5.serial, ("RTL_LORA_NATIVE_DONE",), 180)
-        profile = _wait_line(tab5.serial, ("RTL_LORA_NATIVE_PROFILE",), 15)
+        observed = []
+        done = _wait_line(tab5.serial, ("RTL_LORA_NATIVE_DONE",), 180, observed)
+        profile = _wait_line(tab5.serial, ("RTL_LORA_NATIVE_PROFILE",), 15, observed)
         traces = _read_traces(tab5.serial, done)
         print(done)
         print(profile)
@@ -193,7 +207,9 @@ def main():
             print(trace.encode("ascii", "backslashreplace").decode("ascii"))
         report = {"capture": str(args.capture), "impairment": impairment,
                   "done": done, "profile": profile,
-                  "traces": traces}
+                  "traces": traces,
+                  "memory": [_parse_fields(line) for line in observed
+                             if line.startswith("RTL_LORA_MEMORY ")]}
         if args.compare_host:
             reference = _host_reference_symbols(args.capture, iq)
             symbol_line = next((line for line in traces

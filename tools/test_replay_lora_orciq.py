@@ -69,6 +69,34 @@ class ReplayUploadTests(unittest.TestCase):
             [],
         )
 
+    def test_parse_fields_converts_profile_values(self):
+        self.assertEqual(
+            replay_lora_orciq._parse_fields(
+                "RTL_LORA_MEMORY stage=after_init decoder_psram=657184 "
+                "fft_table=PSRAM fft_bytes=131072 recovery=PSRAM recovery_bytes=1856"
+            ),
+            {"stage": "after_init", "decoder_psram": 657184,
+             "fft_table": "PSRAM", "fft_bytes": 131072,
+             "recovery": "PSRAM", "recovery_bytes": 1856},
+        )
+
+    def test_wait_line_retains_nonmatching_telemetry(self):
+        connection = FakeSerial()
+        connection._line("RTL_LORA_MEMORY stage=replay_before decoder_psram=657160")
+        connection._line("RTL_LORA_NATIVE_DONE packets=1")
+        observed = []
+
+        self.assertEqual(
+            replay_lora_orciq._wait_line(
+                connection, ("RTL_LORA_NATIVE_DONE",), observed=observed
+            ),
+            "RTL_LORA_NATIVE_DONE packets=1",
+        )
+        self.assertEqual(
+            observed,
+            ["RTL_LORA_MEMORY stage=replay_before decoder_psram=657160"],
+        )
+
     def test_trace_reader_keeps_symbol_alternates(self):
         connection = FakeSerial()
         connection._line("RTL_LORA_NATIVE_TRACE sequence=1")

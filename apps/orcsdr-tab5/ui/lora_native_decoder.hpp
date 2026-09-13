@@ -87,8 +87,11 @@ struct Stats {
   uint32_t full_capture_passes = 0;
   uint32_t full_fallbacks = 0;
   uint32_t cfo_retry_passes = 0;
-  uint32_t alternate_recovery_attempts = 0;
-  uint32_t alternate_recovery_symbols = 0;
+  uint32_t recovery_attempted = 0;
+  uint32_t recovery_symbols_considered = 0;
+  uint32_t recovery_candidates_tested = 0;
+  uint32_t recovery_success = 0;
+  bool recovery_exhausted = false;
   uint16_t trace_symbols[128]{};
   uint16_t trace_symbol_count = 0;
   uint32_t trace_data_start = 0;
@@ -113,6 +116,11 @@ struct Stats {
 
 // Allocates fixed decoder scratch space once. Call before starting RTL streaming.
 bool initialize();
+size_t psram_bytes();
+size_t fft_table_bytes();
+size_t recovery_workspace_bytes();
+bool fft_table_in_psram();
+bool recovery_workspace_in_psram();
 
 // Decodes an immutable CU8 capture. This function is intentionally task-only:
 // it may take milliseconds and must never run from the RTL IQ callback.

@@ -4,6 +4,7 @@
 
 #include <dsps_fft2r.h>
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -48,12 +49,15 @@ void merge_profile(Stats* destination, const Stats& source) {
   ADD_PROFILE(full_capture_passes);
   ADD_PROFILE(full_fallbacks);
   ADD_PROFILE(cfo_retry_passes);
-  ADD_PROFILE(alternate_recovery_attempts);
-  ADD_PROFILE(alternate_recovery_symbols);
+  ADD_PROFILE(recovery_attempted);
+  ADD_PROFILE(recovery_symbols_considered);
+  ADD_PROFILE(recovery_candidates_tested);
+  ADD_PROFILE(recovery_success);
 #undef ADD_PROFILE
   destination->candidate_accepted |= source.candidate_accepted;
   destination->candidate_rejected |= source.candidate_rejected;
   destination->candidate_truncated |= source.candidate_truncated;
+  destination->recovery_exhausted |= source.recovery_exhausted;
 }
 
 constexpr uint32_t kDecodeRate = 500000;
@@ -72,6 +76,8 @@ constexpr float kLoraLowpass[][5] = {
 };
 constexpr size_t kMaxBytes = 257;
 constexpr size_t kMaxNibbles = kMaxBytes * 2;
+constexpr size_t kRecoveryAlternateCapacity = 300;
+constexpr uint32_t kMaxWeakRecoveryCandidates = 1;
 constexpr uint8_t kDefaultPsk[] = {
     0xd4, 0xf1, 0xbb, 0x3a, 0x20, 0x29, 0x07, 0x59,
     0xf0, 0xbc, 0xff, 0xab, 0xcf, 0x4e, 0x69, 0x01,
@@ -90,6 +96,65 @@ struct Scratch {
 };
 
 Scratch g_scratch{};
+
+using ScratchAllocator = void* (*)(size_t, uint32_t);
+bool allocate_fixed_scratch(Scratch* scratch, ScratchAllocator allocator);
+
+uint32_t g_failed_allocation_calls = 0;
+uint32_t g_failed_allocation_caps = 0;
+
+void* fail_scratch_allocation(size_t, uint32_t caps) {
+  ++g_failed_allocation_calls;
+  g_failed_allocation_caps = caps;
+  return nullptr;
+}
+
+bool recovery_budget_available(uint32_t candidates_tested) {
+  return candidates_tested < kMaxWeakRecoveryCandidates;
+}
+
+void free_fixed_scratch(Scratch* scratch) {
+  if (scratch == nullptr) return;
+  heap_caps_free(scratch->fft);
+  heap_caps_free(scratch->downchirp);
+  heap_caps_free(scratch->twiddle);
+  heap_caps_free(scratch->recovery_alternates);
+  scratch->fft = nullptr;
+  scratch->downchirp = nullptr;
+  scratch->twiddle = nullptr;
+  scratch->recovery_alternates = nullptr;
+}
+
+bool allocate_fixed_scratch(Scratch* scratch, ScratchAllocator allocator) {
+  if (scratch == nullptr || allocator == nullptr) return false;
+  free_fixed_scratch(scratch);
+  constexpr uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+  scratch->fft = static_cast<float*>(allocator(sizeof(float) * kMaxFft * 2, caps));
+  if (scratch->fft == nullptr) return false;
+  scratch->downchirp = static_cast<float*>(allocator(sizeof(float) * kMaxFft * 2, caps));
+  if (scratch->downchirp == nullptr) {
+    free_fixed_scratch(scratch);
+    return false;
+  }
+  scratch->twiddle = static_cast<float*>(allocator(sizeof(float) * kMaxFft, caps));
+  if (scratch->twiddle == nullptr) {
+    free_fixed_scratch(scratch);
+    return false;
+  }
+  scratch->recovery_alternates = static_cast<SymbolAlternateTracePoint*>(allocator(
+      sizeof(SymbolAlternateTracePoint) * kRecoveryAlternateCapacity, caps));
+  if (scratch->recovery_alternates == nullptr || !esp_ptr_external_ram(scratch->fft) ||
+      !esp_ptr_external_ram(scratch->downchirp) || !esp_ptr_external_ram(scratch->twiddle) ||
+      !esp_ptr_external_ram(scratch->recovery_alternates)) {
+    free_fixed_scratch(scratch);
+    return false;
+  }
+  return true;
+}
+
+size_t allocated_bytes(const void* allocation) {
+  return allocation == nullptr ? 0 : heap_caps_get_allocated_size(const_cast<void*>(allocation));
+}
 
 uint32_t now_millis() {
   return static_cast<uint32_t>(esp_timer_get_time() / 1000);
@@ -830,20 +895,35 @@ bool decode_mesh(const uint8_t* data, size_t size, const Config& config, Packet*
 
 bool initialize() {
   if (g_scratch.fft != nullptr && g_scratch.downchirp != nullptr && g_scratch.twiddle != nullptr &&
-      g_scratch.recovery_alternates != nullptr)
-    return rf_analysis::initialize_fft();
-  g_scratch.fft = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft * 2,
-                                                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  g_scratch.downchirp = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft * 2,
-                                                               MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  g_scratch.twiddle = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft,
-                                                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  g_scratch.recovery_alternates = static_cast<SymbolAlternateTracePoint*>(heap_caps_malloc(
-      sizeof(SymbolAlternateTracePoint) * 300, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (g_scratch.fft == nullptr || g_scratch.downchirp == nullptr || g_scratch.twiddle == nullptr ||
-      g_scratch.recovery_alternates == nullptr)
+      g_scratch.recovery_alternates != nullptr) {
+    return esp_ptr_external_ram(g_scratch.fft) && esp_ptr_external_ram(g_scratch.downchirp) &&
+           esp_ptr_external_ram(g_scratch.twiddle) &&
+           esp_ptr_external_ram(g_scratch.recovery_alternates) && rf_analysis::initialize_fft();
+  }
+  if (!allocate_fixed_scratch(&g_scratch, heap_caps_malloc) || !rf_analysis::initialize_fft()) {
+    free_fixed_scratch(&g_scratch);
     return false;
-  return rf_analysis::initialize_fft();
+  }
+  return true;
+}
+
+size_t psram_bytes() {
+  return allocated_bytes(g_scratch.fft) + allocated_bytes(g_scratch.downchirp) +
+         allocated_bytes(g_scratch.twiddle) + allocated_bytes(g_scratch.resampled) +
+         allocated_bytes(g_scratch.recovery_alternates);
+}
+
+size_t fft_table_bytes() { return allocated_bytes(g_scratch.twiddle); }
+
+size_t recovery_workspace_bytes() { return allocated_bytes(g_scratch.recovery_alternates); }
+
+bool fft_table_in_psram() {
+  return g_scratch.twiddle != nullptr && esp_ptr_external_ram(g_scratch.twiddle);
+}
+
+bool recovery_workspace_in_psram() {
+  return g_scratch.recovery_alternates != nullptr &&
+         esp_ptr_external_ram(g_scratch.recovery_alternates);
 }
 
 static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
@@ -971,7 +1051,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     const size_t nominal_data_start =
         sync + static_cast<size_t>((last_up > last_down ? 2.25f : 1.25f) * n);
     if (stats != nullptr) stats->sync_cfo_millis += now_millis() - sync_started;
-    uint16_t symbols[300]{};
+    uint16_t symbols[kRecoveryAlternateCapacity]{};
     uint8_t payload_len = 0;
     uint8_t coding_rate = 0;
     bool has_crc = false;
@@ -1063,7 +1143,9 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     auto* recovery_alternates = g_scratch.recovery_alternates;
     size_t recovery_alternate_count = 0;
     bool crc_ok = false;
-    for (int phase_retry = 0; phase_retry < 2 && !crc_ok; ++phase_retry) {
+    bool recovery_exhausted = false;
+    uint32_t recovery_candidates_tested = 0;
+    for (int phase_retry = 0; phase_retry < 2 && !crc_ok && !recovery_exhausted; ++phase_retry) {
       if (stats != nullptr) ++stats->cfo_hypotheses;
       const float payload_phase_cfo_hz = phase_cfo_hz + (phase_retry ? correction_cfo_hz : 0.0f);
       uint16_t payload_preamble_peak = preamble_peak;
@@ -1078,7 +1160,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
         payload_drift_cfo_hz = refined_cfo_hz(payload_preamble_peak, fft_bins, bandwidth_hz);
       }
       for (int16_t payload_clock_ppm : kPayloadClockPpm) {
-      if (crc_ok) break;
+      if (crc_ok || recovery_exhausted) break;
       if (stats != nullptr) {
         ++stats->clock_hypotheses;
         ++stats->payload_candidates;
@@ -1101,7 +1183,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
         }
         symbols[i] = peak_to_symbol(peak, payload_preamble_peak, fft_bins, bins);
         if (phase_retry == 0 && payload_clock_ppm == 0 &&
-            recovery_alternate_count < 300)
+            recovery_alternate_count < kRecoveryAlternateCapacity)
           recovery_alternates[recovery_alternate_count++] = find_symbol_alternate(
               static_cast<uint16_t>(i), peak, payload_preamble_peak, fft_bins, bins);
         if (config.trace && phase_retry == 0 && payload_clock_ppm == 0 &&
@@ -1150,14 +1232,22 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       const bool payload_decoded = symbols_ok &&
           decode_symbols(symbols, count, spreading_factor, decoded, &decoded_size, &crc_ok, stats);
       if (payload_decoded && !crc_ok && phase_retry == 0 && payload_clock_ppm == 0) {
+        if (stats != nullptr) {
+          ++stats->recovery_attempted;
+          stats->recovery_symbols_considered +=
+              static_cast<uint32_t>(recovery_alternate_count);
+        }
         const size_t changed = apply_lower_alternates(
             symbols, count, recovery_alternates, recovery_alternate_count, bins);
-        if (changed != 0) {
-          if (stats != nullptr) {
-            ++stats->alternate_recovery_attempts;
-            stats->alternate_recovery_symbols += static_cast<uint32_t>(changed);
-          }
+        if (changed != 0 && recovery_budget_available(recovery_candidates_tested)) {
+          ++recovery_candidates_tested;
+          if (stats != nullptr) ++stats->recovery_candidates_tested;
           decode_symbols(symbols, count, spreading_factor, decoded, &decoded_size, &crc_ok, stats);
+          if (crc_ok && stats != nullptr) ++stats->recovery_success;
+        }
+        if (!crc_ok) {
+          recovery_exhausted = true;
+          if (stats != nullptr) stats->recovery_exhausted = true;
         }
       }
       if (stats != nullptr)
@@ -1224,7 +1314,8 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
   ++first->full_capture_passes;
   merge_profile(first, prior_profile);
   first->candidate_millis = candidate_millis;
-  if (found != 0 || first->crc_ok != 0 || fabsf(first->raw_cfo_tenths_hz) <= 5) {
+  if (found != 0 || first->crc_ok != 0 || first->recovery_exhausted ||
+      fabsf(first->raw_cfo_tenths_hz) <= 5) {
     first->decode_millis = now_millis() - started;
     return found;
   }
@@ -1243,6 +1334,16 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
 }
 
 bool self_check() {
+  if (!recovery_budget_available(0) || recovery_budget_available(1)) return false;
+  Scratch failed_scratch{};
+  g_failed_allocation_calls = 0;
+  g_failed_allocation_caps = 0;
+  if (allocate_fixed_scratch(&failed_scratch, fail_scratch_allocation) ||
+      g_failed_allocation_calls != 1 ||
+      g_failed_allocation_caps != (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) ||
+      failed_scratch.fft != nullptr || failed_scratch.downchirp != nullptr ||
+      failed_scratch.twiddle != nullptr || failed_scratch.recovery_alternates != nullptr)
+    return false;
   Stats first_profile{};
   first_profile.fft_calls = 2;
   first_profile.full_capture_passes = 1;

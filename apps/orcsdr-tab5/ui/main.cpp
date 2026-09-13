@@ -2870,6 +2870,35 @@ void log_dram_budget(const char* stage) {
   }
 }
 
+void log_lora_memory(const char* stage) {
+  Serial.printf(
+      "RTL_LORA_MEMORY stage=%s internal_free=%lu internal_largest=%lu dma_free=%lu "
+      "dma_largest=%lu psram_free=%lu psram_largest=%lu decoder_psram=%u "
+      "fft_table=%s fft_bytes=%u recovery=%s recovery_bytes=%u "
+      "task_stack_hwm=%lu reserve_int=%d\n",
+      stage,
+      static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+      static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)),
+      static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)),
+      static_cast<unsigned long>(
+          heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)),
+      static_cast<unsigned long>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+      static_cast<unsigned long>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+      static_cast<unsigned>(orcsdr::lora_native::psram_bytes()),
+      orcsdr::lora_native::fft_table_bytes() == 0
+          ? "UNALLOCATED"
+          : (orcsdr::lora_native::fft_table_in_psram() ? "PSRAM" : "INVALID"),
+      static_cast<unsigned>(orcsdr::lora_native::fft_table_bytes()),
+      orcsdr::lora_native::recovery_workspace_bytes() == 0
+          ? "UNALLOCATED"
+          : (orcsdr::lora_native::recovery_workspace_in_psram() ? "PSRAM" : "INVALID"),
+      static_cast<unsigned>(orcsdr::lora_native::recovery_workspace_bytes()),
+      static_cast<unsigned long>(lora_native_decode_task_handle == nullptr
+                                     ? 0
+                                     : uxTaskGetStackHighWaterMark(lora_native_decode_task_handle)),
+      CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL);
+}
+
 void apply_speaker_volume(uint8_t volume) {
   // Keep master and virtual-channel levels aligned; some M5 paths only honor one.
   const uint8_t physical_volume = std::min(volume, kRtlSpeakerHardwareMax);
@@ -3950,10 +3979,12 @@ void lora_native_decode_task(void*) {
         lora_authorized_key, lora_authorized_key_bytes, candidate_samples,
         !work.automatic && work.sequence != 0};
     const uint32_t queue_millis = millis() - work.queued_ms;
+    if (!work.automatic && work.sequence != 0) log_lora_memory("replay_before");
     const size_t count = orcsdr::lora_native::decode_capture(
         work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
         work.frequency_hz, config,
         decoded, std::size(decoded), &stats);
+    if (!work.automatic && work.sequence != 0) log_lora_memory("replay_after");
     lora_native_crc_ok.fetch_add(stats.crc_ok, std::memory_order_relaxed);
     lora_native_encrypted.fetch_add(stats.encrypted, std::memory_order_relaxed);
     lora_native_last_millis.store(stats.decode_millis, std::memory_order_release);
@@ -4005,7 +4036,8 @@ void lora_native_decode_task(void*) {
         "header_candidates=%lu payload_candidates=%lu symbols_processed=%lu "
         "candidate_passes=%lu candidate_accepted=%u candidate_rejected=%u "
         "candidate_truncated=%u full_capture_passes=%lu full_fallbacks=%lu cfo_retry_passes=%lu "
-        "alternate_attempts=%lu alternate_symbols=%lu\n",
+        "recovery_attempted=%lu recovery_symbols_considered=%lu "
+        "recovery_candidates_tested=%lu recovery_success=%lu recovery_exhausted=%u\n",
         static_cast<unsigned long>(work.sequence),
         static_cast<unsigned long>(stats.preparation_millis),
         static_cast<unsigned long>(stats.filter_millis),
@@ -4033,8 +4065,11 @@ void lora_native_decode_task(void*) {
         static_cast<unsigned long>(stats.full_capture_passes),
         static_cast<unsigned long>(stats.full_fallbacks),
         static_cast<unsigned long>(stats.cfo_retry_passes),
-        static_cast<unsigned long>(stats.alternate_recovery_attempts),
-        static_cast<unsigned long>(stats.alternate_recovery_symbols));
+        static_cast<unsigned long>(stats.recovery_attempted),
+        static_cast<unsigned long>(stats.recovery_symbols_considered),
+        static_cast<unsigned long>(stats.recovery_candidates_tested),
+        static_cast<unsigned long>(stats.recovery_success),
+        stats.recovery_exhausted ? 1u : 0u);
     if (!work.automatic && work.sequence != 0 && stats.trace_symbol_count != 0) {
       Serial.printf("RTL_LORA_NATIVE_TRACE sequence=%lu data_start=%lu timing_adjustment=%d preamble_peak=%u preprocess_fnv1a=%08lx\n",
                     static_cast<unsigned long>(work.sequence),
@@ -4098,14 +4133,20 @@ bool lora_native_decoder_start() {
     Serial.println("RTL_LORA_NATIVE_SELF_CHECK_FAIL");
     return false;
   }
-  if (!orcsdr::lora_native::initialize()) return false;
+  if (!orcsdr::lora_native::initialize()) {
+    Serial.println("RTL_LORA_NATIVE_INIT_FAIL stage=psram");
+    log_lora_memory("init_failed");
+    return false;
+  }
   lora_native_decode_queue = xQueueCreate(1, sizeof(LoraNativeDecodeWork));
   if (lora_native_decode_queue == nullptr ||
       xTaskCreatePinnedToCore(lora_native_decode_task, "lora_native", 12288, nullptr, 1,
                               &lora_native_decode_task_handle, 0) != pdPASS) {
+    Serial.println("RTL_LORA_NATIVE_INIT_FAIL stage=task");
     return false;
   }
   lora_native_decoder_ready.store(true, std::memory_order_release);
+  log_lora_memory("after_init");
   return true;
 }
 
@@ -13907,6 +13948,10 @@ void process_command(char* command) {
     Serial.println("LORA_MESSAGE_CLEARED");
     return;
   }
+  if (strcmp(command, "RTL_LORA_MEMORY") == 0) {
+    log_lora_memory("live");
+    return;
+  }
   if (strncmp(command, "RTL_LORA_REPLAY_BEGIN ", 22) == 0) {
     if (!authenticated) {
       Serial.println("RTL_LORA_REPLAY_ERROR auth_required");
@@ -15319,6 +15364,7 @@ void setup() {
   speaker_config.task_pinned_core = 1;
   M5.Speaker.config(speaker_config);
   log_dram_budget("boot");
+  log_lora_memory("boot");
   {
     orcsdr::NvsStore rot_prefs;
     if (rot_prefs.begin("orclink", true)) {
