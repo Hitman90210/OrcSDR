@@ -469,6 +469,47 @@ used zero recovery attempts; single-packet positives used one CFO/clock
 hypothesis, while the two-packet whip power capture used two. Known negatives
 remained zero-preamble. Native runtimes ranged from 12.281 to 12.892 seconds.
 
+The corpus was replayed a third time after making the one-candidate recovery
+ceiling enforceable. It again classified A=7, B=0, C=3, D=0, unknown=0. All
+host-positive symbols matched exactly, every clean row used zero recovery, and
+the three confirmed negatives remained zero-preamble. Runtimes were 12.665 to
+13.266 seconds. The whip capture with a trailing partial signal retained the
+host oracle's known `Samples ended before full packet` warnings, but its
+expected packet still matched exactly.
+
+The fixed decoder allocations now reject non-PSRAM pointers and fail without an
+internal-RAM fallback. A boot self-check injects a failing allocator and verifies
+one PSRAM-capable call, a failed fixed-scratch allocation result, and null
+scratch pointers. The production initialization caller reports
+`RTL_LORA_NATIVE_INIT_FAIL stage=psram`, leaves the native decoder not ready,
+and returns control to the band-enter path so the rest of boot can continue. The
+weak recovery ceiling is a compile-time value of one candidate and is also
+exercised by the boot self-check.
+
+| Stage | Internal free / largest | DMA free / largest | PSRAM free / largest | Decoder PSRAM | Task stack HWM |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Boot, before decoder | 121,951 / 38,912 | 82,399 / 38,912 | 27,578,088 / 27,262,976 | 0 | 0 |
+| After decoder init | 82,779 / 38,912 | 43,227 / 38,912 | 26,203,252 / 25,690,112 | 657,216 | 8,400 |
+| Before clean replay | 76,051 / 32,768 | 36,499 / 32,768 | 10,056,784 / 9,961,472 | 657,216 | 8,140 |
+| After clean replay | 76,051 / 32,768 | 36,499 / 32,768 | 2,323,532 / 2,293,760 | 8,390,464 | 568 |
+| Live after replay suite | 75,555 / 32,768 | 36,003 / 32,768 | 2,223,872 / 2,162,688 | 8,390,464 | 140 |
+
+All byte values are direct ESP-IDF heap measurements. The configured protected
+internal reserve remained 40,960 bytes throughout; it is an allocator reserve,
+not a promise that one 40 KiB contiguous block remains after initialization.
+The 657,216-byte fixed decoder allocation consists of two 256 KiB FFT work
+buffers, the 131,072-byte ANSI FFT table, and the allocator-rounded 1,856-byte
+recovery workspace. The post-replay increase is the retained resampling buffer.
+Both the FFT table and recovery workspace reported `PSRAM` at init, replay, and
+live stages. The 140-unit stack high-water result remained nonzero with no reset,
+but is a narrow observed margin to monitor during the matrix and live soak.
+
+The representative clean replay remained exact at 118/118 symbols in 12.971
+seconds with one clock/CFO hypothesis and zero recovery. The -21 dB, seed 90500,
+target-RMS 0.02 vector remained CRC-valid in 12.949 seconds with exactly one
+candidate tested and one recovery success. It used 480 FFTs and did not enter a
+clock or CFO sweep.
+
 During this phase firmware was built and flashed to COM17 for measurement. The
 separate one-line PSRAM placement fix for the home spectrum buffer preserves the
 tracked 40 KiB internal DMA reserve and restored boot with the default native

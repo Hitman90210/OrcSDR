@@ -15,6 +15,8 @@
 - Do not add alternate combinations, CFO/timing hypotheses, resampler changes, or FFT passes without new trace evidence.
 - Only host-valid vectors count toward host/native comparison.
 - Recovery has exactly one candidate budget and runs only after primary payload CRC failure.
+- FFT-table and recovery-workspace telemetry must report PSRAM provenance as well as bytes.
+- A bounded injected allocation failure must prove no internal-memory fallback.
 - Run both MLA-30+ and indoor 915 MHz whip captures with the same seeds.
 - Do not open a PR until memory, matrix, full-corpus, and live-RF gates are satisfactory.
 
@@ -33,18 +35,18 @@
 - Produces: `orcsdr::lora_native::psram_bytes()` and `RTL_LORA_MEMORY` stage records.
 - Produces: `recovery_attempted`, `recovery_symbols_considered`, `recovery_candidates_tested`, `recovery_success`, and `recovery_exhausted` profile fields.
 
-- [ ] **Step 1: Write failing parser tests**
+- [x] **Step 1: Write failing parser tests**
 
 ```python
 def test_memory_and_recovery_fields_are_parsed():
     assert _parse_fields("RTL_LORA_MEMORY stage=after_init psram_bytes=657160")["psram_bytes"] == 657160
 ```
 
-- [ ] **Step 2: Verify the focused test fails because the parser/fields are absent**
+- [x] **Step 2: Verify the focused test fails because the parser/fields are absent**
 
 Run: `python -m unittest tools/test_replay_lora_orciq.py`
 
-- [ ] **Step 3: Add the minimal runtime guards and telemetry**
+- [x] **Step 3: Add the minimal runtime guards and telemetry**
 
 ```cpp
 constexpr uint32_t kRecoveryCandidateBudget = 1;
@@ -53,11 +55,11 @@ if (!esp_ptr_external_ram(g_scratch.recovery_alternates)) return false;
 
 Record internal, DMA, PSRAM, decoder allocation, and decoder-task stack high-water values after initialization, before/after replay, and while live reception is running. Return initialization failure without an internal-memory fallback.
 
-- [ ] **Step 4: Build, flash, and verify boot plus stage measurements**
+- [x] **Step 4: Build, flash, and verify boot plus stage measurements**
 
 Run: `idf.py -B build-native-hosted3 build`, then flash COM17 and inspect no-reset serial evidence.
 
-- [ ] **Step 5: Commit and push the diagnostic checkpoint**
+- [x] **Step 5: Commit and push the diagnostic checkpoint**
 
 ```text
 test(lora): guard decoder memory budget
@@ -79,6 +81,8 @@ Require all prior positives, zero Class B, all known negatives, zero Class D, an
 - [x] **Step 2: Verify clean positives use one hypothesis and zero recovery where unnecessary**
 
 - [x] **Step 3: Record results, commit, and push**
+
+- [x] **Step 4: Repeat the full corpus after the recovery ceiling change**
 
 ```text
 docs(lora): verify recovery corpus regression
