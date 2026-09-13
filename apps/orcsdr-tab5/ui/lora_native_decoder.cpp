@@ -22,6 +22,38 @@ bool candidate_is_conclusive(size_t found, const Stats& stats) {
          (!stats.truncated && (stats.preambles != 0 || stats.header_failures != 0));
 }
 
+void merge_profile(Stats* destination, const Stats& source) {
+  if (destination == nullptr) return;
+#define ADD_PROFILE(field) destination->field += source.field
+  ADD_PROFILE(preparation_millis);
+  ADD_PROFILE(filter_millis);
+  ADD_PROFILE(resample_millis);
+  ADD_PROFILE(preamble_search_millis);
+  ADD_PROFILE(sync_cfo_millis);
+  ADD_PROFILE(timing_header_millis);
+  ADD_PROFILE(payload_symbols_millis);
+  ADD_PROFILE(payload_decode_millis);
+  ADD_PROFILE(payload_fec_millis);
+  ADD_PROFILE(crc_millis);
+  ADD_PROFILE(mesh_millis);
+  ADD_PROFILE(fft_calls);
+  ADD_PROFILE(preamble_windows);
+  ADD_PROFILE(timing_offsets);
+  ADD_PROFILE(cfo_hypotheses);
+  ADD_PROFILE(clock_hypotheses);
+  ADD_PROFILE(header_candidates);
+  ADD_PROFILE(payload_candidates);
+  ADD_PROFILE(symbols_processed);
+  ADD_PROFILE(candidate_passes);
+  ADD_PROFILE(full_capture_passes);
+  ADD_PROFILE(full_fallbacks);
+  ADD_PROFILE(cfo_retry_passes);
+#undef ADD_PROFILE
+  destination->candidate_accepted |= source.candidate_accepted;
+  destination->candidate_rejected |= source.candidate_rejected;
+  destination->candidate_truncated |= source.candidate_truncated;
+}
+
 constexpr uint32_t kDecodeRate = 500000;
 constexpr uint8_t kMinSf = 7;
 constexpr uint8_t kMaxSf = 12;
@@ -641,7 +673,7 @@ size_t symbol_count(uint8_t payload_len, uint8_t coding_rate, bool has_crc, uint
 }
 
 bool decode_symbols(const uint16_t* raw_symbols, size_t raw_count, uint8_t sf, uint8_t* data,
-                    size_t* data_size, bool* crc_ok) {
+                    size_t* data_size, bool* crc_ok, Stats* stats) {
   if (raw_symbols == nullptr || data == nullptr || data_size == nullptr || crc_ok == nullptr ||
       raw_count < 8) return false;
   uint16_t gray[300]{};
@@ -655,6 +687,7 @@ bool decode_symbols(const uint16_t* raw_symbols, size_t raw_count, uint8_t sf, u
   size_t nibble_count = 0;
   if (!parse_header(gray, sf, &payload_len, &coding_rate, &has_crc, nibbles, &nibble_count))
     return false;
+  const uint32_t fec_started = now_millis();
   const uint8_t redundant_bits = static_cast<uint8_t>(coding_rate + 4);
   for (size_t start = 8; start + redundant_bits <= raw_count; start += redundant_bits) {
     const size_t count = deinterleave(gray + start, redundant_bits, sf, codewords,
@@ -662,6 +695,7 @@ bool decode_symbols(const uint16_t* raw_symbols, size_t raw_count, uint8_t sf, u
     if (count == 0 || nibble_count + count > std::size(nibbles)) return false;
     for (size_t i = 0; i < count; ++i) nibbles[nibble_count++] = hamming_decode(codewords[i], redundant_bits);
   }
+  if (stats != nullptr) stats->payload_fec_millis += now_millis() - fec_started;
   if ((nibble_count & 1u) != 0) ++nibble_count;
   const size_t byte_count = nibble_count / 2;
   if (byte_count < static_cast<size_t>(payload_len) + (has_crc ? 2u : 0u) || byte_count > kMaxBytes)
@@ -670,8 +704,17 @@ bool decode_symbols(const uint16_t* raw_symbols, size_t raw_count, uint8_t sf, u
     data[i] = static_cast<uint8_t>(nibbles[i * 2] | (nibbles[i * 2 + 1] << 4));
   dewhiten(data, has_crc ? payload_len : byte_count);
   *data_size = payload_len;
+  const uint32_t crc_started = now_millis();
   *crc_ok = !has_crc || phy_crc_matches(data, payload_len, data + payload_len);
+  if (stats != nullptr) stats->crc_millis += now_millis() - crc_started;
   return true;
+}
+
+bool measured_dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size_t start,
+                           bool input_is_up, uint16_t* peak, float* height, float cfo_hz,
+                           Stats* stats) {
+  if (stats != nullptr) ++stats->fft_calls;
+  return dechirp_peak(cu8, samples, sample_rate, start, input_is_up, peak, height, cfo_hz);
 }
 
 bool decode_mesh(const uint8_t* data, size_t size, const Config& config, Packet* packet) {
@@ -733,19 +776,25 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     stats->decode_millis = 0;
   }
   if (cu8 == nullptr || packets == nullptr || packet_capacity == 0 || (bytes & 1u) != 0 ||
-      sample_rate_sps < kDecodeRate || !initialize() ||
-      !configure_chirp(spreading_factor, bandwidth_hz)) return 0;
+      sample_rate_sps < kDecodeRate) return 0;
   const uint32_t started = now_millis();
+  const uint32_t preparation_started = now_millis();
+  if (!initialize() || !configure_chirp(spreading_factor, bandwidth_hz)) return 0;
+  if (stats != nullptr) stats->preparation_millis += now_millis() - preparation_started;
   const uint8_t* decode_cu8 = cu8;
   size_t samples = bytes / 2;
   uint32_t decode_rate = sample_rate_sps;
   const uint8_t* filtered_cu8 = nullptr;
   size_t filtered_samples = 0;
+  const uint32_t filter_started = now_millis();
   if (!filter_capture(cu8, samples, sample_rate_sps, &filtered_cu8, &filtered_samples)) return 0;
+  if (stats != nullptr) stats->filter_millis += now_millis() - filter_started;
   const uint8_t* resampled_cu8 = nullptr;
   size_t resampled_samples = 0;
+  const uint32_t resample_started = now_millis();
   if (!linear_resample_capture(filtered_cu8, filtered_samples, sample_rate_sps, &resampled_cu8,
                                &resampled_samples)) return 0;
+  if (stats != nullptr) stats->resample_millis += now_millis() - resample_started;
   decode_cu8 = resampled_cu8;
   samples = resampled_samples;
   decode_rate = kDecodeRate;
@@ -764,11 +813,13 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     bool preamble_found = false;
     size_t cursor = start;
     const uint64_t search_end = virtual_samples;
+    const uint32_t preamble_started = now_millis();
     while (cursor + n * preamble < search_end) {
       uint16_t peak = 0;
       float height = 0;
-      if (!dechirp_peak(decode_cu8, samples, decode_rate, cursor, true, &peak, &height,
-                        phase_cfo_hz)) break;
+      if (stats != nullptr) ++stats->preamble_windows;
+      if (!measured_dechirp_peak(decode_cu8, samples, decode_rate, cursor, true, &peak, &height,
+                                 phase_cfo_hz, stats)) break;
       const uint16_t delta = peak > previous_peak ? peak - previous_peak : previous_peak - peak;
       if (matching > 0 && std::min<size_t>(delta, fft_bins - delta) <= kFftPadding) {
         ++matching;
@@ -789,24 +840,26 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       cursor += n;
       if ((++work_units & 0x0fu) == 0) vTaskDelay(1);
     }
+    if (stats != nullptr) stats->preamble_search_millis += now_millis() - preamble_started;
     if (!preamble_found) break;
     if (stats != nullptr) ++stats->preambles;
+    const uint32_t sync_started = now_millis();
     size_t sync = cursor;
     float up_height = 0;
     float down_height = 0;
     uint16_t unused_peak = 0;
     while (sync + n < virtual_samples) {
-      if (!dechirp_peak(decode_cu8, samples, decode_rate, sync, true, &unused_peak, &up_height,
-                        phase_cfo_hz) ||
-          !dechirp_peak(decode_cu8, samples, decode_rate, sync, false, &unused_peak, &down_height,
-                        phase_cfo_hz)) break;
+      if (!measured_dechirp_peak(decode_cu8, samples, decode_rate, sync, true, &unused_peak,
+                                 &up_height, phase_cfo_hz, stats) ||
+          !measured_dechirp_peak(decode_cu8, samples, decode_rate, sync, false, &unused_peak,
+                                 &down_height, phase_cfo_hz, stats)) break;
       sync += n;
       if (down_height > up_height) break;
     }
     uint16_t down_peak = 0;
     if (sync + n >= virtual_samples ||
-        !dechirp_peak(decode_cu8, samples, decode_rate, sync, false, &down_peak, &down_height,
-                      phase_cfo_hz)) {
+        !measured_dechirp_peak(decode_cu8, samples, decode_rate, sync, false, &down_peak,
+                               &down_height, phase_cfo_hz, stats)) {
       start = cursor + n;
       continue;
     }
@@ -816,29 +869,31 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     }
     uint16_t preamble_peak = 0;
     float ignored = 0;
-    if (!dechirp_peak(decode_cu8, samples, decode_rate, sync - 4 * n, true, &preamble_peak, &ignored,
-                      phase_cfo_hz)) {
+    if (!measured_dechirp_peak(decode_cu8, samples, decode_rate, sync - 4 * n, true,
+                               &preamble_peak, &ignored, phase_cfo_hz, stats)) {
       start = cursor + n;
       continue;
     }
     float correction_cfo_hz = refined_cfo_hz(preamble_peak, fft_bins, bandwidth_hz);
     float last_up = 0;
     float last_down = 0;
-    if (!dechirp_peak(decode_cu8, samples, decode_rate, sync - n, true, &unused_peak, &last_up,
-                      phase_cfo_hz) ||
-        !dechirp_peak(decode_cu8, samples, decode_rate, sync - n, false, &unused_peak, &last_down,
-                      phase_cfo_hz)) {
+    if (!measured_dechirp_peak(decode_cu8, samples, decode_rate, sync - n, true, &unused_peak,
+                               &last_up, phase_cfo_hz, stats) ||
+        !measured_dechirp_peak(decode_cu8, samples, decode_rate, sync - n, false, &unused_peak,
+                               &last_down, phase_cfo_hz, stats)) {
       start = cursor + n;
       continue;
     }
     const size_t nominal_data_start =
         sync + static_cast<size_t>((last_up > last_down ? 2.25f : 1.25f) * n);
+    if (stats != nullptr) stats->sync_cfo_millis += now_millis() - sync_started;
     uint16_t symbols[300]{};
     uint8_t payload_len = 0;
     uint8_t coding_rate = 0;
     bool has_crc = false;
     size_t data_start = 0;
     bool header_found = false;
+    const uint32_t timing_started = now_millis();
     for (int radius = 0; radius <= kTimingSearchSamples && !header_found; ++radius) {
       const int directions = radius == 0 ? 1 : 2;
       for (int direction = 0; direction < directions && !header_found; ++direction) {
@@ -848,16 +903,21 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
         continue;
       const size_t candidate = static_cast<size_t>(static_cast<int64_t>(nominal_data_start) + adjustment);
       if (candidate + 8 * n >= virtual_samples) continue;
+      if (stats != nullptr) {
+        ++stats->timing_offsets;
+        ++stats->header_candidates;
+      }
       bool candidate_ok = true;
       for (size_t i = 0; i < 8; ++i) {
         uint16_t peak = 0;
-        if (!dechirp_peak(decode_cu8, samples, decode_rate, candidate + i * n, true, &peak, &ignored,
-                          phase_cfo_hz)) {
+        if (!measured_dechirp_peak(decode_cu8, samples, decode_rate, candidate + i * n, true,
+                                   &peak, &ignored, phase_cfo_hz, stats)) {
           candidate_ok = false;
           break;
         }
         symbols[i] = peak_to_symbol(peak, preamble_peak, fft_bins, bins);
       }
+      if (candidate_ok && stats != nullptr) stats->symbols_processed += 8;
       if (candidate_ok && parse_raw_header(symbols, spreading_factor, &payload_len, &coding_rate,
                                            &has_crc)) {
         data_start = candidate;
@@ -866,6 +926,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       vTaskDelay(1);
       }
     }
+    if (stats != nullptr) stats->timing_header_millis += now_millis() - timing_started;
     if (!header_found) {
       if (stats != nullptr) ++stats->header_failures;
       start = cursor + n;
@@ -886,12 +947,14 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     std::memcpy(header_symbols, symbols, sizeof(header_symbols));
     bool crc_ok = false;
     for (int phase_retry = 0; phase_retry < 2 && !crc_ok; ++phase_retry) {
+      if (stats != nullptr) ++stats->cfo_hypotheses;
       const float payload_phase_cfo_hz = phase_cfo_hz + (phase_retry ? correction_cfo_hz : 0.0f);
       uint16_t payload_preamble_peak = preamble_peak;
       float payload_drift_cfo_hz = correction_cfo_hz;
       if (phase_retry &&
-          (!dechirp_peak(decode_cu8, samples, decode_rate, sync - 4 * n, true,
-                         &payload_preamble_peak, &ignored, payload_phase_cfo_hz))) {
+          (!measured_dechirp_peak(decode_cu8, samples, decode_rate, sync - 4 * n, true,
+                                  &payload_preamble_peak, &ignored, payload_phase_cfo_hz,
+                                  stats))) {
         continue;
       }
       if (phase_retry) {
@@ -899,21 +962,31 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       }
       for (int16_t payload_clock_ppm : kPayloadClockPpm) {
       if (crc_ok) break;
+      if (stats != nullptr) {
+        ++stats->clock_hypotheses;
+        ++stats->payload_candidates;
+      }
       const float payload_clock_skew =
           static_cast<float>(n) * payload_clock_ppm / 1000000.0f;
       std::memcpy(symbols, header_symbols, sizeof(header_symbols));
       bool symbols_ok = true;
+      const uint32_t symbols_started = now_millis();
       for (size_t i = 8; i < count; ++i) {
         const int64_t symbol_start = static_cast<int64_t>(data_start + i * n) +
             static_cast<int64_t>(lroundf((static_cast<float>(i) - 8.0f) * payload_clock_skew));
         uint16_t peak = 0;
         if (symbol_start < 0 ||
-            !dechirp_peak(decode_cu8, samples, decode_rate, static_cast<size_t>(symbol_start), true,
-                          &peak, &ignored, payload_phase_cfo_hz)) {
+            !measured_dechirp_peak(decode_cu8, samples, decode_rate,
+                                   static_cast<size_t>(symbol_start), true, &peak, &ignored,
+                                   payload_phase_cfo_hz, stats)) {
           symbols_ok = false;
           break;
         }
         symbols[i] = peak_to_symbol(peak, payload_preamble_peak, fft_bins, bins);
+      }
+      if (stats != nullptr) {
+        stats->payload_symbols_millis += now_millis() - symbols_started;
+        if (symbols_ok) stats->symbols_processed += static_cast<uint32_t>(count - 8);
       }
       if (symbols_ok && frequency_hz != 0) {
         const float drift_per_symbol =
@@ -927,14 +1000,21 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       }
       uint8_t decoded[kMaxBytes]{};
       size_t decoded_size = 0;
-      if (symbols_ok && decode_symbols(symbols, count, spreading_factor, decoded, &decoded_size, &crc_ok) &&
-          crc_ok) {
+      const uint32_t payload_decode_started = now_millis();
+      const bool payload_decoded = symbols_ok &&
+          decode_symbols(symbols, count, spreading_factor, decoded, &decoded_size, &crc_ok, stats);
+      if (stats != nullptr)
+        stats->payload_decode_millis += now_millis() - payload_decode_started;
+      if (payload_decoded && crc_ok) {
         if (stats != nullptr) {
           ++stats->crc_ok;
           stats->clock_skew_ppm = payload_clock_ppm;
         }
         Packet packet{};
-        if (decode_mesh(decoded, decoded_size, config, &packet)) {
+        const uint32_t mesh_started = now_millis();
+        const bool mesh_decoded = decode_mesh(decoded, decoded_size, config, &packet);
+        if (stats != nullptr) stats->mesh_millis += now_millis() - mesh_started;
+        if (mesh_decoded) {
           packets[found++] = packet;
           if (stats != nullptr && packet.encrypted) ++stats->encrypted;
         }
@@ -956,14 +1036,18 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
                       const Config& config, Packet* packets, size_t packet_capacity, Stats* stats) {
   const uint32_t started = now_millis();
   uint32_t candidate_millis = 0;
+  Stats prior_profile{};
   if (config.candidate_samples != 0 && config.candidate_samples < bytes / 2) {
     Stats candidate{};
     const size_t candidate_bytes = config.candidate_samples * 2;
     const size_t found = decode_capture_pass(cu8, candidate_bytes, sample_rate_sps,
                                              spreading_factor, bandwidth_hz, frequency_hz,
                                              config, packets, packet_capacity, &candidate, 0.0f);
+    candidate.candidate_passes = 1;
+    candidate.candidate_truncated = candidate.truncated;
     candidate_millis = now_millis() - started;
     if (candidate_is_conclusive(found, candidate)) {
+      candidate.candidate_accepted = true;
       if (stats != nullptr) {
         *stats = candidate;
         stats->candidate_millis = candidate_millis;
@@ -971,12 +1055,17 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
       }
       return found;
     }
+    candidate.candidate_rejected = true;
+    candidate.full_fallbacks = 1;
+    merge_profile(&prior_profile, candidate);
   }
   Stats raw{};
   Stats* first = stats != nullptr ? stats : &raw;
   const size_t found = decode_capture_pass(cu8, bytes, sample_rate_sps, spreading_factor,
                                            bandwidth_hz, frequency_hz, config, packets,
                                            packet_capacity, first, 0.0f);
+  ++first->full_capture_passes;
+  merge_profile(first, prior_profile);
   first->candidate_millis = candidate_millis;
   if (found != 0 || first->crc_ok != 0 || fabsf(first->raw_cfo_tenths_hz) <= 5) {
     first->decode_millis = now_millis() - started;
@@ -987,6 +1076,9 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
                                              bandwidth_hz, frequency_hz, config, packets,
                                              packet_capacity, &corrected,
                                              first->raw_cfo_tenths_hz / 10.0f);
+  corrected.full_capture_passes = 1;
+  corrected.cfo_retry_passes = 1;
+  merge_profile(&corrected, *first);
   corrected.decode_millis = now_millis() - started;
   corrected.candidate_millis = candidate_millis;
   if (stats != nullptr) *stats = corrected;
@@ -994,6 +1086,16 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
 }
 
 bool self_check() {
+  Stats first_profile{};
+  first_profile.fft_calls = 2;
+  first_profile.full_capture_passes = 1;
+  Stats second_profile{};
+  second_profile.fft_calls = 3;
+  second_profile.full_capture_passes = 1;
+  second_profile.cfo_retry_passes = 1;
+  merge_profile(&second_profile, first_profile);
+  if (second_profile.fft_calls != 5 || second_profile.full_capture_passes != 2 ||
+      second_profile.cfo_retry_passes != 1) return false;
   const uint8_t encrypted[] = {
       0x6a, 0x92, 0x18, 0x55, 0xb8, 0x20, 0x6a, 0x22, 0xd1, 0x09, 0x1b, 0xd4,
       0x70, 0x27, 0xbb, 0xef, 0xdd, 0x21, 0x0f, 0x46, 0x25, 0x82, 0xf3, 0x51,

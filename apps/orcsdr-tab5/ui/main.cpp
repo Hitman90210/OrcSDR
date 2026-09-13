@@ -3984,6 +3984,41 @@ void lora_native_decode_task(void*) {
                   static_cast<unsigned long>(stats.candidate_millis),
                   static_cast<int>(stats.clock_skew_ppm),
                   static_cast<unsigned long>(lora_capture_drops.load(std::memory_order_relaxed)));
+    Serial.printf(
+        "RTL_LORA_NATIVE_PROFILE sequence=%lu preparation_ms=%lu filter_ms=%lu resample_ms=%lu "
+        "preamble_ms=%lu sync_cfo_ms=%lu timing_header_ms=%lu payload_symbols_ms=%lu "
+        "payload_decode_ms=%lu payload_fec_ms=%lu crc_ms=%lu mesh_ms=%lu fft_calls=%lu "
+        "preamble_windows=%lu timing_offsets=%lu cfo_hypotheses=%lu clock_hypotheses=%lu "
+        "header_candidates=%lu payload_candidates=%lu symbols_processed=%lu "
+        "candidate_passes=%lu candidate_accepted=%u candidate_rejected=%u "
+        "candidate_truncated=%u full_capture_passes=%lu full_fallbacks=%lu cfo_retry_passes=%lu\n",
+        static_cast<unsigned long>(work.sequence),
+        static_cast<unsigned long>(stats.preparation_millis),
+        static_cast<unsigned long>(stats.filter_millis),
+        static_cast<unsigned long>(stats.resample_millis),
+        static_cast<unsigned long>(stats.preamble_search_millis),
+        static_cast<unsigned long>(stats.sync_cfo_millis),
+        static_cast<unsigned long>(stats.timing_header_millis),
+        static_cast<unsigned long>(stats.payload_symbols_millis),
+        static_cast<unsigned long>(stats.payload_decode_millis),
+        static_cast<unsigned long>(stats.payload_fec_millis),
+        static_cast<unsigned long>(stats.crc_millis),
+        static_cast<unsigned long>(stats.mesh_millis),
+        static_cast<unsigned long>(stats.fft_calls),
+        static_cast<unsigned long>(stats.preamble_windows),
+        static_cast<unsigned long>(stats.timing_offsets),
+        static_cast<unsigned long>(stats.cfo_hypotheses),
+        static_cast<unsigned long>(stats.clock_hypotheses),
+        static_cast<unsigned long>(stats.header_candidates),
+        static_cast<unsigned long>(stats.payload_candidates),
+        static_cast<unsigned long>(stats.symbols_processed),
+        static_cast<unsigned long>(stats.candidate_passes),
+        stats.candidate_accepted ? 1u : 0u,
+        stats.candidate_rejected ? 1u : 0u,
+        stats.candidate_truncated ? 1u : 0u,
+        static_cast<unsigned long>(stats.full_capture_passes),
+        static_cast<unsigned long>(stats.full_fallbacks),
+        static_cast<unsigned long>(stats.cfo_retry_passes));
     lora_native_decode_busy.store(false, std::memory_order_release);
     (void)queue_lora_auto_decode();
     bump_rtl_ui();
