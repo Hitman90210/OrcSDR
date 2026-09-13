@@ -104,11 +104,17 @@ def _symbol_difference(reference, native):
 def _parse_symbol_alternates(line):
     if not line or "values=" not in line:
         return {}
-    return {
-        int(index): {"symbol": int(symbol), "ratio": float(ratio)}
-        for value in line.split("values=", 1)[1].split(",") if value
-        for index, symbol, ratio in [value.split(":")]
-    }
+    alternates = {}
+    for value in line.split("values=", 1)[1].split(","):
+        if not value:
+            continue
+        fields = value.split(":")
+        alternate = {"symbol": int(fields[1]), "ratio": float(fields[2])}
+        if len(fields) == 5:
+            alternate.update(primary_magnitude=float(fields[3]),
+                             alternate_magnitude=float(fields[4]))
+        alternates[int(fields[0])] = alternate
+    return alternates
 
 
 def _alternate_coverage(reference, native, alternates):

@@ -55,6 +55,14 @@ struct SymbolAlternateTracePoint {
   uint16_t ratio_milli = 0;
 };
 
+struct SymbolAlternateMetric {
+  uint16_t symbol_index = 0;
+  uint16_t alternate_symbol = 0;
+  uint16_t ratio_milli = 0;
+  float primary_magnitude = 0;
+  float alternate_magnitude = 0;
+};
+
 struct Stats {
   uint32_t captures = 0;
   uint32_t preambles = 0;
@@ -104,6 +112,7 @@ struct Stats {
   uint8_t trace_fft_count = 0;
   SymbolAlternateTracePoint trace_alternates[128]{};
   uint8_t trace_alternate_count = 0;
+  const SymbolAlternateMetric* trace_alternate_metrics = nullptr;
   bool candidate_accepted = false;
   bool candidate_rejected = false;
   bool candidate_truncated = false;

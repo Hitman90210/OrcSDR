@@ -644,3 +644,49 @@ captures with the same 3,560-byte minimum, stable 32,768-byte largest
 internal/DMA blocks, and normal scanning restored at 906.875 MHz. Internal
 free memory remained about 75 KiB and the unchanged task allocation added no
 measured internal-RAM cost.
+
+### Single-symbol recovery oracle and rejection gate
+
+Replay-only telemetry was extended to retain the native primary and alternate
+FFT magnitudes in PSRAM. An offline oracle then substituted each eligible
+one-bin-lower alternate individually and ran only downstream decode, FEC, CRC,
+and exact packet-identity checks. It did not add firmware candidates or radio
+work.
+
+The three original indoor-whip failures each had exactly one useful
+substitution. The useful symbol ranked first by primary/alternate ratio,
+absolute magnitude margin, and normalized margin: index 89 for seed 90501 at
+-21 dB, and index 103 for seed 90504 at -22 and -23 dB. A temporary production
+selector therefore tried exactly the lowest-ratio eligible symbol while
+retaining the one-candidate ceiling.
+
+The exact frozen 30-row matrix rejected that selector as a production
+replacement. The row-level result was 19 unchanged host-valid passes, three
+newly fixed host-valid rows, two newly regressed host-valid rows, four
+host-invalid/inconclusive rows, and two host-invalid native-only observations.
+The two regressions were MLA-30+ seed 90500 at -21 and -22 dB. The frozen
+collective candidate passed both with exact packet ID 4219089354; the
+single-symbol candidate failed CRC in both.
+
+Those two regressions are Case C, not selector mistakes. Their primary symbol
+sequences differed from the host reference at 12 positions. No individual
+eligible substitution restored CRC or packet identity. At -21 dB the old
+collective candidate corrected 11 actual errors and left index 7 for downstream
+FEC. At -22 dB it corrected 11 actual errors, left index 7, and also changed the
+already-correct index 107; downstream FEC/CRC still produced the exact packet.
+The temporary selector instead chose index 88 at -21 dB and index 84 at -22 dB,
+which could not repair a multi-symbol error pattern alone.
+
+The three original failures remain Case A one-symbol ambiguities. Their old
+collective candidates corrected the sole actual error but also changed 10, 11,
+and 13 already-correct symbols, respectively, and failed CRC. This proves that
+the rows require different hard-symbol recovery shapes. No ranking metric can
+make a single substitution preserve the two collective-recovery passes because
+the oracle found no successful individual substitution in either row.
+
+The acceptance rule is no loss of a previously demonstrated host-valid native
+pass. The single-symbol replacement is therefore rejected despite improving
+the aggregate native count from 23/30 to 26/30. The detailed 30-row differential
+and seven changed-row audits are preserved in
+`docs/lora-recovery-selector-differential.json`. Host-invalid rows remain
+unscored even when native recovery produced the expected manifest packet ID.

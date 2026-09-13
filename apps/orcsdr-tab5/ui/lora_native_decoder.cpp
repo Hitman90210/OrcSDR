@@ -98,7 +98,8 @@ struct Scratch {
   uint8_t sf = 0;
   size_t symbol_samples = 0;
   size_t fft_size = 0;
-  SymbolAlternateTracePoint* recovery_alternates = nullptr;
+  SymbolAlternateMetric* recovery_alternates = nullptr;
+  SymbolAlternateMetric* trace_alternate_metrics = nullptr;
 };
 
 Scratch g_scratch{};
@@ -126,11 +127,13 @@ void free_fixed_scratch(Scratch* scratch) {
   heap_caps_free(scratch->downchirp);
   heap_caps_free(scratch->twiddle);
   heap_caps_free(scratch->recovery_alternates);
+  heap_caps_free(scratch->trace_alternate_metrics);
   scratch->task = nullptr;
   scratch->fft = nullptr;
   scratch->downchirp = nullptr;
   scratch->twiddle = nullptr;
   scratch->recovery_alternates = nullptr;
+  scratch->trace_alternate_metrics = nullptr;
 }
 
 bool allocate_fixed_scratch(Scratch* scratch, ScratchAllocator allocator) {
@@ -154,12 +157,16 @@ bool allocate_fixed_scratch(Scratch* scratch, ScratchAllocator allocator) {
     free_fixed_scratch(scratch);
     return false;
   }
-  scratch->recovery_alternates = static_cast<SymbolAlternateTracePoint*>(allocator(
-      sizeof(SymbolAlternateTracePoint) * kRecoveryAlternateCapacity, caps));
-  if (scratch->recovery_alternates == nullptr || !esp_ptr_external_ram(scratch->task) ||
+  scratch->recovery_alternates = static_cast<SymbolAlternateMetric*>(allocator(
+      sizeof(SymbolAlternateMetric) * kRecoveryAlternateCapacity, caps));
+  scratch->trace_alternate_metrics = static_cast<SymbolAlternateMetric*>(allocator(
+      sizeof(SymbolAlternateMetric) * 128, caps));
+  if (scratch->recovery_alternates == nullptr || scratch->trace_alternate_metrics == nullptr ||
+      !esp_ptr_external_ram(scratch->task) ||
       !esp_ptr_external_ram(scratch->fft) ||
       !esp_ptr_external_ram(scratch->downchirp) || !esp_ptr_external_ram(scratch->twiddle) ||
-      !esp_ptr_external_ram(scratch->recovery_alternates)) {
+      !esp_ptr_external_ram(scratch->recovery_alternates) ||
+      !esp_ptr_external_ram(scratch->trace_alternate_metrics)) {
     free_fixed_scratch(scratch);
     return false;
   }
@@ -818,9 +825,9 @@ void record_fft_trace(Stats* stats, uint16_t symbol_index, uint16_t best_bin,
         (best_bin + fft_bins + offset) % fft_bins, fft_bins);
 }
 
-SymbolAlternateTracePoint find_symbol_alternate(uint16_t symbol_index, uint16_t best_bin,
-                                                uint16_t preamble_peak, size_t fft_bins,
-                                                size_t bins) {
+SymbolAlternateMetric find_symbol_alternate(uint16_t symbol_index, uint16_t best_bin,
+                                            uint16_t preamble_peak, size_t fft_bins,
+                                            size_t bins) {
   const uint16_t primary = peak_to_symbol(best_bin, preamble_peak, fft_bins, bins);
   float alternate_magnitude = -1.0f;
   uint16_t alternate_symbol = 0;
@@ -835,30 +842,33 @@ SymbolAlternateTracePoint find_symbol_alternate(uint16_t symbol_index, uint16_t 
     }
   }
   const float primary_magnitude = folded_fft_magnitude(best_bin, fft_bins);
-  SymbolAlternateTracePoint trace{};
+  SymbolAlternateMetric trace{};
   trace.symbol_index = symbol_index;
   trace.alternate_symbol = alternate_symbol;
   trace.ratio_milli = alternate_magnitude > 0.0f
       ? static_cast<uint16_t>(std::clamp(
             lroundf(primary_magnitude / alternate_magnitude * 1000.0f), 0l, 65535l))
       : 0;
+  trace.primary_magnitude = primary_magnitude;
+  trace.alternate_magnitude = alternate_magnitude;
   return trace;
 }
 
-size_t apply_lower_alternates(uint16_t* symbols, size_t symbol_count,
-                              const SymbolAlternateTracePoint* alternates,
-                              size_t alternate_count, size_t bins) {
+size_t apply_best_lower_alternate(uint16_t* symbols, size_t symbol_count,
+                                  const SymbolAlternateMetric* alternates,
+                                  size_t alternate_count, size_t bins) {
   if (symbols == nullptr || alternates == nullptr || bins == 0) return 0;
-  size_t changed = 0;
+  const SymbolAlternateMetric* best = nullptr;
   for (size_t i = 0; i < alternate_count; ++i) {
     const auto& alternate = alternates[i];
-    if (alternate.symbol_index >= symbol_count) continue;
-    uint16_t& primary = symbols[alternate.symbol_index];
+    if (alternate.symbol_index >= symbol_count || alternate.ratio_milli == 0) continue;
+    const uint16_t primary = symbols[alternate.symbol_index];
     if ((static_cast<size_t>(alternate.alternate_symbol) + 1u) % bins != primary) continue;
-    primary = alternate.alternate_symbol;
-    ++changed;
+    if (best == nullptr || alternate.ratio_milli < best->ratio_milli) best = &alternate;
   }
-  return changed;
+  if (best == nullptr) return 0;
+  symbols[best->symbol_index] = best->alternate_symbol;
+  return 1;
 }
 
 bool measured_dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size_t start,
@@ -925,12 +935,16 @@ size_t psram_bytes() {
   return allocated_bytes(g_scratch.task) + allocated_bytes(g_scratch.fft) +
          allocated_bytes(g_scratch.downchirp) +
          allocated_bytes(g_scratch.twiddle) + allocated_bytes(g_scratch.resampled) +
-         allocated_bytes(g_scratch.recovery_alternates);
+         allocated_bytes(g_scratch.recovery_alternates) +
+         allocated_bytes(g_scratch.trace_alternate_metrics);
 }
 
 size_t fft_table_bytes() { return allocated_bytes(g_scratch.twiddle); }
 
-size_t recovery_workspace_bytes() { return allocated_bytes(g_scratch.recovery_alternates); }
+size_t recovery_workspace_bytes() {
+  return allocated_bytes(g_scratch.recovery_alternates) +
+         allocated_bytes(g_scratch.trace_alternate_metrics);
+}
 
 size_t task_workspace_bytes() { return allocated_bytes(g_scratch.task); }
 
@@ -940,7 +954,9 @@ bool fft_table_in_psram() {
 
 bool recovery_workspace_in_psram() {
   return g_scratch.recovery_alternates != nullptr &&
-         esp_ptr_external_ram(g_scratch.recovery_alternates);
+         g_scratch.trace_alternate_metrics != nullptr &&
+         esp_ptr_external_ram(g_scratch.recovery_alternates) &&
+         esp_ptr_external_ram(g_scratch.trace_alternate_metrics);
 }
 
 bool task_workspace_in_psram() {
@@ -1244,8 +1260,13 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       if (stats != nullptr && config.trace && stats->trace_alternate_count == 0 && symbols_ok) {
         stats->trace_alternate_count = static_cast<uint8_t>(
             std::min(recovery_alternate_count, std::size(stats->trace_alternates)));
-        std::memcpy(stats->trace_alternates, recovery_alternates,
-                    stats->trace_alternate_count * sizeof(stats->trace_alternates[0]));
+        for (size_t i = 0; i < stats->trace_alternate_count; ++i) {
+          const auto& source = recovery_alternates[i];
+          stats->trace_alternates[i] = {
+              source.symbol_index, source.alternate_symbol, source.ratio_milli};
+          g_scratch.trace_alternate_metrics[i] = source;
+        }
+        stats->trace_alternate_metrics = g_scratch.trace_alternate_metrics;
       }
       if (stats != nullptr && config.trace && stats->trace_symbol_count == 0 && symbols_ok) {
         stats->trace_symbol_count =
@@ -1264,7 +1285,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
           stats->recovery_symbols_considered +=
               static_cast<uint32_t>(recovery_alternate_count);
         }
-        const size_t changed = apply_lower_alternates(
+        const size_t changed = apply_best_lower_alternate(
             symbols, count, recovery_alternates, recovery_alternate_count, bins);
         if (changed != 0 && recovery_budget_available(recovery_candidates_tested)) {
           ++recovery_candidates_tested;
@@ -1370,7 +1391,8 @@ bool self_check() {
       g_failed_allocation_caps != (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) ||
       failed_scratch.task != nullptr || failed_scratch.fft != nullptr ||
       failed_scratch.downchirp != nullptr ||
-      failed_scratch.twiddle != nullptr || failed_scratch.recovery_alternates != nullptr)
+      failed_scratch.twiddle != nullptr || failed_scratch.recovery_alternates != nullptr ||
+      failed_scratch.trace_alternate_metrics != nullptr)
     return false;
   Stats first_profile{};
   first_profile.fft_calls = 2;
@@ -1406,13 +1428,13 @@ bool self_check() {
   Stats complete_candidate{};
   complete_candidate.preambles = 1;
   uint16_t alternate_symbols[] = {5, 7, 0};
-  const SymbolAlternateTracePoint alternates[] = {
-      {0, 4, 1005}, {1, 8, 1005}, {2, 2047, 1005},
+  const SymbolAlternateMetric alternates[] = {
+      {0, 4, 1100}, {1, 6, 1005}, {2, 2047, 1050},
   };
-  if (apply_lower_alternates(alternate_symbols, std::size(alternate_symbols), alternates,
-                             std::size(alternates), 2048) != 2 ||
-      alternate_symbols[0] != 4 || alternate_symbols[1] != 7 ||
-      alternate_symbols[2] != 2047) return false;
+  if (apply_best_lower_alternate(alternate_symbols, std::size(alternate_symbols), alternates,
+                                 std::size(alternates), 2048) != 1 ||
+      alternate_symbols[0] != 5 || alternate_symbols[1] != 6 ||
+      alternate_symbols[2] != 0) return false;
   return std::strstr(summary, "81%") != nullptr && std::strstr(summary, "4.12V") != nullptr &&
          std::strcmp(node.long_name, "hardcore_Tbeam") == 0 &&
          std::strcmp(node.short_name, "HcMe") == 0 &&

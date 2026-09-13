@@ -150,7 +150,17 @@ class ReplayUploadTests(unittest.TestCase):
                 alternates,
             ),
             {"error_indices": [8, 10], "covered_indices": [8], "covered": 1,
-             "errors": 2},
+            "errors": 2},
+        )
+
+    def test_symbol_alternates_keep_native_peak_magnitudes(self):
+        self.assertEqual(
+            replay_lora_orciq._parse_symbol_alternates(
+                "RTL_LORA_NATIVE_ALTERNATES sequence=4 count=1 "
+                "values=8:12:1.025:82.000:80.000"
+            ),
+            {8: {"symbol": 12, "ratio": 1.025,
+                 "primary_magnitude": 82.0, "alternate_magnitude": 80.0}},
         )
 
 

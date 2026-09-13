@@ -4122,11 +4122,13 @@ void lora_native_decode_task(void*) {
                     static_cast<unsigned long>(work.sequence),
                     static_cast<unsigned>(stats.trace_alternate_count));
       for (size_t i = 0; i < stats.trace_alternate_count; ++i) {
-        const auto& point = stats.trace_alternates[i];
+        const auto& point = stats.trace_alternate_metrics[i];
         if (i != 0) Serial.print(',');
-        Serial.printf("%u:%u:%.3f", static_cast<unsigned>(point.symbol_index),
+        Serial.printf("%u:%u:%.3f:%.3f:%.3f", static_cast<unsigned>(point.symbol_index),
                       static_cast<unsigned>(point.alternate_symbol),
-                      static_cast<double>(point.ratio_milli) / 1000.0);
+                      static_cast<double>(point.ratio_milli) / 1000.0,
+                      static_cast<double>(point.primary_magnitude),
+                      static_cast<double>(point.alternate_magnitude));
       }
       Serial.println();
       Serial.printf("RTL_LORA_NATIVE_SYMBOLS sequence=%lu count=%u values=",
