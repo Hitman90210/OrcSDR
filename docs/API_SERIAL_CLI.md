@@ -115,7 +115,8 @@ below rather than papered over):
 - **`authenticated`** — gates the rest (`RTL_TUNE`, `RTL_VOLUME <n>`,
   `RTL_CAPTURE`/`RTL_LISTEN`, `RTL_STOP`, `RTL_PRESET_SCAN`,
   `RTL_PRESET_TUNE`, `RTL_P25_IQ_START`, `RTL_P25_IQ_STOP`, and
-  `RTL_P25_REPLAY`). Requires the `PAIR`/`AUTH` HMAC handshake below.
+  `RTL_P25_REPLAY`, and `ORC_RTC_SET`). Requires the `PAIR`/`AUTH` HMAC
+  handshake below.
   This exists for a remote/untrusted-host scenario (e.g. Bluetooth); if
   you're driving the device over a physically-attached USB cable, that
   trust boundary is arguably already crossed, but the gate is enforced as
@@ -134,6 +135,25 @@ reboots. There is currently no documented out-of-band way to generate a
 compliant nonce/proof pair from a plain script without replicating the
 HMAC-SHA256 handshake — treat the authenticated commands as requiring a
 proper pairing client, not something to hand-roll casually.
+
+## Hardware clock
+
+The Tab5 hardware RTC is trusted only after OrcSDR has established it and
+successfully read the value back. Finding the RTC chip alone does not make its
+calendar trustworthy. The offline helper authenticates and copies UTC from the
+connected computer; it does not use an internet or AI service:
+
+```powershell
+python tools/sync_tab5_rtc.py COM17
+```
+
+| Command | Auth | Reply | Notes |
+|---|---|---|---|
+| `ORC_RTC_STATUS` | no | `ORC_RTC_STATUS valid=0\|1 utc=<epoch-or-0> source=hardware\|unavailable` | Reports trusted wall-clock state. |
+| `ORC_RTC_SET <unix_utc>` | yes | `ORC_RTC_SET_OK utc=...` or `ORC_RTC_SET_ERROR ...` | Writes UTC to the hardware RTC, verifies readback, then persists the established marker. |
+
+RTC time augments monotonic uptime. It never replaces `received_ms` or changes
+packet age/order, and establishing the clock does not backfill old packet times.
 
 ## Tuning and band control
 

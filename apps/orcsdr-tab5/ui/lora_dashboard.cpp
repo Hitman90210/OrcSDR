@@ -335,6 +335,22 @@ void split_message(const char* value, size_t line_chars, char* first, char* seco
   if (strlen(remainder) > line_chars) memcpy(second + line_chars - 3, "...", 4);
 }
 
+void format_event_time(char* output, size_t output_size, const Event& event,
+                       uint32_t now_ms) {
+  const uint32_t age = event.sender == 0 ? 0 : (now_ms - event.received_ms) / 1000u;
+  if (event.received_utc == 0) {
+    snprintf(output, output_size, "TIME NOT SET | %lus",
+             static_cast<unsigned long>(age));
+    return;
+  }
+  const uint32_t day_seconds = event.received_utc % 86400u;
+  snprintf(output, output_size, "%02lu:%02lu:%02luZ | %lus",
+           static_cast<unsigned long>(day_seconds / 3600u),
+           static_cast<unsigned long>((day_seconds / 60u) % 60u),
+           static_cast<unsigned long>(day_seconds % 60u),
+           static_cast<unsigned long>(age));
+}
+
 void draw_event_row(const Event& event, int x, int y, int w) {
   M5.Display.fillRoundRect(x, y, w, 66, 8, kPanel);
   M5.Display.drawRoundRect(x, y, w, 66, 8, event.verified ? kGrid : kYellow);
@@ -348,10 +364,10 @@ void draw_event_row(const Event& event, int x, int y, int w) {
   split_message(message, line_chars, first, second);
   text(first, x + 16, y + (second[0] ? 38 : 45), TFT_WHITE, 2, middle_left);
   if (second[0]) text(second, x + 16, y + 56, TFT_WHITE, 2, middle_left);
-  char age[20];
-  const uint32_t seconds = event.sender == 0 ? 0 : (millis() - event.received_ms) / 1000u;
-  snprintf(age, sizeof(age), "%lus", static_cast<unsigned long>(seconds));
-  text(age, x + w - 16, y + 19, kMuted, 1, middle_right);
+  char received[32];
+  format_event_time(received, sizeof(received), event, millis());
+  text(received, x + w - 16, y + 19,
+       event.received_utc ? kMuted : kYellow, 1, middle_right);
 }
 
 void draw_large_event_row(const Event& event, int x, int y, int w) {
@@ -360,10 +376,10 @@ void draw_large_event_row(const Event& event, int x, int y, int w) {
   char sender[18];
   event_sender(event, sender, sizeof(sender), false);
   text(sender, x + 16, y + 18, event.verified ? kGreen : kYellow, 2, middle_left);
-  char age[20];
-  snprintf(age, sizeof(age), "%lus", static_cast<unsigned long>(
-      event.sender == 0 ? 0 : (millis() - event.received_ms) / 1000u));
-  text(age, x + w - 16, y + 18, kMuted, 1, middle_right);
+  char received[32];
+  format_event_time(received, sizeof(received), event, millis());
+  text(received, x + w - 16, y + 18,
+       event.received_utc ? kMuted : kYellow, 1, middle_right);
   const char* message = event.text[0] ? event.text
                                       : (event.encrypted ? "ENCRYPTED FRAME" : "WAITING");
   char first[18]{}, second[18]{};
@@ -831,6 +847,8 @@ bool self_check() {
   snapshot.nodes[0].longitude_e7 = -1230900000;
   snapshot.event_count = 1;
   snapshot.events[0].sender = snapshot.nodes[0].id;
+  snapshot.events[0].received_ms = 1000;
+  snapshot.events[0].received_utc = 52328;
   if (static_cast<uint8_t>(View::count) != 5 || kTabW * 5 != 1280 ||
       !has_position(snapshot.nodes[0])) return false;
   char value[16];
@@ -839,6 +857,12 @@ bool self_check() {
   char first[18]{}, second[18]{};
   split_message("GPS 44.05641, -123.02418", 17, first, second);
   if (strcmp(first, "GPS 44.05641,") != 0 || strcmp(second, "-123.02418") != 0) return false;
+  char received[32];
+  format_event_time(received, sizeof(received), snapshot.events[0], 13000);
+  if (strcmp(received, "14:32:08Z | 12s") != 0) return false;
+  snapshot.events[0].received_utc = 0;
+  format_event_time(received, sizeof(received), snapshot.events[0], 13000);
+  if (strcmp(received, "TIME NOT SET | 12s") != 0) return false;
   const Snapshot saved_snapshot = g_snapshot;
   const uint8_t saved_filter = g_filter;
   const View saved_view = g_view;

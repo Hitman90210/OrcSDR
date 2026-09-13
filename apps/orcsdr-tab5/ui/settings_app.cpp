@@ -389,15 +389,18 @@ void draw_system_power() {
 
 void draw_system() {
   text("SYSTEM", 330, 115, kBlue, 3);
-  char value[40];
+  char value[48];
   draw_system_power();
-  value_row("BUILD", g_state.build_identity, 435);
+  value_row("UTC TIME", g_state.rtc_valid ? g_state.rtc_utc : "TIME NOT SET",
+            425, g_state.rtc_valid ? kGreen : TFT_ORANGE);
+  value_row("BUILD", g_state.build_identity, 465);
   snprintf(value, sizeof(value), "%lu SEC", static_cast<unsigned long>(g_state.uptime_seconds));
-  value_row("UPTIME", value, 475);
-  value_row("NETWORK", g_state.wifi_connected ? "CONNECTED" : "OFFLINE", 515);
-  value_row("SD", g_state.sd_ready ? "READY" : "UNAVAILABLE", 555);
-  text("Reboot, reset, export, and Launcher handoff require separate safety gates.",
-       330, 605, TFT_LIGHTGREY, 2);
+  value_row("UPTIME", value, 505);
+  value_row("NETWORK", g_state.wifi_connected ? "CONNECTED" : "OFFLINE", 545);
+  value_row("SD", g_state.sd_ready ? "READY" : "UNAVAILABLE", 585);
+  text(g_state.rtc_valid ? "Hardware clock established; LoRa receives use fixed UTC timestamps."
+                         : "USB: python tools/sync_tab5_rtc.py COMx",
+       330, 650, g_state.rtc_valid ? TFT_LIGHTGREY : TFT_ORANGE, 2);
 }
 
 void draw_content() {
@@ -666,6 +669,8 @@ void update(const State& state_value) {
                               g_state.battery_current_ma != state_value.battery_current_ma ||
                               g_state.vbus_mv != state_value.vbus_mv ||
                               strcmp(g_state.charging_state, state_value.charging_state) != 0);
+  const bool clock_changed = g_section == Section::system &&
+                             g_state.rtc_valid != state_value.rtc_valid;
   const bool catalog_changed = g_section == Section::data_maps &&
       (g_state.catalog_ready != state_value.catalog_ready || g_state.catalog_busy != state_value.catalog_busy ||
        g_state.catalog_progress_percent != state_value.catalog_progress_percent ||
@@ -691,6 +696,8 @@ void update(const State& state_value) {
     draw_content();
   if (power_changed && g_edit == EditField::none && g_wifi_edit == WifiEdit::none)
     draw_system_power();
+  if (clock_changed && g_edit == EditField::none && g_wifi_edit == WifiEdit::none)
+    draw_content();
   if (catalog_changed && g_edit == EditField::none && g_wifi_edit == WifiEdit::none)
     draw_content();
   if (location_changed && g_edit == EditField::none && g_wifi_edit == WifiEdit::none && !g_location_edit)

@@ -30,6 +30,7 @@ struct Event {
   uint32_t destination = 0;
   uint32_t packet_id = 0;
   uint32_t received_ms = 0;
+  uint32_t received_utc = 0;
   int32_t latitude_e7 = INT32_MAX;
   int32_t longitude_e7 = INT32_MAX;
   int16_t signal_tenths = INT16_MAX;

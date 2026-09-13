@@ -79,6 +79,7 @@
 #include "rf_lab.hpp"
 #include "rf_visualizer.hpp"
 #include "settings_app.hpp"
+#include "time_service.hpp"
 #include "ui_capture.hpp"
 #include "web_console.hpp"
 #include "rf24_dashboard.hpp"
@@ -9433,6 +9434,7 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
     event.destination = packet.destination;
     event.packet_id = packet.packet_id;
     event.received_ms = packet.received_ms;
+    event.received_utc = packet.received_utc;
     event.latitude_e7 = packet.latitude_e7;
     event.longitude_e7 = packet.longitude_e7;
     event.signal_tenths = packet.signal_tenths;
@@ -10581,6 +10583,10 @@ const orcsdr::settings::State& global_settings_state() {
   strlcpy(state.charging_state, charging_state(), sizeof(state.charging_state));
   snprintf(state.build_identity, sizeof(state.build_identity), "%s %s", __DATE__, __TIME__);
   state.uptime_seconds = millis() / 1000;
+  const auto clock = orcsdr::time_service::now();
+  state.rtc_valid = clock.wallclock_valid;
+  if (state.rtc_valid)
+    orcsdr::time_service::format_utc(state.rtc_utc, sizeof(state.rtc_utc), clock.utc);
   return state;
 }
 
@@ -10627,12 +10633,21 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
     strlcpy(snapshot.date, "DEMO", sizeof(snapshot.date));
   } else {
     strlcpy(snapshot.wifi_ip, device.wifi_ip, sizeof(snapshot.wifi_ip));
-    const uint32_t seconds = millis() / 1000u;
-    snprintf(snapshot.clock, sizeof(snapshot.clock), "%02lu:%02lu:%02lu",
-             static_cast<unsigned long>((seconds / 3600u) % 100u),
-             static_cast<unsigned long>((seconds / 60u) % 60u),
-             static_cast<unsigned long>(seconds % 60u));
-    strlcpy(snapshot.date, "UPTIME", sizeof(snapshot.date));
+    const auto clock = orcsdr::time_service::now();
+    char utc[24]{};
+    if (clock.wallclock_valid &&
+        orcsdr::time_service::format_utc(utc, sizeof(utc), clock.utc)) {
+      memcpy(snapshot.clock, utc + 11, 8);
+      snapshot.clock[8] = '\0';
+      snprintf(snapshot.date, sizeof(snapshot.date), "%.10s UTC", utc);
+    } else {
+      const uint32_t seconds = clock.uptime_ms / 1000u;
+      snprintf(snapshot.clock, sizeof(snapshot.clock), "%02lu:%02lu:%02lu",
+               static_cast<unsigned long>((seconds / 3600u) % 100u),
+               static_cast<unsigned long>((seconds / 60u) % 60u),
+               static_cast<unsigned long>(seconds % 60u));
+      strlcpy(snapshot.date, "TIME NOT SET", sizeof(snapshot.date));
+    }
   }
   snapshot.driver_ready = demo || device.rtl_ready;
   snapshot.receiving = demo ||
@@ -11216,6 +11231,7 @@ bool parse_hex_u32_exact(const char* value, uint32_t* output) {
 void lora_store_packet(const LoraDisplayPacket& input) {
   LoraDisplayPacket packet = input;
   if (packet.received_ms == 0) packet.received_ms = millis();
+  if (packet.received_utc == 0) packet.received_utc = orcsdr::time_service::now().utc;
   if (packet.frequency_hz == 0) packet.frequency_hz = rtl_ui_frequency_hz;
   portENTER_CRITICAL(&lora_message_mux);
   if (packet.packet_id != 0) {
@@ -11369,6 +11385,7 @@ void persist_workflow() {
 
 void load_state() {
   preferences.begin("orclink", false);
+  orcsdr::time_service::initialize(preferences.getBool("rtc_est", false));
   orcsdr::am::load(preferences);
   rtl_am_step_hz = orcsdr::am::tune_step();
   rtl_am_scan_spacing_hz = orcsdr::am::scan_spacing();
@@ -14332,8 +14349,39 @@ void process_command(char* command) {
     Serial.println("RTL_CATALOG_REMOVE <id> CONFIRM - remove installed pack (SD only)");
     Serial.println("RTL_CATALOG packs: faa_aircraft|faa_aviation|noaa_weather|fcc_broadcast|lane_county_map");
     Serial.println("RTL_LOCATION STATUS|IP|LOOKUP <zip/address>|CONFIRM - resolve and save receiver location");
+    Serial.println("ORC_RTC_STATUS                 - trusted hardware UTC clock status");
+    Serial.println("ORC_RTC_SET <unix_utc>         - establish hardware UTC clock (auth)");
     Serial.println("SD_LIST/SD_GET_*/SD_PUT_*      - SD card file transfer (see copy_to_tab5_sd.ps1)");
     Serial.println("RTL_HELP_END");
+    return;
+  }
+  if (strcmp(command, "ORC_RTC_STATUS") == 0) {
+    const auto clock = orcsdr::time_service::now();
+    Serial.printf("ORC_RTC_STATUS valid=%d utc=%lu source=%s\n",
+                  clock.wallclock_valid ? 1 : 0,
+                  static_cast<unsigned long>(clock.utc),
+                  M5.Rtc.isEnabled() ? "hardware" : "unavailable");
+    return;
+  }
+  if (strncmp(command, "ORC_RTC_SET ", 12) == 0) {
+    if (!authenticated) {
+      Serial.println("ORC_RTC_SET_ERROR auth_required");
+      return;
+    }
+    char* end = nullptr;
+    const unsigned long epoch = strtoul(command + 12, &end, 10);
+    if (end == command + 12 || *end != '\0' ||
+        !orcsdr::time_service::set_utc(static_cast<uint32_t>(epoch))) {
+      Serial.println("ORC_RTC_SET_ERROR invalid_or_unavailable");
+      return;
+    }
+    if (!preferences.putBool("rtc_est", true)) {
+      Serial.println("ORC_RTC_SET_ERROR persistence_failed");
+      return;
+    }
+    Serial.printf("ORC_RTC_SET_OK utc=%lu\n", epoch);
+    update_global_settings();
+    bump_rtl_ui();
     return;
   }
   if (strcmp(command, "RTL_RESET") == 0) {
@@ -15455,6 +15503,10 @@ void setup() {
     Serial.println("ORC_SETTINGS_SELF_CHECK_FAIL");
   }
   Serial.println("ORC_SETTINGS_SELF_CHECK_OK");
+  if (!orcsdr::time_service::self_check()) {
+    Serial.println("ORC_TIME_SELF_CHECK_FAIL");
+  }
+  Serial.println("ORC_TIME_SELF_CHECK_OK");
   if (!orcsdr::location_estimate::self_check()) {
     Serial.println("ORC_LOCATION_SELF_CHECK_FAIL");
   }

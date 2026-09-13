@@ -112,6 +112,8 @@ struct State {
   char charging_state[16]{};
   char build_identity[40]{};
   uint32_t uptime_seconds = 0;
+  bool rtc_valid = false;
+  char rtc_utc[24]{};
 };
 
 enum class ActionKind : uint8_t {
