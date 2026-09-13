@@ -24,7 +24,14 @@ python tools/lora_lab/run_suite.py --inventory-only `
   --tx-port COM24 --reference-port COM16 --orcsdr-port COM17
 ```
 
-Run a legal local over-the-air baseline after identifying all three ports:
+Run a receive-only false-trigger baseline:
+
+```powershell
+python tools/lora_lab/run_suite.py --quiet-only `
+  --orcsdr-port COM17 --quiet-seconds 900
+```
+
+Run a local over-the-air baseline after identifying all three ports:
 
 ```powershell
 python tools/lora_lab/run_suite.py `

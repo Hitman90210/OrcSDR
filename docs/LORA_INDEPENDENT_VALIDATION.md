@@ -1,7 +1,6 @@
 # Independent LoRa / Meshtastic validation
 
-Status: first-milestone harness implemented; RF baseline awaiting the receiver
-and transmitter USB connections described below.
+Status: first-milestone hardware baseline complete; trigger/DSP code unchanged.
 
 ## Provenance
 
@@ -39,8 +38,8 @@ configuration was changed and no test packet was transmitted.
 | Role | Observed port | Identity | Firmware | Current safe config observation |
 |---|---:|---|---|---|
 | Controlled TX | COM24 | Heltec V4 | `2.8.0.47db0e3` | Region enum 1 (US), modem preset enum 0 (LongFast), automatic channel, no frequency override. |
-| Reference RX | COM16 | LILYGO T-Beam S3 Core | `2.7.10.94d4bdf` | Region enum 1 (US), modem preset enum 0 (LongFast), automatic channel. |
-| Experimental RX | not present | M5Stack Tab5 / OrcSDR | not observed | The historical COM17 assignment is not a device identity. |
+| Reference RX | COM16 | LILYGO T-Beam S3 Core | `2.7.26.54e0d8d` | Region enum 1 (US), modem preset enum 0 (LongFast), automatic channel. |
+| Experimental RX | COM17 | M5Stack Tab5 / OrcSDR | current upstream build | US LongFast slot 20, 906.875 MHz, automatic capture enabled. |
 | Unrelated USB serial | COM30 | USB Billboard device, VID `057E`, PID `0000` | unknown | It did not answer the read-only `RTL_STATUS` query and is not treated as OrcSDR. |
 
 The PC has Meshtastic Python `2.7.11` and pyserial `3.5`. The Heltec firmware
@@ -90,14 +89,65 @@ Local inventory evidence was saved under:
 - `artifacts/lora_validation/20260912-163345/`
 - `artifacts/lora_validation/20260912-163350/`
 
-The later inventories record the USB disappearance rather than hiding it. The
-Heltec COM24 port disappeared after repeated one-shot CLI queries, and COM16
-subsequently became unavailable as well. The Tab5 PC-facing USB Serial/JTAG
-interface was never present during this session. The required physical gate is
-to reconnect the Heltec V4 and connect the Tab5 PC-facing USB cable. After port
-rediscovery, the next run is a quiet-window baseline followed by controlled
-legal US LongFast transmissions.
+The later inventories record the temporary USB disappearance rather than hiding
+it. After reconnection, `artifacts/lora_validation/20260912-173152/` independently
+identified all three roles and saved their non-secret configuration snapshots.
 
-No firmware was built or flashed, no RF baseline was run, and no Hitman90210
-performance claim has yet been reproduced. Trigger/DSP production code remains
-unchanged until that baseline exists.
+Four receive-only windows and three controlled LongFast runs are now recorded:
+
+| Run | Duration / TX | Reference RX | OrcSDR RF | Preamble / header | CRC / Meshtastic | Zero-preamble false triggers | Drops |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `20260912-173415` | 900.0 s | n/a | 11 captures | 11 / 11 | 4 / 4 | 0 | 0 |
+| `20260912-174945` quiet phase | 180.0 s | n/a | 1 capture | 1 / 1 | 1 / 1 | 0 | 0 |
+| `20260912-174945` numbered TX phase | 10 TX | 8/10 | 8/10 windows | 7/10 / 7/10 | 3/10 / 3/10 | n/a | 1 |
+| `20260912-175758` quiet phase | 180.0 s | n/a | 5 captures | 5 / 5 | 2 / 2 | 0 | 0 |
+| `20260912-175758` numbered TX phase | 10 TX | 9/10 | 9/10 windows | 9/10 / 9/10 | 4/10 / 4/10 | n/a | 0 |
+| `20260912-180909` quiet phase | 180.0 s | n/a | 0 captures | 0 / 0 | 0 / 0 | 0 | 0 |
+| `20260912-180909` numbered TX phase | 10 TX | 10/10 | 10/10 windows | 5/10 / 5/10 | 1/10 / 1/10 | n/a | 1 |
+
+Across 1,440 seconds of receive-only observation, OrcSDR started 17 captures.
+Every completed candidate contained a detected LoRa preamble, so the fork's
+reported 24 zero-preamble triggers in 180 seconds were **not reproduced** in
+this RF environment. Seven quiet-window candidates reached CRC-valid encrypted
+Meshtastic packets, showing that uncontrolled LoRa traffic was present rather
+than a truly silent RF channel.
+
+The first two controlled runs used an MLA-30+ outdoors approximately 50 feet
+from the LoRa devices. The comparison run used a 915 MHz whip indoors
+approximately 10 feet from them. Cabling was shielded as stated by the operator.
+Because antenna, distance, and placement changed together, these are whole
+receive-setup results rather than a controlled antenna-only or calibrated-power
+comparison.
+
+With the MLA-30+ setup, COM16 received 8/10 and 9/10 while OrcSDR produced 3/10
+and 4/10 CRC-valid Meshtastic packets. With the closer indoor whip, COM16
+received 10/10 and OrcSDR triggered in all ten TX windows, but only five windows
+reached a preamble and one reached a CRC-valid Meshtastic packet. The whip run
+also recorded one `capture_buffer_waiting` drop. Its capture-to-decode average
+was 7.986 seconds and p95 was 12.070 seconds, compared with 5.554 seconds and
+6.038 seconds in the immediately preceding MLA-30+ run.
+
+The OrcSDR wide-window readings also changed materially: mean TX-window
+`signal_dbfs`/`noise_dbfs` were approximately -4.72/-29.40 for the preceding
+MLA-30+ run and -20.08/-15.73 for the whip run. These are receiver diagnostics,
+not calibrated RF power measurements. The observed result does not support a
+simple closer-is-better conclusion and should be repeated before assigning a
+cause.
+
+OrcSDR does not yet emit decoded payload identity. Association to a numbered
+TX therefore remains a non-overlapping host-time-window estimate. In the first
+controlled run, two extra decode attempts occurred inside TX windows, but they
+are not claimed as duplicate packet decodes. Its corrected
+capture-to-completed-decode time averaged 6.197 seconds with an 8.466-second
+p95 using matching OrcSDR capture sequence IDs.
+
+Raw local evidence:
+
+- `artifacts/lora_validation/20260912-173415/`
+- `artifacts/lora_validation/20260912-174945/`
+- `artifacts/lora_validation/20260912-175758/`
+- `artifacts/lora_validation/20260912-180909/`
+
+No firmware was built or flashed. No trigger or DSP production code changed.
+The next milestone can now benchmark independently designed early-candidate
+detectors against this measured upstream baseline.

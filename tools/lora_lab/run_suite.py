@@ -221,12 +221,21 @@ def correlate(transmissions: list[dict], events: list[dict], reference_tokens: s
         if event.get("kind") == "orcsdr"
         and event.get("line_type") == "RTL_LORA_NATIVE_DONE"
     ]
+    decodes_by_sequence = {event.get("sequence"): event for event in decodes}
     rows = []
     for index, tx in enumerate(transmissions):
         end = transmissions[index + 1]["monotonic"] if index + 1 < len(transmissions) else tx["monotonic"] + window
         matched_captures = [event for event in captures if tx["monotonic"] <= event["monotonic"] < end]
-        matched_decodes = [event for event in decodes if tx["monotonic"] <= event["monotonic"] < end]
+        matched_decodes = [
+            decodes_by_sequence[event.get("sequence")]
+            for event in matched_captures
+            if event.get("sequence") in decodes_by_sequence
+        ]
         best = matched_decodes[0] if matched_decodes else {}
+        best_capture = next(
+            (event for event in matched_captures if event.get("sequence") == best.get("sequence")),
+            None,
+        )
         rows.append(
             {
                 "sequence": tx["sequence"],
@@ -239,8 +248,11 @@ def correlate(transmissions: list[dict], events: list[dict], reference_tokens: s
                 "orcsdr_header_failures": sum(int(item.get("header_failures", 0)) for item in matched_decodes),
                 "orcsdr_crc_ok": sum(int(item.get("crc_ok", 0)) for item in matched_decodes),
                 "orcsdr_packets": sum(int(item.get("packets", 0)) for item in matched_decodes),
-                "duplicate_attempts": max(0, len(matched_decodes) - 1),
-                "decode_latency_seconds": round(best["monotonic"] - tx["monotonic"], 3) if best else None,
+                "extra_decode_attempts": max(0, len(matched_decodes) - 1),
+                "decode_latency_seconds": (
+                    round(best["monotonic"] - best_capture["monotonic"], 3)
+                    if best_capture else None
+                ),
             }
         )
     return rows
@@ -267,6 +279,20 @@ def quiet_trigger_counts(events: list[dict]) -> tuple[int, int, int]:
     return len(captures), false_triggers, unresolved
 
 
+def quiet_window_events(events: list[dict], start: float, end: float) -> list[dict]:
+    captures = [
+        event for event in events
+        if event.get("line_type") == "RTL_IQ_START"
+        and start <= event["monotonic"] <= end
+    ]
+    sequences = {event.get("sequence") for event in captures}
+    return captures + [
+        event for event in events
+        if event.get("line_type") == "RTL_LORA_NATIVE_DONE"
+        and event.get("sequence") in sequences
+    ]
+
+
 def write_results(
     run_dir: Path, rows: list[dict], quiet_events: list[dict], all_events: list[dict], duration: float
 ):
@@ -286,7 +312,7 @@ def write_results(
     )
     crc_succeeded = sum(row["orcsdr_crc_ok"] > 0 for row in rows)
     mesh_decoded = sum(row["orcsdr_packets"] > 0 for row in rows)
-    duplicate_attempts = sum(row["duplicate_attempts"] for row in rows)
+    extra_decode_attempts = sum(row["extra_decode_attempts"] for row in rows)
     latencies = sorted(
         row["decode_latency_seconds"] for row in rows
         if row["decode_latency_seconds"] is not None
@@ -305,8 +331,9 @@ def write_results(
         "crc_success_rate": ratio(crc_succeeded),
         "orcsdr_meshtastic_decoded": mesh_decoded,
         "meshtastic_decode_rate": ratio(mesh_decoded),
-        "duplicate_attempts": duplicate_attempts,
-        "duplicate_rate": ratio(duplicate_attempts),
+        "extra_decode_attempts": extra_decode_attempts,
+        "extra_decode_attempt_rate": ratio(extra_decode_attempts),
+        "duplicate_rate": None,
         "average_decode_latency_seconds": round(sum(latencies) / len(latencies), 3) if latencies else None,
         "p95_decode_latency_seconds": latencies[max(0, int(len(latencies) * 0.95) - 1)] if latencies else None,
         "quiet_seconds": duration,
@@ -325,6 +352,7 @@ def write_results(
         "warnings": [
             "Receiver blind time is not claimed from decoder elapsed time alone.",
             "Heap and PSRAM deltas are unavailable in the current LoRa status output.",
+            "Duplicate packet decodes cannot be claimed without OrcSDR payload identity.",
         ],
     }
     (run_dir / "results.json").write_text(json.dumps(results, indent=2) + "\n", encoding="utf-8")
@@ -338,7 +366,8 @@ def write_results(
         f"- OrcSDR header successes: {results['orcsdr_header_success']}/{requested} ({results['header_success_rate']})",
         f"- OrcSDR CRC successes: {results['orcsdr_crc_success']}/{requested} ({results['crc_success_rate']})",
         f"- OrcSDR Meshtastic decodes: {results['orcsdr_meshtastic_decoded']}/{requested} ({results['meshtastic_decode_rate']})",
-        f"- Duplicate attempts: {results['duplicate_attempts']}",
+        f"- Extra decode attempts in TX windows: {results['extra_decode_attempts']}",
+        "- Duplicate packet rate: not measurable without OrcSDR payload identity",
         f"- Quiet-window false triggers: {false_triggers} in {duration:.1f}s",
         f"- Quiet captures without a completed decode: {unresolved_quiet}",
         "- Correlation boundary: OrcSDR events are associated by a non-overlapping host-time window.",
@@ -355,12 +384,14 @@ def self_check():
     assert sample and sample["crc_ok"] == 1 and sample["sequence"] == 7
     tx = [{"sequence": 1, "token": TOKEN_PREFIX + "000001", "packet_id": 9, "monotonic": 10.0}]
     events = [
-        {"kind": "orcsdr", "line_type": "RTL_IQ_START", "mode": "energy", "monotonic": 10.1},
-        {"kind": "orcsdr", "line_type": "RTL_LORA_NATIVE_DONE", "preambles": 1, "crc_ok": 1, "packets": 1, "monotonic": 10.8},
+        {"kind": "orcsdr", "line_type": "RTL_IQ_START", "mode": "energy", "sequence": 7, "monotonic": 10.1},
+        {"kind": "orcsdr", "line_type": "RTL_LORA_NATIVE_DONE", "sequence": 7, "preambles": 1, "crc_ok": 1, "packets": 1, "monotonic": 10.8},
     ]
     row = correlate(tx, events, {TOKEN_PREFIX + "000001"}, 8)[0]
     assert row["reference_received"] and row["orcsdr_crc_ok"] == 1
+    assert row["decode_latency_seconds"] == 0.7 and row["extra_decode_attempts"] == 0
     assert quiet_trigger_counts(events) == (1, 0, 0)
+    assert quiet_trigger_counts(quiet_window_events(events, 10.0, 10.2)) == (1, 0, 0)
     events[-1]["preambles"] = 0
     assert quiet_trigger_counts(events) == (1, 1, 0)
     print("lora_lab self-check: PASS")
@@ -378,6 +409,7 @@ def parse_args():
     parser.add_argument("--confirm-local-ota-legal", action="store_true")
     parser.add_argument("--output-root", type=Path, default=Path("artifacts/lora_validation"))
     parser.add_argument("--inventory-only", action="store_true")
+    parser.add_argument("--quiet-only", action="store_true")
     parser.add_argument("--self-check", action="store_true")
     return parser.parse_args()
 
@@ -438,6 +470,47 @@ def main() -> int:
         )
         print(json.dumps(inventory, indent=2))
         return 0
+    if args.quiet_only:
+        if not args.orcsdr_port:
+            raise SystemExit("quiet-only runs require --orcsdr-port")
+        events = EventLog(run_dir / "events.jsonl")
+        orc = OrcConsole(args.orcsdr_port, run_dir / "orcsdr.log", events)
+        try:
+            orc.open()
+            iq_status = orc.query("RTL_IQ_STATUS", "RTL_IQ_STATUS")
+            plan_status = orc.query("RTL_LORA_PLAN_STATUS", "RTL_LORA_PLAN_STATUS")
+            frequency_status = orc.query("RTL_FREQ", "RTL_FREQ_STATUS")
+            if iq_status.get("auto") != "on" or frequency_status.get("band") != "LORA":
+                raise RuntimeError("OrcSDR must already be listening with automatic LoRa capture")
+            (run_dir / "configuration.json").write_text(
+                json.dumps(
+                    {
+                        "transport": "RX_ONLY",
+                        "orcsdr": {
+                            "port": args.orcsdr_port,
+                            "iq_status": iq_status,
+                            "plan_status": plan_status,
+                            "frequency_status": frequency_status,
+                        },
+                    },
+                    indent=2,
+                ) + "\n",
+                encoding="utf-8",
+            )
+            quiet_start = time.monotonic()
+            events.add("quiet_start", seconds=args.quiet_seconds)
+            time.sleep(args.quiet_seconds)
+            quiet_end = time.monotonic()
+            all_events = events.snapshot()
+            quiet_events = quiet_window_events(all_events, quiet_start, quiet_end)
+            results = write_results(
+                run_dir, [], quiet_events, all_events, quiet_end - quiet_start
+            )
+            events.add("suite_complete", results=results)
+            print(json.dumps(results, indent=2))
+            return 0
+        finally:
+            orc.close()
     if not all((args.tx_port, args.reference_port, args.orcsdr_port)):
         raise SystemExit("full runs require --tx-port, --reference-port, and --orcsdr-port")
 
@@ -506,7 +579,6 @@ def main() -> int:
         events.add("quiet_start", seconds=args.quiet_seconds)
         time.sleep(args.quiet_seconds)
         quiet_end = time.monotonic()
-        quiet_events = [event for event in events.snapshot() if quiet_start <= event["monotonic"] <= quiet_end]
         events.add("quiet_end")
 
         tx_interface = interfaces["tx"]
@@ -525,6 +597,7 @@ def main() -> int:
             time.sleep(args.interval_seconds)
         time.sleep(4)
         all_events = events.snapshot()
+        quiet_events = quiet_window_events(all_events, quiet_start, quiet_end)
         rows = correlate(transmissions, all_events, reference_tokens, args.interval_seconds + 4)
         results = write_results(run_dir, rows, quiet_events, all_events, quiet_end - quiet_start)
         events.add("suite_complete", results=results)
