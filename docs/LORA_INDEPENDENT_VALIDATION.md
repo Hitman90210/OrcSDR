@@ -690,3 +690,16 @@ the aggregate native count from 23/30 to 26/30. The detailed 30-row differential
 and seven changed-row audits are preserved in
 `docs/lora-recovery-selector-differential.json`. Host-invalid rows remain
 unscored even when native recovery produced the expected manifest packet ID.
+
+Following that gate, production recovery was restored to the frozen collective
+lower-alternate construction while retaining the compile-time one-candidate
+ceiling. The rejected selector remains only as recorded evidence; no threshold,
+second candidate, symbol combination search, additional FFT pass, or broader
+synchronization work was added.
+
+Targeted post-restore hardware replay confirmed the decision boundary. MLA-30+
+seed 90500 at -21 and -22 dB again produced exact packet ID 4219089354 with one
+recovery attempt, one candidate, one success, and runtimes of 13.127 and 13.068
+seconds. The three indoor-whip Case A rows again failed CRC with one bounded
+candidate and no packet, matching the frozen collective baseline, in 13.101
+seconds each. Normal live scanning was then restored at 906.875 MHz.

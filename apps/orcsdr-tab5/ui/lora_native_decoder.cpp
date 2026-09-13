@@ -854,21 +854,20 @@ SymbolAlternateMetric find_symbol_alternate(uint16_t symbol_index, uint16_t best
   return trace;
 }
 
-size_t apply_best_lower_alternate(uint16_t* symbols, size_t symbol_count,
-                                  const SymbolAlternateMetric* alternates,
-                                  size_t alternate_count, size_t bins) {
+size_t apply_lower_alternates(uint16_t* symbols, size_t symbol_count,
+                              const SymbolAlternateMetric* alternates,
+                              size_t alternate_count, size_t bins) {
   if (symbols == nullptr || alternates == nullptr || bins == 0) return 0;
-  const SymbolAlternateMetric* best = nullptr;
+  size_t changed = 0;
   for (size_t i = 0; i < alternate_count; ++i) {
     const auto& alternate = alternates[i];
-    if (alternate.symbol_index >= symbol_count || alternate.ratio_milli == 0) continue;
-    const uint16_t primary = symbols[alternate.symbol_index];
+    if (alternate.symbol_index >= symbol_count) continue;
+    uint16_t& primary = symbols[alternate.symbol_index];
     if ((static_cast<size_t>(alternate.alternate_symbol) + 1u) % bins != primary) continue;
-    if (best == nullptr || alternate.ratio_milli < best->ratio_milli) best = &alternate;
+    primary = alternate.alternate_symbol;
+    ++changed;
   }
-  if (best == nullptr) return 0;
-  symbols[best->symbol_index] = best->alternate_symbol;
-  return 1;
+  return changed;
 }
 
 bool measured_dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size_t start,
@@ -1285,7 +1284,7 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
           stats->recovery_symbols_considered +=
               static_cast<uint32_t>(recovery_alternate_count);
         }
-        const size_t changed = apply_best_lower_alternate(
+        const size_t changed = apply_lower_alternates(
             symbols, count, recovery_alternates, recovery_alternate_count, bins);
         if (changed != 0 && recovery_budget_available(recovery_candidates_tested)) {
           ++recovery_candidates_tested;
@@ -1429,12 +1428,12 @@ bool self_check() {
   complete_candidate.preambles = 1;
   uint16_t alternate_symbols[] = {5, 7, 0};
   const SymbolAlternateMetric alternates[] = {
-      {0, 4, 1100}, {1, 6, 1005}, {2, 2047, 1050},
+      {0, 4, 1005}, {1, 8, 1005}, {2, 2047, 1005},
   };
-  if (apply_best_lower_alternate(alternate_symbols, std::size(alternate_symbols), alternates,
-                                 std::size(alternates), 2048) != 1 ||
-      alternate_symbols[0] != 5 || alternate_symbols[1] != 6 ||
-      alternate_symbols[2] != 0) return false;
+  if (apply_lower_alternates(alternate_symbols, std::size(alternate_symbols), alternates,
+                             std::size(alternates), 2048) != 2 ||
+      alternate_symbols[0] != 4 || alternate_symbols[1] != 7 ||
+      alternate_symbols[2] != 2047) return false;
   return std::strstr(summary, "81%") != nullptr && std::strstr(summary, "4.12V") != nullptr &&
          std::strcmp(node.long_name, "hardcore_Tbeam") == 0 &&
          std::strcmp(node.short_name, "HcMe") == 0 &&
