@@ -1,6 +1,7 @@
 # Independent LoRa / Meshtastic validation
 
-Status: first-milestone hardware baseline complete; trigger/DSP code unchanged.
+Status: first-milestone hardware baseline complete; second-milestone offline
+candidate-detector benchmark started; trigger/DSP firmware unchanged.
 
 ## Provenance
 
@@ -202,6 +203,31 @@ whip capture in 72.252 seconds. The latter found two preambles and one CRC
 failure; offline host decoding still recovered the labeled CRC-valid packet.
 These timings are capture-specific performance evidence, not an antenna-only
 comparison.
+
+Matched no-controlled-TX captures were also collected. The MLA-30+ window had
+no preamble in either native or host decoding. The whip window contained a
+CRC-valid public-channel position packet from an uncontrolled node, so it is
+labeled background LoRa rather than a negative vector.
+
+### Initial staged-detector benchmark
+
+`tools/lora_lab/candidate_detector.py` measures total-window power, the fraction
+of FFT energy inside the configured LoRa channel, and repeated dechirped FFT
+peaks. It uses only NumPy and the ORCIQ metadata; it does not call the full LoRa
+decoder when computing these metrics.
+
+| Capture | Power RMS p95 | In-channel ratio p95 | Consecutive chirps | Peak / median FFT |
+|---|---:|---:|---:|---:|
+| MLA-30+ controlled TX | 1.195940 | 0.987187 | 17 | 220.553 |
+| Whip controlled TX | 1.196912 | 0.986759 | 16 | 215.044 |
+| Whip no-controlled-TX, background LoRa present | 1.193266 | 0.982133 | 16 | 220.242 |
+| MLA-30+ no-controlled-TX, no preamble | 0.048021 | 0.291400 | 2 | 3.368 |
+
+This small corpus shows that power and channel occupancy identify RF activity,
+while repeated chirp peaks distinguish the no-preamble capture from all three
+LoRa-positive captures. It is not yet sufficient to choose a production
+threshold or claim a false-positive rate. More negative interference classes
+and weak-signal positives are required before firmware gating is enabled.
 
 No firmware was built or flashed. No trigger or DSP production code changed.
 The next milestone can benchmark independently designed early-candidate

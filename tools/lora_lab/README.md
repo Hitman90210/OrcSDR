@@ -66,3 +66,16 @@ reference RX, and OrcSDR logs plus JSON, CSV, configuration, inventory, and a
 Markdown summary. OrcSDR correlation is currently a non-overlapping host-time
 window; payload-level correlation requires retained IQ or an explicit decoded
 packet event and is not claimed by this first harness revision.
+
+Benchmark saved ORCIQ captures without invoking the full packet decoder:
+
+```powershell
+$captures = Get-ChildItem artifacts/lora_validation/corpus -Recurse -Filter *.orciq
+python tools/lora_lab/candidate_detector.py `
+  --output artifacts/lora_validation/corpus/candidate_benchmark.json `
+  $captures.FullName
+```
+
+The report keeps power, configured-channel occupancy, and repeated-chirp
+confidence separate. Treat no-controlled-TX captures containing unrelated LoRa
+as background positives, not noise negatives.
