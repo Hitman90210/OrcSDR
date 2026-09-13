@@ -73,6 +73,7 @@ def _symbol_difference(reference, native):
     histogram = Counter(differences)
     return {
         "first": next((i for i, difference in enumerate(differences) if difference), None),
+        "indices": [i for i, difference in enumerate(differences) if difference],
         "different": sum(difference != 0 for difference in differences),
         "largest": max(differences, key=abs, default=0),
         "histogram": {
@@ -82,11 +83,13 @@ def _symbol_difference(reference, native):
     }
 
 
-def _host_reference_symbols(path):
+def _host_reference_symbols(path, raw_override=None):
     np, _, _, _, LoRaReceiver, _ = decode_orciq._dependencies()
     from lora_phy.errors import NoPreambleError
 
     rate, frequency_hz, sf, bandwidth_hz, raw = decode_orciq.read_capture(path)
+    if raw_override is not None:
+        raw = raw_override
     iq = np.frombuffer(raw, dtype=np.uint8).astype(np.float32).reshape(-1, 2) - 127.5
     signal = (iq[:, 0] + 1j * iq[:, 1]) / 127.5
 
@@ -117,6 +120,23 @@ def _host_reference_symbols(path):
     return None
 
 
+def _impair_iq(iq, snr_db, seed, target_rms):
+    np, *_ = decode_orciq._dependencies()
+    from lora_lab.candidate_detector import impair_awgn
+
+    values = np.frombuffer(iq, dtype=np.uint8).reshape(-1, 2).astype(np.float32)
+    signal = ((values[:, 0] - 127.5) + 1j * (values[:, 1] - 127.5)) / 127.5
+    blocks = signal[:signal.size // 4096 * 4096].reshape(-1, 4096)
+    active_rms = float(np.percentile(np.sqrt(np.mean(np.abs(blocks) ** 2, axis=1)), 95))
+    impaired, details = impair_awgn(signal, active_rms, snr_db, seed, target_rms)
+    encoded = np.empty((impaired.size, 2), dtype=np.uint8)
+    encoded[:, 0] = np.clip(np.rint(impaired.real * 127.5 + 127.5), 0, 255)
+    encoded[:, 1] = np.clip(np.rint(impaired.imag * 127.5 + 127.5), 0, 255)
+    return encoded.tobytes(), {"snr_db": snr_db, "seed": seed,
+                               "target_rms": target_rms,
+                               "measured_snr_db": float(details["measured_snr_db"])}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("capture", type=Path)
@@ -125,8 +145,14 @@ def main():
                         default=Path(__file__).resolve().parents[1] / ".orclink" / "ui-doc.key")
     parser.add_argument("--compare-host", action="store_true")
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--awgn-snr", type=float)
+    parser.add_argument("--seed", type=int, default=90210)
+    parser.add_argument("--target-rms", type=float, default=0.05)
     args = parser.parse_args()
     rate, frequency_hz, sf, bandwidth_hz, iq = decode_orciq.read_capture(args.capture)
+    impairment = None
+    if args.awgn_snr is not None:
+        iq, impairment = _impair_iq(iq, args.awgn_snr, args.seed, args.target_rms)
 
     from help_media import Tab5
     tab5 = Tab5(args.port, args.pairing_key)
@@ -145,10 +171,11 @@ def main():
         print(profile)
         for trace in traces:
             print(trace.encode("ascii", "backslashreplace").decode("ascii"))
-        report = {"capture": str(args.capture), "done": done, "profile": profile,
+        report = {"capture": str(args.capture), "impairment": impairment,
+                  "done": done, "profile": profile,
                   "traces": traces}
         if args.compare_host:
-            reference = _host_reference_symbols(args.capture)
+            reference = _host_reference_symbols(args.capture, iq)
             symbol_line = next((line for line in traces
                                 if line.startswith("RTL_LORA_NATIVE_SYMBOLS")), None)
             native = ([int(value) for value in symbol_line.split("values=", 1)[1].split(",")]

@@ -422,6 +422,25 @@ The replay command was also made repeatable: `RTL_STOP` now acknowledges an
 already-stopped receiver, and no-preamble replays no longer wait for symbol
 traces that cannot exist.
 
+### First native impairment boundary after the FFT fix
+
+The deterministic replay tool can apply the existing seeded AWGN model in
+memory and compare native symbols with the host's CRC-valid stream. It does not
+retain another IQ file. MLA-30+ capture `orciq-0f4812e88b88bd75` at -21 dB,
+seed 90500, and target RMS 0.02 measured -21.002 dB. The host passed, including
+with float-linear, quantized-linear, and 25/48 polyphase preprocessing. Native
+found the header but failed payload CRC after 77.264 seconds and 28 payload
+hypotheses.
+
+Native differed in 8 of 118 symbols, all by +1 bin, at indices 76, 95, 104,
+107, 109, 111, 112, and 114. The first error is late and the errors cluster
+toward the end; selected peak-to-runner-up ratios were only 1.002-1.052. This
+is the first retained evidence for a bounded confidence/recovery path. It does
+not justify replacing the clean-packet preprocessing chain. The next
+experiment should retain the best alternative *distinct symbol* during one
+additional payload demodulation pass, then rank a small CRC recovery search
+without repeating dozens of FFT passes.
+
 During this phase firmware was built and flashed to COM17 for measurement. The
 separate one-line PSRAM placement fix for the home spectrum buffer preserves the
 tracked 40 KiB internal DMA reserve and restored boot with the default native

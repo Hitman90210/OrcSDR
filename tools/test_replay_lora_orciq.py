@@ -72,7 +72,7 @@ class ReplayUploadTests(unittest.TestCase):
     def test_symbol_difference_reports_first_and_histogram(self):
         self.assertEqual(
             replay_lora_orciq._symbol_difference([1, 2, 3], [1, 3, 2]),
-            {"first": 1, "different": 2, "largest": 1,
+            {"first": 1, "indices": [1, 2], "different": 2, "largest": 1,
              "histogram": {"-1": 1, "0": 1, "+1": 1}},
         )
 
