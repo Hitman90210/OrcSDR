@@ -79,3 +79,14 @@ python tools/lora_lab/candidate_detector.py `
 The report keeps power, configured-channel occupancy, and repeated-chirp
 confidence separate. Treat no-controlled-TX captures containing unrelated LoRa
 as background positives, not noise negatives.
+
+Run the deterministic offline impairment comparison with a comma-separated SNR
+range. Each impaired capture is temporary and is passed through the full host
+decoder; only the JSON results are retained:
+
+```powershell
+python tools/lora_lab/candidate_detector.py `
+  --snr-db "10,5,0,-5,-10,-15,-20" --seed 90210 `
+  --output artifacts/lora_validation/corpus/impairment_benchmark.json `
+  <controlled-mla-capture> <controlled-whip-capture>
+```

@@ -250,6 +250,33 @@ must not be presented as receiver-sensitivity evidence. Reproducible host-side
 attenuation/noise impairment or a physically attenuated RF path is required for
 that measurement.
 
+### Deterministic offline impairment
+
+The two original controlled captures were scaled from their measured power RMS
+p95 to 0.05 RMS, then impaired with seeded complex Gaussian noise at 10, 5, 0,
+-5, -10, -15, and -20 dB SNR. Seeds 90210-90216 were used for the MLA-30+
+capture and 90217-90223 for the whip capture. One temporary ORCIQ file at a
+time was quantized and passed to the full host decoder; no impaired IQ copies
+were retained. Results are in the ignored lab artifact
+`artifacts/lora_validation/corpus/impairment_benchmark.json`.
+
+| SNR (dB) | MLA chirps / peak-to-median / host | Whip chirps / peak-to-median / host |
+|---:|---|---|
+| 10 | 17 / 115.257 / exact packet | 16 / 115.624 / exact packet |
+| 5 | 17 / 73.430 / exact packet | 16 / 72.717 / exact packet |
+| 0 | 17 / 43.907 / exact packet | 16 / 43.652 / exact packet |
+| -5 | 17 / 26.168 / exact packet | 16 / 25.374 / exact packet |
+| -10 | 17 / 14.291 / exact packet | 16 / 14.395 / exact packet |
+| -15 | 17 / 8.874 / exact packet | 16 / 9.068 / exact packet |
+| -20 | 17 / 5.705 / exact packet | 16 / 5.440 / exact packet |
+
+Measured SNR was within 0.01 dB of every requested point. No clipping occurred
+through -10 dB; -15 dB clipped at most 0.000156% of complex samples and -20 dB
+clipped at most 0.951016%. Both controlled packet IDs remained recoverable at
+every point, so this range does not establish a host-decoder failure boundary
+or justify a production candidate threshold. These are deterministic synthetic
+algorithm results, not calibrated RF sensitivity or antenna-performance data.
+
 No firmware was built or flashed. No trigger or DSP production code changed.
 The next milestone can benchmark independently designed early-candidate
 detector instrumentation against this measured upstream baseline without

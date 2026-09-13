@@ -6,12 +6,37 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parents[1]))
-from decode_orciq import read_capture
+from decode_orciq import HEADER, decode_capture, read_capture
+
+
+def impair_awgn(
+    signal: np.ndarray,
+    active_rms: float,
+    snr_db: float,
+    seed: int,
+    target_active_rms: float = 0.05,
+) -> tuple[np.ndarray, dict]:
+    if active_rms <= 0:
+        raise ValueError("active_rms must be positive")
+    scale = target_active_rms / active_rms
+    noise_rms = target_active_rms / np.sqrt(10 ** (snr_db / 10))
+    rng = np.random.default_rng(seed)
+    noise = rng.normal(0, noise_rms / np.sqrt(2), signal.size) + 1j * rng.normal(
+        0, noise_rms / np.sqrt(2), signal.size
+    )
+    measured_noise_rms = float(np.sqrt(np.mean(np.abs(noise) ** 2)))
+    return signal * scale + noise, {
+        "scale": scale,
+        "noise_rms": noise_rms,
+        "measured_snr_db": 20 * np.log10(target_active_rms / measured_noise_rms),
+    }
 
 
 def downchirp(sf: int, bandwidth: int, rate: int) -> np.ndarray:
@@ -91,12 +116,84 @@ def capture_metrics(path: Path) -> dict:
     }
 
 
+def impairment_metrics(path: Path, snr_db: float, seed: int) -> dict:
+    rate, _, sf, bandwidth, raw = read_capture(path)
+    values = np.frombuffer(raw, dtype=np.uint8).reshape(-1, 2).astype(np.float32)
+    signal = ((values[:, 0] - 127.5) + 1j * (values[:, 1] - 127.5)) / 127.5
+    blocks = signal[: signal.size // 4096 * 4096].reshape(-1, 4096)
+    active_rms = float(np.percentile(np.sqrt(np.mean(np.abs(blocks) ** 2, axis=1)), 95))
+    impaired, details = impair_awgn(signal, active_rms, snr_db, seed)
+    clipped = (np.abs(impaired.real) > 1) | (np.abs(impaired.imag) > 1)
+    encoded = np.empty((impaired.size, 2), dtype=np.uint8)
+    encoded[:, 0] = np.clip(np.rint(impaired.real * 127.5 + 127.5), 0, 255)
+    encoded[:, 1] = np.clip(np.rint(impaired.imag * 127.5 + 127.5), 0, 255)
+    quantized = ((encoded[:, 0].astype(np.float32) - 127.5) + 1j * (
+        encoded[:, 1].astype(np.float32) - 127.5
+    )) / 127.5
+
+    with tempfile.TemporaryDirectory() as directory:
+        temporary = Path(directory) / path.name
+        with path.open("rb") as source:
+            temporary.write_bytes(source.read(HEADER.size) + encoded.tobytes())
+        started = time.perf_counter()
+        try:
+            decoded = decode_capture(temporary)
+            decode_error = None
+        except ValueError as error:
+            decoded = []
+            decode_error = str(error)
+        decode_seconds = time.perf_counter() - started
+
+    return {
+        "snr_db": snr_db,
+        "seed": seed,
+        "active_rms_p95": round(active_rms, 6),
+        "target_active_rms": 0.05,
+        "signal_scale": details["scale"],
+        "noise_rms": details["noise_rms"],
+        "measured_snr_db": round(float(details["measured_snr_db"]), 3),
+        "clipped_sample_percent": round(float(np.mean(clipped) * 100), 6),
+        **chirp_metrics(_resample(quantized, rate, bandwidth * 2), sf, bandwidth, bandwidth * 2),
+        "host_valid_packets": sum("error" not in result for result in decoded),
+        "host_valid_packet_ids": [
+            {key: result.get(key) for key in ("from", "id", "port")}
+            for result in decoded
+            if "error" not in result
+        ],
+        "host_decode_errors": [result["error"] for result in decoded if "error" in result],
+        "host_decode_exception": decode_error,
+        "host_decode_seconds": round(decode_seconds, 3),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("captures", nargs="+", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--snr-db",
+        help="comma-separated deterministic AWGN levels; runs the full host decoder",
+    )
+    parser.add_argument("--seed", type=int, default=90210)
     args = parser.parse_args()
-    report = {"captures": [capture_metrics(path) for path in args.captures]}
+    captures = [capture_metrics(path) for path in args.captures]
+    report = {"captures": captures}
+    if args.snr_db:
+        levels = [float(value) for value in args.snr_db.split(",")]
+        report["impairments"] = [
+            {
+                "path": str(path),
+                "levels": [
+                    impairment_metrics(
+                        path,
+                        level,
+                        args.seed + capture_index * len(levels) + level_index,
+                    )
+                    for level_index, level in enumerate(levels)
+                ],
+            }
+            for capture_index, path in enumerate(args.captures)
+        ]
     text = json.dumps(report, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
