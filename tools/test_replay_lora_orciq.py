@@ -97,6 +97,15 @@ class ReplayUploadTests(unittest.TestCase):
             ["RTL_LORA_MEMORY stage=replay_before decoder_psram=657160"],
         )
 
+    def test_parse_records_keeps_packet_identity(self):
+        self.assertEqual(
+            replay_lora_orciq._parse_records(
+                ["noise", "RTL_LORA_NATIVE_PACKET sequence=2 packet_id=4219089354"],
+                "RTL_LORA_NATIVE_PACKET ",
+            ),
+            [{"sequence": 2, "packet_id": 4219089354}],
+        )
+
     def test_trace_reader_keeps_symbol_alternates(self):
         connection = FakeSerial()
         connection._line("RTL_LORA_NATIVE_TRACE sequence=1")

@@ -4010,6 +4010,16 @@ void lora_native_decode_task(void*) {
       strlcpy(packet.short_name, decoded[i].short_name, sizeof(packet.short_name));
       strlcpy(packet.long_name, decoded[i].long_name, sizeof(packet.long_name));
       lora_store_packet(packet);
+      if (!work.automatic && work.sequence != 0) {
+        Serial.printf(
+            "RTL_LORA_NATIVE_PACKET sequence=%lu index=%u sender=%lu destination=%lu "
+            "packet_id=%lu port=%u encrypted=%u\n",
+            static_cast<unsigned long>(work.sequence), static_cast<unsigned>(i),
+            static_cast<unsigned long>(decoded[i].sender),
+            static_cast<unsigned long>(decoded[i].destination),
+            static_cast<unsigned long>(decoded[i].packet_id),
+            static_cast<unsigned>(decoded[i].port), decoded[i].encrypted ? 1u : 0u);
+      }
     }
     Serial.printf("RTL_LORA_NATIVE_DONE packets=%u preambles=%lu header_failures=%lu crc_ok=%lu crc_failures=%lu encrypted=%lu raw_cfo_hz=%.1f cfo_hz=%.1f elapsed_ms=%lu sequence=%lu bytes=%u trigger_offset_samples=%u queue_ms=%lu candidate_ms=%lu clock_skew_ppm=%d drops=%lu\n",
                   static_cast<unsigned>(count),
