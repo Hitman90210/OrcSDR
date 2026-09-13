@@ -175,6 +175,20 @@ Raw local evidence:
 - `artifacts/lora_validation/20260912-182146/`
 - `artifacts/lora_validation/20260912-183330/`
 
+### IQ retrieval stability finding
+
+After the paired runs, a manual four-second PSRAM IQ capture at 960 ksample/s
+completed, but host retrieval ended early with a serial timeout. The subsequent
+abort command also timed out, and the operator observed the Tab5 blue-screen
+and reboot to Home at 906.875 MHz. No IQ file was retained.
+
+The boot-time reset reason was not captured, so this is recorded only as an
+unclassified reboot during sustained IQ retrieval. It is not attributed to a
+watchdog, brownout, USB fault, or another cause. The same retrieval path should
+not be repeated on hardware until transfer behavior is bounded and the reset
+reason can be retained or queried after startup.
+
 No firmware was built or flashed. No trigger or DSP production code changed.
-The next milestone can now benchmark independently designed early-candidate
-detectors against this measured upstream baseline.
+The next milestone can benchmark independently designed early-candidate
+detector instrumentation against this measured upstream baseline without
+depending on multi-megabyte IQ retrieval.
