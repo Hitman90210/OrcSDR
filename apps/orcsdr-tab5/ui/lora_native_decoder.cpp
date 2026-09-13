@@ -48,6 +48,8 @@ void merge_profile(Stats* destination, const Stats& source) {
   ADD_PROFILE(full_capture_passes);
   ADD_PROFILE(full_fallbacks);
   ADD_PROFILE(cfo_retry_passes);
+  ADD_PROFILE(alternate_recovery_attempts);
+  ADD_PROFILE(alternate_recovery_symbols);
 #undef ADD_PROFILE
   destination->candidate_accepted |= source.candidate_accepted;
   destination->candidate_rejected |= source.candidate_rejected;
@@ -84,6 +86,7 @@ struct Scratch {
   uint8_t sf = 0;
   size_t symbol_samples = 0;
   size_t fft_size = 0;
+  SymbolAlternateTracePoint* recovery_alternates = nullptr;
 };
 
 Scratch g_scratch{};
@@ -736,6 +739,49 @@ void record_fft_trace(Stats* stats, uint16_t symbol_index, uint16_t best_bin,
         (best_bin + fft_bins + offset) % fft_bins, fft_bins);
 }
 
+SymbolAlternateTracePoint find_symbol_alternate(uint16_t symbol_index, uint16_t best_bin,
+                                                uint16_t preamble_peak, size_t fft_bins,
+                                                size_t bins) {
+  const uint16_t primary = peak_to_symbol(best_bin, preamble_peak, fft_bins, bins);
+  float alternate_magnitude = -1.0f;
+  uint16_t alternate_symbol = 0;
+  for (size_t bin = 0; bin < fft_bins; ++bin) {
+    const uint16_t symbol = peak_to_symbol(static_cast<uint16_t>(bin), preamble_peak,
+                                           fft_bins, bins);
+    if (symbol == primary) continue;
+    const float magnitude = folded_fft_magnitude(bin, fft_bins);
+    if (magnitude > alternate_magnitude) {
+      alternate_magnitude = magnitude;
+      alternate_symbol = symbol;
+    }
+  }
+  const float primary_magnitude = folded_fft_magnitude(best_bin, fft_bins);
+  SymbolAlternateTracePoint trace{};
+  trace.symbol_index = symbol_index;
+  trace.alternate_symbol = alternate_symbol;
+  trace.ratio_milli = alternate_magnitude > 0.0f
+      ? static_cast<uint16_t>(std::clamp(
+            lroundf(primary_magnitude / alternate_magnitude * 1000.0f), 0l, 65535l))
+      : 0;
+  return trace;
+}
+
+size_t apply_lower_alternates(uint16_t* symbols, size_t symbol_count,
+                              const SymbolAlternateTracePoint* alternates,
+                              size_t alternate_count, size_t bins) {
+  if (symbols == nullptr || alternates == nullptr || bins == 0) return 0;
+  size_t changed = 0;
+  for (size_t i = 0; i < alternate_count; ++i) {
+    const auto& alternate = alternates[i];
+    if (alternate.symbol_index >= symbol_count) continue;
+    uint16_t& primary = symbols[alternate.symbol_index];
+    if ((static_cast<size_t>(alternate.alternate_symbol) + 1u) % bins != primary) continue;
+    primary = alternate.alternate_symbol;
+    ++changed;
+  }
+  return changed;
+}
+
 bool measured_dechirp_peak(const uint8_t* cu8, size_t samples, uint32_t sample_rate, size_t start,
                            bool input_is_up, uint16_t* peak, float* height, float cfo_hz,
                            Stats* stats) {
@@ -783,7 +829,8 @@ bool decode_mesh(const uint8_t* data, size_t size, const Config& config, Packet*
 }  // namespace
 
 bool initialize() {
-  if (g_scratch.fft != nullptr && g_scratch.downchirp != nullptr && g_scratch.twiddle != nullptr)
+  if (g_scratch.fft != nullptr && g_scratch.downchirp != nullptr && g_scratch.twiddle != nullptr &&
+      g_scratch.recovery_alternates != nullptr)
     return rf_analysis::initialize_fft();
   g_scratch.fft = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft * 2,
                                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -791,7 +838,10 @@ bool initialize() {
                                                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   g_scratch.twiddle = static_cast<float*>(heap_caps_malloc(sizeof(float) * kMaxFft,
                                                              MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (g_scratch.fft == nullptr || g_scratch.downchirp == nullptr || g_scratch.twiddle == nullptr)
+  g_scratch.recovery_alternates = static_cast<SymbolAlternateTracePoint*>(heap_caps_malloc(
+      sizeof(SymbolAlternateTracePoint) * 300, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (g_scratch.fft == nullptr || g_scratch.downchirp == nullptr || g_scratch.twiddle == nullptr ||
+      g_scratch.recovery_alternates == nullptr)
     return false;
   return rf_analysis::initialize_fft();
 }
@@ -1010,6 +1060,8 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
     }
     uint16_t header_symbols[8]{};
     std::memcpy(header_symbols, symbols, sizeof(header_symbols));
+    auto* recovery_alternates = g_scratch.recovery_alternates;
+    size_t recovery_alternate_count = 0;
     bool crc_ok = false;
     for (int phase_retry = 0; phase_retry < 2 && !crc_ok; ++phase_retry) {
       if (stats != nullptr) ++stats->cfo_hypotheses;
@@ -1048,6 +1100,10 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
           break;
         }
         symbols[i] = peak_to_symbol(peak, payload_preamble_peak, fft_bins, bins);
+        if (phase_retry == 0 && payload_clock_ppm == 0 &&
+            recovery_alternate_count < 300)
+          recovery_alternates[recovery_alternate_count++] = find_symbol_alternate(
+              static_cast<uint16_t>(i), peak, payload_preamble_peak, fft_bins, bins);
         if (config.trace && phase_retry == 0 && payload_clock_ppm == 0 &&
             (i == 13 || i == 14 || i == 15 || i == 50 || i + 1 == count))
           record_fft_trace(stats, static_cast<uint16_t>(i), peak, fft_bins);
@@ -1065,6 +1121,22 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
           corrected %= static_cast<int32_t>(bins);
           symbols[i] = static_cast<uint16_t>(corrected < 0 ? corrected + bins : corrected);
         }
+        if (phase_retry == 0 && payload_clock_ppm == 0) {
+          for (size_t j = 0; j < recovery_alternate_count; ++j) {
+            auto& trace = recovery_alternates[j];
+            int32_t corrected = static_cast<int32_t>(trace.alternate_symbol) -
+                static_cast<int32_t>(lroundf((trace.symbol_index + 2u) * drift_per_symbol));
+            corrected %= static_cast<int32_t>(bins);
+            trace.alternate_symbol = static_cast<uint16_t>(corrected < 0 ? corrected + bins
+                                                                         : corrected);
+          }
+        }
+      }
+      if (stats != nullptr && config.trace && stats->trace_alternate_count == 0 && symbols_ok) {
+        stats->trace_alternate_count = static_cast<uint8_t>(
+            std::min(recovery_alternate_count, std::size(stats->trace_alternates)));
+        std::memcpy(stats->trace_alternates, recovery_alternates,
+                    stats->trace_alternate_count * sizeof(stats->trace_alternates[0]));
       }
       if (stats != nullptr && config.trace && stats->trace_symbol_count == 0 && symbols_ok) {
         stats->trace_symbol_count =
@@ -1077,6 +1149,17 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
       const uint32_t payload_decode_started = now_millis();
       const bool payload_decoded = symbols_ok &&
           decode_symbols(symbols, count, spreading_factor, decoded, &decoded_size, &crc_ok, stats);
+      if (payload_decoded && !crc_ok && phase_retry == 0 && payload_clock_ppm == 0) {
+        const size_t changed = apply_lower_alternates(
+            symbols, count, recovery_alternates, recovery_alternate_count, bins);
+        if (changed != 0) {
+          if (stats != nullptr) {
+            ++stats->alternate_recovery_attempts;
+            stats->alternate_recovery_symbols += static_cast<uint32_t>(changed);
+          }
+          decode_symbols(symbols, count, spreading_factor, decoded, &decoded_size, &crc_ok, stats);
+        }
+      }
       if (stats != nullptr)
         stats->payload_decode_millis += now_millis() - payload_decode_started;
       if (payload_decoded && crc_ok) {
@@ -1193,6 +1276,14 @@ bool self_check() {
   truncated_candidate.truncated = true;
   Stats complete_candidate{};
   complete_candidate.preambles = 1;
+  uint16_t alternate_symbols[] = {5, 7, 0};
+  const SymbolAlternateTracePoint alternates[] = {
+      {0, 4, 1005}, {1, 8, 1005}, {2, 2047, 1005},
+  };
+  if (apply_lower_alternates(alternate_symbols, std::size(alternate_symbols), alternates,
+                             std::size(alternates), 2048) != 2 ||
+      alternate_symbols[0] != 4 || alternate_symbols[1] != 7 ||
+      alternate_symbols[2] != 2047) return false;
   return std::strstr(summary, "81%") != nullptr && std::strstr(summary, "4.12V") != nullptr &&
          std::strcmp(node.long_name, "hardcore_Tbeam") == 0 &&
          std::strcmp(node.short_name, "HcMe") == 0 &&

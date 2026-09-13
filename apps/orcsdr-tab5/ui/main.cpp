@@ -4004,7 +4004,8 @@ void lora_native_decode_task(void*) {
         "preamble_windows=%lu timing_offsets=%lu cfo_hypotheses=%lu clock_hypotheses=%lu "
         "header_candidates=%lu payload_candidates=%lu symbols_processed=%lu "
         "candidate_passes=%lu candidate_accepted=%u candidate_rejected=%u "
-        "candidate_truncated=%u full_capture_passes=%lu full_fallbacks=%lu cfo_retry_passes=%lu\n",
+        "candidate_truncated=%u full_capture_passes=%lu full_fallbacks=%lu cfo_retry_passes=%lu "
+        "alternate_attempts=%lu alternate_symbols=%lu\n",
         static_cast<unsigned long>(work.sequence),
         static_cast<unsigned long>(stats.preparation_millis),
         static_cast<unsigned long>(stats.filter_millis),
@@ -4031,7 +4032,9 @@ void lora_native_decode_task(void*) {
         stats.candidate_truncated ? 1u : 0u,
         static_cast<unsigned long>(stats.full_capture_passes),
         static_cast<unsigned long>(stats.full_fallbacks),
-        static_cast<unsigned long>(stats.cfo_retry_passes));
+        static_cast<unsigned long>(stats.cfo_retry_passes),
+        static_cast<unsigned long>(stats.alternate_recovery_attempts),
+        static_cast<unsigned long>(stats.alternate_recovery_symbols));
     if (!work.automatic && work.sequence != 0 && stats.trace_symbol_count != 0) {
       Serial.printf("RTL_LORA_NATIVE_TRACE sequence=%lu data_start=%lu timing_adjustment=%d preamble_peak=%u preprocess_fnv1a=%08lx\n",
                     static_cast<unsigned long>(work.sequence),
@@ -4063,6 +4066,17 @@ void lora_native_decode_task(void*) {
             point.neighbors[0], point.neighbors[1], point.neighbors[2],
             point.neighbors[3], point.neighbors[4]);
       }
+      Serial.printf("RTL_LORA_NATIVE_ALTERNATES sequence=%lu count=%u values=",
+                    static_cast<unsigned long>(work.sequence),
+                    static_cast<unsigned>(stats.trace_alternate_count));
+      for (size_t i = 0; i < stats.trace_alternate_count; ++i) {
+        const auto& point = stats.trace_alternates[i];
+        if (i != 0) Serial.print(',');
+        Serial.printf("%u:%u:%.3f", static_cast<unsigned>(point.symbol_index),
+                      static_cast<unsigned>(point.alternate_symbol),
+                      static_cast<double>(point.ratio_milli) / 1000.0);
+      }
+      Serial.println();
       Serial.printf("RTL_LORA_NATIVE_SYMBOLS sequence=%lu count=%u values=",
                     static_cast<unsigned long>(work.sequence),
                     static_cast<unsigned>(stats.trace_symbol_count));

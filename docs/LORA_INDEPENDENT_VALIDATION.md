@@ -435,15 +435,30 @@ hypotheses.
 Native differed in 8 of 118 symbols, all by +1 bin, at indices 76, 95, 104,
 107, 109, 111, 112, and 114. The first error is late and the errors cluster
 toward the end; selected peak-to-runner-up ratios were only 1.002-1.052. This
-is the first retained evidence for a bounded confidence/recovery path. It does
-not justify replacing the clean-packet preprocessing chain. The next
-experiment should retain the best alternative *distinct symbol* during one
-additional payload demodulation pass, then rank a small CRC recovery search
-without repeating dozens of FFT passes.
+was the first retained evidence for a bounded recovery path. It did not justify
+replacing the clean-packet preprocessing chain.
+
+Replay-only tracing then retained the strongest *distinct symbol* from each
+existing payload FFT. It covered all eight host-correct symbols. Those eight
+were also the only decisions whose strongest distinct alternative was exactly
+one symbol lower; the other 102 payload alternatives were one symbol higher.
+A CRC-gated fallback now applies the lower alternatives together and performs
+one additional FEC/CRC decode without another FFT. On a subsequent replay of
+the exact seeded impairment, native decoded one encrypted packet with valid
+CRC in 12.962 seconds using 480 FFTs, one CFO hypothesis, one clock hypothesis,
+and one alternate-recovery attempt. Eleven payload symbols were substituted;
+LoRa FEC covered the remaining header discrepancy. The prior native result was
+no packet after 77.264 seconds and 3,822 FFTs.
+
+The same clean capture still decoded with an exact 118/118 host/native symbol
+match in 12.869 seconds and did not invoke alternate recovery. The MLA-30+
+no-preamble control remained negative in 12.628 seconds. This establishes a
+specific improvement on one seeded -21 dB boundary, not a general sensitivity
+limit; broader seeded impairment and live OTA validation remain open.
 
 During this phase firmware was built and flashed to COM17 for measurement. The
 separate one-line PSRAM placement fix for the home spectrum buffer preserves the
 tracked 40 KiB internal DMA reserve and restored boot with the default native
-configuration. No production trigger threshold has been enabled. Live
-capture-to-decode acceptance remains a separate final gate after flashing the
-trace-gated image and restarting normal LoRa reception.
+configuration. No production trigger threshold has been enabled. Normal LoRa
+reception was restarted at 906.875 MHz after replay; a newly observed live OTA
+packet on this image remains a separate acceptance gate.

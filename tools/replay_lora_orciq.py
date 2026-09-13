@@ -62,7 +62,8 @@ def _read_traces(connection, done):
     while True:
         line = _wait_line(connection,
                           ("RTL_LORA_NATIVE_TRACE", "RTL_LORA_NATIVE_PREPROCESS",
-                           "RTL_LORA_NATIVE_FFT", "RTL_LORA_NATIVE_SYMBOLS"), 15)
+                           "RTL_LORA_NATIVE_FFT", "RTL_LORA_NATIVE_ALTERNATES",
+                           "RTL_LORA_NATIVE_SYMBOLS"), 15)
         traces.append(line)
         if line.startswith("RTL_LORA_NATIVE_SYMBOLS"):
             return traces
@@ -81,6 +82,25 @@ def _symbol_difference(reference, native):
             for difference, count in sorted(histogram.items())
         },
     }
+
+
+def _parse_symbol_alternates(line):
+    if not line or "values=" not in line:
+        return {}
+    return {
+        int(index): {"symbol": int(symbol), "ratio": float(ratio)}
+        for value in line.split("values=", 1)[1].split(",") if value
+        for index, symbol, ratio in [value.split(":")]
+    }
+
+
+def _alternate_coverage(reference, native, alternates):
+    errors = [i for i, (expected, actual) in enumerate(zip(reference, native))
+              if expected != actual]
+    covered = [i for i in errors
+               if i in alternates and alternates[i]["symbol"] == reference[i]]
+    return {"error_indices": errors, "covered_indices": covered,
+            "covered": len(covered), "errors": len(errors)}
 
 
 def _host_reference_symbols(path, raw_override=None):
@@ -184,6 +204,13 @@ def main():
                           if reference is not None and native is not None else None)
             report["symbol_difference"] = comparison
             print("RTL_LORA_SYMBOL_DIFF " + json.dumps(comparison, sort_keys=True))
+            alternate_line = next((line for line in traces
+                                   if line.startswith("RTL_LORA_NATIVE_ALTERNATES")), None)
+            alternates = _parse_symbol_alternates(alternate_line)
+            coverage = (_alternate_coverage(reference, native, alternates)
+                        if reference is not None and native is not None else None)
+            report["alternate_coverage"] = coverage
+            print("RTL_LORA_ALTERNATE_COVERAGE " + json.dumps(coverage, sort_keys=True))
         if args.report:
             args.report.parent.mkdir(parents=True, exist_ok=True)
             args.report.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

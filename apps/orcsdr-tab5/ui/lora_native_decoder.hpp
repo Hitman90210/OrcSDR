@@ -49,6 +49,12 @@ struct FftTracePoint {
   float neighbors[5]{};
 };
 
+struct SymbolAlternateTracePoint {
+  uint16_t symbol_index = 0;
+  uint16_t alternate_symbol = 0;
+  uint16_t ratio_milli = 0;
+};
+
 struct Stats {
   uint32_t captures = 0;
   uint32_t preambles = 0;
@@ -81,6 +87,8 @@ struct Stats {
   uint32_t full_capture_passes = 0;
   uint32_t full_fallbacks = 0;
   uint32_t cfo_retry_passes = 0;
+  uint32_t alternate_recovery_attempts = 0;
+  uint32_t alternate_recovery_symbols = 0;
   uint16_t trace_symbols[128]{};
   uint16_t trace_symbol_count = 0;
   uint32_t trace_data_start = 0;
@@ -91,6 +99,8 @@ struct Stats {
   uint8_t trace_preprocess_count = 0;
   FftTracePoint trace_fft[5]{};
   uint8_t trace_fft_count = 0;
+  SymbolAlternateTracePoint trace_alternates[128]{};
+  uint8_t trace_alternate_count = 0;
   bool candidate_accepted = false;
   bool candidate_rejected = false;
   bool candidate_truncated = false;
