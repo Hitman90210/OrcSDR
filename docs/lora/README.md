@@ -10,7 +10,9 @@ transmits, pairs, controls mesh nodes, or invents mesh activity.
 - **Nodes** lists bounded sender records. A field is shown only when received;
   otherwise it is `—`. Links are never inferred from signal strength.
 - **Traffic** retains local receive events. Payloads without an authorized key
-  are marked `ENCRYPTED`, not shown as decoded text.
+  are marked `ENCRYPTED`, not shown as decoded text. Each event always keeps
+  monotonic receive uptime for age/order and optionally snapshots trusted UTC;
+  synchronizing later never rewrites older events.
 - **Map** is an M5GFX topology grid, not an online map. It plots only verified
   received coordinates and links only when protocol evidence supplies them.
 - **RF Health** reports receiver rate, USB/consumer drops, capture/log state,
@@ -41,12 +43,22 @@ queue and low-priority SD writer keep writes out of USB, IQ, and rendering
 paths. Clearing the Traffic screen clears only the RAM list; it does not delete
 the saved CSV. **Export Log** on Nodes writes only the bounded recent display
 list (at most eight decoded events) to a new `/orcsdr/lora_NNN.csv`; it does not
-enable continuous logging. IQ capture remains explicit and is exported separately.
+enable continuous logging. CSV retains `uptime_ms` and adds `wallclock_valid`,
+`wallclock_source`, and `received_utc`. IQ capture remains explicit and is
+exported separately.
 
 **Scan Band** samples up to fourteen evenly spaced LongFast slots in the selected
-region. It temporarily retunes the configured monitor, reports observed energy,
-then restores the prior frequency. It is a survey, not reliable packet capture;
-normal fixed-profile monitoring is the correct decode mode.
+region. It retunes, waits 750 ms for each measurement, ranks the three strongest
+relative-energy readings on Overview, then restores the prior frequency. The live
+meter and survey results are dBFS, not calibrated dBm. It is a survey, not reliable
+packet capture; normal fixed-profile monitoring is the correct decode mode.
+
+The Overview visualization is independently implemented for the Tab5. Its
+fixed-scale heat palette, averaged spectrum, channel markers, and bounded time
+history follow common SDR presentation concepts reviewed in
+[Gqrx](https://github.com/gqrx-sdr/gqrx) and
+[SDR++](https://github.com/AlexandreRouma/SDRPlusPlus), both GPL-licensed; no
+source, palette table, or rendering code was copied.
 
 ## Configuration
 

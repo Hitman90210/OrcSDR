@@ -59,6 +59,7 @@ idf_component_register(
         "../ui/rf_visualizer_controls.cpp"
         "../ui/settings_app.cpp"
         "../ui/text_editor.cpp"
+        "../ui/time_service.cpp"
         "../ui/ui_capture.cpp"
         "../ui/web_console.cpp"
         "../ui/rf24_dashboard.cpp"

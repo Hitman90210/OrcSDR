@@ -4,6 +4,7 @@
 #include "orc_badge.hpp"
 
 #include <M5Unified.h>
+#include <esp_attr.h>
 
 #include <algorithm>
 #include <cmath>
@@ -40,7 +41,7 @@ bool shown = false;
 bool browser = false;
 int32_t scroll_offset_px = 0;
 uint32_t last_spectrum_ms = 0;
-float spectrum_levels[256]{};
+EXT_RAM_BSS_ATTR float spectrum_levels[256]{};
 uint8_t waterfall_contrast = 5;
 
 struct Gesture {

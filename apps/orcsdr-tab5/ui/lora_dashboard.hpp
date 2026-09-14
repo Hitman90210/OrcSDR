@@ -7,6 +7,7 @@ namespace orcsdr::lora {
 
 constexpr size_t kNodeCapacity = 16;
 constexpr size_t kEventCapacity = 16;
+constexpr size_t kSurveyResultCapacity = 3;
 
 enum class View : uint8_t { overview, nodes, traffic, map, rf_health, count };
 
@@ -30,6 +31,7 @@ struct Event {
   uint32_t destination = 0;
   uint32_t packet_id = 0;
   uint32_t received_ms = 0;
+  uint32_t received_utc = 0;
   int32_t latitude_e7 = INT32_MAX;
   int32_t longitude_e7 = INT32_MAX;
   int16_t signal_tenths = INT16_MAX;
@@ -38,6 +40,11 @@ struct Event {
   bool encrypted = false;
   bool verified = false;
   char text[112]{};
+};
+
+struct SurveyReading {
+  uint32_t frequency_hz = 0;
+  float level_dbfs = -120.0f;
 };
 
 struct Snapshot {
@@ -79,11 +86,13 @@ struct Snapshot {
   char profile[24]{};
   char region[24]{};
   char log_status[48]{};
+  SurveyReading survey_results[kSurveyResultCapacity]{};
   Node nodes[kNodeCapacity]{};
   Event events[kEventCapacity]{};
   uint8_t node_count = 0;
   uint8_t event_count = 0;
   uint8_t selected_node = 0;
+  uint8_t survey_result_count = 0;
 };
 
 enum class ActionKind : uint8_t {
@@ -92,6 +101,7 @@ enum class ActionKind : uint8_t {
   select_view,
   select_node,
   toggle_favorite,
+  toggle_packet_details,
   filter_next,
   scan_toggle,
   record_iq_toggle,
@@ -130,6 +140,7 @@ void open_channel_picker();
 View view();
 void show_documentation_view(View view, const Snapshot& snapshot);
 void toggle_filter();
+void toggle_packet_details();
 void center_on_selected();
 void toggle_follow_node();
 bool self_check();
