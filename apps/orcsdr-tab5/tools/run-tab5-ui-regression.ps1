@@ -986,11 +986,26 @@ function Invoke-AmBroadcastTest {
       if ($fmDriver.State -eq 'STREAMING' -and $fmDriver.Bytes -gt 0) { break }
       Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $fmDeadline)
-    if ($fmDriver.State -ne 'STREAMING' -or $fmDriver.Bytes -eq 0 -or $fmDriver.Mode -ne 'AUTO') {
+    if ($fmDriver.State -ne 'STREAMING' -or $fmDriver.Bytes -eq 0 -or $fmDriver.Mode -ne 'MANUAL') {
       throw "AM to FM transition did not restore FM tuner state: state=$($fmDriver.State) bytes=$($fmDriver.Bytes) mode=$($fmDriver.Mode)"
     }
+    [void](Send-And-Wait 'RTL_UI ACTION FM GAIN_AUTO' '^RTL_UI_ACTION_OK$')
+    Start-Sleep -Milliseconds 300
+    $fmAuto = Send-And-Wait 'RTL_FM_GAIN STATUS' '^RTL_FM_GAIN_STATUS '
+    if ($fmAuto -notmatch 'mode=AUTO selecting=1 gain_tenth_db=0 target_dbfs=-24\.0') {
+      throw "FM bounded auto gain failed: $fmAuto"
+    }
+    foreach ($gain in @(0, 496)) {
+      [void](Send-And-Wait "RTL_UI ACTION FM GAIN $gain" '^RTL_UI_ACTION_OK$')
+      Start-Sleep -Milliseconds 300
+      $fmDriver = Get-DriverStatus
+      if ($fmDriver.Mode -ne 'MANUAL' -or $fmDriver.Gain -ne $gain) {
+        throw "FM manual gain action failed: requested=$gain mode=$($fmDriver.Mode) gain=$($fmDriver.Gain)"
+      }
+    }
+    Write-SoakLine 'RTL_FM_GAIN_REGRESSION pass=1 auto=lowest_usable manual_range_tenth_db=0-496'
     [void](Open-Ui 'AM' 'AM')
-    Write-SoakLine 'RTL_AM_FM_TRANSITION_REGRESSION pass=1 fm_gain_mode=AUTO'
+    Write-SoakLine 'RTL_AM_FM_TRANSITION_REGRESSION pass=1 software_auto_gain_mode=MANUAL'
     $audioBeforeScan = Get-AudioStatus
     [void](Send-And-Wait 'RTL_UI ACTION AM SCAN' '^RTL_UI_ACTION_OK$')
     $scanDeadline = [DateTime]::UtcNow.AddSeconds(3)

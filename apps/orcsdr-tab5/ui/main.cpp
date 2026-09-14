@@ -1148,6 +1148,9 @@ static std::atomic<uint32_t> rtl_am_scan_freq_hz{kRtlAmDefaultHz};
 static std::atomic<bool> rtl_am_gain_auto_enabled{true};
 static std::atomic<bool> rtl_am_gain_auto_selecting{false};
 static std::atomic<bool> rtl_am_gain_auto_restart{true};
+static std::atomic<bool> rtl_fm_gain_auto_enabled{true};
+static std::atomic<bool> rtl_fm_gain_auto_selecting{false};
+static std::atomic<bool> rtl_fm_gain_auto_restart{true};
 
 enum class ActiveScan : uint8_t { none, fm_presets, am_presets, p25_survey, pocsag_discovery };
 orcsdr::radio::Session radio_session;
@@ -2301,7 +2304,7 @@ void handle_p25_dashboard_action(const orcsdr::p25::Action& action);
 orcsdr::lora::Snapshot lora_dashboard_snapshot();
 void handle_lora_dashboard_action(const orcsdr::lora::Action& action);
 void service_shared_scan(uint32_t now);
-void service_am_auto_gain(uint32_t now);
+void service_audio_auto_gain(uint32_t now);
 void service_p25_entry_probe(uint32_t now);
 void cancel_active_scan(bool restore);
 void service_p25_follow(uint32_t now);
@@ -8338,7 +8341,7 @@ static void rtl_driver_app_task(void *) {
           }
           service_p25_entry_probe(now_retune);
           service_shared_scan(now_retune);
-          service_am_auto_gain(now_retune);
+          service_audio_auto_gain(now_retune);
           uint32_t desired_lo = rtl_hot_retune_hz.load(std::memory_order_acquire);
           const bool force_lo =
               rtl_fm_force_lo_apply.load(std::memory_order_acquire);
@@ -9104,6 +9107,16 @@ orcsdr::fm::Snapshot fm_dashboard_snapshot() {
     if (last_error != ESP_OK)
       strlcpy(snapshot.last_error, esp_rtl_sdr_err_to_name(last_error),
               sizeof(snapshot.last_error));
+    snapshot.gain_auto = rtl_fm_gain_auto_enabled.load(std::memory_order_relaxed);
+    snapshot.gain_auto_selecting =
+        rtl_fm_gain_auto_selecting.load(std::memory_order_relaxed);
+    (void)esp_rtl_sdr_get_tuner_gain(g_rtl, &snapshot.gain_tenth_db);
+    size_t gain_count = 0;
+    if (esp_rtl_sdr_get_tuner_gains(g_rtl, snapshot.gain_steps_tenth_db,
+                                    std::size(snapshot.gain_steps_tenth_db),
+                                    &gain_count) == ESP_OK)
+      snapshot.gain_step_count = static_cast<uint8_t>(std::min(
+          gain_count, std::size(snapshot.gain_steps_tenth_db)));
   }
 #else
   snapshot.target_sps = kRtlSampleRateSps;
@@ -9207,6 +9220,31 @@ void handle_fm_dashboard_action(const orcsdr::fm::Action& action) {
         (void)audio_rec_stop_and_export();
       else
         (void)audio_rec_start();
+      break;
+    case ActionKind::gain_auto:
+#if !RTL_USE_LEGACY_USB
+      if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) {
+        const esp_err_t result = esp_rtl_sdr_set_tuner_gain_mode(
+            g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
+        if (result == ESP_OK) {
+          rtl_fm_gain_auto_enabled.store(true, std::memory_order_relaxed);
+          rtl_fm_gain_auto_restart.store(true, std::memory_order_release);
+        }
+        Serial.printf("RTL_FM_GAIN mode=AUTO strategy=lowest_usable result=%s\n",
+                      esp_rtl_sdr_err_to_name(result));
+      }
+#endif
+      break;
+    case ActionKind::gain_tenth_db:
+#if !RTL_USE_LEGACY_USB
+      rtl_fm_gain_auto_enabled.store(false, std::memory_order_relaxed);
+      rtl_fm_gain_auto_selecting.store(false, std::memory_order_relaxed);
+      rtl_fm_gain_auto_restart.store(false, std::memory_order_relaxed);
+      if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN))
+        Serial.printf("RTL_FM_GAIN mode=MANUAL gain_tenth_db=%lu result=%s\n",
+                      static_cast<unsigned long>(action.value), esp_rtl_sdr_err_to_name(
+                          esp_rtl_sdr_set_tuner_gain(g_rtl, static_cast<int>(action.value))));
+#endif
       break;
     case ActionKind::scan_presets:
       if (rtl_fm_preset_scan_active.load(std::memory_order_relaxed))
@@ -9327,10 +9365,15 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
       break;
     case ActionKind::gain_auto:
 #if !RTL_USE_LEGACY_USB
-      if (rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO)) {
-        rtl_am_gain_auto_enabled.store(true, std::memory_order_relaxed);
-        rtl_am_gain_auto_restart.store(true, std::memory_order_release);
-        Serial.println("RTL_AM_GAIN mode=AUTO strategy=lowest_usable");
+      if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) {
+        const esp_err_t result = esp_rtl_sdr_set_tuner_gain_mode(
+            g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
+        if (result == ESP_OK) {
+          rtl_am_gain_auto_enabled.store(true, std::memory_order_relaxed);
+          rtl_am_gain_auto_restart.store(true, std::memory_order_release);
+        }
+        Serial.printf("RTL_AM_GAIN mode=AUTO strategy=lowest_usable result=%s\n",
+                      esp_rtl_sdr_err_to_name(result));
       }
 #endif
       break;
@@ -10275,42 +10318,52 @@ void service_shared_scan(uint32_t now) {
   scan_engine.service(now, callbacks);
 }
 
-void service_am_auto_gain(uint32_t now) {
+void service_audio_auto_gain(uint32_t now) {
 #if !RTL_USE_LEGACY_USB
-  static uint8_t step = 0;
-  static uint32_t sample_at_ms = 0;
-  if (g_stream_band != RtlBand::am || g_rtl == nullptr ||
-      !rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN) ||
-      rtl_am_scan_active.load(std::memory_order_relaxed) ||
-      !rtl_am_gain_auto_enabled.load(std::memory_order_relaxed)) return;
+  static uint8_t steps[2]{};
+  static uint32_t sample_at_ms[2]{};
+  const bool fm = g_stream_band == RtlBand::fm;
+  const bool am = g_stream_band == RtlBand::am;
+  if ((!fm && !am) || g_rtl == nullptr ||
+      !rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) return;
+  auto& enabled = fm ? rtl_fm_gain_auto_enabled : rtl_am_gain_auto_enabled;
+  auto& selecting = fm ? rtl_fm_gain_auto_selecting : rtl_am_gain_auto_selecting;
+  auto& restart = fm ? rtl_fm_gain_auto_restart : rtl_am_gain_auto_restart;
+  if (!enabled.load(std::memory_order_relaxed) ||
+      (am && rtl_am_scan_active.load(std::memory_order_relaxed)) ||
+      (fm && (rtl_fm_preset_scan_active.load(std::memory_order_relaxed) ||
+              rtl_auto_fm_active.load(std::memory_order_relaxed)))) return;
+  const size_t state = fm ? 1 : 0;
+  uint8_t& step = steps[state];
+  const char* label = fm ? "FM" : "AM";
 
   int gains[32]{};
   size_t count = 0;
   if (esp_rtl_sdr_get_tuner_gains(g_rtl, gains, std::size(gains), &count) != ESP_OK ||
       count == 0) return;
   count = std::min(count, std::size(gains));
-  if (rtl_am_gain_auto_restart.exchange(false, std::memory_order_acq_rel)) {
+  if (restart.exchange(false, std::memory_order_acq_rel)) {
     step = 0;
-    rtl_am_gain_auto_selecting.store(true, std::memory_order_relaxed);
+    selecting.store(true, std::memory_order_relaxed);
     (void)esp_rtl_sdr_set_tuner_gain(g_rtl, gains[step]);
-    sample_at_ms = now + 500;
-    Serial.printf("RTL_AM_AUTO_GAIN start gain_tenth_db=%d target_dbfs=%.1f\n",
-                  gains[step], static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
+    sample_at_ms[state] = now + 500;
+    Serial.printf("RTL_%s_AUTO_GAIN start gain_tenth_db=%d target_dbfs=%.1f\n",
+                  label, gains[step], static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
     return;
   }
-  if (!rtl_am_gain_auto_selecting.load(std::memory_order_relaxed) ||
-      static_cast<int32_t>(now - sample_at_ms) < 0) return;
+  if (!selecting.load(std::memory_order_relaxed) ||
+      static_cast<int32_t>(now - sample_at_ms[state]) < 0) return;
 
   const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
   if (orcsdr::am::auto_gain_should_advance(level, step, count)) {
     ++step;
     (void)esp_rtl_sdr_set_tuner_gain(g_rtl, gains[step]);
-    sample_at_ms = now + 500;
+    sample_at_ms[state] = now + 500;
     return;
   }
-  rtl_am_gain_auto_selecting.store(false, std::memory_order_relaxed);
-  Serial.printf("RTL_AM_AUTO_GAIN selected gain_tenth_db=%d level_dbfs=%.1f\n",
-                gains[step], static_cast<double>(level));
+  selecting.store(false, std::memory_order_relaxed);
+  Serial.printf("RTL_%s_AUTO_GAIN selected gain_tenth_db=%d level_dbfs=%.1f\n",
+                label, gains[step], static_cast<double>(level));
 #else
   (void)now;
 #endif
@@ -11703,16 +11756,23 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(band), std::memory_order_relaxed);
   }
 #if !RTL_USE_LEGACY_USB
-  if (rtl_ui_band == RtlBand::am && band != RtlBand::am) {
+  if (rtl_ui_band == RtlBand::am && band != RtlBand::am)
     rtl_am_gain_auto_selecting.store(false, std::memory_order_relaxed);
-    if (rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO))
-      (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO);
-  } else if (rtl_ui_band != RtlBand::am && band == RtlBand::am) {
-    if (rtl_am_gain_auto_enabled.load(std::memory_order_relaxed) &&
-        rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO))
-      rtl_am_gain_auto_restart.store(true, std::memory_order_release);
-    else if (rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN))
-      (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
+  if (rtl_ui_band == RtlBand::fm && band != RtlBand::fm)
+    rtl_fm_gain_auto_selecting.store(false, std::memory_order_relaxed);
+  if ((rtl_ui_band == RtlBand::am || rtl_ui_band == RtlBand::fm) &&
+      band != RtlBand::am && band != RtlBand::fm &&
+      rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO))
+    (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO);
+  if ((band == RtlBand::am || band == RtlBand::fm) &&
+      rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) {
+    (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
+    auto& enabled = band == RtlBand::fm ? rtl_fm_gain_auto_enabled
+                                       : rtl_am_gain_auto_enabled;
+    auto& restart = band == RtlBand::fm ? rtl_fm_gain_auto_restart
+                                       : rtl_am_gain_auto_restart;
+    if (enabled.load(std::memory_order_relaxed))
+      restart.store(true, std::memory_order_release);
   }
 #endif
   if (band == RtlBand::cb) {
@@ -11901,6 +11961,8 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
       rtl_am_gain_auto_enabled.load(std::memory_order_relaxed))
     rtl_am_gain_auto_restart.store(true, std::memory_order_release);
   if (ui_changed && rtl_ui_band == RtlBand::fm) {
+    if (rtl_fm_gain_auto_enabled.load(std::memory_order_relaxed))
+      rtl_fm_gain_auto_restart.store(true, std::memory_order_release);
     rtl_fm_lo_nudge_hz.store(0, std::memory_order_relaxed);
     rtl_fm_last_user_tune_ms.store(millis(), std::memory_order_relaxed);
     rtl_fm_force_lo_apply.store(true, std::memory_order_release);
@@ -11998,6 +12060,14 @@ void poll_sdr_touch(bool from_stream) {
     const auto action = orcsdr::am::handle_gain_drag(touch.x, touch.y);
     if (action.kind != orcsdr::am::ActionKind::none) {
       handle_am_dashboard_action(action);
+      was_pressed = true;
+      return;
+    }
+  }
+  if (pressed && rtl_ui_band == RtlBand::fm && orcsdr::fm::active()) {
+    const auto action = orcsdr::fm::handle_gain_drag(touch.x, touch.y);
+    if (action.kind != orcsdr::fm::ActionKind::none) {
+      handle_fm_dashboard_action(action);
       was_pressed = true;
       return;
     }
@@ -13462,8 +13532,13 @@ void process_command(char* command) {
       else if (!strcmp(action, "SPAN_UP")) kind=K::span_up; else if (!strcmp(action, "SOUND")) kind=K::sound_toggle;
       else if (!strcmp(action, "VOL_DOWN")) kind=K::volume_down; else if (!strcmp(action, "VOL_UP")) kind=K::volume_up;
       else if (!strcmp(action, "GRAPHICS")) kind=K::graphics_toggle; else if (!strcmp(action, "RECORD")) kind=K::recording_toggle;
+      else if (!strcmp(action, "GAIN_AUTO")) kind=K::gain_auto; else if (!strcmp(action, "GAIN")) kind=K::gain_tenth_db;
       else if (!strcmp(action, "SCAN")) kind=K::scan_presets; else if (!strcmp(action, "SETTINGS")) kind=K::open_device_settings;
       else if (!strcmp(action, "HOME")) kind=K::exit_to_browse;
+      if (kind == K::gain_tenth_db && (fields != 3 || value > 496)) {
+        Serial.println("RTL_UI_ACTION_INVALID fm_gain_out_of_range");
+        return;
+      }
       if (kind != K::none) { handle_fm_dashboard_action({kind, static_cast<uint32_t>(value)}); Serial.println("RTL_UI_ACTION_OK"); return; }
     } else if (strcmp(domain, "AM") == 0) {
       if (!strcmp(action, "SCAN_DISCARD")) {
@@ -14230,6 +14305,15 @@ void process_command(char* command) {
     Serial.printf("RTL_AM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d target_dbfs=%.1f\n",
                   rtl_am_gain_auto_enabled.load(std::memory_order_relaxed) ? "AUTO" : "MANUAL",
                   rtl_am_gain_auto_selecting.load(std::memory_order_relaxed) ? 1 : 0, gain,
+                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
+    return;
+  }
+  if (strcmp(command, "RTL_FM_GAIN STATUS") == 0) {
+    int gain = 0;
+    if (g_rtl != nullptr) (void)esp_rtl_sdr_get_tuner_gain(g_rtl, &gain);
+    Serial.printf("RTL_FM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d target_dbfs=%.1f\n",
+                  rtl_fm_gain_auto_enabled.load(std::memory_order_relaxed) ? "AUTO" : "MANUAL",
+                  rtl_fm_gain_auto_selecting.load(std::memory_order_relaxed) ? 1 : 0, gain,
                   static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
     return;
   }
