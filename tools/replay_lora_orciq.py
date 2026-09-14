@@ -87,18 +87,24 @@ def _read_traces(connection, done):
 
 
 def _symbol_difference(reference, native):
-    differences = [actual - expected for expected, actual in zip(reference, native, strict=True)]
+    compared = min(len(reference), len(native))
+    differences = [native[i] - reference[i] for i in range(compared)]
+    indices = [i for i, difference in enumerate(differences) if difference]
+    indices.extend(range(compared, max(len(reference), len(native))))
     histogram = Counter(differences)
-    return {
-        "first": next((i for i, difference in enumerate(differences) if difference), None),
-        "indices": [i for i, difference in enumerate(differences) if difference],
-        "different": sum(difference != 0 for difference in differences),
+    result = {
+        "first": indices[0] if indices else None,
+        "indices": indices,
+        "different": len(indices),
         "largest": max(differences, key=abs, default=0),
         "histogram": {
             (f"{difference:+d}" if difference else "0"): count
             for difference, count in sorted(histogram.items())
         },
     }
+    if len(reference) != len(native):
+        result["length_mismatch"] = {"reference": len(reference), "native": len(native)}
+    return result
 
 
 def _parse_symbol_alternates(line):
@@ -118,12 +124,17 @@ def _parse_symbol_alternates(line):
 
 
 def _alternate_coverage(reference, native, alternates):
-    errors = [i for i, (expected, actual) in enumerate(zip(reference, native, strict=True))
-              if expected != actual]
+    compared = min(len(reference), len(native))
+    errors = [i for i in range(compared) if reference[i] != native[i]]
+    errors.extend(range(compared, max(len(reference), len(native))))
     covered = [i for i in errors
-               if i in alternates and alternates[i]["symbol"] == reference[i]]
-    return {"error_indices": errors, "covered_indices": covered,
-            "covered": len(covered), "errors": len(errors)}
+               if i < len(reference) and i in alternates and
+               alternates[i]["symbol"] == reference[i]]
+    result = {"error_indices": errors, "covered_indices": covered,
+              "covered": len(covered), "errors": len(errors)}
+    if len(reference) != len(native):
+        result["length_mismatch"] = {"reference": len(reference), "native": len(native)}
+    return result
 
 
 def _host_reference(path, raw_override=None):

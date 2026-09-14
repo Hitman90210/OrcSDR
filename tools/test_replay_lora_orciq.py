@@ -130,9 +130,13 @@ class ReplayUploadTests(unittest.TestCase):
              "histogram": {"-1": 1, "0": 1, "+1": 1}},
         )
 
-    def test_symbol_difference_rejects_unequal_lengths(self):
-        with self.assertRaises(ValueError):
-            replay_lora_orciq._symbol_difference([1, 2], [1])
+    def test_symbol_difference_records_unequal_lengths(self):
+        self.assertEqual(
+            replay_lora_orciq._symbol_difference([1, 2], [1]),
+            {"first": 1, "indices": [1], "different": 1, "largest": 0,
+             "histogram": {"0": 1},
+             "length_mismatch": {"reference": 2, "native": 1}},
+        )
 
     def test_alternate_coverage_reports_correct_runner_up_symbols(self):
         line = (
@@ -157,9 +161,12 @@ class ReplayUploadTests(unittest.TestCase):
             "errors": 2},
         )
 
-    def test_alternate_coverage_rejects_unequal_lengths(self):
-        with self.assertRaises(ValueError):
-            replay_lora_orciq._alternate_coverage([1, 2], [1], {})
+    def test_alternate_coverage_records_unequal_lengths(self):
+        self.assertEqual(
+            replay_lora_orciq._alternate_coverage([1], [1, 2], {}),
+            {"error_indices": [1], "covered_indices": [], "covered": 0,
+             "errors": 1, "length_mismatch": {"reference": 1, "native": 2}},
+        )
 
     def test_symbol_alternates_keep_native_peak_magnitudes(self):
         self.assertEqual(
