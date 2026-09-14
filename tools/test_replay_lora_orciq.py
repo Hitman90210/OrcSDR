@@ -1,5 +1,6 @@
 import hashlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -9,10 +10,11 @@ import replay_lora_orciq
 
 
 class FakeSerial:
-    def __init__(self):
+    def __init__(self, chunk=3):
         self.stream = bytearray()
         self.commands = []
         self.payload = bytearray()
+        self.chunk = chunk
 
     def _line(self, value):
         self.stream.extend(value.encode("ascii") + b"\n")
@@ -22,7 +24,7 @@ class FakeSerial:
             command = value.decode("ascii").strip()
             self.commands.append(command)
             if command.startswith("RTL_LORA_REPLAY_BEGIN "):
-                self._line("RTL_LORA_REPLAY_READY chunk=3 bytes=6")
+                self._line(f"RTL_LORA_REPLAY_READY chunk={self.chunk} bytes=6")
             elif command.startswith("RTL_LORA_REPLAY_CHUNK "):
                 self._line("RTL_LORA_REPLAY_DATA")
             return len(value)
@@ -46,6 +48,27 @@ class FakeSerial:
 
 
 class ReplayUploadTests(unittest.TestCase):
+    def test_capture_header_rejects_invalid_lora_parameters(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "invalid.orciq"
+            for rate, sf, bandwidth in ((0, 11, 250000), (960000, 31, 250000),
+                                        (960000, 11, 0), (125000, 11, 250000)):
+                with self.subTest(rate=rate, sf=sf, bandwidth=bandwidth):
+                    decoder = replay_lora_orciq.decode_orciq
+                    path.write_bytes(decoder.HEADER.pack(
+                        decoder.MAGIC, decoder.HEADER.size, rate, 906875000,
+                        2, 1, sf, 0, bandwidth, 0,
+                    ) + b"\x7f\x7f")
+                    with self.assertRaisesRegex(ValueError, "invalid LoRa parameters"):
+                        replay_lora_orciq.decode_orciq.read_capture(path)
+
+    def test_upload_rejects_zero_device_chunk(self):
+        with self.assertRaisesRegex(RuntimeError, "invalid replay chunk"):
+            replay_lora_orciq._upload_iq(
+                FakeSerial(chunk=0), b"abcdef", rate=960000,
+                frequency_hz=906875000, sf=11, bandwidth_hz=250000,
+            )
+
     def test_upload_is_chunked_and_content_bound(self):
         connection = FakeSerial()
         replay_lora_orciq._upload_iq(

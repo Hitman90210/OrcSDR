@@ -49,7 +49,10 @@ def _upload_iq(connection, iq, *, rate, frequency_hz, sf, bandwidth_hz):
     ready = _wait_line(connection, ("RTL_LORA_REPLAY_READY", "RTL_LORA_REPLAY_ERROR"))
     if ready.startswith("RTL_LORA_REPLAY_ERROR"):
         raise RuntimeError(ready)
-    chunk = int(re.search(r"\bchunk=(\d+)", ready).group(1))
+    chunk_match = re.search(r"\bchunk=(\d+)", ready)
+    chunk = int(chunk_match.group(1)) if chunk_match else 0
+    if chunk <= 0:
+        raise RuntimeError(f"invalid replay chunk: {ready}")
     sent = 0
     while sent < len(iq):
         data = iq[sent : sent + chunk]

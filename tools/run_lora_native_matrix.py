@@ -15,6 +15,10 @@ import replay_lora_orciq
 DEFAULT_CAPTURE_IDS = ("orciq-0f4812e88b88bd75", "orciq-d9f355473ea17c15")
 
 
+def _matrix_key(capture_id, seed, snr_db, target_rms):
+    return capture_id, seed, snr_db, target_rms
+
+
 def _build_row(capture, snr_db, seed, report):
     done = replay_lora_orciq._parse_fields(report["done"])
     profile = replay_lora_orciq._parse_fields(report["profile"])
@@ -71,6 +75,7 @@ def _build_row(capture, snr_db, seed, report):
         "antenna": capture.get("setup", {}).get("antenna"),
         "seed": seed,
         "requested_impairment_db": snr_db,
+        "target_rms": (report.get("impairment") or {}).get("target_rms"),
         "host_exact": host_exact,
         "host_packet_id": report.get("host_packet_id"),
         "native_exact": native_exact,
@@ -145,7 +150,8 @@ def main():
     rows = []
     if args.output.exists():
         rows = json.loads(args.output.read_text(encoding="utf-8")).get("rows", [])
-    completed = {(row["capture_id"], row["seed"], row["requested_impairment_db"])
+    completed = {_matrix_key(row["capture_id"], row["seed"],
+                             row["requested_impairment_db"], row.get("target_rms"))
                  for row in rows}
     reports = args.output.parent / "reports"
     corpus_root = repo / manifest["corpus_root"]
@@ -153,7 +159,7 @@ def main():
         for capture in captures:
             for snr_db in snrs:
                 for seed in seeds:
-                    key = (capture["capture_id"], seed, snr_db)
+                    key = _matrix_key(capture["capture_id"], seed, snr_db, args.target_rms)
                     if key in completed:
                         continue
                     report_path = reports / f"{capture['capture_id']}-s{seed}-{abs(snr_db):g}db.json"

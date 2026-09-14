@@ -48,6 +48,14 @@ bool set_utc(uint32_t epoch) {
   tm utc{};
   if (gmtime_r(&requested, &utc) == nullptr) return false;
   M5.Rtc.setDateTime(&utc);
+  m5::rtc_datetime_t stored{};
+  if (!M5.Rtc.getDateTime(&stored) || stored.date.year != utc.tm_year + 1900 ||
+      stored.date.month != utc.tm_mon + 1 || stored.date.date != utc.tm_mday ||
+      stored.time.hours != utc.tm_hour || stored.time.minutes != utc.tm_min ||
+      stored.time.seconds != utc.tm_sec) {
+    g_wallclock_valid.store(false, std::memory_order_release);
+    return false;
+  }
   M5.Rtc.setSystemTimeFromRtc();
   const time_t readback = time(nullptr);
   const bool valid = valid_epoch(readback) &&

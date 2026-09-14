@@ -67,6 +67,8 @@ def read_capture(path: Path):
     magic, header_bytes, rate, freq, data_bytes, fmt, sf, _, bw, flags = HEADER.unpack_from(raw)
     if magic != MAGIC or header_bytes != HEADER.size or fmt != 1 or flags != 0:
         raise ValueError("unsupported ORCIQ header")
+    if rate == 0 or not 7 <= sf <= 12 or bw == 0 or bw > rate:
+        raise ValueError("invalid LoRa parameters in ORCIQ header")
     iq = raw[header_bytes:]
     if len(iq) != data_bytes or data_bytes % 2:
         raise ValueError(f"IQ length mismatch: header={data_bytes}, file={len(iq)}")

@@ -8,6 +8,12 @@ import run_lora_native_matrix
 
 
 class MatrixRowTests(unittest.TestCase):
+    def test_resume_key_includes_target_rms(self):
+        self.assertNotEqual(
+            run_lora_native_matrix._matrix_key("capture", 1, -23.0, 0.02),
+            run_lora_native_matrix._matrix_key("capture", 1, -23.0, 0.05),
+        )
+
     def test_host_pass_native_fail_without_all_correct_alternates_is_class_b(self):
         capture = {
             "capture_id": "orciq-example",
