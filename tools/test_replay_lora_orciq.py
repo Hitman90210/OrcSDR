@@ -130,6 +130,10 @@ class ReplayUploadTests(unittest.TestCase):
              "histogram": {"-1": 1, "0": 1, "+1": 1}},
         )
 
+    def test_symbol_difference_rejects_unequal_lengths(self):
+        with self.assertRaises(ValueError):
+            replay_lora_orciq._symbol_difference([1, 2], [1])
+
     def test_alternate_coverage_reports_correct_runner_up_symbols(self):
         line = (
             "RTL_LORA_NATIVE_ALTERNATES sequence=4 count=3 "
@@ -152,6 +156,10 @@ class ReplayUploadTests(unittest.TestCase):
             {"error_indices": [8, 10], "covered_indices": [8], "covered": 1,
             "errors": 2},
         )
+
+    def test_alternate_coverage_rejects_unequal_lengths(self):
+        with self.assertRaises(ValueError):
+            replay_lora_orciq._alternate_coverage([1, 2], [1], {})
 
     def test_symbol_alternates_keep_native_peak_magnitudes(self):
         self.assertEqual(

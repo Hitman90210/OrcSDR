@@ -87,7 +87,7 @@ def _read_traces(connection, done):
 
 
 def _symbol_difference(reference, native):
-    differences = [actual - expected for expected, actual in zip(reference, native)]
+    differences = [actual - expected for expected, actual in zip(reference, native, strict=True)]
     histogram = Counter(differences)
     return {
         "first": next((i for i, difference in enumerate(differences) if difference), None),
@@ -118,7 +118,7 @@ def _parse_symbol_alternates(line):
 
 
 def _alternate_coverage(reference, native, alternates):
-    errors = [i for i, (expected, actual) in enumerate(zip(reference, native))
+    errors = [i for i, (expected, actual) in enumerate(zip(reference, native, strict=True))
               if expected != actual]
     covered = [i for i in errors
                if i in alternates and alternates[i]["symbol"] == reference[i]]

@@ -407,7 +407,7 @@ The LoRa Traffic toolbar equivalents are `RTL_UI ACTION LORA DETAILS`,
 - `P25`: `TUNE`, `PREV`, `NEXT`, `SURVEY`, `HOLD`, `HOLD_TG <id>`, `SKIP`,
   `FOLLOW`, `ENCRYPT_SKIP`, `RELOAD`, `SPAN_DOWN`, `SPAN_UP`, `SOUND`,
   `VOL_DOWN`, `VOL_UP`, `SETTINGS`, `HOME`.
-- `LORA`: `VIEW <0-5>`, `NODE <index>`, `FAVORITE`, `FILTER`, `SCAN`, `IQ`,
+- `LORA`: `VIEW <0-5>`, `NODE <index>`, `DETAILS`, `FAVORITE`, `FILTER`, `SCAN`, `IQ`,
   `LOG`, `CLEAR`, `EXPORT`, `FOLLOW`, `CHANNELS`, `SETTINGS`, `HOME`.
 - `SETTINGS`: `WIFI_POWER <0|1>`, `WIFI_BOOT <0|1>`, `ANTENNA <0|1>`, `SCAN`,
   `CONNECT_SAVED <index>`, `FORGET <index>`, `MOVE_UP <index>`,

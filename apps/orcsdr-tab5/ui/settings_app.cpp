@@ -670,7 +670,8 @@ void update(const State& state_value) {
                               g_state.vbus_mv != state_value.vbus_mv ||
                               strcmp(g_state.charging_state, state_value.charging_state) != 0);
   const bool clock_changed = g_section == Section::system &&
-                             g_state.rtc_valid != state_value.rtc_valid;
+                             (g_state.rtc_valid != state_value.rtc_valid ||
+                              strcmp(g_state.rtc_utc, state_value.rtc_utc) != 0);
   const bool catalog_changed = g_section == Section::data_maps &&
       (g_state.catalog_ready != state_value.catalog_ready || g_state.catalog_busy != state_value.catalog_busy ||
        g_state.catalog_progress_percent != state_value.catalog_progress_percent ||
