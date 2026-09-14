@@ -9804,6 +9804,9 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
     case ActionKind::filter_next:
       orcsdr::lora::toggle_filter();
       break;
+    case ActionKind::toggle_packet_details:
+      orcsdr::lora::toggle_packet_details();
+      break;
     case ActionKind::center_map:
       orcsdr::lora::center_on_selected();
       break;
@@ -13513,6 +13516,7 @@ void process_command(char* command) {
     } else if (strcmp(domain, "LORA") == 0) {
       using K = orcsdr::lora::ActionKind; K kind = K::none;
       if (!strcmp(action, "VIEW")) kind=K::select_view; else if (!strcmp(action, "NODE")) kind=K::select_node;
+      else if (!strcmp(action, "DETAILS")) kind=K::toggle_packet_details;
       else if (!strcmp(action, "FAVORITE")) kind=K::toggle_favorite; else if (!strcmp(action, "FILTER")) kind=K::filter_next;
       else if (!strcmp(action, "SCAN")) kind=K::scan_toggle; else if (!strcmp(action, "IQ")) kind=K::record_iq_toggle;
       else if (!strcmp(action, "LOG")) kind=K::logging_toggle; else if (!strcmp(action, "CLEAR")) kind=K::clear_events;
@@ -14302,6 +14306,7 @@ void process_command(char* command) {
     Serial.println("RTL_LAB OPEN|CLOSE|STATUS|PAGE|GET|SET|ACTION|SELF_CHECK - RF Lab UI/control");
     Serial.println("RTL_LAB REFERENCE|SNAPSHOT|RUN|RECIPE|RECORDS - RF Lab evidence workflow (mutations auth)");
     Serial.println("RTL_UI ACTION <domain> <action> [value] - mirror FM/AM/P25/LoRa/Settings touch action (auth)");
+    Serial.println("RTL_UI ACTION LORA DETAILS|FILTER|EXPORT|CLEAR - Traffic toolbar actions (auth)");
     Serial.println("RTL_WIFI_STATUS|C6_STATUS|COEX_STATUS|SCAN|RESULTS|PROFILES - Wi-Fi and radio coexistence state");
     Serial.println("RTL_WIFI_C6_UPDATE CONFIRM - authenticated explicit in-app C6 update");
     Serial.println("RTL_WIFI_CONNECT_SAVED [PAUSE]|DISCONNECT - connect profile 0 with a temporary SDR pause");

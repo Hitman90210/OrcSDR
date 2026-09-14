@@ -41,10 +41,12 @@ bool g_active = false;
 bool g_channels_open = false;
 bool g_follow_node = false;
 bool g_node_details = false;
+bool g_traffic_details = false;
 bool g_map_center_set = false;
 int32_t g_map_center_lat_e7 = INT32_MAX;
 int32_t g_map_center_lon_e7 = INT32_MAX;
-uint8_t g_filter = 0;
+uint8_t g_node_filter = 0;
+uint8_t g_traffic_filter = 0;
 size_t g_traffic_offset = 0;
 uint32_t g_last_dynamic_ms = 0;
 uint32_t g_last_spectrum_ms = 0;
@@ -58,14 +60,35 @@ bool has_position(const Node& node) {
   return node.latitude_e7 != INT32_MAX && node.longitude_e7 != INT32_MAX;
 }
 
-size_t traffic_max_offset(size_t event_count) {
-  return event_count > kTrafficRows ? event_count - kTrafficRows : 0;
+bool supported_event(const Event& event) {
+  return event.port == 1 || event.port == 3 || event.port == 4 || event.port == 5 ||
+         event.port == 7 || event.port == 67;
+}
+
+size_t visible_event_count() {
+  size_t count = 0;
+  for (size_t i = 0; i < g_snapshot.event_count; ++i)
+    if (g_traffic_filter == 0 || supported_event(g_snapshot.events[i])) ++count;
+  return count;
+}
+
+const Event* visible_event_at(size_t row) {
+  for (size_t i = 0, visible = 0; i < g_snapshot.event_count; ++i) {
+    if (g_traffic_filter != 0 && !supported_event(g_snapshot.events[i])) continue;
+    if (visible++ == row) return &g_snapshot.events[i];
+  }
+  return nullptr;
+}
+
+size_t traffic_max_offset() {
+  const size_t count = visible_event_count();
+  return count > kTrafficRows ? count - kTrafficRows : 0;
 }
 
 const Node* visible_node_at(size_t row, size_t* snapshot_index = nullptr) {
   size_t visible = 0;
   for (size_t i = 0; i < g_snapshot.node_count; ++i) {
-    if (g_filter != 0 && !g_snapshot.nodes[i].favorite) continue;
+    if (g_node_filter != 0 && !g_snapshot.nodes[i].favorite) continue;
     if (visible++ != row) continue;
     if (snapshot_index) *snapshot_index = i;
     return &g_snapshot.nodes[i];
@@ -276,14 +299,13 @@ void draw_nodes_static() {
 }
 
 void draw_traffic_static() {
-  card(28, 144, 335, 464);
-  text("SOURCES", 52, 170, kGreen, 2, middle_left);
-  card(386, 144, 862, 464);
-  text("DECODED TRAFFIC", 412, 170, kGreen, 2, middle_left);
-  button(386, 616, 202, 42, "VIEW RAW", kCyan);
-  button(604, 616, 202, 42, "SAVE LOG", kCyan);
-  button(822, 616, 202, 42, "FILTER TYPE", kCyan);
-  button(1040, 616, 202, 42, "CLEAR EVENTS", kCyan);
+  card(28, 144, 1220, 464);
+  text("DECODED TRAFFIC", 52, 170, kGreen, 2, middle_left);
+  button(50, 188, 270, 44, g_traffic_details ? "MESSAGES" : "PACKET DETAILS",
+         kCyan, g_traffic_details);
+  button(334, 188, 270, 44, "SAVE LOG", kCyan);
+  button(618, 188, 270, 44, "FILTER TYPE", kCyan);
+  button(902, 188, 270, 44, "CLEAR EVENTS", kCyan);
 }
 
 void draw_map_static() {
@@ -351,23 +373,43 @@ void format_event_time(char* output, size_t output_size, const Event& event,
            static_cast<unsigned long>(age));
 }
 
+void format_event_details(char* output, size_t output_size, const Event& event) {
+  char destination[12]{};
+  char signal[12] = "—";
+  char snr[12] = "—";
+  format_id(destination, sizeof(destination), event.destination);
+  if (event.signal_tenths != INT16_MAX)
+    snprintf(signal, sizeof(signal), "%.1f", event.signal_tenths / 10.0);
+  if (event.snr_tenths != INT16_MAX)
+    snprintf(snr, sizeof(snr), "%.1f", event.snr_tenths / 10.0);
+  snprintf(output, output_size, "TO %s  ID %08lX  PORT %u  RSSI %s  SNR %s",
+           destination, static_cast<unsigned long>(event.packet_id), event.port,
+           signal, snr);
+}
+
 void draw_event_row(const Event& event, int x, int y, int w) {
   M5.Display.fillRoundRect(x, y, w, 66, 8, kPanel);
   M5.Display.drawRoundRect(x, y, w, 66, 8, event.verified ? kGrid : kYellow);
   char sender[48];
   event_sender(event, sender, w >= 500 ? sizeof(sender) : 18, w >= 500);
   text(sender, x + 16, y + 19, event.verified ? kGreen : kYellow, 2, middle_left);
-  const char* message = event.text[0] ? event.text
-                                      : (event.encrypted ? "ENCRYPTED FRAME" : "WAITING");
-  const size_t line_chars = std::min<size_t>(65, static_cast<size_t>((w - 32) / 12));
-  char first[66]{}, second[66]{};
-  split_message(message, line_chars, first, second);
-  text(first, x + 16, y + (second[0] ? 38 : 45), TFT_WHITE, 2, middle_left);
-  if (second[0]) text(second, x + 16, y + 56, TFT_WHITE, 2, middle_left);
+  if (g_traffic_details) {
+    char details[96]{};
+    format_event_details(details, sizeof(details), event);
+    text(details, x + 16, y + 46, TFT_WHITE, 2, middle_left);
+  } else {
+    const char* message = event.text[0] ? event.text
+                                        : (event.encrypted ? "ENCRYPTED FRAME" : "WAITING");
+    const size_t line_chars = std::min<size_t>(62, static_cast<size_t>((w - 32) / 18));
+    char first[66]{}, second[66]{};
+    split_message(message, line_chars, first, second);
+    if (second[0] && strlen(first) <= sizeof(first) - 4) strcat(first, "...");
+    text(first, x + 16, y + 46, TFT_WHITE, 3, middle_left);
+  }
   char received[32];
   format_event_time(received, sizeof(received), event, millis());
   text(received, x + w - 16, y + 19,
-       event.received_utc ? kMuted : kYellow, 1, middle_right);
+       event.received_utc ? kMuted : kYellow, 2, middle_right);
 }
 
 void draw_large_event_row(const Event& event, int x, int y, int w) {
@@ -437,7 +479,7 @@ void draw_nodes_dynamic() {
     text(value, 678, y + 23, TFT_WHITE, 2, middle_left);
   }
   if (shown == 0)
-    text(g_filter == 0 ? "NO VERIFIED NODES" : "NO FAVORITE NODES", 416, 400,
+    text(g_node_filter == 0 ? "NO VERIFIED NODES" : "NO FAVORITE NODES", 416, 400,
          kMuted, 2);
   M5.Display.fillRect(842, 218, 388, 358, kPanel);
   const Node* node = g_snapshot.node_count ? &g_snapshot.nodes[
@@ -485,8 +527,8 @@ void draw_nodes_dynamic() {
   }
   text(g_snapshot.log_status[0] ? g_snapshot.log_status : "EXPORTS RECENT EVENTS",
        1036, 460, kMuted, 2);
-  button(840, 478, 190, 44, g_filter == 0 ? "FILTER: ALL" : "FAVORITES", kCyan,
-         g_filter != 0);
+  button(840, 478, 190, 44, g_node_filter == 0 ? "FILTER: ALL" : "FAVORITES", kCyan,
+         g_node_filter != 0);
   button(1040, 478, 190, 44, "FAVORITE", node && node->favorite ? kYellow : kCyan,
          node && node->favorite);
   button(840, 532, 190, 44, g_node_details ? "HIDE DETAILS" : "VIEW DETAILS", kCyan,
@@ -495,32 +537,27 @@ void draw_nodes_dynamic() {
 }
 
 void draw_traffic_dynamic() {
-  M5.Display.fillRect(42, 192, 307, 400, kPanel);
-  M5.Display.fillRect(400, 192, 834, 400, kPanel);
-  g_traffic_offset = std::min(g_traffic_offset, traffic_max_offset(g_snapshot.event_count));
-  const size_t visible = std::min(kTrafficRows, g_snapshot.event_count - g_traffic_offset);
+  M5.Display.fillRect(42, 240, 1192, 360, kPanel);
+  const size_t event_count = visible_event_count();
+  g_traffic_offset = std::min(g_traffic_offset, traffic_max_offset());
+  const size_t visible = std::min(kTrafficRows, event_count - g_traffic_offset);
   for (size_t i = 0; i < visible; ++i) {
-    const Event& event = g_snapshot.events[g_traffic_offset + i];
-    draw_event_row(event, 408, 204 + static_cast<int>(i) * 72, 772);
-    char sender[18]; event_sender(event, sender, sizeof(sender), false);
-    text(sender, 62, 215 + static_cast<int>(i) * 72, event.verified ? kGreen : kYellow,
-         2, middle_left);
-    text(event.text[0] ? event.text : (event.encrypted ? "ENCRYPTED" : "—"),
-         62, 241 + static_cast<int>(i) * 72, TFT_WHITE, 1, middle_left);
+    const Event* event = visible_event_at(g_traffic_offset + i);
+    if (event) draw_event_row(*event, 50, 246 + static_cast<int>(i) * 72, 1118);
   }
-  if (g_snapshot.event_count == 0) text("WAITING FOR DECODED TRAFFIC", 820, 390, kMuted, 2);
+  if (event_count == 0) text("WAITING FOR DECODED TRAFFIC", 820, 390, kMuted, 2);
   char value[48];
-  snprintf(value, sizeof(value), "FILTER: %s", g_filter == 0 ? "ALL" : "SUPPORTED");
+  snprintf(value, sizeof(value), "FILTER: %s", g_traffic_filter == 0 ? "ALL" : "SUPPORTED");
   text(value, 1150, 170, kCyan, 1, middle_right);
   const bool can_scroll_up = g_traffic_offset > 0;
-  const bool can_scroll_down = g_traffic_offset < traffic_max_offset(g_snapshot.event_count);
-  button(1188, 204, 36, 44, "^", can_scroll_up ? kCyan : kMuted);
+  const bool can_scroll_down = g_traffic_offset < traffic_max_offset();
+  button(1188, 248, 36, 44, "^", can_scroll_up ? kCyan : kMuted);
   button(1188, 548, 36, 44, "v", can_scroll_down ? kCyan : kMuted);
-  if (g_snapshot.event_count) {
+  if (event_count) {
     snprintf(value, sizeof(value), "%u-%u / %u",
              static_cast<unsigned>(g_traffic_offset + 1),
              static_cast<unsigned>(g_traffic_offset + visible),
-             static_cast<unsigned>(g_snapshot.event_count));
+             static_cast<unsigned>(event_count));
     text(value, 1206, 526, kMuted, 1);
   }
 }
@@ -775,18 +812,19 @@ Action handle_touch(int32_t x, int32_t y) {
     }
     if (hit(x, y, 1040, 532, 190, 44)) return {ActionKind::export_log};
   } else if (g_view == View::traffic) {
-    if (hit(x, y, 1188, 204, 36, 44) && g_traffic_offset > 0) {
+    if (hit(x, y, 1188, 248, 36, 44) && g_traffic_offset > 0) {
       --g_traffic_offset;
       return {ActionKind::refresh};
     }
     if (hit(x, y, 1188, 548, 36, 44) &&
-        g_traffic_offset < traffic_max_offset(g_snapshot.event_count)) {
+        g_traffic_offset < traffic_max_offset()) {
       ++g_traffic_offset;
       return {ActionKind::refresh};
     }
-    if (hit(x, y, 604, 616, 202, 42)) return {ActionKind::export_log};
-    if (hit(x, y, 822, 616, 202, 42)) return {ActionKind::filter_next};
-    if (hit(x, y, 1040, 616, 202, 42)) return {ActionKind::clear_events};
+    if (hit(x, y, 50, 188, 270, 44)) return {ActionKind::toggle_packet_details};
+    if (hit(x, y, 334, 188, 270, 44)) return {ActionKind::export_log};
+    if (hit(x, y, 618, 188, 270, 44)) return {ActionKind::filter_next};
+    if (hit(x, y, 902, 188, 270, 44)) return {ActionKind::clear_events};
   } else if (g_view == View::map) {
     if (hit(x, y, 26, 604, 210, 42)) return {ActionKind::center_map};
     if (hit(x, y, 252, 604, 210, 42)) return {ActionKind::follow_node};
@@ -819,7 +857,14 @@ void show_documentation_view(View view_value, const Snapshot& snapshot) {
 }
 
 void toggle_filter() {
-  g_filter = (g_filter + 1) % 2;
+  uint8_t& filter = g_view == View::traffic ? g_traffic_filter : g_node_filter;
+  filter = (filter + 1) % 2;
+  g_traffic_offset = 0;
+  if (g_active) draw_static();
+}
+
+void toggle_packet_details() {
+  g_traffic_details = !g_traffic_details;
   if (g_active) draw_static();
 }
 
@@ -863,14 +908,26 @@ bool self_check() {
   snapshot.events[0].received_utc = 0;
   format_event_time(received, sizeof(received), snapshot.events[0], 13000);
   if (strcmp(received, "TIME NOT SET | 12s") != 0) return false;
+  snapshot.events[0].destination = 0xFFFFFFFF;
+  snapshot.events[0].packet_id = 0x10203040;
+  snapshot.events[0].port = 1;
+  snapshot.events[0].signal_tenths = -720;
+  snapshot.events[0].snr_tenths = 94;
+  char details[96]{};
+  format_event_details(details, sizeof(details), snapshot.events[0]);
+  if (strcmp(details, "TO !FFFFFFFF  ID 10203040  PORT 1  RSSI -72.0  SNR 9.4") != 0)
+    return false;
   const Snapshot saved_snapshot = g_snapshot;
-  const uint8_t saved_filter = g_filter;
+  const uint8_t saved_node_filter = g_node_filter;
+  const uint8_t saved_traffic_filter = g_traffic_filter;
   const View saved_view = g_view;
   const bool saved_active = g_active;
   const bool saved_details = g_node_details;
+  const bool saved_traffic_details = g_traffic_details;
   const size_t saved_traffic_offset = g_traffic_offset;
   g_snapshot = snapshot;
-  g_filter = 1;
+  g_node_filter = 1;
+  g_traffic_filter = 0;
   g_view = View::nodes;
   g_active = true;
   g_node_details = false;
@@ -886,18 +943,31 @@ bool self_check() {
   g_view = View::traffic;
   g_snapshot.event_count = 8;
   g_traffic_offset = 0;
-  const bool traffic_scroll_ok = traffic_max_offset(5) == 0 && traffic_max_offset(8) == 3 &&
+  const bool traffic_scroll_ok = traffic_max_offset() == 3 &&
                                  handle_touch(1200, 560).kind == ActionKind::refresh &&
                                  g_traffic_offset == 1 &&
-                                 handle_touch(1200, 220).kind == ActionKind::refresh &&
+                                 handle_touch(1200, 260).kind == ActionKind::refresh &&
                                  g_traffic_offset == 0;
+  const bool traffic_controls_ok =
+      handle_touch(100, 210).kind == ActionKind::toggle_packet_details &&
+      handle_touch(400, 210).kind == ActionKind::export_log &&
+      handle_touch(680, 210).kind == ActionKind::filter_next &&
+      handle_touch(960, 210).kind == ActionKind::clear_events;
+  g_snapshot.events[1].port = 99;
+  g_traffic_filter = 1;
+  const bool traffic_filter_ok = visible_event_count() == 1 &&
+                                 visible_event_at(0) == &g_snapshot.events[0] &&
+                                 visible_event_at(1) == nullptr;
   g_snapshot = saved_snapshot;
-  g_filter = saved_filter;
+  g_node_filter = saved_node_filter;
+  g_traffic_filter = saved_traffic_filter;
   g_view = saved_view;
   g_active = saved_active;
   g_node_details = saved_details;
+  g_traffic_details = saved_traffic_details;
   g_traffic_offset = saved_traffic_offset;
-  if (!filter_ok || !controls_ok || !traffic_scroll_ok) return false;
+  if (!filter_ok || !controls_ok || !traffic_scroll_ok || !traffic_controls_ok ||
+      !traffic_filter_ok) return false;
   return audio_header::self_check() && lora_channel::self_check();
 }
 

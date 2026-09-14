@@ -93,6 +93,7 @@ enum class ActionKind : uint8_t {
   select_view,
   select_node,
   toggle_favorite,
+  toggle_packet_details,
   filter_next,
   scan_toggle,
   record_iq_toggle,
@@ -131,6 +132,7 @@ void open_channel_picker();
 View view();
 void show_documentation_view(View view, const Snapshot& snapshot);
 void toggle_filter();
+void toggle_packet_details();
 void center_on_selected();
 void toggle_follow_node();
 bool self_check();
