@@ -6,7 +6,7 @@ from pathlib import Path
 from tools.check_documentation_truth import run_checks
 
 
-PIN = "b175dfea6782faa97e512d4a2408767c75977527"
+PIN = "7ec9825e31653eaa5692978e3e5d44032d621417"
 
 
 class DocumentationTruthTests(unittest.TestCase):

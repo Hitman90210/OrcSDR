@@ -1,7 +1,7 @@
 # Porting `esp_rtl_sdr` to ESP32 devices
 
-> **Current OrcSDR dependency (2026-09-12):** driver 0.8.0-rc2 at immutable
-> pin `b175dfea6782faa97e512d4a2408767c75977527`. Older pins below are retained
+> **Current OrcSDR dependency (2026-09-14):** driver 0.8.0-rc2 at immutable
+> pin `7ec9825e31653eaa5692978e3e5d44032d621417`. Older pins below are retained
 > as Historical Evidence for the integration that was actually tested then.
 
 ## Goals

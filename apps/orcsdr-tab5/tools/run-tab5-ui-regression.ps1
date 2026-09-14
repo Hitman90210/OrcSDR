@@ -26,6 +26,15 @@ param(
   [switch]$C6Update,
   [switch]$RadioScan,
   [switch]$AmBroadcast,
+  [switch]$GainSweep,
+  [ValidateSet('FM', 'BROWSE', 'LORA')]
+  [string]$GainSweepBand = 'FM',
+  [ValidateRange(24000000, 1766000000)]
+  [uint32]$GainSweepFrequency = 99100000,
+  [ValidateRange(0, 496)]
+  [int[]]$GainSweepGains,
+  [ValidateRange(100, 30000)]
+  [int]$GainSweepDwellMs = 500,
   [switch]$InstallLaneMap,
   [switch]$InstallFaaAircraft,
   [string]$LocationQuery = '97401',
@@ -817,8 +826,8 @@ if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
 if (($InstallLaneMap -or $InstallFaaAircraft) -and !$DataOnly) {
   throw '-InstallLaneMap and -InstallFaaAircraft require -DataOnly.'
 }
-if (@($Run, $Soak, $Driver080Rc2, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast).Where({ $_ }).Count -gt 1) {
-  throw 'Choose only one of -Run, -Soak, -Driver080Rc2, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, or -AmBroadcast.'
+if (@($Run, $Soak, $Driver080Rc2, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast, $GainSweep).Where({ $_ }).Count -gt 1) {
+  throw 'Choose only one of -Run, -Soak, -Driver080Rc2, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, -AmBroadcast, or -GainSweep.'
 }
 
 function Get-C6UpdateStatus {
@@ -872,6 +881,113 @@ function Get-DriverStatus {
     Bias = [int]$Matches[15]; Bytes = [uint64]$Matches[16]; Blocks = [uint64]$Matches[17]
     EffectiveSps = [uint32]$Matches[18]; Overruns = [uint32]$Matches[19]
     Drops = [uint32]$Matches[20]; ShadowOk = [int]$Matches[21]; MetricsOk = [int]$Matches[22]
+  }
+}
+
+function Invoke-GainSweepTest {
+  Wait-DeviceReady 60 11000
+  Connect-Authenticated
+  $initial = $null
+  $initialSignal = $null
+  $initialDriver = $null
+  $initialSoftwareAuto = $false
+  $initialVerbosity = $null
+  try {
+    $verbosity = Send-And-Wait 'RTL_SERIAL VERBOSITY' '^RTL_SERIAL_VERBOSITY mode=(QUIET|NORMAL|DEBUG|TRACE)$'
+    $initialVerbosity = $verbosity.Split('=')[-1]
+    [void](Send-And-Wait 'RTL_SERIAL VERBOSITY QUIET' '^RTL_SERIAL_VERBOSITY_OK mode=QUIET$')
+    $initial = Get-UiState
+    $initialSignal = Get-SignalStatus
+    $initialDriver = Get-DriverStatus
+    if ($initial.Band -in @('FM', 'AM')) {
+      $initialSoftwareAuto = (Send-And-Wait "RTL_$($initial.Band)_GAIN STATUS" "^RTL_$($initial.Band)_GAIN_STATUS ").Contains('mode=AUTO')
+    }
+    if ($GainSweepBand -eq 'FM') {
+      if ($GainSweepFrequency -lt 76000000 -or $GainSweepFrequency -gt 108000000) {
+        throw '-GainSweepBand FM requires -GainSweepFrequency between 76000000 and 108000000.'
+      }
+      [void](Open-Ui 'FM' 'FM')
+      [void](Send-And-Wait "RTL_UI ACTION FM TUNE $GainSweepFrequency" '^RTL_UI_ACTION_OK$')
+    } else {
+      [void](Send-And-Wait "RTL_TUNE $GainSweepBand $GainSweepFrequency" '^RTL_TUNE_OK ')
+    }
+
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    do {
+      $driver = Get-DriverStatus
+      $signal = Get-SignalStatus
+      if ($driver.State -eq 'STREAMING' -and $driver.Bytes -gt 0 -and
+          $signal.Band -eq $GainSweepBand -and $signal.Frequency -eq $GainSweepFrequency) { break }
+      Start-Sleep -Milliseconds 500
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($driver.State -ne 'STREAMING' -or $driver.Bytes -eq 0 -or $driver.Profile -ne 2 -or $driver.GainCap -ne 1 -or
+        $signal.Band -ne $GainSweepBand -or $signal.Frequency -ne $GainSweepFrequency) {
+      throw "V3 gain sweep requires the requested band streaming with manual gain; state=$($driver.State) band=$($signal.Band) frequency=$($signal.Frequency) profile=$($driver.Profile) gain_cap=$($driver.GainCap) bytes=$($driver.Bytes)"
+    }
+
+    if ($GainSweepBand -eq 'FM') {
+      [void](Send-And-Wait 'RTL_UI ACTION FM GAIN_AUTO' '^RTL_UI_ACTION_OK$')
+      Start-Sleep -Milliseconds 300
+      $auto = Send-And-Wait 'RTL_FM_GAIN STATUS' '^RTL_FM_GAIN_STATUS '
+      if ($auto -notmatch 'mode=AUTO selecting=[01] gain_tenth_db=\d+ target_dbfs=-24\.0') {
+        throw "FM bounded auto gain failed: $auto"
+      }
+    }
+
+    $gains = if ($GainSweepGains.Count) { $GainSweepGains } else {
+      @(0, 9, 14, 27, 37, 77, 87, 125, 144, 157, 166, 197, 207, 229, 254, 280, 297, 328, 338, 364, 372, 386, 402, 421, 434, 439, 445, 480, 496)
+    }
+    foreach ($gain in $gains) {
+      $command = if ($GainSweepBand -eq 'FM') { "RTL_UI ACTION FM GAIN $gain" } else { "RTL_DRIVER GAIN $gain" }
+      $pattern = if ($GainSweepBand -eq 'FM') { '^RTL_UI_ACTION_OK$' } else { '^RTL_DRIVER_RESULT .*accepted=1 result=ESP_OK$' }
+      [void](Send-And-Wait $command $pattern)
+      $deadline = [DateTime]::UtcNow.AddSeconds(5)
+      do {
+        $driver = Get-DriverStatus
+        if ($driver.State -eq 'STREAMING' -and $driver.Bytes -gt 0 -and
+            $driver.Mode -eq 'MANUAL' -and $driver.Gain -eq $gain) { break }
+        Start-Sleep -Milliseconds 100
+      } while ([DateTime]::UtcNow -lt $deadline)
+      $maxSignalTenths = -900
+      $sampleDeadline = [DateTime]::UtcNow.AddMilliseconds($GainSweepDwellMs)
+      do {
+        $signal = Get-SignalStatus
+        $maxSignalTenths = [Math]::Max($maxSignalTenths, $signal.SignalTenths)
+        Start-Sleep -Milliseconds 100
+      } while ([DateTime]::UtcNow -lt $sampleDeadline)
+      $driver = Get-DriverStatus
+      if ($driver.State -ne 'STREAMING' -or $driver.Mode -ne 'MANUAL' -or $driver.Gain -ne $gain -or $driver.Bytes -eq 0 -or
+          $signal.Band -ne $GainSweepBand -or $signal.Frequency -ne $GainSweepFrequency) {
+        throw "Gain sweep sample failed: requested=$gain state=$($driver.State) mode=$($driver.Mode) gain=$($driver.Gain) bytes=$($driver.Bytes) signal=$($signal.Line)"
+      }
+      Write-SoakLine "RTL_GAIN_SWEEP_SAMPLE band=$GainSweepBand frequency_hz=$GainSweepFrequency gain_tenth_db=$gain signal_dbfs_tenths=$($signal.SignalTenths) max_signal_dbfs_tenths=$maxSignalTenths bytes=$($driver.Bytes)"
+    }
+    Assert-Health
+    Write-SoakLine "RTL_GAIN_SWEEP_RESULT pass=1 profile=2 band=$GainSweepBand frequency_hz=$GainSweepFrequency samples=$($gains.Count)"
+  } finally {
+    try {
+      if ($null -ne $initial -and $null -ne $initialSignal -and
+          $initial.Band -in @('FM','AM','WX','CB','LORA','BROWSE','ADSB','P25')) {
+        [void](Send-And-Wait "RTL_TUNE $($initial.Band) $($initialSignal.Frequency)" '^RTL_TUNE_(?:OK|UNAVAILABLE|INVALID)')
+      }
+      if ($null -ne $initialDriver) {
+        if ($initialSoftwareAuto) {
+          [void](Send-And-Wait "RTL_UI ACTION $($initial.Band) GAIN_AUTO" '^RTL_UI_ACTION_OK$')
+        } elseif ($initialDriver.Mode -eq 'AUTO' -and $initialDriver.GainAutoCap -eq 1) {
+          [void](Send-And-Wait 'RTL_DRIVER GAINMODE AUTO' '^RTL_DRIVER_RESULT .*accepted=1 result=ESP_OK$')
+        } else {
+          [void](Send-And-Wait "RTL_DRIVER GAIN $($initialDriver.Gain)" '^RTL_DRIVER_RESULT .*accepted=1 result=ESP_OK$')
+        }
+      }
+      if ($null -ne $initial) {
+        [void](Send-And-Wait "RTL_UI OPEN $($initial.Screen)" '^RTL_UI_OPEN_(?:OK|INVALID)')
+      }
+      if ($null -ne $initialVerbosity) {
+        [void](Send-And-Wait "RTL_SERIAL VERBOSITY $initialVerbosity" "^RTL_SERIAL_VERBOSITY_OK mode=$initialVerbosity$")
+      }
+    } catch {
+      Write-Warning "Could not restore initial gain sweep state: $($_.Exception.Message)"
+    }
   }
 }
 
@@ -986,11 +1102,26 @@ function Invoke-AmBroadcastTest {
       if ($fmDriver.State -eq 'STREAMING' -and $fmDriver.Bytes -gt 0) { break }
       Start-Sleep -Milliseconds 500
     } while ([DateTime]::UtcNow -lt $fmDeadline)
-    if ($fmDriver.State -ne 'STREAMING' -or $fmDriver.Bytes -eq 0 -or $fmDriver.Mode -ne 'AUTO') {
+    if ($fmDriver.State -ne 'STREAMING' -or $fmDriver.Bytes -eq 0 -or $fmDriver.Mode -ne 'MANUAL') {
       throw "AM to FM transition did not restore FM tuner state: state=$($fmDriver.State) bytes=$($fmDriver.Bytes) mode=$($fmDriver.Mode)"
     }
+    [void](Send-And-Wait 'RTL_UI ACTION FM GAIN_AUTO' '^RTL_UI_ACTION_OK$')
+    Start-Sleep -Milliseconds 300
+    $fmAuto = Send-And-Wait 'RTL_FM_GAIN STATUS' '^RTL_FM_GAIN_STATUS '
+    if ($fmAuto -notmatch 'mode=AUTO selecting=1 gain_tenth_db=0 target_dbfs=-24\.0') {
+      throw "FM bounded auto gain failed: $fmAuto"
+    }
+    foreach ($gain in @(0, 496)) {
+      [void](Send-And-Wait "RTL_UI ACTION FM GAIN $gain" '^RTL_UI_ACTION_OK$')
+      Start-Sleep -Milliseconds 300
+      $fmDriver = Get-DriverStatus
+      if ($fmDriver.Mode -ne 'MANUAL' -or $fmDriver.Gain -ne $gain) {
+        throw "FM manual gain action failed: requested=$gain mode=$($fmDriver.Mode) gain=$($fmDriver.Gain)"
+      }
+    }
+    Write-SoakLine 'RTL_FM_GAIN_REGRESSION pass=1 auto=lowest_usable manual_range_tenth_db=0-496'
     [void](Open-Ui 'AM' 'AM')
-    Write-SoakLine 'RTL_AM_FM_TRANSITION_REGRESSION pass=1 fm_gain_mode=AUTO'
+    Write-SoakLine 'RTL_AM_FM_TRANSITION_REGRESSION pass=1 software_auto_gain_mode=MANUAL'
     $audioBeforeScan = Get-AudioStatus
     [void](Send-And-Wait 'RTL_UI ACTION AM SCAN' '^RTL_UI_ACTION_OK$')
     $scanDeadline = [DateTime]::UtcNow.AddSeconds(3)
@@ -1252,6 +1383,7 @@ try {
   if ($C6Update) { Invoke-C6UpdateTest; exit 0 }
   if ($RadioScan) { Invoke-RadioScanTest; exit 0 }
   if ($AmBroadcast) { Invoke-AmBroadcastTest; exit 0 }
+  if ($GainSweep) { Invoke-GainSweepTest; exit 0 }
 
   if ($Profile) {
     $commit = (& git -C (Join-Path $PSScriptRoot '..\..\..') rev-parse --short HEAD 2>$null)

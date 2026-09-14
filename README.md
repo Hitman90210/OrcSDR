@@ -70,11 +70,11 @@ RF Lab turns the receiver into a portable test bench with four focused tabs:
 
 The FM dashboard organizes listening, station information, and diagnostics into five tabs:
 
-- **Listen:** presents the tuned frequency, preset number, relative signal level, station name and radio text, running and stereo state, left/right audio meters, seek buttons, frequency steps, and direct frequency entry.
-- **Spectrum:** shows a live spectrum and waterfall with center frequency, DSP filter bandwidth, audio/IQ activity, adjustable span, step controls, and tap-to-tune interaction.
+- **Listen:** presents the tuned frequency, preset number, relative signal level, station name and radio text, running and stereo state, left/right audio meters, RF gain, seek buttons, frequency steps, and direct frequency entry.
+- **Spectrum:** shows a live spectrum and waterfall with center frequency, DSP filter bandwidth, audio/IQ activity, RF gain, adjustable span, step controls, and tap-to-tune interaction.
 - **Station / RDS:** expands the currently playing station and decoded RDS fields, including Program Service name, RadioText, PI code, and PTY, alongside stereo, pilot-carrier, and decoder-lock status.
 - **RF Health:** reports effective versus requested sample rate, USB overruns, IQ consumer drops, audio underruns, DSP load, audio-buffer pressure, Wi-Fi state, driver state, and the most recent radio error.
-- **Settings:** controls sound, volume, tuning step, filter bandwidth, spectrum graphics, and recording; it also provides preset scanning/rebuilding, device settings, and a return to Home while FM continues playing.
+- **Settings:** controls sound, volume, tuning step, filter bandwidth, automatic or manual RF gain, spectrum graphics, and recording; it also provides preset scanning/rebuilding, device settings, and a return to Home while FM continues playing.
 
 ### ADS-B dashboard
 

@@ -388,6 +388,9 @@ RTL_UI ACTION P25 SURVEY
 RTL_UI ACTION LORA VIEW 3
 RTL_UI ACTION LORA DETAILS
 RTL_UI ACTION FM TUNE 101900000
+RTL_UI ACTION FM GAIN_AUTO
+RTL_UI ACTION FM GAIN 254
+RTL_FM_GAIN STATUS
 ```
 
 The LoRa Traffic toolbar equivalents are `RTL_UI ACTION LORA DETAILS`,
@@ -404,7 +407,10 @@ LoRa Overview uses the unsmoothed value for faster visual response.
 
 - `FM`: `TUNE`, `DOWN`, `UP`, `SEEK_DOWN`, `SEEK_UP`, `SAVE`, `STEP`,
   `FILTER_DOWN`, `FILTER_UP`, `SPAN_DOWN`, `SPAN_UP`, `SOUND`, `VOL_DOWN`,
-  `VOL_UP`, `GRAPHICS`, `RECORD`, `SCAN`, `SETTINGS`, `HOME`.
+  `VOL_UP`, `GRAPHICS`, `RECORD`, `GAIN_AUTO`, `GAIN <0-496>`, `SCAN`,
+  `SETTINGS`, `HOME`. `GAIN_AUTO` selects the lowest tuner-gain step that
+  reaches the target level; `RTL_FM_GAIN STATUS` reports its progress and
+  selected gain.
 - `P25`: `TUNE`, `PREV`, `NEXT`, `SURVEY`, `HOLD`, `HOLD_TG <id>`, `SKIP`,
   `FOLLOW`, `ENCRYPT_SKIP`, `RELOAD`, `SPAN_DOWN`, `SPAN_UP`, `SOUND`,
   `VOL_DOWN`, `VOL_UP`, `SETTINGS`, `HOME`.
