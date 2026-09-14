@@ -29,9 +29,23 @@ constexpr Region kRegions[] = {
 
 Selection current{};
 bool scanning = false;
-uint8_t survey_span = 0;
+uint8_t survey_next_span = 0;
+uint8_t survey_results_count = 0;
 uint32_t survey_next_ms = 0;
 uint32_t survey_restore_hz = 0;
+uint32_t survey_frequency_hz = 0;
+bool survey_waiting_for_sample = false;
+SurveyResult survey_results[14]{};
+
+void retain_survey_result(uint32_t frequency_hz, float level_dbfs) {
+  if (survey_results_count >= std::size(survey_results)) return;
+  uint8_t index = survey_results_count++;
+  survey_results[index] = {frequency_hz, level_dbfs};
+  while (index > 0 && survey_results[index].level_dbfs > survey_results[index - 1].level_dbfs) {
+    std::swap(survey_results[index], survey_results[index - 1]);
+    --index;
+  }
+}
 
 uint32_t longfast_hash() {
   uint32_t hash = 5381;
@@ -126,38 +140,60 @@ bool choose(size_t region_index, uint16_t slot, NvsStore& store) {
 
 void start_survey(uint32_t restore_frequency_hz, uint32_t now_ms) {
   survey_restore_hz = restore_frequency_hz;
-  survey_span = 0;
+  survey_next_span = 0;
+  survey_results_count = 0;
   survey_next_ms = now_ms;
+  survey_frequency_hz = 0;
+  survey_waiting_for_sample = false;
   scanning = true;
 }
 
 uint32_t cancel_survey() {
   scanning = false;
+  survey_waiting_for_sample = false;
   return survey_restore_hz;
 }
 
-SurveyStep service_survey(uint32_t now_ms, bool receiver_is_lora) {
+SurveyStep service_survey(uint32_t now_ms, bool receiver_is_lora, float level_dbfs) {
   if (!scanning || !receiver_is_lora || now_ms < survey_next_ms) return {};
   const uint8_t spans = survey_span_count();
-  if (survey_span >= spans) {
-    scanning = false;
-    return {survey_restore_hz, survey_span, true};
+  SurveyStep step{};
+  if (survey_waiting_for_sample) {
+    retain_survey_result(survey_frequency_hz, level_dbfs);
+    step.sampled_frequency_hz = survey_frequency_hz;
+    step.sampled_level_dbfs = level_dbfs;
+    step.span = survey_results_count;
+    step.sampled = true;
+    survey_waiting_for_sample = false;
+    if (survey_next_span >= spans) {
+      scanning = false;
+      step.frequency_hz = survey_restore_hz;
+      step.restore = true;
+      return step;
+    }
   }
   const uint16_t slots = slot_count(current.region_index);
   const uint16_t slot = spans <= 1
                             ? 1
                             : static_cast<uint16_t>(
-                                  1u + static_cast<uint32_t>(survey_span) * (slots - 1u) /
+                                  1u + static_cast<uint32_t>(survey_next_span) * (slots - 1u) /
                                            (spans - 1u));
-  ++survey_span;
+  ++survey_next_span;
+  survey_frequency_hz = frequency_hz(current.region_index, slot);
+  survey_waiting_for_sample = true;
   survey_next_ms = now_ms + 750;
-  return {frequency_hz(current.region_index, slot), survey_span, false};
+  step.frequency_hz = survey_frequency_hz;
+  return step;
 }
 
 bool survey_active() { return scanning; }
-uint8_t survey_progress() { return survey_span; }
+uint8_t survey_progress() { return survey_results_count; }
 uint8_t survey_span_count() {
   return static_cast<uint8_t>(std::min<uint16_t>(14, slot_count(current.region_index)));
+}
+uint8_t survey_result_count() { return survey_results_count; }
+SurveyResult survey_result(uint8_t index) {
+  return index < survey_results_count ? survey_results[index] : SurveyResult{};
 }
 
 bool self_check() {
@@ -165,13 +201,39 @@ bool self_check() {
   const int eu433 = find_region("EU_433");
   const int eu868 = find_region("EU_868");
   const int ph868 = find_region("PH_868");
-  return region_count() == 24 && us == 0 && slot_count(us) == 104 && default_slot(us) == 20 &&
+  const bool channels_ok =
+         region_count() == 24 && us == 0 && slot_count(us) == 104 && default_slot(us) == 20 &&
          frequency_hz(us, 20) == 906875000 && slot_for_frequency(us, 906875000) == 20 &&
          default_slot(eu433) == 4 && frequency_hz(eu433, 4) == 433875000 &&
          default_slot(eu868) == 1 && frequency_hz(eu868, 1) == 869525000 &&
          ph868 >= 0 && slot_count(ph868) == 5 && default_slot(ph868) == 1 &&
          frequency_hz(ph868, 1) == 868125000 &&
          slot_for_frequency(us, 906800000) == 0;
+  if (!channels_ok) return false;
+
+  const uint8_t spans = survey_span_count();
+  const uint16_t slots = slot_count(current.region_index);
+  const uint32_t first_hz = frequency_hz(current.region_index, 1);
+  const uint16_t second_slot = spans <= 1
+                                   ? 1
+                                   : static_cast<uint16_t>(1u + (slots - 1u) / (spans - 1u));
+  const uint32_t second_hz = frequency_hz(current.region_index, second_slot);
+  start_survey(current.frequency_hz, 1000);
+  const SurveyStep first = service_survey(1000, true, -90.0f);
+  const SurveyStep early = service_survey(1749, true, -60.0f);
+  const SurveyStep first_sample = service_survey(1750, true, -60.0f);
+  const SurveyStep second_sample = service_survey(2500, true, -40.0f);
+  const bool survey_ok = first.frequency_hz == first_hz && !first.sampled &&
+                         early.frequency_hz == 0 && first_sample.sampled &&
+                         first_sample.sampled_frequency_hz == first_hz &&
+                         first_sample.frequency_hz == second_hz && second_sample.sampled &&
+                         survey_progress() == 2 && survey_result_count() == 2 &&
+                         survey_result(0).frequency_hz == second_hz &&
+                         survey_result(0).level_dbfs == -40.0f &&
+                         survey_result(1).frequency_hz == first_hz;
+  start_survey(current.frequency_hz, 3000);
+  (void)cancel_survey();
+  return survey_ok && survey_result_count() == 0;
 }
 
 }  // namespace orcsdr::lora_channel

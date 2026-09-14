@@ -393,6 +393,9 @@ RTL_UI ACTION FM TUNE 101900000
 The LoRa Traffic toolbar equivalents are `RTL_UI ACTION LORA DETAILS`,
 `RTL_UI ACTION LORA EXPORT`, `RTL_UI ACTION LORA FILTER`, and
 `RTL_UI ACTION LORA CLEAR`. All four require authentication.
+`RTL_UI ACTION LORA SCAN` starts or stops the same bounded energy survey as
+**Scan Band**; each `RTL_LORA_SURVEY` result is emitted after its 750 ms dwell.
+`RTL_SIGNAL` reports the same relative dBFS measurement shown on Overview.
 
 `RTL_UI OPEN` accepts `HOME`, `FM`, `P25`, `ADSB`, `LORA`, `RF_LAB`,
 `WIFI_ANALYSIS`, or `SETTINGS`.

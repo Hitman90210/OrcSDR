@@ -48,9 +48,17 @@ enable continuous logging. CSV retains `uptime_ms` and adds `wallclock_valid`,
 exported separately.
 
 **Scan Band** samples up to fourteen evenly spaced LongFast slots in the selected
-region. It temporarily retunes the configured monitor, reports observed energy,
-then restores the prior frequency. It is a survey, not reliable packet capture;
-normal fixed-profile monitoring is the correct decode mode.
+region. It retunes, waits 750 ms for each measurement, ranks the three strongest
+relative-energy readings on Overview, then restores the prior frequency. The live
+meter and survey results are dBFS, not calibrated dBm. It is a survey, not reliable
+packet capture; normal fixed-profile monitoring is the correct decode mode.
+
+The Overview visualization is independently implemented for the Tab5. Its
+fixed-scale heat palette, averaged spectrum, channel markers, and bounded time
+history follow common SDR presentation concepts reviewed in
+[Gqrx](https://github.com/gqrx-sdr/gqrx) and
+[SDR++](https://github.com/AlexandreRouma/SDRPlusPlus), both GPL-licensed; no
+source, palette table, or rendering code was copied.
 
 ## Configuration
 

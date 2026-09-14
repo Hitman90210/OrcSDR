@@ -506,6 +506,7 @@ constexpr size_t kRtlSpectrumBins = 256;
 constexpr size_t kRtlSpectrumWelchWindows = 2;
 // Keep scope cadence stable when sound is toggled; only back off if audio drops.
 constexpr uint32_t kRtlSpectrumIntervalMs = 100;
+constexpr uint32_t kRtlLoraSpectrumIntervalMs = 50;
 constexpr uint32_t kRtlSpectrumStressedIntervalMs = 220;
 constexpr size_t kRtlRingDepth = 3;
 constexpr UBaseType_t kRtlDspTaskPrio = 6;
@@ -6579,7 +6580,9 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   }
 
   const uint32_t now = millis();
-  constexpr uint32_t spectrum_interval = kRtlSpectrumIntervalMs;
+  const uint32_t spectrum_interval = rtl_ui_band == RtlBand::lora
+                                         ? kRtlLoraSpectrumIntervalMs
+                                         : kRtlSpectrumIntervalMs;
   if (rtl_spectrum_last_ms != 0 &&
       now - rtl_spectrum_last_ms < spectrum_interval) {
     return;
@@ -8481,9 +8484,12 @@ static void rtl_driver_app_task(void *) {
             const bool audio_stressed =
                 sound_on && rtl_audio.dropped_chunks > 0 &&
                 rtl_audio.dropped_chunks * 2u > rtl_audio.queued_chunks + 2u;
+            const uint32_t normal_visual_interval = g_stream_band == RtlBand::lora
+                                                        ? kRtlLoraSpectrumIntervalMs
+                                                        : kRtlSpectrumIntervalMs;
             const uint32_t visual_interval = audio_stressed
                                                  ? kRtlSpectrumStressedIntervalMs
-                                                 : kRtlSpectrumIntervalMs;
+                                                 : normal_visual_interval;
             if (now - rtl_session_started_ms >= kRtlAudioPrimeMs &&
                 now - spectrum_last_ms >= visual_interval) {
               spectrum_last_ms = now;
@@ -9392,6 +9398,12 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.sd_logging = lora_log_ready.load(std::memory_order_relaxed);
   snapshot.survey_active = orcsdr::lora_channel::survey_active();
   snapshot.survey_progress = orcsdr::lora_channel::survey_progress();
+  snapshot.survey_result_count = std::min<uint8_t>(
+      orcsdr::lora_channel::survey_result_count(), orcsdr::lora::kSurveyResultCapacity);
+  for (uint8_t i = 0; i < snapshot.survey_result_count; ++i) {
+    const auto result = orcsdr::lora_channel::survey_result(i);
+    snapshot.survey_results[i] = {result.frequency_hz, result.level_dbfs};
+  }
   snapshot.iq_recording = g_iq_rec_active.load(std::memory_order_relaxed);
   snapshot.iq_ready = g_iq_rec_ready.load(std::memory_order_relaxed);
   snapshot.iq_busy = lora_native_decode_busy.load(std::memory_order_relaxed);
@@ -9452,6 +9464,7 @@ orcsdr::lora::Snapshot lora_dashboard_snapshot() {
   snapshot.revision ^= static_cast<uint32_t>(snapshot.node_count) << 16;
   snapshot.revision ^= static_cast<uint32_t>(snapshot.selected_node) << 8;
   snapshot.revision ^= snapshot.survey_active ? 1u : 0u;
+  snapshot.revision ^= snapshot.survey_progress << 20;
   snapshot.revision ^= snapshot.sd_logging ? 2u : 0u;
   snapshot.revision ^= snapshot.iq_recording ? 4u : 0u;
   snapshot.revision ^= snapshot.iq_ready ? 8u : 0u;
@@ -9766,16 +9779,19 @@ void handle_p25_dashboard_action(const orcsdr::p25::Action& action) {
 
 void service_lora_survey(uint32_t now) {
   const auto step = orcsdr::lora_channel::service_survey(
-      now, g_stream_band == RtlBand::lora);
+      now, g_stream_band == RtlBand::lora,
+      rtl_signal_dbfs.load(std::memory_order_relaxed));
   if (step.frequency_hz == 0) return;
+  if (step.sampled) {
+    Serial.printf("RTL_LORA_SURVEY span=%u center_hz=%u level_dbfs=%.1f\n",
+                  step.span, step.sampled_frequency_hz,
+                  static_cast<double>(step.sampled_level_dbfs));
+  }
   if (step.restore) {
     request_hot_retune(step.frequency_hz);
     Serial.printf("RTL_LORA_SURVEY restored_hz=%u\n", step.frequency_hz);
     return;
   }
-  Serial.printf("RTL_LORA_SURVEY span=%u center_hz=%u level_dbfs=%.1f\n",
-                step.span, step.frequency_hz,
-                static_cast<double>(rtl_signal_dbfs.load(std::memory_order_relaxed)));
   request_hot_retune(step.frequency_hz);
 }
 
@@ -11706,7 +11722,7 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     rtl_scope_span_hz.store(480000, std::memory_order_relaxed);
   }
   if (band == RtlBand::lora) {
-    rtl_scope_span_hz.store(kRtlScopeSpanMaxHz, std::memory_order_relaxed);
+    rtl_scope_span_hz.store(500000, std::memory_order_relaxed);
   }
   if (band == RtlBand::p25) {
     rtl_scope_span_hz.store(kRtlScopeSpanMaxHz, std::memory_order_relaxed);

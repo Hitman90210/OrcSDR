@@ -32,7 +32,10 @@ constexpr int kPlotH = 124;
 constexpr int kWaterfallY = 402;
 constexpr int kWaterfallH = 126;
 constexpr uint32_t kDynamicRefreshIntervalMs = 1000;
-constexpr uint32_t kSpectrumRefreshIntervalMs = 250;
+constexpr uint32_t kSpectrumRefreshIntervalMs = 50;
+constexpr float kSpectrumRangeDb = 42.0f;
+constexpr int kWaterfallRowsPerFrame = 1;
+constexpr size_t kSpectrumTraceCapacity = 256;
 constexpr size_t kTrafficRows = 5;
 
 Snapshot g_snapshot{};
@@ -51,6 +54,11 @@ size_t g_traffic_offset = 0;
 uint32_t g_last_dynamic_ms = 0;
 uint32_t g_last_spectrum_ms = 0;
 uint16_t g_waterfall_row[kPlotW]{};
+int16_t g_previous_spectrum_y[kSpectrumTraceCapacity]{};
+size_t g_previous_spectrum_bins = 0;
+View g_previous_spectrum_view = View::count;
+float g_waterfall_floor = -120.0f;
+bool g_waterfall_floor_valid = false;
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
   return x >= bx && x < bx + bw && y >= by && y < by + bh;
@@ -63,6 +71,61 @@ bool has_position(const Node& node) {
 bool supported_event(const Event& event) {
   return event.port == 1 || event.port == 3 || event.port == 4 || event.port == 5 ||
          event.port == 7 || event.port == 67;
+}
+
+float estimate_noise_floor(const float* levels, size_t first_bin, size_t visible_bins) {
+  float minimum = levels[first_bin];
+  for (size_t i = 1; i < visible_bins; ++i)
+    minimum = std::min(minimum, levels[first_bin + i]);
+  float sum = 0.0f;
+  size_t count = 0;
+  for (size_t i = 0; i < visible_bins; ++i) {
+    const float level = levels[first_bin + i];
+    if (level <= minimum + 12.0f) {
+      sum += level;
+      ++count;
+    }
+  }
+  return (count ? sum / static_cast<float>(count) : minimum) - 3.0f;
+}
+
+uint16_t waterfall_color(float level) {
+  const float v = std::clamp(level, 0.0f, 1.0f);
+  uint8_t r = 0, g = 0, b = 0;
+  if (v < 0.20f) {
+    b = static_cast<uint8_t>(20.0f + v * 400.0f);
+  } else if (v < 0.50f) {
+    const float t = (v - 0.20f) / 0.30f;
+    g = static_cast<uint8_t>(180.0f * t);
+    b = static_cast<uint8_t>(100.0f + 155.0f * t);
+  } else if (v < 0.75f) {
+    const float t = (v - 0.50f) / 0.25f;
+    r = static_cast<uint8_t>(255.0f * t);
+    g = static_cast<uint8_t>(180.0f + 75.0f * t);
+    b = static_cast<uint8_t>(255.0f * (1.0f - t));
+  } else if (v < 0.90f) {
+    const float t = (v - 0.75f) / 0.15f;
+    r = 255;
+    g = static_cast<uint8_t>(255.0f * (1.0f - t));
+  } else {
+    const uint8_t hot = static_cast<uint8_t>(255.0f * (v - 0.90f) / 0.10f);
+    r = 255;
+    g = hot;
+    b = hot;
+  }
+  return M5.Display.color565(r, g, b);
+}
+
+void draw_lora_channel_markers() {
+  if (g_snapshot.span_hz == 0 || g_snapshot.bandwidth_hz >= g_snapshot.span_hz) return;
+  const int half_width = static_cast<int>(
+      static_cast<uint64_t>(kPlotW) * g_snapshot.bandwidth_hz / g_snapshot.span_hz / 2u);
+  const int center = kPlotX + kPlotW / 2;
+  for (const int edge : {center - half_width, center + half_width}) {
+    M5.Display.drawFastVLine(edge, kPlotY + 1, kPlotH - 2, kYellow);
+    M5.Display.drawFastVLine(edge, kWaterfallY + 1, kWaterfallH - 2, kGrid);
+  }
+  M5.Display.drawFastVLine(center, kPlotY + 1, kPlotH - 2, kGreen);
 }
 
 size_t visible_event_count() {
@@ -271,12 +334,23 @@ void draw_plot_static() {
            static_cast<unsigned long>(g_snapshot.bandwidth_hz / 1000u));
   text(value, 520, 198, kGreen, 2, middle_left);
   text("RX ONLY", 1020, 164, kGreen, 2, middle_left);
+  const uint32_t half_span = g_snapshot.span_hz / 2u;
+  const uint32_t left_hz = g_snapshot.frequency_hz > half_span
+                               ? g_snapshot.frequency_hz - half_span
+                               : 0;
+  snprintf(value, sizeof(value), "%.3f", left_hz / 1000000.0);
+  text(value, kPlotX, 250, kMuted, 1, middle_left);
+  snprintf(value, sizeof(value), "%.3f MHz", g_snapshot.frequency_hz / 1000000.0);
+  text(value, kPlotX + kPlotW / 2, 250, kCyan, 1);
+  snprintf(value, sizeof(value), "%.3f", (g_snapshot.frequency_hz + half_span) / 1000000.0);
+  text(value, kPlotX + kPlotW, 250, kMuted, 1, middle_right);
   M5.Display.fillRect(kPlotX, kPlotY, kPlotW, kPlotH, kBg);
   M5.Display.drawRect(kPlotX, kPlotY, kPlotW, kPlotH, kGrid);
   for (int i = 1; i < 5; ++i) {
     M5.Display.drawFastHLine(kPlotX, kPlotY + i * kPlotH / 5, kPlotW, kGrid);
     M5.Display.drawFastVLine(kPlotX + i * kPlotW / 5, kPlotY, kPlotH, kGrid);
   }
+  draw_lora_channel_markers();
   M5.Display.drawRect(kPlotX, kWaterfallY, kPlotW, kWaterfallH, kCyan);
   M5.Display.setScrollRect(kPlotX + 1, kWaterfallY + 1, kPlotW - 2, kWaterfallH - 2,
                            kBg);
@@ -358,19 +432,27 @@ void split_message(const char* value, size_t line_chars, char* first, char* seco
 }
 
 void format_event_time(char* output, size_t output_size, const Event& event,
-                       uint32_t now_ms) {
+                       uint32_t now_ms, bool include_age = true) {
   const uint32_t age = event.sender == 0 ? 0 : (now_ms - event.received_ms) / 1000u;
   if (event.received_utc == 0) {
-    snprintf(output, output_size, "TIME NOT SET | %lus",
-             static_cast<unsigned long>(age));
+    if (include_age)
+      snprintf(output, output_size, "TIME NOT SET | %lus", static_cast<unsigned long>(age));
+    else
+      strlcpy(output, "TIME NOT SET", output_size);
     return;
   }
   const uint32_t day_seconds = event.received_utc % 86400u;
-  snprintf(output, output_size, "%02lu:%02lu:%02luZ | %lus",
-           static_cast<unsigned long>(day_seconds / 3600u),
-           static_cast<unsigned long>((day_seconds / 60u) % 60u),
-           static_cast<unsigned long>(day_seconds % 60u),
-           static_cast<unsigned long>(age));
+  if (include_age)
+    snprintf(output, output_size, "%02lu:%02lu:%02luZ | %lus",
+             static_cast<unsigned long>(day_seconds / 3600u),
+             static_cast<unsigned long>((day_seconds / 60u) % 60u),
+             static_cast<unsigned long>(day_seconds % 60u),
+             static_cast<unsigned long>(age));
+  else
+    snprintf(output, output_size, "%02lu:%02lu:%02luZ",
+             static_cast<unsigned long>(day_seconds / 3600u),
+             static_cast<unsigned long>((day_seconds / 60u) % 60u),
+             static_cast<unsigned long>(day_seconds % 60u));
 }
 
 void format_event_details(char* output, size_t output_size, const Event& event) {
@@ -407,7 +489,8 @@ void draw_event_row(const Event& event, int x, int y, int w) {
     text(first, x + 16, y + 46, TFT_WHITE, 3, middle_left);
   }
   char received[32];
-  format_event_time(received, sizeof(received), event, millis());
+  format_event_time(received, sizeof(received), event, millis(),
+                    g_view != View::traffic || g_traffic_details);
   text(received, x + w - 16, y + 19,
        event.received_utc ? kMuted : kYellow, 2, middle_right);
 }
@@ -431,11 +514,29 @@ void draw_large_event_row(const Event& event, int x, int y, int w) {
 }
 
 void draw_overview_dynamic() {
-  M5.Display.fillRect(854, 310, 366, 205, kPanel);
-  for (size_t i = 0; i < 2 && i < g_snapshot.event_count; ++i)
-    draw_large_event_row(g_snapshot.events[i], 862, 316 + static_cast<int>(i) * 99, 350);
-  if (g_snapshot.event_count == 0)
-    text("WAITING FOR VERIFIED TRAFFIC", 1037, 410, kMuted, 1);
+  char value[48];
+  M5.Display.fillRect(850, 184, 370, 36, kPanel);
+  snprintf(value, sizeof(value), "SIGNAL %.1f dBFS", g_snapshot.relative_dbfs);
+  text(value, 1204, 202, kGreen, 2, middle_right);
+  M5.Display.fillRect(854, 286, 366, 229, kPanel);
+  if (g_snapshot.survey_result_count) {
+    text("SCAN RESULTS", 868, 300, kCyan, 2, middle_left);
+    text("RELATIVE ENERGY", 1204, 300, kMuted, 1, middle_right);
+    for (size_t i = 0; i < g_snapshot.survey_result_count; ++i) {
+      const auto& result = g_snapshot.survey_results[i];
+      snprintf(value, sizeof(value), "%u  %.3f MHz", static_cast<unsigned>(i + 1),
+               result.frequency_hz / 1000000.0);
+      text(value, 868, 342 + static_cast<int>(i) * 52, TFT_WHITE, 2, middle_left);
+      snprintf(value, sizeof(value), "%.1f dBFS", result.level_dbfs);
+      text(value, 1204, 342 + static_cast<int>(i) * 52, kGreen, 2, middle_right);
+    }
+  } else {
+    text("RECENT", 868, 300, kCyan, 2, middle_left);
+    for (size_t i = 0; i < 2 && i < g_snapshot.event_count; ++i)
+      draw_large_event_row(g_snapshot.events[i], 862, 316 + static_cast<int>(i) * 99, 350);
+    if (g_snapshot.event_count == 0)
+      text("WAITING FOR VERIFIED TRAFFIC", 1037, 410, kMuted, 1);
+  }
 }
 
 void draw_nodes_dynamic() {
@@ -701,6 +802,9 @@ void enter(const Snapshot& snapshot) {
   g_map_center_set = false;
   g_last_dynamic_ms = 0;
   g_last_spectrum_ms = 0;
+  g_previous_spectrum_bins = 0;
+  g_previous_spectrum_view = View::count;
+  g_waterfall_floor_valid = false;
   draw_static();
 }
 
@@ -721,7 +825,9 @@ void update(const Snapshot& snapshot) {
   const bool content_changed = snapshot.revision != g_snapshot.revision;
   g_snapshot = snapshot;
   const uint32_t now = millis();
-  if (!content_changed && now - g_last_dynamic_ms < kDynamicRefreshIntervalMs) return;
+  const bool needs_age_refresh = g_view != View::traffic || g_traffic_details;
+  if (!content_changed &&
+      (!needs_age_refresh || now - g_last_dynamic_ms < kDynamicRefreshIntervalMs)) return;
   g_last_dynamic_ms = now;
   M5.Display.startWrite();
   draw_dynamic();
@@ -729,7 +835,7 @@ void update(const Snapshot& snapshot) {
   M5.Display.endWrite();
 }
 
-void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, float floor) {
+void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, float /*floor*/) {
   if (!spectrum_active() || levels == nullptr || visible_bins < 2) return;
   const uint32_t now = millis();
   if (now - g_last_spectrum_ms < kSpectrumRefreshIntervalMs) return;
@@ -738,34 +844,67 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
   const int y = g_view == View::rf_health ? 300 : kPlotY;
   const int w = g_view == View::rf_health ? 770 : kPlotW;
   const int h = g_view == View::rf_health ? 130 : kPlotH;
+  const int trace_x = x + 1;
+  const int trace_w = w - 2;
+  visible_bins = std::min(visible_bins, kSpectrumTraceCapacity);
+  const float target_floor = estimate_noise_floor(levels, first_bin, visible_bins);
+  g_waterfall_floor = g_waterfall_floor_valid
+                          ? 0.97f * g_waterfall_floor + 0.03f * target_floor
+                          : target_floor;
+  g_waterfall_floor_valid = true;
+  const float display_floor = g_waterfall_floor;
   M5.Display.startWrite();
-  M5.Display.fillRect(x + 1, y + 1, w - 2, h - 2, kBg);
+  const bool erase_previous = g_previous_spectrum_bins == visible_bins &&
+                              g_previous_spectrum_view == g_view;
+  if (erase_previous) {
+    int previous_x = trace_x;
+    int previous_y = g_previous_spectrum_y[0];
+    for (size_t i = 1; i < visible_bins; ++i) {
+      const int next_x = trace_x + static_cast<int>(i * static_cast<size_t>(trace_w - 1) /
+                                              (visible_bins - 1));
+      M5.Display.drawLine(previous_x, previous_y, next_x,
+                          g_previous_spectrum_y[i], kBg);
+      previous_x = next_x;
+      previous_y = g_previous_spectrum_y[i];
+    }
+  } else {
+    M5.Display.fillRect(x + 1, y + 1, w - 2, h - 2, kBg);
+  }
   for (int i = 1; i < 5; ++i) {
     M5.Display.drawFastHLine(x, y + i * h / 5, w, kGrid);
     M5.Display.drawFastVLine(x + i * w / 5, y, h, kGrid);
   }
-  int px = x;
-  int py = y + h - 2;
-  for (int i = 0; i < w; ++i) {
-    const size_t source = first_bin + std::min<size_t>(visible_bins - 1,
-        static_cast<size_t>(i) * visible_bins / static_cast<size_t>(w));
-    const float normalized = std::clamp((levels[source] - floor) / 70.0f, 0.0f, 1.0f);
+  int px = trace_x;
+  int py = y + h - 2 - static_cast<int>(
+      std::clamp((levels[first_bin] - display_floor) / kSpectrumRangeDb, 0.0f, 1.0f) *
+      (h - 4));
+  g_previous_spectrum_y[0] = static_cast<int16_t>(py);
+  for (size_t i = 1; i < visible_bins; ++i) {
+    const size_t source = first_bin + i;
+    const int next_x = trace_x + static_cast<int>(i * static_cast<size_t>(trace_w - 1) /
+                                            (visible_bins - 1));
+    const float normalized = std::clamp(
+        (levels[source] - display_floor) / kSpectrumRangeDb, 0.0f, 1.0f);
     const int next_y = y + h - 2 - static_cast<int>(normalized * (h - 4));
-    M5.Display.drawLine(px, py, x + i, next_y, kGreen);
-    px = x + i; py = next_y;
+    M5.Display.drawLine(px, py, next_x, next_y, kGreen);
+    g_previous_spectrum_y[i] = static_cast<int16_t>(next_y);
+    px = next_x;
+    py = next_y;
   }
+  g_previous_spectrum_bins = visible_bins;
+  g_previous_spectrum_view = g_view;
   if (g_view == View::overview) {
     for (int i = 0; i < kPlotW; ++i) {
       const size_t source = first_bin + std::min<size_t>(visible_bins - 1,
           static_cast<size_t>(i) * visible_bins / kPlotW);
-      const float level = std::clamp((levels[source] - floor) / 70.0f, 0.0f, 1.0f);
-      const uint8_t r = static_cast<uint8_t>(std::clamp(level * 300.0f, 0.0f, 255.0f));
-      const uint8_t g = static_cast<uint8_t>(std::clamp(level * 255.0f, 0.0f, 255.0f));
-      const uint8_t b = static_cast<uint8_t>(std::clamp(180.0f - level * 180.0f, 0.0f, 255.0f));
-      g_waterfall_row[i] = M5.Display.color565(r, g, b);
+      const float normalized = (levels[source] - display_floor) / kSpectrumRangeDb;
+      g_waterfall_row[i] = waterfall_color(normalized);
     }
-    M5.Display.scroll(0, -1);
-    M5.Display.pushImage(kPlotX, kWaterfallY + kWaterfallH - 2, kPlotW, 1, g_waterfall_row);
+    M5.Display.scroll(0, -kWaterfallRowsPerFrame);
+    for (int row = 0; row < kWaterfallRowsPerFrame; ++row)
+      M5.Display.pushImage(kPlotX, kWaterfallY + kWaterfallH - 3 + row,
+                           kPlotW, 1, g_waterfall_row);
+    draw_lora_channel_markers();
   }
   M5.Display.endWrite();
 }
@@ -896,6 +1035,10 @@ bool self_check() {
   snapshot.events[0].received_utc = 52328;
   if (static_cast<uint8_t>(View::count) != 5 || kTabW * 5 != 1280 ||
       !has_position(snapshot.nodes[0])) return false;
+  const float scope_levels[] = {-50.0f, -49.0f, -48.0f, -10.0f};
+  if (fabsf(estimate_noise_floor(scope_levels, 0, 4) + 52.0f) > 0.01f ||
+      kSpectrumRefreshIntervalMs != 50 || kWaterfallRowsPerFrame != 1 ||
+      kSpectrumTraceCapacity != 256) return false;
   char value[16];
   format_id(value, sizeof(value), snapshot.nodes[0].id);
   if (strcmp(value, "!A1B2C3D4") != 0) return false;
@@ -905,9 +1048,13 @@ bool self_check() {
   char received[32];
   format_event_time(received, sizeof(received), snapshot.events[0], 13000);
   if (strcmp(received, "14:32:08Z | 12s") != 0) return false;
+  format_event_time(received, sizeof(received), snapshot.events[0], 13000, false);
+  if (strcmp(received, "14:32:08Z") != 0) return false;
   snapshot.events[0].received_utc = 0;
   format_event_time(received, sizeof(received), snapshot.events[0], 13000);
   if (strcmp(received, "TIME NOT SET | 12s") != 0) return false;
+  format_event_time(received, sizeof(received), snapshot.events[0], 13000, false);
+  if (strcmp(received, "TIME NOT SET") != 0) return false;
   snapshot.events[0].destination = 0xFFFFFFFF;
   snapshot.events[0].packet_id = 0x10203040;
   snapshot.events[0].port = 1;
