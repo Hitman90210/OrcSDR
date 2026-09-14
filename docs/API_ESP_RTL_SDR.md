@@ -3,7 +3,7 @@
 The public driver API is maintained in
 [`hardcoreerik/esp-rtl-sdr`](https://github.com/hardcoreerik/esp-rtl-sdr).
 Current OrcSDR uses driver **0.8.0-rc2** at immutable commit
-`b175dfea6782faa97e512d4a2408767c75977527`. The same SHA is recorded in
+`7ec9825e31653eaa5692978e3e5d44032d621417`. The same SHA is recorded in
 `apps/orcsdr-tab5/main/idf_component.yml` and
 `apps/orcsdr-tab5/dependencies.lock`.
 

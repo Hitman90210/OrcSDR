@@ -14,7 +14,7 @@ historical and unsupported.
 
 The portable receiver boundary is the external `esp-rtl-sdr` component,
 0.8.0-rc2, pinned immutably at
-`b175dfea6782faa97e512d4a2408767c75977527` by
+`7ec9825e31653eaa5692978e3e5d44032d621417` by
 `apps/orcsdr-tab5/main/idf_component.yml` and
 `apps/orcsdr-tab5/dependencies.lock`. OrcSDR uses callback delivery and owns
 DSP, UI, storage, and product behavior above that driver. The old local USB
