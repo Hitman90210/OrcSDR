@@ -28,6 +28,7 @@ param(
   [switch]$AmBroadcast,
   [switch]$GainSweep,
   [switch]$IqDiagnostic,
+  [switch]$IqHotTune,
   [ValidatePattern('^[A-Za-z0-9_-]{1,31}$')]
   [string]$IqTransition = 'manual',
   [ValidateSet('FM', 'AM', 'BROWSE')]
@@ -860,11 +861,14 @@ function ConvertFrom-V3cRfState([string]$Line) {
 }
 
 function Test-IqDriverReady($Before, $Current, [uint64]$ExpectedFrequency,
-                            [bool]$RestartObserved) {
-  return $Current.State -eq 'STREAMING' -and
-         $Current.Frequency -eq $ExpectedFrequency -and $Current.Bytes -gt 0 -and
-         ($RestartObserved -or $Before.State -ne 'STREAMING' -or
-          $Current.Bytes -lt $Before.Bytes)
+                            [bool]$RestartObserved, [bool]$HotTune = $false) {
+  if ($Current.State -ne 'STREAMING' -or $Current.Frequency -ne $ExpectedFrequency -or
+      $Current.Bytes -le 0) { return $false }
+  if ($HotTune) {
+    return $Before.Frequency -ne $ExpectedFrequency -and $Current.Bytes -gt $Before.Bytes
+  }
+  return $RestartObserved -or $Before.State -ne 'STREAMING' -or
+         $Current.Bytes -lt $Before.Bytes
 }
 
 function Invoke-SelfCheck {
@@ -943,6 +947,11 @@ function Invoke-SelfCheck {
       !(Test-IqDriverReady $beforeTune $freshTune 99113000 $false)) {
     throw 'IQ post-tune restart guard failed.'
   }
+  $hotBefore = [pscustomobject]@{ State = 'STREAMING'; Frequency = 23900000; Bytes = 1000000 }
+  $hotAfter = [pscustomobject]@{ State = 'STREAMING'; Frequency = 24100000; Bytes = 1100000 }
+  if (!(Test-IqDriverReady $hotBefore $hotAfter 24100000 $false $true)) {
+    throw 'IQ hot-tune guard failed.'
+  }
   $lineBytes = [Text.Encoding]::ASCII.GetBytes("RTL_IQ_GET_DATA bytes=4`r`n")
   $protocolBytes = [byte[]]($lineBytes + [byte[]](13, 10, 255, 0))
   $protocolStream = [IO.MemoryStream]::new($protocolBytes)
@@ -957,6 +966,7 @@ if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
 if (($InstallLaneMap -or $InstallFaaAircraft) -and !$DataOnly) {
   throw '-InstallLaneMap and -InstallFaaAircraft require -DataOnly.'
 }
+if ($IqHotTune -and !$IqDiagnostic) { throw '-IqHotTune requires -IqDiagnostic.' }
 if (@($Run, $Soak, $Driver080Rc2, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast, $GainSweep, $IqDiagnostic).Where({ $_ }).Count -gt 1) {
   throw 'Choose only one primary test mode, including -IqDiagnostic.'
 }
@@ -1029,17 +1039,26 @@ function Invoke-IqDiagnosticCapture {
   Wait-DeviceReady 60 11000
   Connect-Authenticated
   $beforeTune = Get-DriverStatus
-  [void](Send-And-Wait "RTL_TUNE $IqBand $IqFrequency" '^RTL_TUNE_OK ' 20)
+  if ($IqHotTune) {
+    $current = Get-RadioFrequency
+    if ($current.Band -ne $IqBand) {
+      throw "Hot IQ tune requires current band $IqBand; device is $($current.Band)."
+    }
+    $script:lastV3cRfState = $null
+    [void](Send-And-Wait "RTL_FREQ $IqFrequency" '^RTL_FREQ_OK ' 20)
+  } else {
+    [void](Send-And-Wait "RTL_TUNE $IqBand $IqFrequency" '^RTL_TUNE_OK ' 20)
+  }
   $expectedDriverFrequency = $IqFrequency
   $restartObserved = $beforeTune.State -ne 'STREAMING'
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     $driver = Get-DriverStatus
     if ($driver.State -ne 'STREAMING') { $restartObserved = $true }
-    if (Test-IqDriverReady $beforeTune $driver $expectedDriverFrequency $restartObserved) { break }
+    if (Test-IqDriverReady $beforeTune $driver $expectedDriverFrequency $restartObserved $IqHotTune) { break }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
-  if (!(Test-IqDriverReady $beforeTune $driver $expectedDriverFrequency $restartObserved)) {
+  if (!(Test-IqDriverReady $beforeTune $driver $expectedDriverFrequency $restartObserved $IqHotTune)) {
     throw "Requested IQ state did not stabilize: state=$($driver.State) display_hz=$IqFrequency driver_lo_hz=$($driver.Frequency) expected_lo_hz=$expectedDriverFrequency"
   }
 
@@ -1111,6 +1130,7 @@ function Invoke-IqDiagnosticCapture {
     timestamp_utc = [DateTime]::UtcNow.ToString('o')
     capture_path = $output
     transition = $start.Transition
+    tune_method = if ($IqHotTune) { 'hot' } else { 'restart' }
     sequence = $start.Sequence
     capture_started_ms = $start.StartedMs
     dongle_profile = $driverAfter.ProfileName
