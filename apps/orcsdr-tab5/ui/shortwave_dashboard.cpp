@@ -104,12 +104,13 @@ void draw_quick_controls() {
   char value[40];
   snprintf(value, sizeof(value), "STEP %lu Hz",
            static_cast<unsigned long>(g_snapshot.step_hz));
-  text(value, 142, 274, TFT_WHITE, 2);
+  button(24, 246, 236, 56, value);
   snprintf(value, sizeof(value), "AM FILTER %.1f kHz",
            static_cast<double>(g_snapshot.filter_bandwidth_hz) / 1000.0);
-  text(value, 396, 274, TFT_WHITE, 2);
-  text(g_snapshot.sound_enabled ? "SOUND ON" : "SOUND OFF", 674, 274,
-       g_snapshot.sound_enabled ? kGreen : TFT_ORANGE, 2);
+  button(278, 246, 236, 56, value);
+  button(532, 246, 284, 56,
+         g_snapshot.sound_enabled ? "SOUND ON" : "SOUND OFF",
+         g_snapshot.sound_enabled);
 }
 
 void draw_controls() {
@@ -176,9 +177,6 @@ void draw_static() {
   card(24, 110, 792, 122);
   button(42, 128, 64, 72, "-");
   button(734, 128, 64, 72, "+");
-  button(24, 246, 236, 56, "STEP");
-  button(278, 246, 236, 56, "FILTER");
-  button(532, 246, 284, 56, "SOUND");
   card(840, 110, 420, 474);
   M5.Display.drawRect(kSpectrumX, kSpectrumY, kSpectrumW, kSpectrumH, kGrid);
   for (int i = 1; i < 8; ++i)
