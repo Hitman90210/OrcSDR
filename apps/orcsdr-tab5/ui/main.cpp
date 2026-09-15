@@ -46,6 +46,7 @@
 #include "orcsdr_storage.hpp"
 #include "am_dashboard.hpp"
 #include "shortwave_model.hpp"
+#include "receiver_tuning_controls.hpp"
 #include "am_finder.hpp"
 #include "adsb_dashboard.hpp"
 #include "adsb_decoder.hpp"
@@ -15637,6 +15638,11 @@ void setup() {
     return;
   }
   Serial.println("RTL_SHORTWAVE_MODEL_SELF_CHECK_OK");
+  if (!orcsdr::receiver_controls::self_check()) {
+    Serial.println("RTL_RECEIVER_CONTROLS_SELF_CHECK_FAIL");
+    return;
+  }
+  Serial.println("RTL_RECEIVER_CONTROLS_SELF_CHECK_OK");
   if (!orcsdr::am_finder::self_check()) {
     Serial.println("RTL_AM_FINDER_SELF_CHECK_FAIL");
   }

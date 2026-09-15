@@ -45,11 +45,11 @@
 - Modify: `apps/orcsdr-tab5/main/CMakeLists.txt`
 - Modify: `apps/orcsdr-tab5/ui/main.cpp` (self-check registration only)
 
-- [ ] Write failing self-check cases for V3c Direct Q and V4 HF-upconverter control availability.
-- [ ] Implement labels and actions for RF GAIN, TUNER AGC, RTL AGC, AUDIO BOOST, VOLUME, and OFFSET TUNING.
-- [ ] Keep unsupported controls visible only when explanation is useful; never emit their actions.
-- [ ] Verify the focused self-check passes.
-- [ ] Commit the shared-control slice.
+- [x] Write failing self-check cases for V3c Direct Q and V4 HF-upconverter control availability.
+- [x] Implement labels and actions for RF GAIN, TUNER AGC, RTL AGC, AUDIO BOOST, VOLUME, and OFFSET TUNING.
+- [x] Keep unsupported controls visible only when explanation is useful; never emit their actions.
+- [x] Verify the focused self-check passes.
+- [x] Commit the shared-control slice.
 
 ### Task 3: Dedicated Shortwave LIVE dashboard
 
