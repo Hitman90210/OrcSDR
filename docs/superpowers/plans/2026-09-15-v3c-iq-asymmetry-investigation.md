@@ -62,15 +62,15 @@ Commit message: `test: add raw IQ asymmetry analyzer`
 - Consumes: authenticated `RTL_IQ_DIAG_START <transition>` while a radio stream is running
 - Produces: existing `RTL_IQ_GET_*` byte stream plus JSON metadata beside the host `.cu8` file
 
-- [ ] **Step 1: Add a failing source/self-check for the diagnostic protocol**
+- [ ] **Step 1: Add a failing parser/self-check for diagnostic metadata**
 
-Extend the existing PowerShell `-SelfCheck` assertions to require a one-second diagnostic capture size, authenticated start command, bounded transition label, and unchanged `RTL_IQ_GET_*` retrieval framing.
+Add a host parser for the diagnostic start/status response and exercise it from `-SelfCheck` with a literal line containing a one-second byte count, bounded transition label, sequence, frequency, and rate. This catches malformed or incomplete metadata without asserting on source text.
 
 - [ ] **Step 2: Verify the focused self-check fails**
 
 Run: `apps/orcsdr-tab5/tools/run-tab5-ui-regression.ps1 -SelfCheck`
 
-Expected: failure naming the absent diagnostic capture protocol.
+Expected: failure because the diagnostic response parser is absent.
 
 - [ ] **Step 3: Generalize the existing recorder minimally**
 
