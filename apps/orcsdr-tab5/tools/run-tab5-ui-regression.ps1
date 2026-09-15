@@ -1171,7 +1171,7 @@ function Invoke-IqDiagnosticCapture {
     antenna_band_suitability = $IqAntennaSuitability
     health_before = $healthBefore
     health_after_capture = $healthAfterCapture
-    driver_after_retrieval = $driverAfterRetrieval.Line
+    driver_after_retrieval = $driverAfterRetrieval
     health_after_retrieval = $healthAfterRetrieval
     capture_done_line = $doneLine
     orcsdr_commit = (& git -C (Join-Path $PSScriptRoot '..\..\..') rev-parse HEAD).Trim()
