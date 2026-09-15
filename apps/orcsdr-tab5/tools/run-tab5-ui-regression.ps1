@@ -823,6 +823,14 @@ function ConvertFrom-V3cRfState([string]$Line) {
   }
 }
 
+function Test-IqDriverReady($Before, $Current, [uint64]$ExpectedFrequency,
+                            [bool]$RestartObserved) {
+  return $Current.State -eq 'STREAMING' -and
+         $Current.Frequency -eq $ExpectedFrequency -and $Current.Bytes -gt 0 -and
+         ($RestartObserved -or $Before.State -ne 'STREAMING' -or
+          $Current.Bytes -lt $Before.Bytes)
+}
+
 function Invoke-SelfCheck {
   if (-not (Test-FatalLine 'Guru Meditation Error: Core 1 panic')) { throw 'Fatal parser missed panic.' }
   if (-not (Test-FatalLine 'ESP-ROM:esp32p4-eco2-20240710')) { throw 'Fatal parser missed reset.' }
@@ -891,6 +899,13 @@ function Invoke-SelfCheck {
   if ($rfState.PllIf -ne 3570000 -or $rfState.DemodIf -ne 3570000 -or
       $rfState.Mode -ne 'NORMAL_TUNER' -or $rfState.Transition -ne 'COLD_INIT') {
     throw 'V3c RF state parser failed.'
+  }
+  $beforeTune = [pscustomobject]@{ State = 'STREAMING'; Frequency = 99113000; Bytes = 500000000 }
+  $staleTune = [pscustomobject]@{ State = 'STREAMING'; Frequency = 99113000; Bytes = 500100000 }
+  $freshTune = [pscustomobject]@{ State = 'STREAMING'; Frequency = 99113000; Bytes = 1000000 }
+  if ((Test-IqDriverReady $beforeTune $staleTune 99113000 $false) -or
+      !(Test-IqDriverReady $beforeTune $freshTune 99113000 $false)) {
+    throw 'IQ post-tune restart guard failed.'
   }
   Write-SoakLine 'RTL_UI_SOAK_SELF_CHECK pass=1'
 }
@@ -970,16 +985,18 @@ function Invoke-IqDiagnosticCapture {
   }
   Wait-DeviceReady 60 11000
   Connect-Authenticated
+  $beforeTune = Get-DriverStatus
   [void](Send-And-Wait "RTL_TUNE $IqBand $IqFrequency" '^RTL_TUNE_OK ' 20)
   $expectedDriverFrequency = if ($IqBand -eq 'FM') { $IqFrequency + 13000 } else { $IqFrequency }
+  $restartObserved = $beforeTune.State -ne 'STREAMING'
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     $driver = Get-DriverStatus
-    if ($driver.State -eq 'STREAMING' -and $driver.Frequency -eq $expectedDriverFrequency -and
-        $driver.Bytes -gt 0) { break }
+    if ($driver.State -ne 'STREAMING') { $restartObserved = $true }
+    if (Test-IqDriverReady $beforeTune $driver $expectedDriverFrequency $restartObserved) { break }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
-  if ($driver.State -ne 'STREAMING' -or $driver.Frequency -ne $expectedDriverFrequency) {
+  if (!(Test-IqDriverReady $beforeTune $driver $expectedDriverFrequency $restartObserved)) {
     throw "Requested IQ state did not stabilize: state=$($driver.State) display_hz=$IqFrequency driver_lo_hz=$($driver.Frequency) expected_lo_hz=$expectedDriverFrequency"
   }
 
