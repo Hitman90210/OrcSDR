@@ -310,6 +310,15 @@ Action handle_touch(int32_t x, int32_t y) {
     return {ActionKind::audio_boost, !g_snapshot.controls.audio_boost};
   if (hit(x, y, 1052, 258, 72, 68)) return {ActionKind::volume_down};
   if (hit(x, y, 1164, 258, 72, 68)) return {ActionKind::volume_up};
+  if (hit(x, y, kSpectrumX, kSpectrumY, kSpectrumW, kSpectrumH) ||
+      hit(x, y, kSpectrumX, kWaterfallY, kSpectrumW, kWaterfallH)) {
+    const int64_t offset =
+        static_cast<int64_t>(x - (kSpectrumX + kSpectrumW / 2)) *
+        g_snapshot.span_hz / kSpectrumW;
+    const int64_t selected = static_cast<int64_t>(g_snapshot.frequency_hz) + offset;
+    return {ActionKind::tune_hz, static_cast<int32_t>(
+        std::clamp<int64_t>(selected, 24000, 30000000))};
+  }
   return {};
 }
 
@@ -357,10 +366,21 @@ bool dashboard_self_check() {
       spectrum_x_for_bin(3, 4) == kSpectrumX + kSpectrumW - 1 &&
       kWaterfallY > kSpectrumY + kSpectrumH &&
       kWaterfallY + kWaterfallH <= kTabsY;
+  g_snapshot.frequency_hz = 7100000;
+  g_snapshot.span_hz = 480000;
+  const bool touch_tune_bounds_ok =
+      handle_touch(kSpectrumX + kSpectrumW / 2, kSpectrumY).kind ==
+          ActionKind::tune_hz &&
+      handle_touch(kSpectrumX + kSpectrumW / 2, kSpectrumY).value == 7100000 &&
+      handle_touch(kSpectrumX - 1, kSpectrumY).kind == ActionKind::none &&
+      handle_touch(kSpectrumX, kSpectrumY - 1).kind == ActionKind::none &&
+      handle_touch(kSpectrumX + kSpectrumW, kWaterfallY).kind == ActionKind::none &&
+      handle_touch(kSpectrumX, kWaterfallY + kWaterfallH).kind == ActionKind::none &&
+      handle_touch(830, 400).kind == ActionKind::none;
   g_snapshot = saved;
   g_active = was_active;
-  return ok && direct_q_ok && spectrum_layout_ok && kTabsY + 90 <= 720 && model_self_check() &&
-         receiver_controls::self_check();
+  return ok && direct_q_ok && spectrum_layout_ok && touch_tune_bounds_ok &&
+         kTabsY + 90 <= 720 && model_self_check() && receiver_controls::self_check();
 }
 
 }  // namespace orcsdr::shortwave

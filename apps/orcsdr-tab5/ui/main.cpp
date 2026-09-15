@@ -12099,6 +12099,7 @@ bool point_in_scope(int32_t x, int32_t y) {
   if (rtl_ui_band == RtlBand::adsb) return false;
   // Dashboard modules own their complete touch surfaces, including spectrum views.
   if (rtl_ui_band == RtlBand::fm || rtl_ui_band == RtlBand::am ||
+      rtl_ui_band == RtlBand::shortwave ||
       (rtl_ui_band == RtlBand::p25 && orcsdr::p25::active())) return false;
   // Spectrum + waterfall hit target for pan/flick (not the control rows).
   return x >= kSpectrumX && x < kSpectrumX + spectrum_draw_width() && y >= kSpectrumY &&
