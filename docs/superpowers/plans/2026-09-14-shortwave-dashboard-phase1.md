@@ -31,11 +31,11 @@
 - Modify: `apps/orcsdr-tab5/main/CMakeLists.txt`
 - Modify: `apps/orcsdr-tab5/ui/main.cpp` (self-check registration only)
 
-- [ ] Declare band lookup, tuning steps, filter presets, route/tuning state, and fixed-size station/memory/log structures.
-- [ ] Add a self-check call before implementation and run the native build to observe the expected missing/failed implementation.
-- [ ] Implement the ITU-derived band table and validation rules.
-- [ ] Verify edge, gap, unknown-station, optional-field, and step/filter checks pass.
-- [ ] Commit the model slice.
+- [x] Declare band lookup, tuning steps, filter presets, route/tuning state, and fixed-size station/memory/log structures.
+- [x] Add a self-check call before implementation and run the native build to observe the expected missing/failed implementation.
+- [x] Implement the ITU-derived band table and validation rules.
+- [x] Verify edge, gap, unknown-station, optional-field, and step/filter checks pass.
+- [x] Commit the model slice.
 
 ### Task 2: Shared tuning-control presentation
 
