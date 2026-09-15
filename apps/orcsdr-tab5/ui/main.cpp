@@ -1430,6 +1430,7 @@ static char g_rds_capture_last_path[96] = "";
 // the 250 ms pre-roll and the complete packet after an energy trigger.
 constexpr size_t kIqRecSeconds = 4;
 constexpr size_t kIqRecMaxBytes = kRtlSampleRateSps * 2u * kIqRecSeconds;
+constexpr size_t kIqDiagnosticMaxBytes = kRtlSampleRateSps * 2u;
 constexpr size_t kOrciqHeaderBytes = 36;
 constexpr size_t kP25IqRecMaxBytes = 1024u * 1024u - kOrciqHeaderBytes;
 constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
@@ -1447,7 +1448,7 @@ static std::atomic<bool> g_iq_rec_export_pending{false};
 static std::atomic<bool> g_iq_rec_export_busy{false};
 static std::atomic<bool> g_iq_rec_auto_triggered{false};
 static std::atomic<bool> g_iq_retrieve_resume{false};
-enum class IqCaptureKind : uint8_t { none, lora, p25, pocsag };
+enum class IqCaptureKind : uint8_t { none, lora, p25, pocsag, diagnostic };
 static std::atomic<IqCaptureKind> g_iq_rec_kind{IqCaptureKind::none};
 static uint32_t g_iq_rec_frequency_hz = 0;
 static uint8_t g_iq_rec_sf = 11;
@@ -1455,7 +1456,9 @@ static uint32_t g_iq_rec_bandwidth_hz = 250000;
 static uint32_t g_iq_rec_file_seq = 0;
 static char g_iq_rec_last_path[96] = "";
 static uint32_t g_iq_rec_sequence = 0;
+static uint32_t g_iq_diag_next_sequence = 0;
 static uint32_t g_iq_rec_started_ms = 0;
+static char g_iq_rec_transition[32] = "none";
 static size_t g_iq_rec_trigger_offset_samples = 0;
 static size_t g_lora_pre_roll_write = 0;
 static size_t g_lora_pre_roll_fill = 0;
@@ -3858,10 +3861,12 @@ size_t lora_copy_pre_roll() {
 
 const char* iq_capture_kind_name(IqCaptureKind kind) {
   if (kind == IqCaptureKind::pocsag) return "pocsag";
+  if (kind == IqCaptureKind::diagnostic) return "diagnostic";
   return kind == IqCaptureKind::lora ? "lora" : kind == IqCaptureKind::p25 ? "p25" : "none";
 }
 
 size_t iq_capture_max_bytes(IqCaptureKind kind) {
+  if (kind == IqCaptureKind::diagnostic) return kIqDiagnosticMaxBytes;
   return kind == IqCaptureKind::p25 ? kP25IqRecMaxBytes : kIqRecMaxBytes;
 }
 
@@ -3878,7 +3883,7 @@ void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
   g_iq_rec_write.store(initial_bytes, std::memory_order_release);
   g_iq_rec_sequence = automatic && kind == IqCaptureKind::lora
                           ? lora_capture_sequence.fetch_add(1, std::memory_order_relaxed) + 1
-                          : 0;
+                          : kind == IqCaptureKind::diagnostic ? ++g_iq_diag_next_sequence : 0;
   g_iq_rec_started_ms = millis();
   g_iq_rec_trigger_offset_samples = initial_bytes / 2;
   g_lora_quiet_tail_bytes = 0;
@@ -5934,6 +5939,44 @@ bool handle_global_header_audio_touch(int32_t x, int32_t y) {
     return true;
   }
   draw_global_header_controls();
+  return true;
+}
+
+bool diagnostic_iq_rec_start(const char* transition) {
+  const size_t length = transition == nullptr ? 0 : strlen(transition);
+  if (length == 0 || length >= sizeof(g_iq_rec_transition)) {
+    Serial.println("RTL_IQ_DIAG_ERROR invalid_transition");
+    return false;
+  }
+  for (size_t i = 0; i < length; ++i) {
+    const unsigned char value = static_cast<unsigned char>(transition[i]);
+    if (!isalnum(value) && value != '_' && value != '-') {
+      Serial.println("RTL_IQ_DIAG_ERROR invalid_transition");
+      return false;
+    }
+  }
+  if (rtl_capture_state.load(std::memory_order_acquire) != RtlCaptureState::running) {
+    Serial.println("RTL_IQ_DIAG_ERROR radio_required");
+    return false;
+  }
+  if (g_iq_rec_active.load(std::memory_order_acquire) ||
+      g_iq_rec_ready.load(std::memory_order_acquire) ||
+      lora_native_decode_busy.load(std::memory_order_acquire)) {
+    Serial.println("RTL_IQ_DIAG_ERROR capture_or_decode_busy");
+    return false;
+  }
+  if (!iq_rec_ensure_buffer()) {
+    Serial.println("RTL_IQ_DIAG_ERROR no_psram_buffer");
+    return false;
+  }
+  strlcpy(g_iq_rec_transition, transition, sizeof(g_iq_rec_transition));
+  iq_rec_begin(IqCaptureKind::diagnostic, false, 0);
+  Serial.printf(
+      "RTL_IQ_DIAG_START transition=\"%s\" sequence=%lu bytes=%u rate=%u "
+      "frequency_hz=%u started_ms=%lu\n",
+      g_iq_rec_transition, static_cast<unsigned long>(g_iq_rec_sequence),
+      static_cast<unsigned>(kIqDiagnosticMaxBytes), kRtlSampleRateSps,
+      g_iq_rec_frequency_hz, static_cast<unsigned long>(g_iq_rec_started_ms));
   return true;
 }
 
@@ -8223,6 +8266,9 @@ static void rtl_dsp_task(void *) {
       orcsdr::p25decoder::process_cu8(block.data, block.bytes);
     if (!block.custom_rate && block.band == RtlBand::p25 &&
         g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::p25)
+      iq_rec_append(block.data, block.bytes);
+    if (!block.custom_rate &&
+        g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::diagnostic)
       iq_rec_append(block.data, block.bytes);
     if (block.band != RtlBand::adsb || orcsdr::home::active() ||
         orcsdr::visualizer::active() || lab_active)
@@ -14290,6 +14336,26 @@ void process_command(char* command) {
     (void)iq_rec_start();
     return;
   }
+  if (strncmp(command, "RTL_IQ_DIAG_START ", 18) == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_IQ_DIAG_ERROR auth_required");
+    } else {
+      (void)diagnostic_iq_rec_start(command + 18);
+    }
+    return;
+  }
+  if (strcmp(command, "RTL_IQ_DIAG_STATUS") == 0) {
+    Serial.printf(
+        "RTL_IQ_DIAG_STATUS transition=\"%s\" sequence=%lu active=%d ready=%d "
+        "bytes=%u max_bytes=%u rate=%u frequency_hz=%u started_ms=%lu\n",
+        g_iq_rec_transition, static_cast<unsigned long>(g_iq_rec_sequence),
+        g_iq_rec_active.load(std::memory_order_acquire) ? 1 : 0,
+        g_iq_rec_ready.load(std::memory_order_acquire) ? 1 : 0,
+        static_cast<unsigned>(g_iq_rec_write.load(std::memory_order_acquire)),
+        static_cast<unsigned>(kIqDiagnosticMaxBytes), kRtlSampleRateSps,
+        g_iq_rec_frequency_hz, static_cast<unsigned long>(g_iq_rec_started_ms));
+    return;
+  }
   if (strcmp(command, "RTL_IQ_STOP") == 0 || strcmp(command, "RTL_IQ_SAVE") == 0) {
     g_sd_tried = false;
     g_sd_ready = false;
@@ -14796,6 +14862,7 @@ void process_command(char* command) {
     Serial.println("RTL_P25_ENCRYPTION_STATUS      - last LDU2 encryption and mute/return counters");
     Serial.println("RTL_P25_SCAN                   - survey configured control-channel candidates (auth)");
     Serial.println("RTL_P25_IQ_START|STOP|STATUS   - bounded control-channel IQ capture (mutations auth)");
+    Serial.println("RTL_IQ_DIAG_START <transition>|STATUS - one-second pre-DSP CU8 capture (start auth)");
     Serial.println("RTL_P25_REPLAY <path.orciq>    - replay a stopped-radio P25 capture (auth)");
     Serial.println("RTL_LORA_REPLAY_*              - replay host IQ from PSRAM (auth, stopped)");
     Serial.println("RTL_REC_START/STOP/STATUS/SAVE - audio capture-to-WAV control");

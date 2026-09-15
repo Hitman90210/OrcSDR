@@ -27,6 +27,16 @@ param(
   [switch]$RadioScan,
   [switch]$AmBroadcast,
   [switch]$GainSweep,
+  [switch]$IqDiagnostic,
+  [ValidatePattern('^[A-Za-z0-9_-]{1,31}$')]
+  [string]$IqTransition = 'manual',
+  [ValidateSet('FM', 'AM', 'BROWSE')]
+  [string]$IqBand = 'FM',
+  [ValidateRange(24000, 1766000000)]
+  [uint32]$IqFrequency = 99100000,
+  [string]$IqOutputPath,
+  [string]$IqAntenna,
+  [string]$IqAntennaSuitability,
   [ValidateSet('FM', 'BROWSE', 'LORA')]
   [string]$GainSweepBand = 'FM',
   [ValidateRange(24000000, 1766000000)]
@@ -46,6 +56,7 @@ $ErrorActionPreference = 'Stop'
 $script:serial = $null
 $script:linesSeen = 0
 $script:soakLogPath = $null
+$script:lastV3cRfState = $null
 
 if ($Profile) {
   $Soak = $true
@@ -97,6 +108,7 @@ function Read-MatchingLine([string]$Pattern, [int]$Seconds = $TimeoutSeconds) {
       if (!$line) { continue }
       $script:linesSeen++
       Write-SoakLine $line
+      if ($line -match '^V3C_RF_STATE ') { $script:lastV3cRfState = $line }
       if (Test-FatalLine $line) { throw "Device crash/reset detected: $line" }
       if ($line -match $Pattern) { return $line }
     } catch [System.TimeoutException] {}
@@ -785,6 +797,32 @@ function ConvertFrom-DriverStatus([string]$Line) {
   }
 }
 
+function ConvertFrom-IqDiagnosticStart([string]$Line) {
+  if ($Line -notmatch '^RTL_IQ_DIAG_START transition="([A-Za-z0-9_-]{1,31})" sequence=(\d+) bytes=(\d+) rate=(\d+) frequency_hz=(\d+) started_ms=(\d+)$') {
+    throw "Malformed IQ diagnostic start: $Line"
+  }
+  [pscustomobject]@{
+    Transition = $Matches[1]
+    Sequence = [uint32]$Matches[2]
+    Bytes = [uint32]$Matches[3]
+    Rate = [uint32]$Matches[4]
+    Frequency = [uint32]$Matches[5]
+    StartedMs = [uint32]$Matches[6]
+  }
+}
+
+function ConvertFrom-V3cRfState([string]$Line) {
+  $pattern = '^V3C_RF_STATE profile=(\S+) rf=(\d+) rate=(\d+) mode=(\S+) direct=(ON|OFF) pll_if=(\d+) demod_if=(\d+) nco=(\S+) input=(\S+) gain_mode=(AUTO|MANUAL) gain_tenth_db=(-?\d+) rtl_agc=([01]) short_transfers=(\d+) transition=(\S+)$'
+  if ($Line -notmatch $pattern) { throw "Malformed V3c RF state: $Line" }
+  [pscustomobject]@{
+    Profile = $Matches[1]; Frequency = [uint32]$Matches[2]; Rate = [uint32]$Matches[3]
+    Mode = $Matches[4]; Direct = $Matches[5] -eq 'ON'; PllIf = [uint32]$Matches[6]
+    DemodIf = [uint32]$Matches[7]; Nco = $Matches[8]; Input = $Matches[9]
+    GainMode = $Matches[10]; Gain = [int]$Matches[11]; RtlAgc = [int]$Matches[12]
+    ShortTransfers = [uint32]$Matches[13]; Transition = $Matches[14]
+  }
+}
+
 function Invoke-SelfCheck {
   if (-not (Test-FatalLine 'Guru Meditation Error: Core 1 panic')) { throw 'Fatal parser missed panic.' }
   if (-not (Test-FatalLine 'ESP-ROM:esp32p4-eco2-20240710')) { throw 'Fatal parser missed reset.' }
@@ -843,6 +881,17 @@ function Invoke-SelfCheck {
       $driver.Route -ne 'DIRECT_Q') {
     throw 'Driver acceptance parser failed.'
   }
+  $iqDiag = ConvertFrom-IqDiagnosticStart 'RTL_IQ_DIAG_START transition="cold_fm" sequence=7 bytes=4800000 rate=2400000 frequency_hz=99100000 started_ms=1234'
+  if ($iqDiag.Transition -ne 'cold_fm' -or $iqDiag.Sequence -ne 7 -or
+      $iqDiag.Bytes -ne 4800000 -or $iqDiag.Rate -ne 2400000 -or
+      $iqDiag.Frequency -ne 99100000 -or $iqDiag.StartedMs -ne 1234) {
+    throw 'IQ diagnostic metadata parser failed.'
+  }
+  $rfState = ConvertFrom-V3cRfState 'V3C_RF_STATE profile=blog_v3_r820t2 rf=99100000 rate=2400000 mode=NORMAL_TUNER direct=OFF pll_if=3570000 demod_if=3570000 nco=none input=COMPLEX_IQ gain_mode=MANUAL gain_tenth_db=14 rtl_agc=0 short_transfers=0 transition=COLD_INIT'
+  if ($rfState.PllIf -ne 3570000 -or $rfState.DemodIf -ne 3570000 -or
+      $rfState.Mode -ne 'NORMAL_TUNER' -or $rfState.Transition -ne 'COLD_INIT') {
+    throw 'V3c RF state parser failed.'
+  }
   Write-SoakLine 'RTL_UI_SOAK_SELF_CHECK pass=1'
 }
 
@@ -850,8 +899,8 @@ if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
 if (($InstallLaneMap -or $InstallFaaAircraft) -and !$DataOnly) {
   throw '-InstallLaneMap and -InstallFaaAircraft require -DataOnly.'
 }
-if (@($Run, $Soak, $Driver080Rc2, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast, $GainSweep).Where({ $_ }).Count -gt 1) {
-  throw 'Choose only one of -Run, -Soak, -Driver080Rc2, -WifiOnly, -WifiCoexistence, -WifiCoexistenceDiagnostic, -DataOnly, -C6Update, -RadioScan, -AmBroadcast, or -GainSweep.'
+if (@($Run, $Soak, $Driver080Rc2, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast, $GainSweep, $IqDiagnostic).Where({ $_ }).Count -gt 1) {
+  throw 'Choose only one primary test mode, including -IqDiagnostic.'
 }
 
 function Get-C6UpdateStatus {
@@ -893,6 +942,153 @@ function Get-DriverStatus {
     try { return ConvertFrom-DriverStatus $line } catch { }
   }
   throw "Malformed driver status: $line"
+}
+
+function Read-ExactSerialBytes([IO.Stream]$Output, [Security.Cryptography.IncrementalHash]$Hash, [int]$Count) {
+  $buffer = [byte[]]::new([Math]::Min(4096, $Count))
+  $remaining = $Count
+  $deadline = [DateTime]::UtcNow.AddSeconds(10)
+  while ($remaining -gt 0) {
+    try {
+      $read = $script:serial.Read($buffer, 0, [Math]::Min($buffer.Length, $remaining))
+      if ($read -le 0) { continue }
+      $Output.Write($buffer, 0, $read)
+      $Hash.AppendData($buffer, 0, $read)
+      $remaining -= $read
+      $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    } catch [System.TimeoutException] {
+      if ([DateTime]::UtcNow -ge $deadline) {
+        throw "Timed out with $remaining raw IQ bytes remaining in chunk."
+      }
+    }
+  }
+}
+
+function Invoke-IqDiagnosticCapture {
+  if (!$IqAntenna -or !$IqAntennaSuitability) {
+    throw '-IqDiagnostic requires -IqAntenna and -IqAntennaSuitability.'
+  }
+  Wait-DeviceReady 60 11000
+  Connect-Authenticated
+  [void](Send-And-Wait "RTL_TUNE $IqBand $IqFrequency" '^RTL_TUNE_OK ' 20)
+  $deadline = [DateTime]::UtcNow.AddSeconds(30)
+  do {
+    $driver = Get-DriverStatus
+    if ($driver.State -eq 'STREAMING' -and $driver.Frequency -eq $IqFrequency -and
+        $driver.Bytes -gt 0) { break }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $deadline)
+  if ($driver.State -ne 'STREAMING' -or $driver.Frequency -ne $IqFrequency) {
+    throw "Requested IQ state did not stabilize: state=$($driver.State) frequency=$($driver.Frequency)"
+  }
+
+  $healthBefore = Get-HealthStatus
+  $startLine = Send-And-Wait "RTL_IQ_DIAG_START $IqTransition" '^RTL_IQ_DIAG_(?:START|ERROR) ' 10
+  if ($startLine -notmatch '^RTL_IQ_DIAG_START ') { throw "IQ capture rejected: $startLine" }
+  $start = ConvertFrom-IqDiagnosticStart $startLine
+  $doneLine = Read-MatchingLine '^RTL_IQ_DONE storage=psram source=diagnostic ' 15
+
+  $output = if ($IqOutputPath) {
+    [IO.Path]::GetFullPath($IqOutputPath)
+  } else {
+    $directory = Join-Path $PSScriptRoot '..\..\..\artifacts\v3c-iq-investigation'
+    [void](New-Item -ItemType Directory -Force $directory)
+    Join-Path ([IO.Path]::GetFullPath($directory)) ((Get-Date -Format 'yyyyMMdd-HHmmss') + "-$IqTransition.cu8")
+  }
+  $parent = Split-Path -Parent $output
+  if ($parent) { [void](New-Item -ItemType Directory -Force $parent) }
+  if (Test-Path -LiteralPath $output) { throw "IQ output already exists: $output" }
+  $partial = "$output.partial"
+
+  $ready = Send-And-Wait 'RTL_IQ_GET_BEGIN' '^RTL_IQ_GET_(?:READY|ERROR) ' 10
+  if ($ready -notmatch '^RTL_IQ_GET_READY chunk=(\d+) bytes=(\d+)$') {
+    throw "IQ retrieval could not begin: $ready"
+  }
+  $chunkBytes = [int]$Matches[1]
+  $totalBytes = [int]$Matches[2]
+  if ($totalBytes -ne $start.Bytes) {
+    throw "IQ byte count changed: start=$($start.Bytes) retrieve=$totalBytes"
+  }
+
+  $hash = [Security.Cryptography.IncrementalHash]::CreateHash(
+      [Security.Cryptography.HashAlgorithmName]::SHA256)
+  $stream = [IO.File]::Open($partial, [IO.FileMode]::Create,
+                            [IO.FileAccess]::Write, [IO.FileShare]::None)
+  try {
+    $remaining = $totalBytes
+    while ($remaining -gt 0) {
+      $line = Send-And-Wait 'RTL_IQ_GET_CHUNK' '^RTL_IQ_GET_(?:DATA|ERROR) ' 10
+      if ($line -notmatch '^RTL_IQ_GET_DATA bytes=(\d+)$') {
+        throw "IQ retrieval failed: $line"
+      }
+      $count = [int]$Matches[1]
+      if ($count -le 0 -or $count -gt $chunkBytes -or $count -gt $remaining) {
+        throw "Invalid IQ chunk size: $count"
+      }
+      Read-ExactSerialBytes $stream $hash $count
+      $remaining -= $count
+    }
+  } finally {
+    $stream.Dispose()
+  }
+  $localSha = [Convert]::ToHexString($hash.GetHashAndReset()).ToLowerInvariant()
+  $hash.Dispose()
+  $finish = Read-MatchingLine '^RTL_IQ_GET_DONE ' 10
+  if ($finish -notmatch '^RTL_IQ_GET_DONE bytes=(\d+) sha256=([0-9a-fA-F]{64})$' -or
+      [int]$Matches[1] -ne $totalBytes -or $Matches[2].ToLowerInvariant() -ne $localSha) {
+    throw "IQ retrieval hash mismatch: local=$localSha device='$finish'"
+  }
+  Move-Item -LiteralPath $partial -Destination $output
+  [void](Send-And-Wait 'RTL_IQ_RETRIEVE_END' '^RTL_IQ_RETRIEVE_(?:DONE|RESUMING)$' 10)
+
+  $driverAfter = Get-DriverStatus
+  $healthAfter = Get-HealthStatus
+  $rfState = if ($script:lastV3cRfState) {
+    ConvertFrom-V3cRfState $script:lastV3cRfState
+  } else { $null }
+  $metadata = [ordered]@{
+    timestamp_utc = [DateTime]::UtcNow.ToString('o')
+    capture_path = $output
+    transition = $start.Transition
+    sequence = $start.Sequence
+    capture_started_ms = $start.StartedMs
+    dongle_profile = $driverAfter.ProfileName
+    driver_version = $driverAfter.Version
+    driver_base_commit = 'e1ca40e04f8140245d56837cd149bf901f771441'
+    driver_instrumentation_commit = '39a812aa8a22047cda471bfe46797b8d9033a4c8'
+    requested_rf_hz = $IqFrequency
+    reported_rf_hz = $driverAfter.Frequency
+    sample_rate_sps = $start.Rate
+    tuner_mode = $driverAfter.Route
+    direct_sampling = $driverAfter.Route -eq 'DIRECT_Q'
+    driver_rf_state = $script:lastV3cRfState
+    pll_if_hz = if ($rfState) { $rfState.PllIf } else { $null }
+    demod_if_hz = if ($rfState) { $rfState.DemodIf } else { $null }
+    demod_nco = if ($rfState) { $rfState.Nco } else { $null }
+    rtl_input = if ($rfState) { $rfState.Input } else { $null }
+    gain_mode = $driverAfter.Mode
+    gain_tenth_db = $driverAfter.Gain
+    rtl_agc = $driverAfter.RtlAgc
+    usb_overruns_before = $driver.Overruns
+    usb_overruns_after = $driverAfter.Overruns
+    consumer_drops_before = $driver.Drops
+    consumer_drops_after = $driverAfter.Drops
+    short_transfers = if ($rfState) { $rfState.ShortTransfers } else { $null }
+    short_transfers_note = if ($rfState) { 'driver counter at most recent RF transition' } else { 'not exposed for this profile' }
+    capture_bytes = $totalBytes
+    capture_sha256 = $localSha
+    antenna = $IqAntenna
+    antenna_band_suitability = $IqAntennaSuitability
+    health_before = $healthBefore
+    health_after = $healthAfter
+    capture_done_line = $doneLine
+    orcsdr_commit = (& git -C (Join-Path $PSScriptRoot '..\..\..') rev-parse HEAD).Trim()
+  }
+  $metadataPath = [IO.Path]::ChangeExtension($output, '.json')
+  $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $metadataPath -Encoding utf8
+  & python (Join-Path $PSScriptRoot 'analyze_rtl_iq.py') $output --rate $start.Rate --csv
+  if ($LASTEXITCODE -ne 0) { throw "IQ analyzer failed with exit code $LASTEXITCODE" }
+  Write-SoakLine "RTL_IQ_DIAGNOSTIC_RESULT pass=1 transition=$($start.Transition) bytes=$totalBytes sha256=$localSha capture=\"$output\" metadata=\"$metadataPath\""
 }
 
 function Invoke-GainSweepTest {
@@ -1433,6 +1629,7 @@ try {
     Assert-DataServices
     exit 0
   }
+  if ($IqDiagnostic) { Invoke-IqDiagnosticCapture; exit 0 }
   if ($C6Update) { Invoke-C6UpdateTest; exit 0 }
   if ($RadioScan) { Invoke-RadioScanTest; exit 0 }
   if ($AmBroadcast) { Invoke-AmBroadcastTest; exit 0 }
