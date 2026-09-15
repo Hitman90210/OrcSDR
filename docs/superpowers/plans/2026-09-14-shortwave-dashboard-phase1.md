@@ -61,12 +61,12 @@
 - Modify: `apps/orcsdr-tab5/ui/screen_controller.cpp`
 - Modify: `apps/orcsdr-tab5/ui/main.cpp` (adapter and lifecycle wiring only)
 
-- [ ] Define the snapshot/action API and failing touch/self-check expectations.
-- [ ] Draw the LIVE screen with frequency, band, AM, filter, route, signal, spectrum, tuning step, and shared tuning panel.
-- [ ] Add 100 Hz, 500 Hz, 1 kHz, and 5 kHz stepping plus recognized-band navigation.
-- [ ] Show the five product tabs while making non-LIVE tabs explicitly unavailable in Phase 1.
-- [ ] Add the first-class shortwave band to shared receiver routing and reuse AM demodulation/audio AGC.
-- [ ] Forward spectrum and touch data through the adapter and verify the self-check.
+- [x] Define the snapshot/action API and failing touch/self-check expectations.
+- [x] Draw the LIVE screen with frequency, band, AM, filter, route, signal, spectrum, tuning step, and shared tuning panel.
+- [x] Add 100 Hz, 500 Hz, 1 kHz, and 5 kHz stepping plus recognized-band navigation.
+- [x] Show the five product tabs while making non-LIVE tabs explicitly unavailable in Phase 1.
+- [x] Add the first-class shortwave band to shared receiver routing and reuse AM demodulation/audio AGC.
+- [x] Forward spectrum and touch data through the adapter and verify the self-check.
 - [ ] Commit the LIVE dashboard slice.
 
 ### Task 4: Regression, build, and hardware acceptance
@@ -74,11 +74,11 @@
 **Files:**
 - Modify: `apps/orcsdr-tab5/tools/run-tab5-ui-regression.ps1` only if a focused Shortwave serial check is required.
 
-- [ ] Run `git diff --check`.
-- [ ] Run `& .\apps\orcsdr-tab5\tools\run-tab5-ui-regression.ps1 -SelfCheck`.
-- [ ] Run `& .\apps\orcsdr-tab5\tools\build-tab5-idf.ps1`.
-- [ ] Record exact artifact hashes and app size.
-- [ ] Flash the clean artifact to the authorized V4-equipped Tab5.
+- [x] Run `git diff --check`.
+- [x] Run `& .\apps\orcsdr-tab5\tools\run-tab5-ui-regression.ps1 -SelfCheck`.
+- [x] Run `& .\apps\orcsdr-tab5\tools\build-tab5-idf.ps1`.
+- [x] Record exact artifact hashes and app size.
+- [ ] Flash the clean artifact to the authorized connected-dongle Tab5.
 - [ ] Verify serial device identity, Shortwave entry, exact tuning, route, IQ continuity, and no invalid gain commands.
 - [ ] Ask the user to judge physical touch/UI behavior and audio separately; treat the dipole as unsuitable/unknown for reception acceptance.
 - [ ] Commit only any evidence-driven fixes after a failing check reproduces them.

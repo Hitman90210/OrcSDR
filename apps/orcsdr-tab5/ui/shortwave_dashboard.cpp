@@ -1,0 +1,326 @@
+#include "shortwave_dashboard.hpp"
+
+#include "shortwave_model.hpp"
+
+#include <M5Unified.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+
+namespace orcsdr::shortwave {
+namespace {
+
+constexpr uint16_t kPanel = 0x0841;
+constexpr uint16_t kCyan = 0x2e7f;
+constexpr uint16_t kGreen = 0x6fe8;
+constexpr uint16_t kMuted = 0x8c71;
+constexpr uint16_t kGrid = 0x2945;
+constexpr int kSpectrumX = 24;
+constexpr int kSpectrumY = 340;
+constexpr int kSpectrumW = 792;
+constexpr int kSpectrumH = 244;
+constexpr int kTabsY = 630;
+constexpr int kTabW = 256;
+constexpr int kGainX = 872;
+constexpr int kGainY = 488;
+constexpr int kGainW = 350;
+
+Snapshot g_snapshot{};
+bool g_active = false;
+uint32_t g_saved_frequency = 7100000;
+
+bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
+  return x >= bx && x < bx + bw && y >= by && y < by + bh;
+}
+
+void text(const char* value, int x, int y, uint16_t color = TFT_WHITE,
+          int size = 2, textdatum_t datum = middle_center) {
+  M5.Display.setTextDatum(datum);
+  M5.Display.setTextSize(size);
+  M5.Display.setTextColor(color);
+  M5.Display.drawString(value, x, y);
+}
+
+void card(int x, int y, int w, int h) {
+  M5.Display.fillRoundRect(x, y, w, h, 10, kPanel);
+  M5.Display.drawRoundRect(x, y, w, h, 10, kCyan);
+}
+
+void button(int x, int y, int w, int h, const char* label, bool selected = false,
+            bool enabled = true) {
+  const uint16_t color = enabled ? (selected ? kGreen : kCyan) : TFT_DARKGREY;
+  M5.Display.fillRoundRect(x, y, w, h, 8, selected ? 0x1264 : kPanel);
+  M5.Display.drawRoundRect(x, y, w, h, 8, color);
+  text(label, x + w / 2, y + h / 2, enabled ? TFT_WHITE : kMuted, 2);
+}
+
+const char* route_name(ReceiverRoute route) {
+  switch (route) {
+    case ReceiverRoute::direct_q: return "DIRECT Q SAMPLING";
+    case ReceiverRoute::hf_upconverter: return "V4 HF UPCONVERTER";
+    case ReceiverRoute::tuner: return "NORMAL TUNER";
+    default: return "ROUTE UNKNOWN";
+  }
+}
+
+void draw_frequency() {
+  M5.Display.fillRect(120, 120, 565, 92, kPanel);
+  char value[40];
+  snprintf(value, sizeof(value), "%lu.%03lu.%03lu MHz",
+           static_cast<unsigned long>(g_snapshot.frequency_hz / 1000000u),
+           static_cast<unsigned long>((g_snapshot.frequency_hz / 1000u) % 1000u),
+           static_cast<unsigned long>(g_snapshot.frequency_hz % 1000u));
+  text(value, 402, 159, TFT_WHITE, 4);
+  const BroadcastBand* sw_band = band_for(g_snapshot.frequency_hz);
+  text(sw_band ? sw_band->label : "GENERAL HF", 402, 198, kGreen, 2);
+}
+
+void draw_status() {
+  M5.Display.fillRect(862, 111, 374, 48, kPanel);
+  text(route_name(g_snapshot.controls.route), 1049, 126, kGreen, 2);
+  text(g_snapshot.device[0] ? g_snapshot.device : "NO RTL-SDR", 1049, 150,
+       g_snapshot.driver_ready ? TFT_WHITE : TFT_ORANGE, 1);
+  M5.Display.fillRect(35, 294, 760, 34, TFT_BLACK);
+  char status[96];
+  snprintf(status, sizeof(status), "%s  |  %+.1f dBFS  |  %lu kHz span",
+           g_snapshot.running ? "LIVE IQ" : "WAITING",
+           static_cast<double>(g_snapshot.relative_dbfs),
+           static_cast<unsigned long>(g_snapshot.span_hz / 1000u));
+  text(status, 415, 311, g_snapshot.running ? kGreen : TFT_ORANGE, 2);
+}
+
+void draw_quick_controls() {
+  char value[40];
+  snprintf(value, sizeof(value), "STEP %lu Hz",
+           static_cast<unsigned long>(g_snapshot.step_hz));
+  text(value, 142, 274, TFT_WHITE, 2);
+  snprintf(value, sizeof(value), "AM FILTER %.1f kHz",
+           static_cast<double>(g_snapshot.filter_bandwidth_hz) / 1000.0);
+  text(value, 396, 274, TFT_WHITE, 2);
+  text(g_snapshot.sound_enabled ? "SOUND ON" : "SOUND OFF", 674, 274,
+       g_snapshot.sound_enabled ? kGreen : TFT_ORANGE, 2);
+}
+
+void draw_controls() {
+  const auto tuner = receiver_controls::item(receiver_controls::Control::tuner_agc,
+                                              g_snapshot.controls);
+  const auto rtl = receiver_controls::item(receiver_controls::Control::rtl_agc,
+                                            g_snapshot.controls);
+  const auto boost = receiver_controls::item(receiver_controls::Control::audio_boost,
+                                              g_snapshot.controls);
+  const auto gain = receiver_controls::item(receiver_controls::Control::rf_gain,
+                                             g_snapshot.controls);
+  button(858, 176, 184, 68, "TUNER AGC", tuner.active,
+         tuner.availability == receiver_controls::Availability::enabled);
+  button(1052, 176, 184, 68, "RTL AGC", rtl.active,
+         rtl.availability == receiver_controls::Availability::enabled);
+  button(858, 258, 184, 68, "AUDIO BOOST", boost.active);
+  button(1052, 258, 72, 68, "VOL -");
+  button(1164, 258, 72, 68, "VOL +");
+  char volume[24];
+  snprintf(volume, sizeof(volume), "VOLUME %u", g_snapshot.controls.volume);
+  text(volume, 1144, 345, TFT_WHITE, 2);
+
+  M5.Display.fillRect(858, 378, 378, 184, kPanel);
+  text("RF GAIN", 858, 382,
+       gain.availability == receiver_controls::Availability::enabled ? kCyan : kMuted,
+       2, top_left);
+  if (gain.availability != receiver_controls::Availability::enabled) {
+    text(gain.explanation, 1047, 440, kMuted, 2);
+    text("Audio boost remains available", 1047, 474, TFT_LIGHTGREY, 1);
+    return;
+  }
+  char gain_value[32];
+  snprintf(gain_value, sizeof(gain_value), g_snapshot.controls.tuner_agc
+                                                   ? "AUTO %.1f dB"
+                                                   : "MANUAL %.1f dB",
+           static_cast<double>(g_snapshot.controls.gain_tenth_db) / 10.0);
+  text(gain_value, 1047, 426, g_snapshot.controls.tuner_agc ? kGreen : TFT_WHITE, 2);
+  M5.Display.drawRoundRect(kGainX, kGainY, kGainW, 22, 10, kCyan);
+  int position = 0;
+  if (g_snapshot.gain_step_count > 1) {
+    size_t nearest = 0;
+    for (size_t i = 1; i < g_snapshot.gain_step_count; ++i)
+      if (std::abs(g_snapshot.gain_steps_tenth_db[i] - g_snapshot.controls.gain_tenth_db) <
+          std::abs(g_snapshot.gain_steps_tenth_db[nearest] - g_snapshot.controls.gain_tenth_db))
+        nearest = i;
+    position = static_cast<int>(nearest * kGainW / (g_snapshot.gain_step_count - 1));
+  }
+  M5.Display.fillCircle(kGainX + position, kGainY + 11, 12,
+                        g_snapshot.controls.tuner_agc ? kMuted : kGreen);
+  text("Tap TUNER AGC for auto; drag for manual", 1047, 535, TFT_LIGHTGREY, 1);
+}
+
+void draw_static() {
+  M5.Display.fillScreen(TFT_BLACK);
+  text("<", 35, 45, kGreen, 4);
+  text("Orc", 88, 34, TFT_WHITE, 3, middle_left);
+  text("SDR", 168, 34, kGreen, 3, middle_left);
+  text("SHORTWAVE EXPLORER", 89, 67, TFT_LIGHTGREY, 1, middle_left);
+  text("LISTEN  |  EXPLORE  |  LOG", 425, 50, kCyan, 2);
+  text("SETTINGS", 1218, 48, kCyan, 1);
+  M5.Display.drawFastHLine(20, 92, 1240, kGreen);
+
+  card(24, 110, 792, 122);
+  button(42, 128, 64, 72, "-");
+  button(734, 128, 64, 72, "+");
+  button(24, 246, 236, 56, "STEP");
+  button(278, 246, 236, 56, "FILTER");
+  button(532, 246, 284, 56, "SOUND");
+  card(840, 110, 420, 474);
+  M5.Display.drawRect(kSpectrumX, kSpectrumY, kSpectrumW, kSpectrumH, kGrid);
+  for (int i = 1; i < 8; ++i)
+    M5.Display.drawFastVLine(kSpectrumX + i * kSpectrumW / 8, kSpectrumY,
+                            kSpectrumH, kGrid);
+  for (int i = 1; i < 4; ++i)
+    M5.Display.drawFastHLine(kSpectrumX, kSpectrumY + i * kSpectrumH / 4,
+                            kSpectrumW, kGrid);
+
+  constexpr const char* tabs[] = {"LIVE", "ON AIR", "HUNT", "MEMORY", "LOGBOOK"};
+  for (int i = 0; i < 5; ++i) {
+    button(i * kTabW + 4, kTabsY + 4, kTabW - 8, 82, tabs[i], i == 0, i == 0);
+    if (i) text("LATER", i * kTabW + kTabW / 2, kTabsY + 68, kMuted, 1);
+  }
+}
+
+}  // namespace
+
+void enter(const Snapshot& snapshot) {
+  g_snapshot = snapshot;
+  g_saved_frequency = snapshot.frequency_hz;
+  g_active = true;
+  draw();
+}
+
+void leave() { g_active = false; }
+
+void draw() {
+  if (!g_active) return;
+  draw_static();
+  draw_frequency();
+  draw_status();
+  draw_controls();
+  draw_quick_controls();
+}
+
+void update(const Snapshot& snapshot) {
+  if (!g_active) return;
+  const bool controls_changed =
+      snapshot.controls.route != g_snapshot.controls.route ||
+      snapshot.controls.capabilities.rf_gain != g_snapshot.controls.capabilities.rf_gain ||
+      snapshot.controls.capabilities.tuner_agc != g_snapshot.controls.capabilities.tuner_agc ||
+      snapshot.controls.capabilities.rtl_agc != g_snapshot.controls.capabilities.rtl_agc ||
+      snapshot.controls.tuner_agc != g_snapshot.controls.tuner_agc ||
+      snapshot.controls.rtl_agc != g_snapshot.controls.rtl_agc ||
+      snapshot.controls.audio_boost != g_snapshot.controls.audio_boost ||
+      snapshot.controls.volume != g_snapshot.controls.volume ||
+      snapshot.controls.gain_tenth_db != g_snapshot.controls.gain_tenth_db ||
+      snapshot.gain_step_count != g_snapshot.gain_step_count;
+  g_snapshot = snapshot;
+  g_saved_frequency = snapshot.frequency_hz;
+  draw_frequency();
+  draw_status();
+  draw_quick_controls();
+  if (controls_changed) draw_controls();
+}
+
+void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
+                   float floor) {
+  if (!g_active || !levels || visible_bins < 2) return;
+  M5.Display.startWrite();
+  M5.Display.fillRect(kSpectrumX + 1, kSpectrumY + 1, kSpectrumW - 2,
+                      kSpectrumH - 2, TFT_BLACK);
+  for (int i = 1; i < 8; ++i)
+    M5.Display.drawFastVLine(kSpectrumX + i * kSpectrumW / 8, kSpectrumY,
+                            kSpectrumH, kGrid);
+  int last_x = kSpectrumX;
+  int last_y = kSpectrumY + kSpectrumH - 1;
+  for (int x = 0; x < kSpectrumW; ++x) {
+    const size_t bin = first_bin + static_cast<size_t>(x) * visible_bins / kSpectrumW;
+    const float normalized = std::clamp((levels[bin] - floor) / 48.0f, 0.0f, 1.0f);
+    const int y = kSpectrumY + kSpectrumH - 2 -
+                  static_cast<int>(normalized * (kSpectrumH - 4));
+    if (x) M5.Display.drawLine(last_x, last_y, kSpectrumX + x, y, kGreen);
+    last_x = kSpectrumX + x;
+    last_y = y;
+  }
+  M5.Display.drawFastVLine(kSpectrumX + kSpectrumW / 2, kSpectrumY,
+                          kSpectrumH, TFT_WHITE);
+  M5.Display.endWrite();
+}
+
+Action handle_touch(int32_t x, int32_t y) {
+  if (!g_active) return {};
+  if (hit(x, y, 0, 0, 70, 92)) return {ActionKind::exit_home};
+  if (hit(x, y, 1160, 0, 120, 92)) return {ActionKind::open_settings};
+  if (hit(x, y, 42, 128, 64, 72)) return {ActionKind::step_down};
+  if (hit(x, y, 734, 128, 64, 72)) return {ActionKind::step_up};
+  if (hit(x, y, 120, 120, 565, 92)) return {ActionKind::open_frequency};
+  if (hit(x, y, 24, 246, 236, 56)) return {ActionKind::step_cycle};
+  if (hit(x, y, 278, 246, 236, 56)) return {ActionKind::filter_cycle};
+  if (hit(x, y, 532, 246, 284, 56)) return {ActionKind::sound_toggle};
+  if (hit(x, y, 858, 176, 184, 68) &&
+      receiver_controls::action(receiver_controls::Control::tuner_agc,
+                                g_snapshot.controls).kind !=
+          receiver_controls::ActionKind::none)
+    return {ActionKind::gain_auto};
+  if (hit(x, y, 1052, 176, 184, 68) &&
+      receiver_controls::action(receiver_controls::Control::rtl_agc,
+                                g_snapshot.controls).kind !=
+          receiver_controls::ActionKind::none)
+    return {ActionKind::rtl_agc, !g_snapshot.controls.rtl_agc};
+  if (hit(x, y, 858, 258, 184, 68))
+    return {ActionKind::audio_boost, !g_snapshot.controls.audio_boost};
+  if (hit(x, y, 1052, 258, 72, 68)) return {ActionKind::volume_down};
+  if (hit(x, y, 1164, 258, 72, 68)) return {ActionKind::volume_up};
+  return {};
+}
+
+Action handle_gain_drag(int32_t x, int32_t y) {
+  if (!g_active || !hit(x, y, kGainX - 16, kGainY - 20, kGainW + 32, 62) ||
+      g_snapshot.gain_step_count == 0 ||
+      receiver_controls::item(receiver_controls::Control::rf_gain,
+                              g_snapshot.controls).availability !=
+          receiver_controls::Availability::enabled)
+    return {};
+  const int clamped = std::clamp<int32_t>(x, kGainX, kGainX + kGainW);
+  const size_t index = static_cast<size_t>(clamped - kGainX) *
+                       (g_snapshot.gain_step_count - 1) / kGainW;
+  return {ActionKind::gain_tenth_db, g_snapshot.gain_steps_tenth_db[index]};
+}
+
+bool active() { return g_active; }
+bool spectrum_active() { return g_active; }
+uint32_t saved_frequency() { return g_saved_frequency; }
+void note_tuned(uint32_t frequency_hz) { g_saved_frequency = frequency_hz; }
+
+bool dashboard_self_check() {
+  const Snapshot saved = g_snapshot;
+  const bool was_active = g_active;
+  Snapshot test{};
+  test.controls.route = ReceiverRoute::hf_upconverter;
+  test.controls.capabilities = {true, true, true, false};
+  test.gain_steps_tenth_db[0] = 0;
+  test.gain_steps_tenth_db[1] = 297;
+  test.gain_steps_tenth_db[2] = 496;
+  test.gain_step_count = 3;
+  g_snapshot = test;
+  g_active = true;
+  const bool ok = handle_touch(60, 150).kind == ActionKind::step_down &&
+                  handle_touch(760, 150).kind == ActionKind::step_up &&
+                  handle_touch(400, 160).kind == ActionKind::open_frequency &&
+                  handle_touch(900, 200).kind == ActionKind::gain_auto &&
+                  handle_gain_drag(kGainX + kGainW, kGainY).value == 496;
+  g_snapshot.controls.route = ReceiverRoute::direct_q;
+  const bool direct_q_ok = handle_touch(900, 200).kind == ActionKind::none &&
+                           handle_gain_drag(kGainX, kGainY).kind == ActionKind::none &&
+                           handle_touch(900, 280).kind == ActionKind::audio_boost;
+  g_snapshot = saved;
+  g_active = was_active;
+  return ok && direct_q_ok && kTabsY + 90 <= 720 && model_self_check() &&
+         receiver_controls::self_check();
+}
+
+}  // namespace orcsdr::shortwave
