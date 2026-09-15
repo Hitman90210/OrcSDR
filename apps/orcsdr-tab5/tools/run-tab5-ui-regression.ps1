@@ -121,6 +121,42 @@ function Send-And-Wait([string]$Command, [string]$Pattern, [int]$Seconds = $Time
   return Read-MatchingLine $Pattern $Seconds
 }
 
+function Read-BinaryProtocolLine($Stream, [int]$Seconds = $TimeoutSeconds) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+  $bytes = [Collections.Generic.List[byte]]::new()
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+      $value = $Stream.ReadByte()
+      if ($value -lt 0) { continue }
+      if ($value -eq 10) { return [Text.Encoding]::ASCII.GetString($bytes.ToArray()) }
+      if ($value -ne 13) { $bytes.Add([byte]$value) }
+      if ($bytes.Count -gt 4096) { throw 'Binary protocol line exceeded 4096 bytes.' }
+    } catch [System.TimeoutException] {}
+  }
+  throw 'Timed out waiting for binary protocol line.'
+}
+
+function Read-BinaryMatchingLine([string]$Pattern, [int]$Seconds = $TimeoutSeconds) {
+  $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    $remaining = [Math]::Max(1, [int][Math]::Ceiling(($deadline - [DateTime]::UtcNow).TotalSeconds))
+    $line = (Read-BinaryProtocolLine $script:serial $remaining).Trim()
+    if (!$line) { continue }
+    $script:linesSeen++
+    Write-SoakLine $line
+    if ($line -match 'V3C_RF_STATE ') { $script:lastV3cRfState = $line }
+    if (Test-FatalLine $line) { throw "Device crash/reset detected: $line" }
+    if ($line -match $Pattern) { return $line }
+  }
+  throw "Timed out waiting for binary device response: $Pattern"
+}
+
+function Send-And-WaitBinary([string]$Command, [string]$Pattern,
+                            [int]$Seconds = $TimeoutSeconds) {
+  $script:serial.WriteLine($Command)
+  return Read-BinaryMatchingLine $Pattern $Seconds
+}
+
 function Wait-DeviceReady([int]$Seconds = 60, [int]$MinimumUptimeMs = 0) {
   $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
   $nextProbe = [DateTime]::MinValue
@@ -907,6 +943,13 @@ function Invoke-SelfCheck {
       !(Test-IqDriverReady $beforeTune $freshTune 99113000 $false)) {
     throw 'IQ post-tune restart guard failed.'
   }
+  $lineBytes = [Text.Encoding]::ASCII.GetBytes("RTL_IQ_GET_DATA bytes=4`r`n")
+  $protocolBytes = [byte[]]($lineBytes + [byte[]](13, 10, 255, 0))
+  $protocolStream = [IO.MemoryStream]::new($protocolBytes)
+  if ((Read-BinaryProtocolLine $protocolStream 1) -ne 'RTL_IQ_GET_DATA bytes=4' -or
+      $protocolStream.ReadByte() -ne 13) {
+    throw 'Binary protocol line reader consumed payload bytes.'
+  }
   Write-SoakLine 'RTL_UI_SOAK_SELF_CHECK pass=1'
 }
 
@@ -1035,7 +1078,7 @@ function Invoke-IqDiagnosticCapture {
   try {
     $remaining = $totalBytes
     while ($remaining -gt 0) {
-      $line = Send-And-Wait 'RTL_IQ_GET_CHUNK' '^RTL_IQ_GET_(?:DATA|ERROR) ' 10
+      $line = Send-And-WaitBinary 'RTL_IQ_GET_CHUNK' '^RTL_IQ_GET_(?:DATA|ERROR) ' 10
       if ($line -notmatch '^RTL_IQ_GET_DATA bytes=(\d+)$') {
         throw "IQ retrieval failed: $line"
       }
@@ -1051,7 +1094,7 @@ function Invoke-IqDiagnosticCapture {
   }
   $localSha = [Convert]::ToHexString($hash.GetHashAndReset()).ToLowerInvariant()
   $hash.Dispose()
-  $finish = Read-MatchingLine '^RTL_IQ_GET_DONE ' 10
+  $finish = Read-BinaryMatchingLine '^RTL_IQ_GET_DONE ' 10
   if ($finish -notmatch '^RTL_IQ_GET_DONE bytes=(\d+) sha256=([0-9a-fA-F]{64})$' -or
       [int]$Matches[1] -ne $totalBytes -or $Matches[2].ToLowerInvariant() -ne $localSha) {
     throw "IQ retrieval hash mismatch: local=$localSha device='$finish'"

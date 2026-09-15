@@ -1430,7 +1430,6 @@ static char g_rds_capture_last_path[96] = "";
 // the 250 ms pre-roll and the complete packet after an energy trigger.
 constexpr size_t kIqRecSeconds = 4;
 constexpr size_t kIqRecMaxBytes = kRtlSampleRateSps * 2u * kIqRecSeconds;
-constexpr size_t kIqDiagnosticMaxBytes = kRtlSampleRateSps * 2u;
 constexpr size_t kOrciqHeaderBytes = 36;
 constexpr size_t kP25IqRecMaxBytes = 1024u * 1024u - kOrciqHeaderBytes;
 constexpr size_t kLoraPreRollBytes = kRtlSampleRateSps / 2u;  // 250 ms CU8 IQ
@@ -1458,6 +1457,7 @@ static char g_iq_rec_last_path[96] = "";
 static uint32_t g_iq_rec_sequence = 0;
 static uint32_t g_iq_diag_next_sequence = 0;
 static uint32_t g_iq_rec_started_ms = 0;
+static uint32_t g_iq_rec_sample_rate_sps = kRtlSampleRateSps;
 static char g_iq_rec_transition[32] = "none";
 static size_t g_iq_rec_trigger_offset_samples = 0;
 static size_t g_lora_pre_roll_write = 0;
@@ -3866,12 +3866,15 @@ const char* iq_capture_kind_name(IqCaptureKind kind) {
 }
 
 size_t iq_capture_max_bytes(IqCaptureKind kind) {
-  if (kind == IqCaptureKind::diagnostic) return kIqDiagnosticMaxBytes;
+  if (kind == IqCaptureKind::diagnostic) return g_iq_rec_sample_rate_sps * 2u;
   return kind == IqCaptureKind::p25 ? kP25IqRecMaxBytes : kIqRecMaxBytes;
 }
 
 void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
   g_iq_rec_kind.store(kind, std::memory_order_release);
+  g_iq_rec_sample_rate_sps = kind == IqCaptureKind::diagnostic
+                                 ? rtl_active_sample_rate_sps.load(std::memory_order_acquire)
+                                 : kRtlSampleRateSps;
   g_iq_rec_frequency_hz = rtl_ui_frequency_hz;
   g_iq_rec_sf = kind == IqCaptureKind::lora ? lora_sf.load(std::memory_order_relaxed) : 0;
   g_iq_rec_bandwidth_hz = kind == IqCaptureKind::lora
@@ -3894,9 +3897,9 @@ void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
                 "noise_dbfs=%.1f trigger_dbfs=%.1f sequence=%lu trigger_offset_samples=%u\n",
                 iq_capture_kind_name(kind), automatic ? "energy" : "manual",
                 static_cast<unsigned>(max_bytes),
-                static_cast<unsigned>(max_bytes / (2u * kRtlSampleRateSps)),
-                static_cast<unsigned>((max_bytes / 2u * 1000u) / kRtlSampleRateSps),
-                kRtlSampleRateSps,
+                static_cast<unsigned>(max_bytes / (2u * g_iq_rec_sample_rate_sps)),
+                static_cast<unsigned>((max_bytes / 2u * 1000u) / g_iq_rec_sample_rate_sps),
+                g_iq_rec_sample_rate_sps,
                 g_iq_rec_frequency_hz, static_cast<unsigned>(g_iq_rec_sf),
                 static_cast<unsigned>(g_iq_rec_bandwidth_hz),
                 static_cast<double>(rtl_signal_dbfs.load(std::memory_order_relaxed)),
@@ -4005,7 +4008,7 @@ void iq_rec_finish() {
   Serial.printf("RTL_IQ_DONE storage=psram source=%s bytes=%u samples=%u rate=%u frequency_hz=%u sf=%u bw=%u mode=%s sequence=%lu capture_ms=%lu trigger_offset_samples=%u drops=%lu\n",
                 iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
                 static_cast<unsigned>(written), static_cast<unsigned>(written / 2),
-                kRtlSampleRateSps, g_iq_rec_frequency_hz,
+                g_iq_rec_sample_rate_sps, g_iq_rec_frequency_hz,
                 static_cast<unsigned>(g_iq_rec_sf),
                 static_cast<unsigned>(g_iq_rec_bandwidth_hz),
                 g_iq_rec_auto_triggered.load(std::memory_order_relaxed) ? "energy" : "manual",
@@ -5975,7 +5978,8 @@ bool diagnostic_iq_rec_start(const char* transition) {
       "RTL_IQ_DIAG_START transition=\"%s\" sequence=%lu bytes=%u rate=%u "
       "frequency_hz=%u started_ms=%lu\n",
       g_iq_rec_transition, static_cast<unsigned long>(g_iq_rec_sequence),
-      static_cast<unsigned>(kIqDiagnosticMaxBytes), kRtlSampleRateSps,
+      static_cast<unsigned>(iq_capture_max_bytes(IqCaptureKind::diagnostic)),
+      g_iq_rec_sample_rate_sps,
       g_iq_rec_frequency_hz, static_cast<unsigned long>(g_iq_rec_started_ms));
   return true;
 }
@@ -14352,7 +14356,8 @@ void process_command(char* command) {
         g_iq_rec_active.load(std::memory_order_acquire) ? 1 : 0,
         g_iq_rec_ready.load(std::memory_order_acquire) ? 1 : 0,
         static_cast<unsigned>(g_iq_rec_write.load(std::memory_order_acquire)),
-        static_cast<unsigned>(kIqDiagnosticMaxBytes), kRtlSampleRateSps,
+        static_cast<unsigned>(iq_capture_max_bytes(IqCaptureKind::diagnostic)),
+        g_iq_rec_sample_rate_sps,
         g_iq_rec_frequency_hz, static_cast<unsigned long>(g_iq_rec_started_ms));
     return;
   }
