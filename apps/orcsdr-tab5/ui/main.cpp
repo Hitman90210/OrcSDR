@@ -501,12 +501,10 @@ void rds_hypothesis_feed(RdsHypothesis& h, bool bit) {
   }
 }
 /*
- * Scope FFT size. 1024 bins @ 960 kS/s = 937.5 Hz/bin, fine enough to make
- * narrow AM/shortwave carriers visible for touch tuning.
+ * Scope FFT size. 256 bins @ 960 kS/s ≈ 3.75 kHz/bin (was 128 / 7.5 kHz).
  * Welch multi-window average runs only when GFX is on and audio is not stressed.
  */
-constexpr size_t kRtlSpectrumBins = 1024;
-static_assert(kRtlSampleRateSps / kRtlSpectrumBins <= 1000);
+constexpr size_t kRtlSpectrumBins = 256;
 /** Average this many non-overlapping windows for a quieter, more precise trace. */
 constexpr size_t kRtlSpectrumWelchWindows = 2;
 // Keep scope cadence stable when sound is toggled; only back off if audio drops.
@@ -6611,7 +6609,12 @@ void draw_band_edges() {
 }
 
 /**
- * RF scope: windowed FFT, Welch multi-window average, peak-hold envelope.
+ * RF scope: 256-bin FFT, Welch multi-window average, peak-hold envelope.
+ * Prefer a frozen IQ snapshot so demod can keep writing the live buffer.
+ * Two-window Welch averaging keeps the single render core responsive.
+ */
+/**
+ * RF scope: 256-bin FFT, Welch multi-window average, peak-hold envelope.
  * Prefer a frozen IQ snapshot so demod can keep writing the live buffer.
  * Two-window Welch averaging keeps the single render core responsive.
  */
