@@ -413,6 +413,9 @@ void note_tuned(uint32_t frequency_hz) { g_saved_frequency = frequency_hz; }
 bool dashboard_self_check() {
   const Snapshot saved = g_snapshot;
   const bool was_active = g_active;
+  const bool had_keypad = g_keypad;
+  char saved_entry[sizeof(g_entry)];
+  memcpy(saved_entry, g_entry, sizeof(g_entry));
   Snapshot test{};
   test.controls.route = ReceiverRoute::hf_upconverter;
   test.controls.capabilities = {true, true, true, false};
@@ -422,9 +425,11 @@ bool dashboard_self_check() {
   test.gain_step_count = 3;
   g_snapshot = test;
   g_active = true;
+  g_keypad = false;
   const bool ok = handle_touch(60, 150).kind == ActionKind::step_down &&
                   handle_touch(760, 150).kind == ActionKind::step_up &&
-                  handle_touch(400, 160).kind == ActionKind::open_frequency &&
+                  handle_touch(400, 160).kind == ActionKind::none && g_keypad &&
+                  handle_touch(400, 540).kind == ActionKind::none && !g_keypad &&
                   handle_touch(900, 200).kind == ActionKind::gain_auto &&
                   handle_gain_drag(kGainX + kGainW, kGainY).value == 496;
   g_snapshot.controls.route = ReceiverRoute::direct_q;
@@ -453,6 +458,8 @@ bool dashboard_self_check() {
       handle_touch(830, 400).kind == ActionKind::none;
   g_snapshot = saved;
   g_active = was_active;
+  g_keypad = had_keypad;
+  memcpy(g_entry, saved_entry, sizeof(g_entry));
   return ok && direct_q_ok && spectrum_layout_ok && peak_pool_ok &&
          touch_tune_bounds_ok &&
          kTabsY + 90 <= 720 && model_self_check() && receiver_controls::self_check();
