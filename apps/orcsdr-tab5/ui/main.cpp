@@ -6834,6 +6834,33 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
       (now - rtl_spectrum_trace_last_ms) >= spectrum_interval;
   const bool show_peak = (tool == OrcTool::Scope || tool == OrcTool::Radio);
 
+  ++rtl_spectrum_frames;
+  if (now - rtl_spectrum_fps_window_ms >= 1000) {
+    const uint32_t window_ms = now - rtl_spectrum_fps_window_ms;
+    rtl_spectrum_fps = static_cast<uint16_t>(rtl_spectrum_frames);
+    rtl_spectrum_frames = 0;
+    rtl_spectrum_fps_window_ms = now;
+    const uint32_t dsp_us = rtl_dsp_window_us.exchange(0, std::memory_order_acq_rel);
+    const uint32_t dsp_blocks =
+        rtl_dsp_window_blocks.exchange(0, std::memory_order_acq_rel);
+    const uint32_t dsp_max_us =
+        rtl_dsp_block_us_max.exchange(0, std::memory_order_acq_rel);
+    const uint32_t dsp_load_pct =
+        window_ms == 0 ? 0 : static_cast<uint32_t>(
+                                  (static_cast<uint64_t>(dsp_us) * 100u) /
+                                  (static_cast<uint64_t>(window_ms) * 1000u));
+    if (serial_verbosity_at(SerialVerbosity::trace)) {
+      Serial.printf("RTL_SPECTRUM_FPS fps=%u bins=%u welch=%u tool=%s iq_dropped=%u "
+                    "audio_dropped=%u audio_chunks=%u audio_peak=%d dsp_load_pct=%u dsp_blocks=%u "
+                    "dsp_block_us_max=%u\n",
+                    rtl_spectrum_fps, static_cast<unsigned>(kRtlSpectrumBins),
+                    static_cast<unsigned>(windows), orc_tool_name(tool),
+                    rtl_iq_pipeline_drops.load(std::memory_order_relaxed),
+                    rtl_audio.dropped_chunks, rtl_audio.queued_chunks, rtl_audio.peak,
+                    dsp_load_pct, dsp_blocks, dsp_max_us);
+    }
+  }
+
   const bool home_scope =
       orcsdr::home::active() &&
       (orcsdr::screens::owns(orcsdr::screens::Id::home) || ui_documentation_mode);
@@ -6844,7 +6871,6 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
                                 floor, audio_stressed);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
 
@@ -6853,21 +6879,18 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     orcsdr::lora::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
   if (rtl_ui_band == RtlBand::fm && orcsdr::screens::owns(orcsdr::screens::Id::fm)) {
     orcsdr::fm::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
   if (rtl_ui_band == RtlBand::am && orcsdr::screens::owns(orcsdr::screens::Id::am)) {
     orcsdr::am::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
   if (rtl_ui_band == RtlBand::shortwave &&
@@ -6875,14 +6898,12 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     orcsdr::shortwave::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
   if (rtl_ui_band == RtlBand::p25 && orcsdr::screens::owns(orcsdr::screens::Id::p25)) {
     orcsdr::p25::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
 
@@ -6947,32 +6968,6 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   draw_band_edges();
   M5.Display.endWrite();
 
-  ++rtl_spectrum_frames;
-  if (now - rtl_spectrum_fps_window_ms >= 1000) {
-    const uint32_t window_ms = now - rtl_spectrum_fps_window_ms;
-    rtl_spectrum_fps = static_cast<uint16_t>(rtl_spectrum_frames);
-    rtl_spectrum_frames = 0;
-    rtl_spectrum_fps_window_ms = now;
-    const uint32_t dsp_us = rtl_dsp_window_us.exchange(0, std::memory_order_acq_rel);
-    const uint32_t dsp_blocks =
-        rtl_dsp_window_blocks.exchange(0, std::memory_order_acq_rel);
-    const uint32_t dsp_max_us =
-        rtl_dsp_block_us_max.exchange(0, std::memory_order_acq_rel);
-    const uint32_t dsp_load_pct =
-        window_ms == 0 ? 0 : static_cast<uint32_t>(
-                                  (static_cast<uint64_t>(dsp_us) * 100u) /
-                                  (static_cast<uint64_t>(window_ms) * 1000u));
-    if (serial_verbosity_at(SerialVerbosity::trace)) {
-      Serial.printf("RTL_SPECTRUM_FPS fps=%u bins=%u welch=%u tool=%s iq_dropped=%u "
-                    "audio_dropped=%u audio_chunks=%u audio_peak=%d dsp_load_pct=%u dsp_blocks=%u "
-                    "dsp_block_us_max=%u\n",
-                    rtl_spectrum_fps, static_cast<unsigned>(kRtlSpectrumBins),
-                    static_cast<unsigned>(windows), orc_tool_name(tool),
-                    rtl_iq_pipeline_drops.load(std::memory_order_relaxed),
-                    rtl_audio.dropped_chunks, rtl_audio.queued_chunks, rtl_audio.peak,
-                    dsp_load_pct, dsp_blocks, dsp_max_us);
-    }
-  }
 }
 
 float fast_phase(float cross, float dot) {
