@@ -1144,7 +1144,7 @@ function Invoke-IqDiagnosticCapture {
     dongle_profile = $driverAfterCapture.ProfileName
     driver_version = $driverAfterCapture.Version
     driver_base_commit = 'e1ca40e04f8140245d56837cd149bf901f771441'
-    driver_instrumentation_commit = '39a812aa8a22047cda471bfe46797b8d9033a4c8'
+    driver_instrumentation_commit = '94ecd187070b39f370c5d7f0dc55a56762dd6c86'
     requested_display_rf_hz = $IqFrequency
     reported_driver_lo_hz = $driverAfterCapture.Frequency
     expected_driver_lo_hz = $expectedDriverFrequency
