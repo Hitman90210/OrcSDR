@@ -15,12 +15,15 @@ namespace {
 constexpr uint16_t kPanel = 0x0841;
 constexpr uint16_t kCyan = 0x2e7f;
 constexpr uint16_t kGreen = 0x6fe8;
+constexpr uint16_t kYellow = 0xff24;
 constexpr uint16_t kMuted = 0x8c71;
 constexpr uint16_t kGrid = 0x2945;
 constexpr int kSpectrumX = 24;
 constexpr int kSpectrumY = 340;
 constexpr int kSpectrumW = 792;
-constexpr int kSpectrumH = 244;
+constexpr int kSpectrumH = 145;
+constexpr int kWaterfallY = 493;
+constexpr int kWaterfallH = 91;
 constexpr int kTabsY = 630;
 constexpr int kTabW = 256;
 constexpr int kGainX = 872;
@@ -30,6 +33,12 @@ constexpr int kGainW = 350;
 Snapshot g_snapshot{};
 bool g_active = false;
 uint32_t g_saved_frequency = 7100000;
+EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kSpectrumW]{};
+
+int spectrum_x_for_bin(size_t bin, size_t visible_bins) {
+  return kSpectrumX + static_cast<int>(bin * (kSpectrumW - 1) /
+                                       (visible_bins > 1 ? visible_bins - 1 : 1));
+}
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
   return x >= bx && x < bx + bw && y >= by && y < by + bh;
@@ -154,6 +163,7 @@ void draw_controls() {
 }
 
 void draw_static() {
+  M5.Display.clearScrollRect();
   M5.Display.fillScreen(TFT_BLACK);
   text("<", 35, 45, kGreen, 4);
   text("Orc", 88, 34, TFT_WHITE, 3, middle_left);
@@ -177,12 +187,24 @@ void draw_static() {
   for (int i = 1; i < 4; ++i)
     M5.Display.drawFastHLine(kSpectrumX, kSpectrumY + i * kSpectrumH / 4,
                             kSpectrumW, kGrid);
+  M5.Display.drawRect(kSpectrumX, kWaterfallY, kSpectrumW, kWaterfallH, kCyan);
+  M5.Display.setScrollRect(kSpectrumX + 1, kWaterfallY + 1, kSpectrumW - 2,
+                           kWaterfallH - 2, TFT_BLACK);
 
   constexpr const char* tabs[] = {"LIVE", "ON AIR", "HUNT", "MEMORY", "LOGBOOK"};
   for (int i = 0; i < 5; ++i) {
     button(i * kTabW + 4, kTabsY + 4, kTabW - 8, 82, tabs[i], i == 0, i == 0);
     if (i) text("LATER", i * kTabW + kTabW / 2, kTabsY + 68, kMuted, 1);
   }
+}
+
+uint16_t waterfall_color(float level) {
+  level = std::clamp(level, 0.0f, 1.0f);
+  const uint8_t r = level < 0.55f ? 0 : static_cast<uint8_t>((level - 0.55f) * 566);
+  const uint8_t g = level < 0.2f ? 0 : static_cast<uint8_t>(
+      std::min(255.0f, (level - 0.2f) * 510));
+  const uint8_t b = level < 0.65f ? static_cast<uint8_t>((0.65f - level) * 390) : 0;
+  return M5.Display.color565(r, g, b);
 }
 
 }  // namespace
@@ -194,7 +216,10 @@ void enter(const Snapshot& snapshot) {
   draw();
 }
 
-void leave() { g_active = false; }
+void leave() {
+  M5.Display.clearScrollRect();
+  g_active = false;
+}
 
 void draw() {
   if (!g_active) return;
@@ -232,22 +257,32 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
   M5.Display.startWrite();
   M5.Display.fillRect(kSpectrumX + 1, kSpectrumY + 1, kSpectrumW - 2,
                       kSpectrumH - 2, TFT_BLACK);
-  for (int i = 1; i < 8; ++i)
-    M5.Display.drawFastVLine(kSpectrumX + i * kSpectrumW / 8, kSpectrumY,
-                            kSpectrumH, kGrid);
   int last_x = kSpectrumX;
-  int last_y = kSpectrumY + kSpectrumH - 1;
-  for (int x = 0; x < kSpectrumW; ++x) {
-    const size_t bin = first_bin + static_cast<size_t>(x) * visible_bins / kSpectrumW;
-    const float normalized = std::clamp((levels[bin] - floor) / 48.0f, 0.0f, 1.0f);
+  int last_y = kSpectrumY + kSpectrumH - 2;
+  for (size_t i = 0; i < visible_bins; ++i) {
+    const float normalized = std::clamp((levels[first_bin + i] - floor) / 48.0f,
+                                        0.0f, 1.0f);
+    const int x = spectrum_x_for_bin(i, visible_bins);
     const int y = kSpectrumY + kSpectrumH - 2 -
                   static_cast<int>(normalized * (kSpectrumH - 4));
-    if (x) M5.Display.drawLine(last_x, last_y, kSpectrumX + x, y, kGreen);
-    last_x = kSpectrumX + x;
+    if (i) M5.Display.drawLine(last_x, last_y, x, y, kGreen);
+    last_x = x;
     last_y = y;
+    const int x0 = static_cast<int>(i * kSpectrumW / visible_bins);
+    const int x1 = static_cast<int>((i + 1) * kSpectrumW / visible_bins);
+    for (int p = x0; p < x1; ++p) g_waterfall_row[p] = waterfall_color(normalized);
   }
-  M5.Display.drawFastVLine(kSpectrumX + kSpectrumW / 2, kSpectrumY,
-                          kSpectrumH, TFT_WHITE);
+  const int center = kSpectrumX + kSpectrumW / 2;
+  const int half_filter = std::clamp(static_cast<int>(
+      static_cast<uint64_t>(g_snapshot.filter_bandwidth_hz) * kSpectrumW /
+      (2u * (g_snapshot.span_hz ? g_snapshot.span_hz : 1u))), 3,
+      kSpectrumW / 2 - 2);
+  M5.Display.drawFastVLine(center, kSpectrumY, kSpectrumH, kCyan);
+  M5.Display.drawFastVLine(center - half_filter, kSpectrumY, kSpectrumH, kYellow);
+  M5.Display.drawFastVLine(center + half_filter, kSpectrumY, kSpectrumH, kYellow);
+  M5.Display.scroll(0, -1);
+  M5.Display.pushImage(kSpectrumX, kWaterfallY + kWaterfallH - 2, kSpectrumW, 1,
+                       g_waterfall_row);
   M5.Display.endWrite();
 }
 
@@ -317,9 +352,14 @@ bool dashboard_self_check() {
   const bool direct_q_ok = handle_touch(900, 200).kind == ActionKind::none &&
                            handle_gain_drag(kGainX, kGainY).kind == ActionKind::none &&
                            handle_touch(900, 280).kind == ActionKind::audio_boost;
+  const bool spectrum_layout_ok =
+      spectrum_x_for_bin(0, 4) == kSpectrumX &&
+      spectrum_x_for_bin(3, 4) == kSpectrumX + kSpectrumW - 1 &&
+      kWaterfallY > kSpectrumY + kSpectrumH &&
+      kWaterfallY + kWaterfallH <= kTabsY;
   g_snapshot = saved;
   g_active = was_active;
-  return ok && direct_q_ok && kTabsY + 90 <= 720 && model_self_check() &&
+  return ok && direct_q_ok && spectrum_layout_ok && kTabsY + 90 <= 720 && model_self_check() &&
          receiver_controls::self_check();
 }
 
