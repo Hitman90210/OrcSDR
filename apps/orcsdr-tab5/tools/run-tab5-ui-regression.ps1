@@ -108,7 +108,7 @@ function Read-MatchingLine([string]$Pattern, [int]$Seconds = $TimeoutSeconds) {
       if (!$line) { continue }
       $script:linesSeen++
       Write-SoakLine $line
-      if ($line -match '^V3C_RF_STATE ') { $script:lastV3cRfState = $line }
+      if ($line -match 'V3C_RF_STATE ') { $script:lastV3cRfState = $line }
       if (Test-FatalLine $line) { throw "Device crash/reset detected: $line" }
       if ($line -match $Pattern) { return $line }
     } catch [System.TimeoutException] {}
@@ -812,7 +812,7 @@ function ConvertFrom-IqDiagnosticStart([string]$Line) {
 }
 
 function ConvertFrom-V3cRfState([string]$Line) {
-  $pattern = '^V3C_RF_STATE profile=(\S+) rf=(\d+) rate=(\d+) mode=(\S+) direct=(ON|OFF) pll_if=(\d+) demod_if=(\d+) nco=(\S+) input=(\S+) gain_mode=(AUTO|MANUAL) gain_tenth_db=(-?\d+) rtl_agc=([01]) short_transfers=(\d+) transition=(\S+)$'
+  $pattern = '^(?:I \(\d+\) esp_rtl_sdr: )?V3C_RF_STATE profile=(\S+) rf=(\d+) rate=(\d+) mode=(\S+) direct=(ON|OFF) pll_if=(\d+) demod_if=(\d+) nco=(\S+) input=(\S+) gain_mode=(AUTO|MANUAL) gain_tenth_db=(-?\d+) rtl_agc=([01]) short_transfers=(\d+) transition=(\S+)$'
   if ($Line -notmatch $pattern) { throw "Malformed V3c RF state: $Line" }
   [pscustomobject]@{
     Profile = $Matches[1]; Frequency = [uint32]$Matches[2]; Rate = [uint32]$Matches[3]
@@ -887,7 +887,7 @@ function Invoke-SelfCheck {
       $iqDiag.Frequency -ne 99100000 -or $iqDiag.StartedMs -ne 1234) {
     throw 'IQ diagnostic metadata parser failed.'
   }
-  $rfState = ConvertFrom-V3cRfState 'V3C_RF_STATE profile=blog_v3_r820t2 rf=99100000 rate=2400000 mode=NORMAL_TUNER direct=OFF pll_if=3570000 demod_if=3570000 nco=none input=COMPLEX_IQ gain_mode=MANUAL gain_tenth_db=14 rtl_agc=0 short_transfers=0 transition=COLD_INIT'
+  $rfState = ConvertFrom-V3cRfState 'I (1234) esp_rtl_sdr: V3C_RF_STATE profile=blog_v3_r820t2 rf=99113000 rate=2400000 mode=NORMAL_TUNER direct=OFF pll_if=3570000 demod_if=3570000 nco=none input=COMPLEX_IQ gain_mode=MANUAL gain_tenth_db=14 rtl_agc=0 short_transfers=0 transition=COLD_INIT'
   if ($rfState.PllIf -ne 3570000 -or $rfState.DemodIf -ne 3570000 -or
       $rfState.Mode -ne 'NORMAL_TUNER' -or $rfState.Transition -ne 'COLD_INIT') {
     throw 'V3c RF state parser failed.'
@@ -971,15 +971,16 @@ function Invoke-IqDiagnosticCapture {
   Wait-DeviceReady 60 11000
   Connect-Authenticated
   [void](Send-And-Wait "RTL_TUNE $IqBand $IqFrequency" '^RTL_TUNE_OK ' 20)
+  $expectedDriverFrequency = if ($IqBand -eq 'FM') { $IqFrequency + 13000 } else { $IqFrequency }
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     $driver = Get-DriverStatus
-    if ($driver.State -eq 'STREAMING' -and $driver.Frequency -eq $IqFrequency -and
+    if ($driver.State -eq 'STREAMING' -and $driver.Frequency -eq $expectedDriverFrequency -and
         $driver.Bytes -gt 0) { break }
     Start-Sleep -Milliseconds 250
   } while ([DateTime]::UtcNow -lt $deadline)
-  if ($driver.State -ne 'STREAMING' -or $driver.Frequency -ne $IqFrequency) {
-    throw "Requested IQ state did not stabilize: state=$($driver.State) frequency=$($driver.Frequency)"
+  if ($driver.State -ne 'STREAMING' -or $driver.Frequency -ne $expectedDriverFrequency) {
+    throw "Requested IQ state did not stabilize: state=$($driver.State) display_hz=$IqFrequency driver_lo_hz=$($driver.Frequency) expected_lo_hz=$expectedDriverFrequency"
   }
 
   $healthBefore = Get-HealthStatus
@@ -1056,8 +1057,9 @@ function Invoke-IqDiagnosticCapture {
     driver_version = $driverAfter.Version
     driver_base_commit = 'e1ca40e04f8140245d56837cd149bf901f771441'
     driver_instrumentation_commit = '39a812aa8a22047cda471bfe46797b8d9033a4c8'
-    requested_rf_hz = $IqFrequency
-    reported_rf_hz = $driverAfter.Frequency
+    requested_display_rf_hz = $IqFrequency
+    reported_driver_lo_hz = $driverAfter.Frequency
+    expected_driver_lo_hz = $expectedDriverFrequency
     sample_rate_sps = $start.Rate
     tuner_mode = $driverAfter.Route
     direct_sampling = $driverAfter.Route -eq 'DIRECT_Q'
