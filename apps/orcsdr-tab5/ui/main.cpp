@@ -238,6 +238,8 @@ constexpr int kWifiData2Pin = 9;
 constexpr int kWifiData3Pin = 8;
 constexpr int kWifiResetPin = 15;
 constexpr uint32_t kRtlSampleRateSps = 960000;
+constexpr uint32_t kRtlDashboardSampleRateSps = 2400000;
+constexpr uint32_t kRtlDemodRateSps = 240000;
 constexpr uint32_t kRtlNoHfMinHz = 24000000;
 constexpr uint32_t kRtlCaptureBytes = 9600000;
 constexpr size_t kRtlBulkBytes = 32768;
@@ -501,10 +503,12 @@ void rds_hypothesis_feed(RdsHypothesis& h, bool bit) {
   }
 }
 /*
- * Scope FFT size. 256 bins @ 960 kS/s ≈ 3.75 kHz/bin (was 128 / 7.5 kHz).
+ * Dashboard FFT: 2048 bins @ 2.4 MS/s = 1.17 kHz/bin.
+ * Buffers live in PSRAM so ESP-IDF can still reserve its early DMA pool.
  * Welch multi-window average runs only when GFX is on and audio is not stressed.
  */
-constexpr size_t kRtlSpectrumBins = 256;
+constexpr size_t kRtlSpectrumBins = 2048;
+static_assert(kRtlDashboardSampleRateSps / kRtlSpectrumBins < 1200);
 /** Average this many non-overlapping windows for a quieter, more precise trace. */
 constexpr size_t kRtlSpectrumWelchWindows = 2;
 // Keep scope cadence stable when sound is toggled; only back off if audio drops.
@@ -591,7 +595,7 @@ constexpr uint32_t kRtlHotRetuneQuantHz = 5000;
 /** Min time between LO applies (each apply drains bulk + EP0). */
 constexpr uint32_t kRtlHotRetuneMinIntervalMs = 280;
 constexpr uint32_t kRtlScopeSpanMinHz = 120000;
-constexpr uint32_t kRtlScopeSpanMaxHz = 960000;
+constexpr uint32_t kRtlScopeSpanMaxHz = kRtlDashboardSampleRateSps;
 /* 3 dB is at bandwidth/2. 180 kHz chopped stereo/RDS (±90 kHz).
  * Broadcast FM with 19/38/57 kHz MPX needs ~±130 kHz. */
 constexpr uint32_t kRtlFmFilterDefaultHz = 260000;
@@ -1368,14 +1372,15 @@ static std::atomic<uint32_t> rtl_active_sample_rate_sps{kRtlSampleRateSps};
 // repaint; loop() owns the actual draw.
 static std::atomic<bool> rtl_stream_ui_refresh_pending{false};
 static std::atomic<bool> rtl_stream_spectrum_pending{false};
-float rtl_spectrum_real[kRtlSpectrumBins];
-float rtl_spectrum_imaginary[kRtlSpectrumBins];
-float rtl_spectrum_levels[kRtlSpectrumBins];
-float rtl_spectrum_smooth[kRtlSpectrumBins];
-float rtl_spectrum_peak[kRtlSpectrumBins];
-float rtl_spectrum_window[kRtlSpectrumBins];
-int16_t rtl_spectrum_y[kRtlSpectrumBins];
-int16_t rtl_spectrum_peak_y[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_real[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_imaginary[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_levels[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_smooth[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_peak[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_window[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_power[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR int16_t rtl_spectrum_y[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR int16_t rtl_spectrum_peak_y[kRtlSpectrumBins];
 uint16_t rtl_waterfall_row[kSpectrumWidth];
 bool rtl_spectrum_window_ready = false;
 bool rtl_spectrum_trace_valid = false;
@@ -1385,7 +1390,10 @@ uint32_t rtl_spectrum_frames = 0;
 uint32_t rtl_spectrum_fps_window_ms = 0;
 uint16_t rtl_spectrum_fps = 0;
 /** IQ snapshot for scope only (never taken from the live demod buffer mid-write). */
-static uint8_t rtl_spectrum_iq_snap[kRtlSpectrumBins * 2 * kRtlSpectrumWelchWindows];
+EXT_RAM_BSS_ATTR uint8_t
+    rtl_spectrum_iq_snap[kRtlSpectrumBins * 2 * kRtlSpectrumWelchWindows];
+EXT_RAM_BSS_ATTR uint8_t
+    rtl_spectrum_iq_work[kRtlSpectrumBins * 2 * kRtlSpectrumWelchWindows];
 static size_t rtl_spectrum_iq_snap_bytes = 0;
 static portMUX_TYPE rtl_spectrum_snap_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -2737,11 +2745,11 @@ uint32_t rtl_clamp_filter_hz(RtlBand band, uint32_t bandwidth_hz) {
   return constrain((bandwidth_hz / 1000u) * 1000u, low, high);
 }
 
-float rtl_filter_alpha(RtlBand band) {
+float rtl_filter_alpha(RtlBand band, uint32_t sample_rate_sps = kRtlSampleRateSps) {
   constexpr float kPi = 3.14159265358979323846f;
   const float bandwidth = static_cast<float>(
       rtl_clamp_filter_hz(band, rtl_filter_bandwidth_hz.load(std::memory_order_relaxed)));
-  return 1.0f - expf(-kPi * bandwidth / static_cast<float>(kRtlSampleRateSps));
+  return 1.0f - expf(-kPi * bandwidth / static_cast<float>(sample_rate_sps));
 }
 
 uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
@@ -3055,6 +3063,28 @@ void allow_boot_speaker() {
 bool rtl_band_has_audio(RtlBand band) {
   return band != RtlBand::adsb && band != RtlBand::lora;
 }
+
+bool rtl_wide_dashboard_band(RtlBand band) {
+  return band == RtlBand::fm || band == RtlBand::am ||
+         band == RtlBand::shortwave || band == RtlBand::wx ||
+         band == RtlBand::cb || band == RtlBand::browse;
+}
+
+uint32_t rtl_default_sample_rate(RtlBand band) {
+  if (band == RtlBand::adsb) return ESP_RTL_SDR_RATE_2048K;
+  return rtl_wide_dashboard_band(band) ? ESP_RTL_SDR_RATE_2400K
+                                       : ESP_RTL_SDR_RATE_960K;
+}
+
+constexpr uint8_t rtl_rf_decimation(uint32_t sample_rate_sps) {
+  if (sample_rate_sps < kRtlDemodRateSps ||
+      sample_rate_sps % kRtlDemodRateSps != 0) return 0;
+  const uint32_t decimation = sample_rate_sps / kRtlDemodRateSps;
+  return decimation <= UINT8_MAX ? static_cast<uint8_t>(decimation) : 0;
+}
+static_assert(rtl_rf_decimation(ESP_RTL_SDR_RATE_960K) == 4);
+static_assert(rtl_rf_decimation(ESP_RTL_SDR_RATE_2400K) == 10);
+static_assert(rtl_rf_decimation(ESP_RTL_SDR_RATE_2048K) == 0);
 
 void sync_rtl_audio_for_band(RtlBand band) {
   const bool enabled = rtl_audio_user_enabled.load(std::memory_order_acquire) &&
@@ -6609,12 +6639,7 @@ void draw_band_edges() {
 }
 
 /**
- * RF scope: 256-bin FFT, Welch multi-window average, peak-hold envelope.
- * Prefer a frozen IQ snapshot so demod can keep writing the live buffer.
- * Two-window Welch averaging keeps the single render core responsive.
- */
-/**
- * RF scope: 256-bin FFT, Welch multi-window average, peak-hold envelope.
+ * RF scope: PSRAM-backed FFT, Welch multi-window average, peak-hold envelope.
  * Prefer a frozen IQ snapshot so demod can keep writing the live buffer.
  * Two-window Welch averaging keeps the single render core responsive.
  */
@@ -6635,18 +6660,19 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     }
     rtl_spectrum_window_ready = true;
   }
-  uint8_t local_iq[sizeof(rtl_spectrum_iq_snap)];
   size_t local_bytes = 0;
   portENTER_CRITICAL(&rtl_spectrum_snap_mux);
   if (rtl_spectrum_iq_snap_bytes >= kRtlSpectrumBins * 2) {
     local_bytes = rtl_spectrum_iq_snap_bytes;
-    memcpy(local_iq, rtl_spectrum_iq_snap, local_bytes);
+    memcpy(rtl_spectrum_iq_work, rtl_spectrum_iq_snap, local_bytes);
   }
   portEXIT_CRITICAL(&rtl_spectrum_snap_mux);
   if (local_bytes < kRtlSpectrumBins * 2) {
     if (iq == nullptr || bytes < kRtlSpectrumBins * 2) return;
-    local_bytes = bytes < sizeof(local_iq) ? bytes : sizeof(local_iq);
-    memcpy(local_iq, iq, local_bytes);
+    local_bytes = bytes < sizeof(rtl_spectrum_iq_work)
+                      ? bytes
+                      : sizeof(rtl_spectrum_iq_work);
+    memcpy(rtl_spectrum_iq_work, iq, local_bytes);
   }
 
   const uint32_t now = millis();
@@ -6666,12 +6692,11 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   const size_t windows =
       welch_n < max_windows ? welch_n : (max_windows > 0 ? max_windows : 1);
 
-  float power_acc[kRtlSpectrumBins];
-  for (size_t b = 0; b < kRtlSpectrumBins; ++b) power_acc[b] = 0.0f;
+  for (size_t b = 0; b < kRtlSpectrumBins; ++b) rtl_spectrum_power[b] = 0.0f;
 
   constexpr float kPi = 3.14159265358979323846f;
   for (size_t w = 0; w < windows; ++w) {
-    const uint8_t* base = local_iq + w * window_bytes;
+    const uint8_t* base = rtl_spectrum_iq_work + w * window_bytes;
     float mean_i = 0.0f;
     float mean_q = 0.0f;
     for (size_t index = 0; index < kRtlSpectrumBins; ++index) {
@@ -6728,14 +6753,14 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
       const float p =
           rtl_spectrum_real[shifted] * rtl_spectrum_real[shifted] +
           rtl_spectrum_imaginary[shifted] * rtl_spectrum_imaginary[shifted];
-      power_acc[bin] += p;
+      rtl_spectrum_power[bin] += p;
     }
   }
 
   size_t visible_bins = static_cast<size_t>(
       (static_cast<uint64_t>(rtl_scope_span_hz.load(std::memory_order_relaxed)) *
        kRtlSpectrumBins) /
-      kRtlScopeSpanMaxHz);
+      std::max<uint32_t>(1, rtl_active_sample_rate_sps.load(std::memory_order_relaxed)));
   visible_bins = constrain(visible_bins, static_cast<size_t>(32), kRtlSpectrumBins);
   const size_t first_bin = (kRtlSpectrumBins - visible_bins) / 2;
   const size_t last_bin = first_bin + visible_bins;
@@ -6746,7 +6771,7 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   const float inv_w = 1.0f / static_cast<float>(windows);
   const bool home_active = orcsdr::home::active();
   for (size_t bin = 0; bin < kRtlSpectrumBins; ++bin) {
-    const float level = 10.0f * log10f(power_acc[bin] * inv_w + 1.0f);
+    const float level = 10.0f * log10f(rtl_spectrum_power[bin] * inv_w + 1.0f);
     /* EMA average (cyan) + slow peak-hold (orange) for interference spotting. */
     rtl_spectrum_smooth[bin] = rtl_spectrum_trace_valid
                                    ? (0.78f * rtl_spectrum_smooth[bin] + 0.22f * level)
@@ -6767,7 +6792,8 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   }
   const int32_t peak_offset_hz = static_cast<int32_t>(
       (static_cast<int64_t>(strongest_bin) - static_cast<int64_t>(kRtlSpectrumBins / 2)) *
-      static_cast<int64_t>(kRtlSampleRateSps) / static_cast<int64_t>(kRtlSpectrumBins));
+      static_cast<int64_t>(rtl_active_sample_rate_sps.load(std::memory_order_relaxed)) /
+      static_cast<int64_t>(kRtlSpectrumBins));
   rtl_scope_peak_offset_hz.store(peak_offset_hz, std::memory_order_relaxed);
   rtl_scope_peak_level.store(strongest, std::memory_order_relaxed);
   const float floor = maximum - 48.0f;
@@ -7229,12 +7255,17 @@ void rds_log_status() {
  * wbfm=false: NFM/WX — tighter audio LPF, light de-emphasis only, no stereo.
  * No blanker / heavy post-LPF (those muffled on prior A/B).
  */
-void demodulate_fm(const uint8_t* iq, size_t bytes, float audio_scale, bool wbfm) {
+void demodulate_fm(const uint8_t* iq, size_t bytes, float audio_scale, bool wbfm,
+                   uint32_t sample_rate_sps) {
   int16_t* audio = rtl_audio_buffers[rtl_audio.buffer];
   size_t audio_count = 0;
-  const float iq_lpf_k = rtl_filter_alpha(wbfm ? RtlBand::fm : RtlBand::wx);
+  const uint8_t rf_decimation = rtl_rf_decimation(sample_rate_sps);
+  if (!rf_decimation) return;
+  const float iq_lpf_k = rtl_filter_alpha(wbfm ? RtlBand::fm : RtlBand::wx,
+                                          sample_rate_sps);
   const float audio_lpf_k = wbfm ? kWbfmAudioLpfK : kNfmAudioLpfK;
   const float deemph_k = wbfm ? kWbfmDeemphK : kNfmDeemphK;
+  const float inv_rf_decim = 1.0f / static_cast<float>(rf_decimation);
   const float inv_audio_decim = 1.0f / static_cast<float>(kFmAudioDecim);
 
   /* Stereo meter accumulators, local to this IQ chunk (same call granularity
@@ -7263,10 +7294,10 @@ void demodulate_fm(const uint8_t* iq, size_t bytes, float audio_scale, bool wbfm
 
     rtl_audio.i_sum += rtl_audio.iq_i_lpf;
     rtl_audio.q_sum += rtl_audio.iq_q_lpf;
-    if (++rtl_audio.rf_phase != kFmRfDecim) continue;
+    if (++rtl_audio.rf_phase != rf_decimation) continue;
 
-    const float i = rtl_audio.i_sum;
-    const float q = rtl_audio.q_sum;
+    const float i = rtl_audio.i_sum * inv_rf_decim;
+    const float q = rtl_audio.q_sum * inv_rf_decim;
     rtl_audio.i_sum = 0;
     rtl_audio.q_sum = 0;
     rtl_audio.rf_phase = 0;
@@ -7418,10 +7449,14 @@ void demodulate_fm(const uint8_t* iq, size_t bytes, float audio_scale, bool wbfm
   queue_audio_samples(audio, audio_count);
 }
 
-void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale) {
+void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale,
+                   uint32_t sample_rate_sps) {
   int16_t* audio = rtl_audio_buffers[rtl_audio.buffer];
   size_t audio_count = 0;
-  const float iq_lpf_k = rtl_filter_alpha(RtlBand::am);
+  const uint8_t rf_decimation = rtl_rf_decimation(sample_rate_sps);
+  if (!rf_decimation) return;
+  const float inv_rf_decim = 1.0f / static_cast<float>(rf_decimation);
+  const float iq_lpf_k = rtl_filter_alpha(RtlBand::am, sample_rate_sps);
   for (size_t offset = 0; offset + 1 < bytes; offset += 2) {
     const float i_in = static_cast<float>(static_cast<int32_t>(iq[offset]) - 128);
     const float q_in = static_cast<float>(static_cast<int32_t>(iq[offset + 1]) - 128);
@@ -7431,10 +7466,10 @@ void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale) {
     rtl_audio.iq_q_lpf2 += iq_lpf_k * (rtl_audio.iq_q_lpf - rtl_audio.iq_q_lpf2);
     rtl_audio.i_sum += rtl_audio.iq_i_lpf2;
     rtl_audio.q_sum += rtl_audio.iq_q_lpf2;
-    if (++rtl_audio.rf_phase != 4) continue;
+    if (++rtl_audio.rf_phase != rf_decimation) continue;
 
-    const float i = rtl_audio.i_sum * 0.25f;
-    const float q = rtl_audio.q_sum * 0.25f;
+    const float i = rtl_audio.i_sum * inv_rf_decim;
+    const float q = rtl_audio.q_sum * inv_rf_decim;
     rtl_audio.i_sum = 0;
     rtl_audio.q_sum = 0;
     rtl_audio.rf_phase = 0;
@@ -7458,14 +7493,18 @@ void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale) {
   queue_audio_samples(audio, audio_count);
 }
 
-void demodulate_ssb(const uint8_t* iq, size_t bytes, float audio_scale, CbMode mode) {
+void demodulate_ssb(const uint8_t* iq, size_t bytes, float audio_scale, CbMode mode,
+                    uint32_t sample_rate_sps) {
   int16_t* audio = rtl_audio_buffers[rtl_audio.buffer];
   size_t audio_count = 0;
-  const float iq_lpf_k = rtl_filter_alpha(RtlBand::cb);
+  const uint8_t rf_decimation = rtl_rf_decimation(sample_rate_sps);
+  if (!rf_decimation) return;
+  const float inv_rf_decim = 1.0f / static_cast<float>(rf_decimation);
+  const float iq_lpf_k = rtl_filter_alpha(RtlBand::cb, sample_rate_sps);
   constexpr float kPi = 3.14159265358979323846f;
   const float bfo_hz = 1500.0f + cb_clarifier_hz.load(std::memory_order_relaxed);
   const float direction = mode == CbMode::usb ? -1.0f : 1.0f;
-  const float step = direction * 2.0f * kPi * bfo_hz / 240000.0f;
+  const float step = direction * 2.0f * kPi * bfo_hz / kRtlDemodRateSps;
   const float step_cos = cosf(step);
   const float step_sin = sinf(step);
 
@@ -7476,10 +7515,10 @@ void demodulate_ssb(const uint8_t* iq, size_t bytes, float audio_scale, CbMode m
     rtl_audio.iq_q_lpf += iq_lpf_k * (q_in - rtl_audio.iq_q_lpf);
     rtl_audio.i_sum += rtl_audio.iq_i_lpf;
     rtl_audio.q_sum += rtl_audio.iq_q_lpf;
-    if (++rtl_audio.rf_phase != 4) continue;
+    if (++rtl_audio.rf_phase != rf_decimation) continue;
 
-    const float i = rtl_audio.i_sum * 0.25f;
-    const float q = rtl_audio.q_sum * 0.25f;
+    const float i = rtl_audio.i_sum * inv_rf_decim;
+    const float q = rtl_audio.q_sum * inv_rf_decim;
     rtl_audio.i_sum = 0;
     rtl_audio.q_sum = 0;
     rtl_audio.rf_phase = 0;
@@ -7678,16 +7717,21 @@ void run_rtl_capture() {
     } else if (band == RtlBand::cb) {
       if (cb_audio_gate_open()) {
         const CbMode mode = cb_mode.load(std::memory_order_relaxed);
-        if (mode == CbMode::am) demodulate_am(rtl_iq_processing, completed_bytes, audio_scale);
-        else demodulate_ssb(rtl_iq_processing, completed_bytes, audio_scale, mode);
+        if (mode == CbMode::am)
+          demodulate_am(rtl_iq_processing, completed_bytes, audio_scale,
+                        kRtlSampleRateSps);
+        else
+          demodulate_ssb(rtl_iq_processing, completed_bytes, audio_scale, mode,
+                         kRtlSampleRateSps);
       } else {
         rtl_audio_play_count = 0;
       }
     } else if (band == RtlBand::am || band == RtlBand::shortwave) {
-      demodulate_am(rtl_iq_processing, completed_bytes, audio_scale);
+      demodulate_am(rtl_iq_processing, completed_bytes, audio_scale,
+                    kRtlSampleRateSps);
     } else if (band != RtlBand::lora) {
       demodulate_fm(rtl_iq_processing, completed_bytes, audio_scale,
-                    band == RtlBand::fm);
+                    band == RtlBand::fm, kRtlSampleRateSps);
     }
 
     // CRITICAL: never issue EP0 PLL writes while a bulk URB is outstanding.
@@ -8057,9 +8101,7 @@ static void on_rtl_driver_event(esp_rtl_sdr_event_t event, const void *payload, 
       }
       std::memcpy(rtl_ring_slots[slot], iq->data, n);
       const uint32_t active_rate = rtl_active_sample_rate_sps.load(std::memory_order_relaxed);
-      const uint32_t decoder_rate = g_stream_band == RtlBand::adsb
-                                        ? ESP_RTL_SDR_RATE_2048K
-                                        : ESP_RTL_SDR_RATE_960K;
+      const uint32_t decoder_rate = rtl_default_sample_rate(g_stream_band);
       const RtlIqBlock block{
           rtl_ring_slots[slot], n,
           rtl_iq_sequence.fetch_add(1, std::memory_order_relaxed), slot, g_stream_band,
@@ -8167,15 +8209,21 @@ static void rtl_dsp_task(void *) {
       if (block.band == RtlBand::cb) {
         if (cb_audio_gate_open()) {
           const CbMode mode = cb_mode.load(std::memory_order_relaxed);
-          if (mode == CbMode::am) demodulate_am(block.data, block.bytes, block.audio_scale);
-          else demodulate_ssb(block.data, block.bytes, block.audio_scale, mode);
+          if (mode == CbMode::am)
+            demodulate_am(block.data, block.bytes, block.audio_scale,
+                          block.sample_rate_sps);
+          else
+            demodulate_ssb(block.data, block.bytes, block.audio_scale, mode,
+                           block.sample_rate_sps);
         } else {
           rtl_audio_play_count = 0;
         }
       } else if (block.band == RtlBand::am || block.band == RtlBand::shortwave) {
-        demodulate_am(block.data, block.bytes, block.audio_scale);
+        demodulate_am(block.data, block.bytes, block.audio_scale,
+                      block.sample_rate_sps);
       } else if (block.band != RtlBand::adsb) {
-        demodulate_fm(block.data, block.bytes, block.audio_scale, block.band == RtlBand::fm);
+        demodulate_fm(block.data, block.bytes, block.audio_scale,
+                      block.band == RtlBand::fm, block.sample_rate_sps);
       }
     }
     const uint32_t dsp_elapsed_us = micros() - dsp_started_us;
@@ -8286,9 +8334,7 @@ static void rtl_driver_app_task(void *) {
       st.frequency_hz =
           band == RtlBand::fm ? rtl_fm_command_lo_hz(frequency_hz) : frequency_hz;
       const uint32_t lab_rate = rtl_rate_override_sps.load(std::memory_order_acquire);
-      st.sample_rate_sps = lab_rate ? lab_rate
-                                    : band == RtlBand::adsb ? ESP_RTL_SDR_RATE_2048K
-                                                            : ESP_RTL_SDR_RATE_960K;
+      st.sample_rate_sps = lab_rate ? lab_rate : rtl_default_sample_rate(band);
       rtl_active_sample_rate_sps.store(st.sample_rate_sps, std::memory_order_release);
       esp_err_t err = esp_rtl_sdr_start(g_rtl, &st);
       Serial.printf("RTL_START %s rate=%u display_hz=%u lo_hz=%u\n",
@@ -8305,11 +8351,12 @@ static void rtl_driver_app_task(void *) {
         rtl_fm_last_user_tune_ms.store(millis(), std::memory_order_relaxed);
         Serial.printf("RTL_WBFM_DSP rate=%u filter_hz=%u iq_lpf_k=%.2f audio_lpf_k=%.2f "
                       "decim=%u/%u note=app_side_filter\n",
-                      kRtlSampleRateSps,
+                      st.sample_rate_sps,
                       rtl_filter_bandwidth_hz.load(std::memory_order_relaxed),
-                      static_cast<double>(rtl_filter_alpha(RtlBand::fm)),
+                      static_cast<double>(rtl_filter_alpha(RtlBand::fm,
+                                                           st.sample_rate_sps)),
                       static_cast<double>(kWbfmAudioLpfK),
-                      static_cast<unsigned>(kFmRfDecim),
+                      static_cast<unsigned>(rtl_rf_decimation(st.sample_rate_sps)),
                       static_cast<unsigned>(kFmAudioDecim));
       }
       if (err != ESP_OK) {
@@ -12011,21 +12058,13 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
       rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO))
     (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO);
 #endif
-  if (band == RtlBand::cb) {
-    rtl_scope_span_hz.store(480000, std::memory_order_relaxed);
-  }
-  if (band == RtlBand::am) {
-    rtl_scope_span_hz.store(480000, std::memory_order_relaxed);
-  }
-  if (band == RtlBand::shortwave) {
-    rtl_scope_span_hz.store(480000, std::memory_order_relaxed);
-  }
-  if (band == RtlBand::lora) {
-    rtl_scope_span_hz.store(500000, std::memory_order_relaxed);
-  }
-  if (band == RtlBand::p25) {
-    rtl_scope_span_hz.store(kRtlScopeSpanMaxHz, std::memory_order_relaxed);
-  }
+  const uint32_t default_span = rtl_wide_dashboard_band(band)
+                                    ? kRtlDashboardSampleRateSps
+                                    : band == RtlBand::adsb
+                                          ? ESP_RTL_SDR_RATE_2048K
+                                          : band == RtlBand::lora ? 500000u
+                                                                  : kRtlSampleRateSps;
+  rtl_scope_span_hz.store(default_span, std::memory_order_relaxed);
   if (band == RtlBand::fm && persist_navigation) {
     persist_fm_frequency(frequency_hz);
   }
@@ -12042,7 +12081,7 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   const uint32_t rate_override = rtl_rate_override_sps.load(std::memory_order_relaxed);
   const auto session_token = radio_session.acquire(
       orcsdr::radio::owner_for_band(band), band, frequency_hz,
-      rate_override ? rate_override : kRtlSampleRateSps);
+      rate_override ? rate_override : rtl_default_sample_rate(band));
   (void)radio_session.set_state(session_token, orcsdr::radio::ReceiverState::starting);
   if (persist_navigation) {
     preferences.putUInt("last_band", static_cast<uint32_t>(band));

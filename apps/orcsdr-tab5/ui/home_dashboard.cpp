@@ -2,6 +2,7 @@
 
 #include "dashboard_audio_control.hpp"
 #include "orc_badge.hpp"
+#include "spectrum_resample.hpp"
 
 #include <M5Unified.h>
 #include <esp_attr.h>
@@ -41,7 +42,7 @@ bool shown = false;
 bool browser = false;
 int32_t scroll_offset_px = 0;
 uint32_t last_spectrum_ms = 0;
-EXT_RAM_BSS_ATTR float spectrum_levels[256]{};
+EXT_RAM_BSS_ATTR float spectrum_levels[512]{};
 uint8_t waterfall_contrast = 5;
 
 struct Gesture {
@@ -565,10 +566,10 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
   const uint32_t interval = audio_stressed ? 333 : 100;
   if (now - last_spectrum_ms < interval) return;
   last_spectrum_ms = now;
-  const size_t samples = std::min<size_t>(256, visible_bins);
+  const size_t samples = std::min<size_t>(std::size(spectrum_levels), visible_bins);
   for (size_t i = 0; i < samples; ++i) {
-    const size_t source = first_bin + i * visible_bins / samples;
-    spectrum_levels[i] = levels[source];
+    spectrum_levels[i] = spectrum::peak_for_pixel(
+        levels, first_bin, visible_bins, i, samples);
   }
   floor = home_spectrum_floor(spectrum_levels, samples, floor);
   M5.Display.startWrite();

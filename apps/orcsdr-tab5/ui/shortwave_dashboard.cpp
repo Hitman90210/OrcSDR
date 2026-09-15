@@ -1,6 +1,7 @@
 #include "shortwave_dashboard.hpp"
 
 #include "shortwave_model.hpp"
+#include "spectrum_resample.hpp"
 
 #include <M5Unified.h>
 
@@ -257,18 +258,18 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
                       kSpectrumH - 2, TFT_BLACK);
   int last_x = kSpectrumX;
   int last_y = kSpectrumY + kSpectrumH - 2;
-  for (size_t i = 0; i < visible_bins; ++i) {
-    const float normalized = std::clamp((levels[first_bin + i] - floor) / 48.0f,
+  for (size_t i = 0; i < kSpectrumW; ++i) {
+    const float level = spectrum::peak_for_pixel(
+        levels, first_bin, visible_bins, i, kSpectrumW);
+    const float normalized = std::clamp((level - floor) / 48.0f,
                                         0.0f, 1.0f);
-    const int x = spectrum_x_for_bin(i, visible_bins);
+    const int x = kSpectrumX + static_cast<int>(i);
     const int y = kSpectrumY + kSpectrumH - 2 -
                   static_cast<int>(normalized * (kSpectrumH - 4));
     if (i) M5.Display.drawLine(last_x, last_y, x, y, kGreen);
     last_x = x;
     last_y = y;
-    const int x0 = static_cast<int>(i * kSpectrumW / visible_bins);
-    const int x1 = static_cast<int>((i + 1) * kSpectrumW / visible_bins);
-    for (int p = x0; p < x1; ++p) g_waterfall_row[p] = waterfall_color(normalized);
+    g_waterfall_row[i] = waterfall_color(normalized);
   }
   const int center = kSpectrumX + kSpectrumW / 2;
   const int half_filter = std::clamp(static_cast<int>(
@@ -364,6 +365,10 @@ bool dashboard_self_check() {
       spectrum_x_for_bin(3, 4) == kSpectrumX + kSpectrumW - 1 &&
       kWaterfallY > kSpectrumY + kSpectrumH &&
       kWaterfallY + kWaterfallH <= kTabsY;
+  const float resolution_test[] = {-80.0f, -20.0f, -75.0f, -40.0f};
+  const bool peak_pool_ok =
+      spectrum::peak_for_pixel(resolution_test, 0, 4, 0, 2) == -20.0f &&
+      spectrum::peak_for_pixel(resolution_test, 0, 4, 1, 2) == -40.0f;
   g_snapshot.frequency_hz = 7100000;
   g_snapshot.span_hz = 480000;
   const bool touch_tune_bounds_ok =
@@ -377,7 +382,8 @@ bool dashboard_self_check() {
       handle_touch(830, 400).kind == ActionKind::none;
   g_snapshot = saved;
   g_active = was_active;
-  return ok && direct_q_ok && spectrum_layout_ok && touch_tune_bounds_ok &&
+  return ok && direct_q_ok && spectrum_layout_ok && peak_pool_ok &&
+         touch_tune_bounds_ok &&
          kTabsY + 90 <= 720 && model_self_check() && receiver_controls::self_check();
 }
 

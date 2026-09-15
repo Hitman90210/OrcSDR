@@ -4,6 +4,7 @@
 #include "orc_badge.hpp"
 #include "receiver_band_plan.hpp"
 #include "nvs_store.hpp"
+#include "spectrum_resample.hpp"
 
 #include <M5Unified.h>
 
@@ -567,16 +568,16 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
   M5.Display.fillRect(kSpectrumX + 1, kSpectrumY + 1, kSpectrumW - 2, kSpectrumH - 2, kBg);
   int px = kSpectrumX;
   int py = kSpectrumY + kSpectrumH - 2;
-  for (size_t i = 0; i < visible_bins; ++i) {
-    const float normalized = std::clamp((levels[first_bin + i] - floor) / 48.0f, 0.0f, 1.0f);
-    const int x = kSpectrumX + static_cast<int>(i * (kSpectrumW - 1) / (visible_bins - 1));
+  for (size_t i = 0; i < kSpectrumW; ++i) {
+    const float level = spectrum::peak_for_pixel(
+        levels, first_bin, visible_bins, i, kSpectrumW);
+    const float normalized = std::clamp((level - floor) / 48.0f, 0.0f, 1.0f);
+    const int x = kSpectrumX + static_cast<int>(i);
     const int y = kSpectrumY + kSpectrumH - 2 - static_cast<int>(normalized * (kSpectrumH - 4));
     if (i) M5.Display.drawLine(px, py, x, y, kGreen);
     px = x;
     py = y;
-    const int x0 = static_cast<int>(i * kSpectrumW / visible_bins);
-    const int x1 = static_cast<int>((i + 1) * kSpectrumW / visible_bins);
-    for (int p = x0; p < x1; ++p) g_waterfall_row[p] = waterfall_color(normalized);
+    g_waterfall_row[i] = waterfall_color(normalized);
   }
   const int center = kSpectrumX + kSpectrumW / 2;
   const int half_filter = std::clamp(static_cast<int>(
