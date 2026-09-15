@@ -88,8 +88,9 @@ void value_row(const char* label, const char* value, int y,
 
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, TFT_BLACK);
-  text("OrcSDR", 28, 36, TFT_WHITE, 3);
-  text("SETTINGS", 180, 36, kBlue, 3);
+  audio_header::draw_badge();
+  text("OrcSDR", 82, 24, TFT_WHITE, 2);
+  text("SETTINGS", 82, 50, kBlue, 2);
   char status[96];
   if (g_state.wifi_connected)
     snprintf(status, sizeof(status), "%s  %s", g_state.wifi_ssid, g_state.wifi_ip);
@@ -98,9 +99,12 @@ void draw_header() {
                     : g_state.wifi_connecting ? "Wi-Fi connecting"
                     : g_state.wifi_scanning ? "Wi-Fi scanning" : "Wi-Fi offline",
             sizeof(status));
-  text(status, 950, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
-  button("CLOSE", 970, 13, 116, 46, TFT_MAROON);
+  text(status, 690, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
+  button("CLOSE", 720, 13, 126, 46, TFT_MAROON);
+  audio_header::draw_battery(g_state.battery_level);
   audio_header::draw_mute_button(g_state.sound_default);
+  audio_header::draw_visualizer_button(false);
+  audio_header::draw_settings_button();
 }
 
 void draw_rail() {
@@ -712,9 +716,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (g_location_edit) return handle_location_keyboard(x, y);
   if (g_wifi_edit != WifiEdit::none) return handle_wifi_keyboard(x, y);
   if (g_edit != EditField::none) return handle_keypad(x, y);
-  if (audio_header::mute_hit(x, y))
-    return {ActionKind::sound_changed, g_state.sound_default ? 0 : 1};
-  if (hit(x, y, 970, 13, 116, 46)) {
+  if (hit(x, y, 720, 13, 126, 46)) {
     g_active = false;
     return {ActionKind::close, 0};
   }

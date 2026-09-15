@@ -293,10 +293,7 @@ void plane(int x, int y, int scale, uint16_t color) {
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(20, kHeaderH - 1, 1240, kBorder);
-  if (!badge::draw(12, 8, 58)) {
-    M5.Display.drawRoundRect(12, 8, 58, 58, 8, kGreen);
-    text("O", 41, 37, kGreen, 3);
-  }
+  audio_header::draw_badge();
   text("OrcSDR", 82, 28, kGreen, 3, middle_left);
   text("ADS-B 1090", 82, 56, kBlue, 1, middle_left);
   M5.Display.drawFastVLine(250, 12, 52, kBorder);
@@ -314,6 +311,7 @@ void draw_header() {
   text("USB", 905, 29, TFT_WHITE, 1, middle_left);
   text("CONNECTED", 905, 51, kBlue, 1, middle_left);
   audio_header::draw_home_button();
+  audio_header::draw_battery(M5.Power.getBatteryLevel());
   audio_header::draw_mute_button(g_live_snapshot.sound_enabled);
   audio_header::draw_visualizer_button(g_live_snapshot.effective_sps != 0);
   audio_header::draw_settings_button();

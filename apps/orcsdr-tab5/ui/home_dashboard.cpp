@@ -34,8 +34,8 @@ constexpr int kRowH = 52, kRowGap = 8, kRowPitch = kRowH + kRowGap;
 constexpr int kVisibleRows = 7;
 constexpr int kAllY = 590;
 constexpr int kTapDragThreshold = 10;
-constexpr int kHeaderStatusX = 595;
-constexpr int kHeaderStatusW = 474;
+constexpr int kHeaderStatusX = 420;
+constexpr int kHeaderStatusW = 446;
 
 Snapshot current{};
 bool shown = false;
@@ -99,16 +99,6 @@ void draw_usb_icon(int x, int y, uint16_t color) {
   M5.Display.drawRect(x + 7, y - 1, 5, 5, color);
 }
 
-void draw_battery(int x, int y) {
-  M5.Display.drawRoundRect(x, y, 58, 27, 4, TFT_WHITE);
-  M5.Display.fillRect(x + 58, y + 8, 5, 11, TFT_WHITE);
-  const int fill = current.battery_percent < 0
-                       ? 0
-                       : std::clamp<int32_t>(current.battery_percent, 0, 100) / 2;
-  M5.Display.fillRect(x + 4, y + 4, fill, 19,
-                      current.battery_percent >= 20 ? kGreen : TFT_ORANGE);
-}
-
 void draw_menu_icon(dashboards::Id id, int x, int y, uint16_t color) {
   if (id == dashboards::Id::home) {
     M5.Display.fillTriangle(x - 14, y, x, y - 13, x + 14, y, color);
@@ -156,11 +146,6 @@ void draw_header_status() {
   text(current.driver_ready ? "READY" : "NOT READY", kHeaderStatusX + 158, 66,
        current.driver_ready ? kCyan : TFT_ORANGE, 1);
   M5.Display.drawFastVLine(kHeaderStatusX + 238, 30, 52, kDim);
-  draw_battery(kHeaderStatusX + 254, 39);
-  char value[12];
-  snprintf(value, sizeof(value), "%ld%%", static_cast<long>(current.battery_percent));
-  text(current.battery_percent >= 0 ? value : "--", kHeaderStatusX + 322, 54, TFT_WHITE, 2);
-  M5.Display.drawFastVLine(kHeaderStatusX + 352, 30, 52, kDim);
   text(current.clock[0] ? current.clock : "--:--", kHeaderStatusX + kHeaderStatusW - 12, 42, TFT_WHITE, 2,
        middle_right);
   text(current.date[0] ? current.date : "UPTIME", kHeaderStatusX + kHeaderStatusW - 12, 68, kCyan, 2,
@@ -168,13 +153,14 @@ void draw_header_status() {
 }
 
 void draw_header() {
-  if (!badge::draw(24, 12, 96))
-    M5.Display.drawRoundRect(24, 12, 96, 96, 12, kGreen);
-  text("OrcSDR", 132, 46, kGreen, 4);
-  text("M5STACK TAB5", 134, 82, kCyan, 2);
-  M5.Display.drawFastVLine(306, 22, 76, kCyan);
-  text("HOME", 338, 59, TFT_WHITE, 5);
+  audio_header::draw_badge();
+  text("OrcSDR", 82, 28, kGreen, 3);
+  text("M5STACK TAB5", 82, 56, kCyan, 1);
+  M5.Display.drawFastVLine(260, 18, 58, kCyan);
+  text("HOME", 292, 42, TFT_WHITE, 4);
   draw_header_status();
+  audio_header::draw_battery(current.battery_percent);
+  audio_header::draw_home_button();
   audio_header::draw_visualizer_button(current.receiving);
   audio_header::draw_settings_button();
   audio_header::draw_mute_button(current.sound_enabled);
@@ -427,9 +413,10 @@ void draw_receiver_chrome() {
 void draw_browser() {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.drawRoundRect(10, 10, 1260, 700, 14, kCyan);
-  text("ALL DASHBOARDS", 38, 48, TFT_WHITE, 4);
-  panel(1072, 20, 120, 54, kCyan, 8);
-  text("HOME", 1132, 47, kCyan, 2, middle_center);
+  audio_header::draw_badge();
+  text("ALL DASHBOARDS", 82, 38, TFT_WHITE, 3);
+  audio_header::draw_battery(current.battery_percent);
+  audio_header::draw_home_button();
   audio_header::draw_settings_button();
   audio_header::draw_mute_button(current.sound_enabled);
   audio_header::draw_visualizer_button(current.receiving);
@@ -461,7 +448,7 @@ Action tap_action(int32_t x, int32_t y) {
     return {ActionKind::open_device_settings};
   if (audio_header::mute_hit(x, y)) return {ActionKind::sound_toggle};
   if (browser) {
-    if (inside(x, y, 1072, 20, 120, 54)) return {ActionKind::close_browser};
+    if (audio_header::home_hit(x, y)) return {ActionKind::close_browser};
     for (size_t i = 0; i < dashboards::count(); ++i) {
       const int col = static_cast<int>(i % 3), row = static_cast<int>(i / 3);
       if (inside(x, y, 30 + col * 410, 104 + row * 140, 390, 118)) {

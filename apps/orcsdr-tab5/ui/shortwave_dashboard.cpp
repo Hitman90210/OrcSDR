@@ -1,5 +1,6 @@
 #include "shortwave_dashboard.hpp"
 
+#include "dashboard_audio_control.hpp"
 #include "shortwave_model.hpp"
 #include "spectrum_resample.hpp"
 
@@ -33,7 +34,9 @@ constexpr int kGainW = 350;
 
 Snapshot g_snapshot{};
 bool g_active = false;
+bool g_keypad = false;
 uint32_t g_saved_frequency = 7100000;
+char g_entry[12]{};
 EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kSpectrumW]{};
 
 int spectrum_x_for_bin(size_t bin, size_t visible_bins) {
@@ -167,12 +170,16 @@ void draw_controls() {
 void draw_static() {
   M5.Display.clearScrollRect();
   M5.Display.fillScreen(TFT_BLACK);
-  text("<", 35, 45, kGreen, 4);
-  text("Orc", 88, 34, TFT_WHITE, 3, middle_left);
-  text("SDR", 168, 34, kGreen, 3, middle_left);
-  text("SHORTWAVE EXPLORER", 89, 67, TFT_LIGHTGREY, 1, middle_left);
-  text("LISTEN  |  EXPLORE  |  LOG", 425, 50, kCyan, 2);
-  text("SETTINGS", 1218, 48, kCyan, 1);
+  audio_header::draw_badge();
+  text("OrcSDR", 82, 28, TFT_WHITE, 3, middle_left);
+  text("SHORTWAVE EXPLORER", 82, 58, kCyan, 1, middle_left);
+  M5.Display.drawFastVLine(350, 18, 58, kCyan);
+  text("SHORTWAVE", 390, 42, TFT_WHITE, 4, middle_left);
+  audio_header::draw_battery(g_snapshot.battery_percent);
+  audio_header::draw_home_button();
+  audio_header::draw_mute_button(g_snapshot.sound_enabled);
+  audio_header::draw_visualizer_button(g_snapshot.running);
+  audio_header::draw_settings_button();
   M5.Display.drawFastHLine(20, 92, 1240, kGreen);
 
   card(24, 110, 792, 122);
@@ -197,6 +204,24 @@ void draw_static() {
   }
 }
 
+void draw_keypad() {
+  M5.Display.clearScrollRect();
+  M5.Display.fillRect(0, 93, 1280, 627, TFT_BLACK);
+  card(340, 135, 600, 470);
+  text("ENTER SHORTWAVE FREQUENCY (MHz)", 640, 168, kCyan, 2);
+  char field[24];
+  snprintf(field, sizeof(field), "%s%s", g_entry, g_entry[0] ? " MHz" : "");
+  M5.Display.fillRoundRect(380, 200, 520, 58, 8, TFT_NAVY);
+  text(field[0] ? field : "0.024 - 30.000", 640, 229, TFT_WHITE, 3);
+  static constexpr char keys[] = {'1','2','3','4','5','6','7','8','9','.','0','<'};
+  for (int i = 0; i < 12; ++i) {
+    char key[2] = {keys[i], 0};
+    button(380 + (i % 3) * 174, 275 + (i / 3) * 60, 160, 50, key);
+  }
+  button(380, 525, 250, 55, "CANCEL");
+  button(650, 525, 250, 55, "TUNE", true);
+}
+
 uint16_t waterfall_color(float level) {
   level = std::clamp(level, 0.0f, 1.0f);
   const uint8_t r = level < 0.55f ? 0 : static_cast<uint8_t>((level - 0.55f) * 566);
@@ -212,6 +237,8 @@ void enter(const Snapshot& snapshot) {
   g_snapshot = snapshot;
   g_saved_frequency = snapshot.frequency_hz;
   g_active = true;
+  g_keypad = false;
+  g_entry[0] = '\0';
   draw();
 }
 
@@ -223,6 +250,10 @@ void leave() {
 void draw() {
   if (!g_active) return;
   draw_static();
+  if (g_keypad) {
+    draw_keypad();
+    return;
+  }
   draw_frequency();
   draw_status();
   draw_controls();
@@ -287,11 +318,51 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
 
 Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return {};
-  if (hit(x, y, 0, 0, 70, 92)) return {ActionKind::exit_home};
-  if (hit(x, y, 1160, 0, 120, 92)) return {ActionKind::open_settings};
+  if (g_keypad) {
+    if (hit(x, y, 380, 525, 250, 55)) {
+      g_keypad = false;
+      g_entry[0] = '\0';
+      draw();
+      return {};
+    }
+    if (hit(x, y, 650, 525, 250, 55)) {
+      char* end = nullptr;
+      const double mhz = strtod(g_entry, &end);
+      if (end != g_entry && *end == '\0' && mhz >= 0.024 && mhz <= 30.0) {
+        g_keypad = false;
+        const uint32_t hz = static_cast<uint32_t>(llround(mhz * 1000000.0));
+        g_entry[0] = '\0';
+        draw();
+        return {ActionKind::tune_hz, static_cast<int32_t>(hz)};
+      }
+      return {};
+    }
+    static constexpr char keys[] = {'1','2','3','4','5','6','7','8','9','.','0','\b'};
+    for (int i = 0; i < 12; ++i) {
+      if (!hit(x, y, 380 + (i % 3) * 174, 275 + (i / 3) * 60, 160, 50)) continue;
+      const size_t n = strlen(g_entry);
+      if (keys[i] == '\b') {
+        if (n) g_entry[n - 1] = '\0';
+      } else if (n + 1 < sizeof(g_entry) &&
+                 (keys[i] != '.' || strchr(g_entry, '.') == nullptr)) {
+        g_entry[n] = keys[i];
+        g_entry[n + 1] = '\0';
+      }
+      draw_keypad();
+      return {};
+    }
+    return {};
+  }
+  if (audio_header::home_hit(x, y)) return {ActionKind::exit_home};
+  if (audio_header::settings_hit(x, y)) return {ActionKind::open_settings};
   if (hit(x, y, 42, 128, 64, 72)) return {ActionKind::step_down};
   if (hit(x, y, 734, 128, 64, 72)) return {ActionKind::step_up};
-  if (hit(x, y, 120, 120, 565, 92)) return {ActionKind::open_frequency};
+  if (hit(x, y, 120, 120, 565, 92)) {
+    g_keypad = true;
+    g_entry[0] = '\0';
+    draw();
+    return {};
+  }
   if (hit(x, y, 24, 246, 236, 56)) return {ActionKind::step_cycle};
   if (hit(x, y, 278, 246, 236, 56)) return {ActionKind::filter_cycle};
   if (hit(x, y, 532, 246, 284, 56)) return {ActionKind::sound_toggle};
@@ -335,7 +406,7 @@ Action handle_gain_drag(int32_t x, int32_t y) {
 }
 
 bool active() { return g_active; }
-bool spectrum_active() { return g_active; }
+bool spectrum_active() { return g_active && !g_keypad; }
 uint32_t saved_frequency() { return g_saved_frequency; }
 void note_tuned(uint32_t frequency_hz) { g_saved_frequency = frequency_hz; }
 

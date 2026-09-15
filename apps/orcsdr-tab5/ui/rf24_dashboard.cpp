@@ -79,7 +79,7 @@ void scan_detail(const Snapshot& snapshot, char* out, size_t size) {
 void draw_header(const Snapshot& snapshot) {
   M5.Display.fillRect(0, 0, 1280, 82, kBg);
   M5.Display.drawFastHLine(20, 80, 1240, kCyan);
-  if (!badge::draw(12, 6, 70)) text("ORC", 46, 38, kGreen, 2, middle_center);
+  audio_header::draw_badge();
   text("OrcSDR", 96, 34, kGreen, 2);
   text("2.4 GHz ANALYZER", 270, 34, TFT_WHITE, 3);
   text(snapshot.ready ? "READY" : "OFFLINE", 808, 34,
@@ -88,6 +88,7 @@ void draw_header(const Snapshot& snapshot) {
   text(snapshot.scanning ? "SCANNING" : "RESCAN", 925, 39,
        snapshot.scanning ? kMuted : kGreen, 1, middle_center);
   audio_header::draw_home_button();
+  audio_header::draw_battery(M5.Power.getBatteryLevel());
   audio_header::draw_mute_button(snapshot.sound_enabled);
   audio_header::draw_visualizer_button(snapshot.visualizer_available);
   audio_header::draw_settings_button();

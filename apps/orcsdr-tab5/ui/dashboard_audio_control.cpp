@@ -1,5 +1,7 @@
 #include "dashboard_audio_control.hpp"
 
+#include "orc_badge.hpp"
+
 #include <M5Unified.h>
 
 #include <algorithm>
@@ -16,13 +18,11 @@ constexpr uint16_t kGreen = 0x6fe8;
 constexpr uint16_t kMuted = 0x8c71;
 constexpr uint16_t kGrid = 0x2945;
 constexpr int kRegionX = 866;
-constexpr int kRegionY = 25;
+constexpr int kRegionY = 8;
 constexpr int kRegionW = 174;
-constexpr int kRegionH = 82;
-constexpr int kIndicatorX = 870;
-constexpr int kIndicatorW = 88;
-constexpr int kButtonY = 34;
-constexpr int kButtonH = 64;
+constexpr int kRegionH = 58;
+constexpr int kButtonY = 10;
+constexpr int kButtonH = 54;
 constexpr int kButtonW = 54;
 constexpr int kButtonX[] = {868, 926, 984};
 constexpr int kHomeX = 1040;
@@ -86,6 +86,26 @@ void draw_button(int x, const char* label, uint16_t color) {
 
 void reset(Control& control) { control = {}; }
 
+void draw_badge() {
+  M5.Display.fillRect(12, 8, 58, 58, kBg);
+  if (!badge::draw(12, 8, 58)) {
+    M5.Display.drawRoundRect(12, 8, 58, 58, 8, kGreen);
+    text("O", 41, 37, kGreen, 3);
+  }
+}
+
+void draw_battery(int32_t battery_percent) {
+  M5.Display.fillRect(kRegionX, kRegionY, kRegionW, kRegionH, kBg);
+  char level[8];
+  if (battery_percent < 0)
+    snprintf(level, sizeof(level), "--");
+  else
+    snprintf(level, sizeof(level), "%ld%%",
+             static_cast<long>(std::clamp<int32_t>(battery_percent, 0, 100)));
+  text(level, 910, 37, battery_percent < 0 ? kMuted : TFT_WHITE, 2);
+  draw_battery(950, 21, battery_percent);
+}
+
 void draw(const Control& control, uint8_t volume, bool sound_enabled,
           int32_t battery_percent) {
   M5.Display.fillRect(kRegionX, kRegionY, kRegionW, kRegionH, kBg);
@@ -97,12 +117,9 @@ void draw(const Control& control, uint8_t volume, bool sound_enabled,
     return;
   }
 
-  draw_speaker(884, 57, sound_enabled ? kGreen : kMuted, sound_enabled);
-  char level[8];
-  snprintf(level, sizeof(level), "%u", volume);
-  text(level, 926, 67, sound_enabled ? TFT_WHITE : kMuted, 2);
-  text("USB", 965, 67, TFT_WHITE, 1);
-  draw_battery(966, 50, battery_percent);
+  (void)volume;
+  (void)sound_enabled;
+  draw_battery(battery_percent);
 }
 
 void draw_home_button() {
@@ -161,7 +178,7 @@ bool settings_hit(int32_t x, int32_t y) {
 
 Action handle_touch(Control& control, int32_t x, int32_t y, uint32_t now_ms) {
   if (!control.expanded) {
-    if (!hit(x, y, kIndicatorX, kRegionY, kIndicatorW, kRegionH)) return Action::none;
+    if (!mute_hit(x, y)) return Action::none;
     control.expanded = true;
     control.hide_at_ms = now_ms + kTrayTimeoutMs;
     return Action::opened;
@@ -190,7 +207,8 @@ bool service_timeout(Control& control, uint32_t now_ms) {
 
 bool self_check() {
   Control control{};
-  if (handle_touch(control, 900, 60, 100) != Action::opened || !control.expanded)
+  if (handle_touch(control, kMuteX + 1, kMuteY + 1, 100) != Action::opened ||
+      !control.expanded)
     return false;
   if (handle_touch(control, kButtonX[0] + 1, kButtonY + 1, 200) != Action::volume_down)
     return false;
@@ -202,7 +220,7 @@ bool self_check() {
     return false;
   if (service_timeout(control, 4399) || !service_timeout(control, 4400)) return false;
   reset(control);
-  if (handle_touch(control, 800, 60, 0) != Action::none) return false;
+  if (handle_touch(control, 900, 60, 0) != Action::none) return false;
   return kRegionX + kRegionW <= kHomeX && kButtonX[2] + kButtonW <= kHomeX &&
          kHomeX + kHomeW <= kMuteX && kMuteX + kMuteW <= kVisualizerX &&
          kVisualizerX + kVisualizerW <= kSettingsX &&

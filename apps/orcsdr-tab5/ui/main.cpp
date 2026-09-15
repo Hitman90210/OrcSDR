@@ -1686,6 +1686,7 @@ std::atomic<bool> rtl_volume_changed{false};
 std::atomic<uint32_t> rtl_audio_settings_persist_due_ms{0};
 /** When false: no scope/waterfall updates (audio + SIG meter still run). A/B for chop diagnosis. */
 std::atomic<bool> rtl_graphics_enabled{true};
+orcsdr::audio_header::Control rtl_header_audio_control{};
 enum class SdrPinchMode : uint8_t { Span, Filter };
 enum class SdrNavDropdown : uint8_t { None, Band, Pinch, Step };
 std::atomic<uint32_t> rtl_scope_span_hz{kRtlScopeSpanMaxHz};
@@ -2308,7 +2309,8 @@ void close_global_settings();
 void handle_global_settings_touch(int32_t x, int32_t y);
 void update_global_settings();
 void redraw_global_settings();
-void draw_global_settings_gear();
+void draw_global_header_controls();
+bool handle_global_header_audio_touch(int32_t x, int32_t y);
 void draw_global_bias_warning();
 orcsdr::fm::Snapshot fm_dashboard_snapshot();
 void handle_fm_dashboard_action(const orcsdr::fm::Action& action);
@@ -5903,11 +5905,32 @@ void update_signal_level_from_iq(const uint8_t* iq, size_t bytes) {
   rtl_signal_dbfs_smooth = 0.88f * rtl_signal_dbfs_smooth + 0.12f * dbfs;
 }
 
-void draw_global_settings_gear() {
+void draw_global_header_controls() {
+  orcsdr::audio_header::draw(rtl_header_audio_control, rtl_ui_volume,
+                             rtl_audio_user_enabled.load(std::memory_order_acquire),
+                             M5.Power.getBatteryLevel());
+  orcsdr::audio_header::draw_home_button();
   orcsdr::audio_header::draw_settings_button();
   orcsdr::audio_header::draw_mute_button(
       rtl_audio_user_enabled.load(std::memory_order_acquire));
+  orcsdr::audio_header::draw_visualizer_button(
+      rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running);
   draw_global_bias_warning();
+}
+
+bool handle_global_header_audio_touch(int32_t x, int32_t y) {
+  const auto action = orcsdr::audio_header::handle_touch(
+      rtl_header_audio_control, x, y, millis());
+  if (action == orcsdr::audio_header::Action::none) return false;
+  if (action == orcsdr::audio_header::Action::volume_down)
+    adjust_rtl_volume(-static_cast<int>(kRtlVolumeStep));
+  else if (action == orcsdr::audio_header::Action::volume_up)
+    adjust_rtl_volume(static_cast<int>(kRtlVolumeStep));
+  else if (action == orcsdr::audio_header::Action::sound_toggle)
+    set_rtl_audio_user_enabled(
+        !rtl_audio_user_enabled.load(std::memory_order_acquire));
+  draw_global_header_controls();
+  return true;
 }
 
 void draw_global_bias_warning() {
@@ -6000,6 +6023,7 @@ void draw_adsb_dashboard(bool static_panel) {
   }
   else if (static_panel) orcsdr::adsb::draw();
   else orcsdr::adsb::update();
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_pocsag_dashboard(bool static_panel) {
@@ -6012,6 +6036,7 @@ void draw_pocsag_dashboard(bool static_panel) {
   if (!orcsdr::pocsag::active()) orcsdr::pocsag::enter(pocsag_dashboard_settings);
   else if (static_panel) orcsdr::pocsag::draw();
   else orcsdr::pocsag::update();
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_lora_dashboard(bool static_panel) {
@@ -6021,6 +6046,7 @@ void draw_lora_dashboard(bool static_panel) {
   const auto snapshot = lora_dashboard_snapshot();
   if (static_panel || !orcsdr::lora::active()) orcsdr::lora::enter(snapshot);
   else orcsdr::lora::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 orcsdr::rf24::Snapshot rf24_dashboard_snapshot() {
@@ -6064,6 +6090,7 @@ void draw_rf24_dashboard(bool static_panel) {
   const auto snapshot = rf24_dashboard_snapshot();
   if (static_panel || !orcsdr::rf24::active()) orcsdr::rf24::enter(snapshot);
   else orcsdr::rf24::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 
@@ -6073,6 +6100,7 @@ void draw_fm_dashboard(bool static_panel) {
   const auto snapshot = fm_dashboard_snapshot();
   if (static_panel) orcsdr::fm::enter(snapshot);
   else if (orcsdr::fm::active()) orcsdr::fm::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_am_dashboard(bool static_panel) {
@@ -6081,6 +6109,7 @@ void draw_am_dashboard(bool static_panel) {
   const auto snapshot = am_dashboard_snapshot();
   if (static_panel) orcsdr::am::enter(snapshot);
   else if (orcsdr::am::active()) orcsdr::am::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_shortwave_dashboard(bool static_panel) {
@@ -6089,6 +6118,7 @@ void draw_shortwave_dashboard(bool static_panel) {
   const auto snapshot = shortwave_dashboard_snapshot();
   if (static_panel) orcsdr::shortwave::enter(snapshot);
   else if (orcsdr::shortwave::active()) orcsdr::shortwave::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_p25_dashboard(bool static_panel) {
@@ -6097,6 +6127,7 @@ void draw_p25_dashboard(bool static_panel) {
   const auto snapshot = p25_dashboard_snapshot();
   if (static_panel) orcsdr::p25::enter(snapshot);
   else if (orcsdr::p25::active()) orcsdr::p25::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 orcsdr::screens::Id screen_for_band(RtlBand band) {
@@ -6476,6 +6507,7 @@ void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume) {
     return;
   }
   const auto screen = screen_for_band(band);
+  orcsdr::audio_header::reset(rtl_header_audio_control);
   orcsdr::screens::begin_transition(screen, millis());
   orcsdr::home::leave();
   orcsdr::rf24::leave();
@@ -6489,13 +6521,11 @@ void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume) {
   if (band != RtlBand::lora) orcsdr::lora::leave();
   if (band == RtlBand::adsb) {
     draw_adsb_dashboard(true);
-    draw_global_settings_gear();
     orcsdr::screens::finish_transition();
     return;
   }
   if (band == RtlBand::pocsag) {
     draw_pocsag_dashboard(true);
-    draw_global_settings_gear();
     orcsdr::screens::finish_transition();
     return;
   }
@@ -11067,7 +11097,6 @@ void navigation_restore_screen(orcsdr::screens::Id restore) {
     orcsdr::home::draw();
   } else if (restore == orcsdr::screens::Id::adsb) {
     draw_adsb_dashboard(true);
-    draw_global_settings_gear();
   } else if (restore == orcsdr::screens::Id::fm) {
     resume_rtl_speaker();
     orcsdr::fm::draw();
@@ -11113,6 +11142,7 @@ void configure_navigation_service() {
 }
 
 void show_home(bool demo) {
+  orcsdr::audio_header::reset(rtl_header_audio_control);
   orcsdr::navigation::show_home(demo);
 }
 
@@ -12521,9 +12551,11 @@ void poll_sdr_touch(bool from_stream) {
 
 void handle_sdr_touch(int32_t x, int32_t y) {
   if (orcsdr::settings::active()) {
-    handle_global_settings_touch(x, y);
+    if (!handle_global_header_audio_touch(x, y))
+      handle_global_settings_touch(x, y);
     return;
   }
+  if (handle_global_header_audio_touch(x, y)) return;
   if (orcsdr::rf24::active()) {
     const auto action = orcsdr::rf24::handle_touch(x, y, rf24_dashboard_snapshot());
     if (action.kind == orcsdr::rf24::ActionKind::close) close_rf24_dashboard();
@@ -12546,13 +12578,6 @@ void handle_sdr_touch(int32_t x, int32_t y) {
   }
   if (orcsdr::audio_header::home_hit(x, y)) {
     show_home();
-    return;
-  }
-  if (orcsdr::audio_header::mute_hit(x, y)) {
-    const bool enabled = !rtl_audio_user_enabled.load(std::memory_order_acquire);
-    set_rtl_audio_user_enabled(enabled);
-    orcsdr::audio_header::draw_mute_button(enabled);
-    Serial.printf("RTL_SOUND %s\n", enabled ? "on" : "off");
     return;
   }
   if (orcsdr::audio_header::settings_hit(x, y)) {
@@ -16451,6 +16476,8 @@ void loop() {
   }
 
   if (radio_ui) service_rtl_speaker_watchdog();
+  if (orcsdr::audio_header::service_timeout(rtl_header_audio_control, millis()))
+    draw_global_header_controls();
 
   if (orcsdr::visualizer::active()) {
     // service_visualizer() above owns the complete full-screen surface.
@@ -16462,11 +16489,15 @@ void loop() {
     }
     const auto touch = M5.Touch.getDetail(0);
     const bool pressed = touch.isPressed() || touch.wasPressed();
-    if (pressed && !was_pressed) handle_global_settings_touch(touch.x, touch.y);
+    if (pressed && !was_pressed &&
+        !handle_global_header_audio_touch(touch.x, touch.y))
+      handle_global_settings_touch(touch.x, touch.y);
     was_pressed = pressed;
   } else if (home_ui) {
     const auto touch = M5.Touch.getDetail(0);
-    if (touch.wasPressed() && orcsdr::audio_header::visualizer_hit(touch.x, touch.y))
+    if (touch.wasPressed() && handle_global_header_audio_touch(touch.x, touch.y)) {
+    } else if (touch.wasPressed() &&
+               orcsdr::audio_header::visualizer_hit(touch.x, touch.y))
       open_visualizer();
     else
       handle_home_action(orcsdr::home::handle_touch(touch.x, touch.y, touch.isPressed()));

@@ -192,10 +192,7 @@ void draw_header_live_values() {
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(20, kHeaderH - 1, 1240, kBorder);
-  if (!badge::draw(12, 8, 58)) {
-    M5.Display.drawRoundRect(12, 8, 58, 58, 8, kGreen);
-    text("O", 41, 37, kGreen, 2);
-  }
+  audio_header::draw_badge();
   text("OrcSDR", 82, 28, kGreen, 2, middle_left);
   text("POCSAG PAGER MONITOR", 82, 56, kCyan, 1, middle_left);
   M5.Display.drawFastVLine(340, 12, 52, kBorder);
@@ -203,6 +200,9 @@ void draw_header() {
   M5.Display.drawFastVLine(750, 12, 52, kBorder);
   draw_header_live_values();
   audio_header::draw_home_button();
+  audio_header::draw_battery(M5.Power.getBatteryLevel());
+  audio_header::draw_mute_button(true);
+  audio_header::draw_visualizer_button(g_live);
   audio_header::draw_settings_button();
 }
 

@@ -19,6 +19,8 @@ struct Control {
 };
 
 void reset(Control& control);
+void draw_badge();
+void draw_battery(int32_t battery_percent);
 void draw(const Control& control, uint8_t volume, bool sound_enabled,
           int32_t battery_percent);
 void draw_home_button();
