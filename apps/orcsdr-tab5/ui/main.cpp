@@ -602,10 +602,7 @@ constexpr uint32_t kRtlFmFilterDefaultHz = 260000;
 constexpr uint32_t kRtlAmFilterDefaultHz = 10000;
 constexpr uint32_t kRtlWxFilterDefaultHz = 25000;
 static_assert(kRtlScopeSpanMinHz < kRtlScopeSpanMaxHz);
-/* Display/nominal FM channel. LO is biased separately (this dongle sat
- * 13 kHz low — 96.100 only peaked when commanded 96.113). */
 constexpr uint32_t kRtlFmDefaultHz = 96100000;
-constexpr int32_t kRtlFmLoBiasHz = 13000;
 constexpr uint32_t kRtlAmMinHz = orcsdr::receiver_bands::kAmBroadcast.min_hz;
 constexpr uint32_t kRtlAmMaxHz = orcsdr::receiver_bands::kAmBroadcast.max_hz;
 constexpr uint32_t kRtlAmStepHz = orcsdr::receiver_bands::kAmBroadcast.default_step_hz;
@@ -958,8 +955,6 @@ static std::atomic<float> rtl_audio_left_dbfs{-90.0f};
 static std::atomic<float> rtl_audio_right_dbfs{-90.0f};
 static std::atomic<bool> rtl_stereo_locked{false};
 static std::atomic<float> rtl_pilot_env{0.0f};
-static std::atomic<int32_t> rtl_fm_lo_nudge_hz{0};
-static std::atomic<uint32_t> rtl_fm_last_user_tune_ms{0};
 static std::atomic<bool> rtl_fm_force_lo_apply{false};
 // RDS Stage 1 carrier presence and Stage 2 block sync telemetry.
 static std::atomic<float> rtl_rds_signal_dbfs{-90.0f};
@@ -2804,12 +2799,8 @@ uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
 
 uint32_t rtl_fm_sanitize_display_hz(uint32_t frequency_hz) {
   frequency_hz = rtl_clamp_frequency(RtlBand::fm, frequency_hz);
-  /* Command LO is display + 13 kHz. That value must never become the
-   * channel shown or saved (home was rebooting to 96.113). */
-  if (kRtlFmLoBiasHz > 0 &&
-      (frequency_hz % 100000u) == static_cast<uint32_t>(kRtlFmLoBiasHz)) {
-    frequency_hz -= static_cast<uint32_t>(kRtlFmLoBiasHz);
-  }
+  // Clean development builds that persisted the former +13 kHz LO offset.
+  if ((frequency_hz % 100000u) == 13000u) frequency_hz -= 13000u;
   return frequency_hz;
 }
 
@@ -8194,8 +8185,7 @@ static void on_rtl_driver_event(esp_rtl_sdr_event_t event, const void *payload, 
     case ESP_RTL_SDR_EVT_RETUNED: {
       if (g_stream_band == RtlBand::p25) orcsdr::p25decoder::reset();
       const auto *hz = static_cast<const uint32_t *>(payload);
-      /* FM UI is the channel. Payload is the commanded LO (display + 13 kHz
-       * + nudge). Writing it back is why Home showed 96.113 after a lock. */
+      /* FM UI owns the displayed channel; driver callbacks report hardware state. */
       if (hz != nullptr && g_stream_band != RtlBand::fm) {
         rtl_ui_frequency_hz = *hz;
         rtl_requested_frequency_hz.store(*hz, std::memory_order_release);
@@ -8427,7 +8417,6 @@ static void rtl_driver_app_task(void *) {
                       esp_rtl_sdr_err_to_name(err), st.sample_rate_sps, frequency_hz);
       }
       if (err == ESP_OK && band == RtlBand::fm) {
-        rtl_fm_last_user_tune_ms.store(millis(), std::memory_order_relaxed);
         Serial.printf("RTL_WBFM_DSP rate=%u filter_hz=%u iq_lpf_k=%.2f audio_lpf_k=%.2f "
                       "decim=%u/%u note=app_side_filter\n",
                       st.sample_rate_sps,
@@ -8565,8 +8554,7 @@ static void rtl_driver_app_task(void *) {
             last_lo_apply_ms = now_retune;
             if (te == ESP_OK) {
               last_lo_applied_hz = next;
-              /* Channel changes need a demod/RDS wipe. Auto-center nudges
-               * must not — that was an audible hole every time the LO walked. */
+              /* Channel changes need a demod/RDS wipe. */
               if (force_lo || g_stream_band != RtlBand::fm) {
                 rtl_audio_reset_demod_filters();
               }
@@ -8632,45 +8620,7 @@ static void rtl_driver_app_task(void *) {
             rtl_signal_meter_last_ms = now;
             rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
           }
-          if (g_stream_band == RtlBand::fm) {
-            rds_log_status();
-            const uint32_t center_now = now;
-            /* Home is listen-only. Walking the LO every ~1 s drained USB and
-             * punched a hole in audio and the scope. Stereo lock means we
-             * are already close enough. */
-            if (!orcsdr::home::active() &&
-                !rtl_fm_preset_scan_active.load(std::memory_order_relaxed) &&
-                !auto_fm_scanning &&
-                !rtl_stereo_locked.load(std::memory_order_relaxed) &&
-                center_now - rtl_fm_last_user_tune_ms.load(std::memory_order_relaxed) >= 900) {
-              static uint32_t last_center_ms = 0;
-              if (center_now - last_center_ms >= 900) {
-                const int32_t peak_off =
-                    rtl_scope_peak_offset_hz.load(std::memory_order_relaxed);
-                if (peak_off <= -12000 || peak_off >= 12000) {
-                  if (peak_off >= -45000 && peak_off <= 45000 &&
-                      rtl_signal_dbfs_smooth > -50.0f) {
-                    const int32_t next_nudge =
-                        rtl_fm_lo_nudge_hz.load(std::memory_order_relaxed) + peak_off;
-                    if (next_nudge >= -40000 && next_nudge <= 40000) {
-                      rtl_fm_lo_nudge_hz.store(next_nudge, std::memory_order_relaxed);
-                      const uint32_t lo = rtl_fm_command_lo_hz(rtl_ui_frequency_hz);
-                      rtl_hot_retune_hz.store(lo, std::memory_order_release);
-                      last_center_ms = center_now;
-                      if (serial_verbosity_at(SerialVerbosity::debug))
-                        Serial.printf(
-                            "RTL_FM_CENTER display=%u lo=%u peak_off=%d nudge=%d "
-                            "pilot=%.3f stereo=%d\n",
-                            rtl_ui_frequency_hz, lo, peak_off, next_nudge,
-                            static_cast<double>(
-                                rtl_pilot_env.load(std::memory_order_relaxed)),
-                            rtl_stereo_locked.load(std::memory_order_relaxed) ? 1 : 0);
-                    }
-                  }
-                }
-              }
-            }
-          }
+          if (g_stream_band == RtlBand::fm) rds_log_status();
           /* Auto-export WAV after buffer fills (never write SD on the IQ callback). */
           if (g_audio_rec_export_pending.exchange(false, std::memory_order_acq_rel)) {
             (void)audio_rec_stop_and_export();
@@ -11905,7 +11855,7 @@ void load_state() {
   rtl_graphics_enabled.store(settings_graphics_default, std::memory_order_release);
   M5.Display.setBrightness(settings_brightness);
   M5.Display.setRotation(settings_rotation);
-  // Display is the channel. LO bias is applied at tune time.
+  // Display and commanded LO use the same exact channel frequency.
   // FM.cfg may still carry a baked-in 96.113 from an older build — load it
   // first for presets, then let NVS last-station win.
   load_p25_config();
@@ -12295,11 +12245,7 @@ bool handle_lora_touch(int32_t x, int32_t y) {
 }
 
 uint32_t rtl_fm_command_lo_hz(uint32_t display_hz) {
-  const int64_t lo = static_cast<int64_t>(display_hz) + kRtlFmLoBiasHz +
-                     rtl_fm_lo_nudge_hz.load(std::memory_order_relaxed);
-  if (lo < static_cast<int64_t>(kRtlFmMinHz)) return kRtlFmMinHz;
-  if (lo > static_cast<int64_t>(kRtlFmMaxHz) + 50000) return kRtlFmMaxHz + 50000;
-  return static_cast<uint32_t>(lo);
+  return rtl_clamp_frequency(RtlBand::fm, display_hz);
 }
 
 bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
@@ -12325,8 +12271,6 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   if (ui_changed && rtl_ui_band == RtlBand::fm) {
     if (rtl_fm_gain_auto_enabled.load(std::memory_order_relaxed))
       rtl_fm_gain_auto_restart.store(true, std::memory_order_release);
-    rtl_fm_lo_nudge_hz.store(0, std::memory_order_relaxed);
-    rtl_fm_last_user_tune_ms.store(millis(), std::memory_order_relaxed);
     rtl_fm_force_lo_apply.store(true, std::memory_order_release);
     if (!rtl_auto_fm_active.load(std::memory_order_relaxed) &&
         !rtl_fm_preset_scan_active.load(std::memory_order_relaxed)) {
@@ -15426,8 +15370,7 @@ void process_command(char* command) {
         rds_tenths,
         static_cast<int>(lroundf(
             rtl_pilot_env.load(std::memory_order_relaxed) * 1000.0f)),
-        rtl_filter_bandwidth_hz.load(std::memory_order_relaxed),
-        rtl_fm_lo_nudge_hz.load(std::memory_order_relaxed));
+        rtl_filter_bandwidth_hz.load(std::memory_order_relaxed), 0);
     return;
   }
   if (strcmp(command, "RTL_PRESET_SCAN") == 0 && authenticated) {

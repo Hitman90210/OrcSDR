@@ -1030,7 +1030,7 @@ function Invoke-IqDiagnosticCapture {
   Connect-Authenticated
   $beforeTune = Get-DriverStatus
   [void](Send-And-Wait "RTL_TUNE $IqBand $IqFrequency" '^RTL_TUNE_OK ' 20)
-  $expectedDriverFrequency = if ($IqBand -eq 'FM') { $IqFrequency + 13000 } else { $IqFrequency }
+  $expectedDriverFrequency = $IqFrequency
   $restartObserved = $beforeTune.State -ne 'STREAMING'
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
