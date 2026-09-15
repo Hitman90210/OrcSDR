@@ -25,6 +25,7 @@ struct Snapshot {
   uint16_t preset_count = 0;
   uint8_t preset_page = 0;
   uint8_t preset_pages = 1;
+  bool gain_available = false;
   bool gain_auto = true;
   bool gain_auto_selecting = false;
   int gain_tenth_db = 0;

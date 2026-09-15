@@ -2414,12 +2414,27 @@ static_assert(rtl_frequency_supported_for_caps(1000000, ESP_RTL_SDR_CAP_HF_UPCON
 static_assert(rtl_frequency_supported_for_caps(1000000, ESP_RTL_SDR_CAP_DIRECT_SAMPLING));
 static_assert(rtl_frequency_supported_for_caps(kRtlNoHfMinHz, ESP_RTL_SDR_CAP_STREAM));
 
+constexpr bool rtl_tuner_gain_available_for_caps(uint32_t frequency_hz, uint32_t caps) {
+  return (caps & ESP_RTL_SDR_CAP_GAIN) != 0 &&
+         !((caps & ESP_RTL_SDR_CAP_DIRECT_SAMPLING) != 0 &&
+           frequency_hz < kRtlNoHfMinHz);
+}
+static_assert(rtl_tuner_gain_available_for_caps(1000000, ESP_RTL_SDR_CAP_GAIN));
+static_assert(!rtl_tuner_gain_available_for_caps(
+    1000000, ESP_RTL_SDR_CAP_GAIN | ESP_RTL_SDR_CAP_DIRECT_SAMPLING));
+static_assert(rtl_tuner_gain_available_for_caps(
+    kRtlNoHfMinHz, ESP_RTL_SDR_CAP_GAIN | ESP_RTL_SDR_CAP_DIRECT_SAMPLING));
+
 uint32_t rtl_device_capabilities() {
   return g_rtl_device_capabilities.load(std::memory_order_acquire);
 }
 
 bool rtl_has_device_capability(uint32_t capability) {
   return (rtl_device_capabilities() & capability) != 0;
+}
+
+bool rtl_tuner_gain_available(uint32_t frequency_hz) {
+  return rtl_tuner_gain_available_for_caps(frequency_hz, rtl_device_capabilities());
 }
 
 bool rtl_frequency_supported(uint32_t frequency_hz) {
@@ -6316,15 +6331,16 @@ void service_rf_lab() {
                                   RtlCaptureState::running)
         request_hot_retune(rtl_ui_frequency_hz);
     } else if (action.kind == Kind::gain_mode) {
-      const uint32_t capability = action.value ? ESP_RTL_SDR_CAP_GAIN
-                                               : ESP_RTL_SDR_CAP_GAIN_AUTO;
-      result = rtl_has_device_capability(capability)
+      const bool available = action.value
+                                 ? rtl_tuner_gain_available(rtl_ui_frequency_hz)
+                                 : rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO);
+      result = available
                    ? esp_rtl_sdr_set_tuner_gain_mode(
                          g_rtl, action.value ? ESP_RTL_SDR_GAIN_MODE_MANUAL
                                              : ESP_RTL_SDR_GAIN_MODE_AUTO)
                    : ESP_RTL_SDR_ERR_UNSUPPORTED;
     } else if (action.kind == Kind::gain_tenth_db) {
-      result = rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)
+      result = rtl_tuner_gain_available(rtl_ui_frequency_hz)
                    ? esp_rtl_sdr_set_tuner_gain(g_rtl, action.value)
                    : ESP_RTL_SDR_ERR_UNSUPPORTED;
     } else if (action.kind == Kind::rtl_agc) {
@@ -9287,7 +9303,8 @@ orcsdr::am::Snapshot am_dashboard_snapshot() {
   snapshot.scan_found = rtl_am_scan_found.load(std::memory_order_relaxed);
   snapshot.scan_frequency_hz = rtl_am_scan_freq_hz.load(std::memory_order_relaxed);
 #if !RTL_USE_LEGACY_USB
-  if (g_rtl != nullptr) {
+  snapshot.gain_available = rtl_tuner_gain_available(snapshot.frequency_hz);
+  if (g_rtl != nullptr && snapshot.gain_available) {
     snapshot.gain_auto = rtl_am_gain_auto_enabled.load(std::memory_order_relaxed);
     snapshot.gain_auto_selecting =
         rtl_am_gain_auto_selecting.load(std::memory_order_relaxed);
@@ -9368,7 +9385,7 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
       break;
     case ActionKind::gain_auto:
 #if !RTL_USE_LEGACY_USB
-      if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) {
+      if (g_rtl != nullptr && rtl_tuner_gain_available(rtl_ui_frequency_hz)) {
         const esp_err_t result = esp_rtl_sdr_set_tuner_gain_mode(
             g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
         if (result == ESP_OK) {
@@ -9385,7 +9402,7 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
       rtl_am_gain_auto_enabled.store(false, std::memory_order_relaxed);
       rtl_am_gain_auto_selecting.store(false, std::memory_order_relaxed);
       rtl_am_gain_auto_restart.store(false, std::memory_order_relaxed);
-      if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN))
+      if (g_rtl != nullptr && rtl_tuner_gain_available(rtl_ui_frequency_hz))
         Serial.printf("RTL_AM_GAIN mode=MANUAL gain_tenth_db=%lu result=%s\n",
                       static_cast<unsigned long>(action.value), esp_rtl_sdr_err_to_name(
                           esp_rtl_sdr_set_tuner_gain(g_rtl, static_cast<int>(action.value))));
@@ -10328,7 +10345,7 @@ void service_audio_auto_gain(uint32_t now) {
   const bool fm = g_stream_band == RtlBand::fm;
   const bool am = g_stream_band == RtlBand::am;
   if ((!fm && !am) || g_rtl == nullptr ||
-      !rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) return;
+      !rtl_tuner_gain_available(rtl_ui_frequency_hz)) return;
   auto& enabled = fm ? rtl_fm_gain_auto_enabled : rtl_am_gain_auto_enabled;
   auto& selecting = fm ? rtl_fm_gain_auto_selecting : rtl_am_gain_auto_selecting;
   auto& restart = fm ? rtl_fm_gain_auto_restart : rtl_am_gain_auto_restart;
@@ -11768,7 +11785,7 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
       rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO))
     (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO);
   if ((band == RtlBand::am || band == RtlBand::fm) &&
-      rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) {
+      rtl_tuner_gain_available(frequency_hz)) {
     (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
     auto& enabled = band == RtlBand::fm ? rtl_fm_gain_auto_enabled
                                        : rtl_am_gain_auto_enabled;

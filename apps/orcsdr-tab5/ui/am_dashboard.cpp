@@ -253,6 +253,16 @@ GainLayout gain_layout() {
 
 void draw_gain_control(bool compact) {
   const GainLayout layout = gain_layout();
+  if (!g_snapshot.gain_available) {
+    button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "AUTO", kMuted, false);
+    text(compact ? "GAIN" : "RF GAIN", layout.slider_x,
+         layout.slider_y - (compact ? 15 : 33), kMuted, 2, middle_left);
+    text("DIRECT Q", layout.slider_x + layout.slider_w,
+         layout.slider_y - (compact ? 15 : 33), kMuted, 2, middle_right);
+    M5.Display.fillRoundRect(layout.slider_x, layout.slider_y, layout.slider_w, 18, 9, kGrid);
+    M5.Display.fillCircle(layout.slider_x, layout.slider_y + 9, compact ? 11 : 14, kMuted);
+    return;
+  }
   char value[24];
   if (g_snapshot.gain_auto)
     snprintf(value, sizeof(value), g_snapshot.gain_auto_selecting ? "AUTO..." : "AUTO %.1f",
@@ -615,7 +625,8 @@ Action handle_touch(int32_t x, int32_t y) {
   }
   if (g_view != View::finder) {
     const GainLayout layout = gain_layout();
-    if (hit(x, y, layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h))
+    if (g_snapshot.gain_available &&
+        hit(x, y, layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h))
       return {ActionKind::gain_auto};
   }
   if (g_view == View::listen) {
