@@ -767,6 +767,24 @@ function Capture-ResetEvidence {
   Write-SoakLine 'RTL_UI_SOAK_RECOVERY device_responsive=0 reset_evidence=unavailable'
 }
 
+function ConvertFrom-DriverStatus([string]$Line) {
+  $pattern = 'version=(\S+) state=(\S+) profile=(\d+) profile_name="([^"]+)" provisional=([01]) device_caps=(0x[0-9a-fA-F]+) library_caps=(0x[0-9a-fA-F]+).*gain_auto_cap=([01]) rtl_agc_cap=([01]) gain_cap=([01]) bias_cap=([01]) mode=(AUTO|MANUAL) gain_tenth_db=(\d+) rtl_agc=([01]) bias=([01]) bytes=(\d+) blocks=(\d+) effective_sps=(\d+) overruns=(\d+) drops=(\d+) shadow_ok=([01]) metrics_ok=([01]) frequency_hz=(\d+) frequency_ok=([01]) route=(\S+)'
+  if ($Line -notmatch $pattern) { throw "Malformed driver status: $Line" }
+  [pscustomobject]@{
+    Version = $Matches[1]; State = $Matches[2]; Profile = [int]$Matches[3]
+    ProfileName = $Matches[4]; Provisional = [int]$Matches[5]
+    DeviceCaps = [Convert]::ToUInt32($Matches[6].Substring(2), 16)
+    LibraryCaps = [Convert]::ToUInt32($Matches[7].Substring(2), 16)
+    GainAutoCap = [int]$Matches[8]; RtlAgcCap = [int]$Matches[9]
+    GainCap = [int]$Matches[10]; BiasCap = [int]$Matches[11]
+    Mode = $Matches[12]; Gain = [int]$Matches[13]; RtlAgc = [int]$Matches[14]
+    Bias = [int]$Matches[15]; Bytes = [uint64]$Matches[16]; Blocks = [uint64]$Matches[17]
+    EffectiveSps = [uint32]$Matches[18]; Overruns = [uint32]$Matches[19]
+    Drops = [uint32]$Matches[20]; ShadowOk = [int]$Matches[21]; MetricsOk = [int]$Matches[22]
+    Frequency = [uint32]$Matches[23]; FrequencyOk = [int]$Matches[24]; Route = $Matches[25]
+  }
+}
+
 function Invoke-SelfCheck {
   if (-not (Test-FatalLine 'Guru Meditation Error: Core 1 panic')) { throw 'Fatal parser missed panic.' }
   if (-not (Test-FatalLine 'ESP-ROM:esp32p4-eco2-20240710')) { throw 'Fatal parser missed reset.' }
@@ -819,6 +837,12 @@ function Invoke-SelfCheck {
       $signal.SignalTenths -ne -321 -or $signal.FilterHz -ne 6000) {
     throw 'AM signal parser failed.'
   }
+  $driver = ConvertFrom-DriverStatus 'RTL_DRIVER_STATUS installed=1 version=0.8.0-rc2 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=1 device_caps=0x0001fbd9 library_caps=0x000fffff delivery=callback gain_auto_cap=0 rtl_agc_cap=0 gain_cap=1 bias_cap=0 mode=MANUAL gain_tenth_db=297 rtl_agc=0 bias=0 bytes=123456 blocks=42 effective_sps=959488 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=23999999 frequency_ok=1 route=DIRECT_Q'
+  if ($driver.Version -ne '0.8.0-rc2' -or $driver.Profile -ne 2 -or
+      $driver.Frequency -ne 23999999 -or $driver.FrequencyOk -ne 1 -or
+      $driver.Route -ne 'DIRECT_Q') {
+    throw 'Driver acceptance parser failed.'
+  }
   Write-SoakLine 'RTL_UI_SOAK_SELF_CHECK pass=1'
 }
 
@@ -864,24 +888,11 @@ function Invoke-C6UpdateTest {
 }
 
 function Get-DriverStatus {
-  $pattern = 'version=(\S+) state=(\S+) profile=(\d+) profile_name="([^"]+)" provisional=([01]) device_caps=(0x[0-9a-fA-F]+) library_caps=(0x[0-9a-fA-F]+).*gain_auto_cap=([01]) rtl_agc_cap=([01]) gain_cap=([01]) bias_cap=([01]) mode=(AUTO|MANUAL) gain_tenth_db=(\d+) rtl_agc=([01]) bias=([01]) bytes=(\d+) blocks=(\d+) effective_sps=(\d+) overruns=(\d+) drops=(\d+) shadow_ok=([01]) metrics_ok=([01])'
   for ($attempt = 0; $attempt -lt 3; $attempt++) {
     $line = Send-And-Wait 'RTL_DRIVER STATUS' '^RTL_DRIVER_STATUS '
-    if ($line -match $pattern) { break }
+    try { return ConvertFrom-DriverStatus $line } catch { }
   }
-  if ($line -notmatch $pattern) { throw "Malformed driver status: $line" }
-  [pscustomobject]@{
-    Version = $Matches[1]; State = $Matches[2]; Profile = [int]$Matches[3]
-    ProfileName = $Matches[4]; Provisional = [int]$Matches[5]
-    DeviceCaps = [Convert]::ToUInt32($Matches[6].Substring(2), 16)
-    LibraryCaps = [Convert]::ToUInt32($Matches[7].Substring(2), 16)
-    GainAutoCap = [int]$Matches[8]; RtlAgcCap = [int]$Matches[9]
-    GainCap = [int]$Matches[10]; BiasCap = [int]$Matches[11]
-    Mode = $Matches[12]; Gain = [int]$Matches[13]; RtlAgc = [int]$Matches[14]
-    Bias = [int]$Matches[15]; Bytes = [uint64]$Matches[16]; Blocks = [uint64]$Matches[17]
-    EffectiveSps = [uint32]$Matches[18]; Overruns = [uint32]$Matches[19]
-    Drops = [uint32]$Matches[20]; ShadowOk = [int]$Matches[21]; MetricsOk = [int]$Matches[22]
-  }
+  throw "Malformed driver status: $line"
 }
 
 function Invoke-GainSweepTest {
@@ -1217,7 +1228,7 @@ function Invoke-Driver080Rc2Test {
   Wait-DeviceReady
   Connect-Authenticated
   $selfCheck = Send-And-Wait 'RTL_DRIVER SELF_CHECK' '^RTL_DRIVER_SELF_CHECK '
-  if ($selfCheck -notmatch 'pass=1 version=0\.8\.0-rc2 profile=1 ') { throw "Driver self-check failed: $selfCheck" }
+  if ($selfCheck -notmatch 'pass=1 version=0\.8\.0-rc2 profile=(1|2) ') { throw "Driver self-check failed: $selfCheck" }
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     $initial = Get-DriverStatus
@@ -1227,11 +1238,19 @@ function Invoke-Driver080Rc2Test {
   if ($initial.State -ne 'STREAMING' -or $initial.Bytes -eq 0) {
     throw "Driver test requires active IQ streaming; state=$($initial.State) bytes=$($initial.Bytes)"
   }
-  if ($initial.Profile -ne 1 -or $initial.Provisional -ne 0 -or
-      $initial.GainAutoCap -ne 1 -or $initial.RtlAgcCap -ne 1 -or
-      $initial.GainCap -ne 1 -or $initial.BiasCap -ne 1 -or
-      $initial.ShadowOk -ne 1 -or $initial.MetricsOk -ne 1) {
-    throw 'Required Blog V4 v0.8.0-rc2 profile, capability, or status getter is unavailable.'
+  $isV4 = $initial.Profile -eq 1
+  $isV3 = $initial.Profile -eq 2
+  $hasDirectSampling = ($initial.DeviceCaps -band 0x40) -ne 0
+  $hasFrequencyCorrection = ($initial.DeviceCaps -band 0x100) -ne 0
+  if ((!$isV4 -and !$isV3) -or !$hasFrequencyCorrection -or
+      $initial.ShadowOk -ne 1 -or $initial.MetricsOk -ne 1 -or $initial.FrequencyOk -ne 1 -or
+      ($isV4 -and ($initial.Provisional -ne 0 -or $initial.GainAutoCap -ne 1 -or
+                   $initial.RtlAgcCap -ne 1 -or $initial.GainCap -ne 1 -or
+                   $initial.BiasCap -ne 1)) -or
+      ($isV3 -and ($initial.Provisional -ne 1 -or !$hasDirectSampling -or
+                   $initial.GainCap -ne 1 -or $initial.GainAutoCap -ne 0 -or
+                   $initial.RtlAgcCap -ne 0 -or $initial.BiasCap -ne 0))) {
+    throw 'Required Blog V4/V3c v0.8.0-rc2 profile, capabilities, or status getter is unavailable.'
   }
 
   $last = $initial
@@ -1252,25 +1271,59 @@ function Invoke-Driver080Rc2Test {
     $script:last = $next
   }
 
+  function Test-Frequency([uint32]$Frequency, [string]$Route) {
+    $reply = Send-And-Wait "RTL_DRIVER TUNE $Frequency" '^RTL_DRIVER_RESULT '
+    if ($reply -notmatch 'accepted=1 result=ESP_OK') { throw "Driver tune rejected: $reply" }
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+      Start-Sleep -Milliseconds 250
+      $next = Get-DriverStatus
+      if ($next.Frequency -eq $Frequency -and $next.FrequencyOk -eq 1 -and
+          $next.Route -eq $Route -and $next.Bytes -gt $script:last.Bytes) { break }
+    } while ([DateTime]::UtcNow -lt $deadline)
+    if ($next.Frequency -ne $Frequency -or $next.FrequencyOk -ne 1 -or $next.Route -ne $Route) {
+      throw "Exact-frequency mismatch after $Frequency Hz: $($next | ConvertTo-Json -Compress)"
+    }
+    if ($next.Bytes -le $script:last.Bytes) { throw "IQ stopped after $Frequency Hz" }
+    if ($next.Overruns -gt $script:last.Overruns + 16 -or $next.Drops -gt $script:last.Drops + 16) {
+      throw "Drop counters grew excessively after $Frequency Hz"
+    }
+    Write-SoakLine "RTL_DRIVER_080_RC2_FREQ pass=1 requested_hz=$Frequency reported_hz=$($next.Frequency) route=$($next.Route) bytes=$($next.Bytes) effective_sps=$($next.EffectiveSps) overruns=$($next.Overruns) drops=$($next.Drops)"
+    $script:last = $next
+  }
+
   $script:last = $last
   try {
-    Test-Transition 'RTL_DRIVER GAINMODE MANUAL' 'MANUAL' -1 -1
-    Test-Transition 'RTL_DRIVER GAIN 297' 'MANUAL' 297 -1
-    Test-Transition 'RTL_DRIVER GAINMODE AUTO' 'AUTO' 297 -1
-    Test-Transition 'RTL_DRIVER RTLAGC ON' 'AUTO' 297 1
-    Test-Transition 'RTL_DRIVER RTLAGC OFF' 'AUTO' 297 0
-    if ($TestBiasTee) {
-      $target = 1 - $initial.Bias
-      Test-Transition "RTL_DRIVER BIAS $(if ($target) { 'ON' } else { 'OFF' })" 'AUTO' 297 0
+    foreach ($frequency in @(24000, 1000000, 10000000, 23999999, 24000000, 24000001,
+                              28799999, 28800000, 28800001, 96100000, 162400000,
+                              433000000, 1090000000, 1766000000)) {
+      $route = if ($isV3 -and $frequency -lt 24000000) { 'DIRECT_Q' }
+               elseif ($isV4 -and $frequency -lt 28800000) { 'HF_UPCONVERTER' }
+               else { 'TUNER' }
+      Test-Frequency $frequency $route
     }
-    Write-SoakLine "RTL_DRIVER_080_RC2_RESULT pass=1 version=$($initial.Version) profile=$($initial.ProfileName) bias_tested=$([int][bool]$TestBiasTee) evidence=request_acceptance+shadow+iq_continuity"
+    if ($isV4) {
+      Test-Transition 'RTL_DRIVER GAINMODE MANUAL' 'MANUAL' -1 -1
+      Test-Transition 'RTL_DRIVER GAIN 297' 'MANUAL' 297 -1
+      Test-Transition 'RTL_DRIVER GAINMODE AUTO' 'AUTO' 297 -1
+      Test-Transition 'RTL_DRIVER RTLAGC ON' 'AUTO' 297 1
+      Test-Transition 'RTL_DRIVER RTLAGC OFF' 'AUTO' 297 0
+      if ($TestBiasTee) {
+        $target = 1 - $initial.Bias
+        Test-Transition "RTL_DRIVER BIAS $(if ($target) { 'ON' } else { 'OFF' })" 'AUTO' 297 0
+      }
+    }
+    Write-SoakLine "RTL_DRIVER_080_RC2_RESULT pass=1 version=$($initial.Version) profile=$($initial.ProfileName) bias_tested=$([int]($isV4 -and [bool]$TestBiasTee)) evidence=capabilities+exact_frequency+route+iq_continuity"
   } finally {
     try {
-      [void](Send-And-Wait "RTL_DRIVER GAIN $($initial.Gain)" '^RTL_DRIVER_RESULT ')
-      [void](Send-And-Wait "RTL_DRIVER GAINMODE $($initial.Mode)" '^RTL_DRIVER_RESULT ')
-      [void](Send-And-Wait "RTL_DRIVER RTLAGC $(if ($initial.RtlAgc) { 'ON' } else { 'OFF' })" '^RTL_DRIVER_RESULT ')
-      if ($TestBiasTee) {
-        [void](Send-And-Wait "RTL_DRIVER BIAS $(if ($initial.Bias) { 'ON' } else { 'OFF' })" '^RTL_DRIVER_RESULT ')
+      [void](Send-And-Wait "RTL_DRIVER TUNE $($initial.Frequency)" '^RTL_DRIVER_RESULT ')
+      if ($isV4) {
+        [void](Send-And-Wait "RTL_DRIVER GAIN $($initial.Gain)" '^RTL_DRIVER_RESULT ')
+        [void](Send-And-Wait "RTL_DRIVER GAINMODE $($initial.Mode)" '^RTL_DRIVER_RESULT ')
+        [void](Send-And-Wait "RTL_DRIVER RTLAGC $(if ($initial.RtlAgc) { 'ON' } else { 'OFF' })" '^RTL_DRIVER_RESULT ')
+        if ($TestBiasTee) {
+          [void](Send-And-Wait "RTL_DRIVER BIAS $(if ($initial.Bias) { 'ON' } else { 'OFF' })" '^RTL_DRIVER_RESULT ')
+        }
       }
     } catch { Write-Warning "Could not restore driver shadow state: $($_.Exception.Message)" }
   }

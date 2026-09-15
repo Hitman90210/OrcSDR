@@ -2405,10 +2405,13 @@ void set_rtl_sdr_status(const char* status) {
 
 #if !RTL_USE_LEGACY_USB
 constexpr bool rtl_frequency_supported_for_caps(uint32_t frequency_hz, uint32_t caps) {
-  return frequency_hz >= kRtlNoHfMinHz || (caps & ESP_RTL_SDR_CAP_HF_UPCONVERTER) != 0;
+  return frequency_hz >= kRtlNoHfMinHz ||
+         (caps & (ESP_RTL_SDR_CAP_HF_UPCONVERTER |
+                  ESP_RTL_SDR_CAP_DIRECT_SAMPLING)) != 0;
 }
 static_assert(!rtl_frequency_supported_for_caps(1000000, ESP_RTL_SDR_CAP_STREAM));
 static_assert(rtl_frequency_supported_for_caps(1000000, ESP_RTL_SDR_CAP_HF_UPCONVERTER));
+static_assert(rtl_frequency_supported_for_caps(1000000, ESP_RTL_SDR_CAP_DIRECT_SAMPLING));
 static_assert(rtl_frequency_supported_for_caps(kRtlNoHfMinHz, ESP_RTL_SDR_CAP_STREAM));
 
 uint32_t rtl_device_capabilities() {
@@ -13250,17 +13253,26 @@ void print_rtl_driver_status() {
   bool rtl_agc = false;
   bool bias_tee = false;
   esp_rtl_sdr_metrics_t metrics{};
+  uint32_t frequency_hz = 0;
   const esp_err_t mode_err = esp_rtl_sdr_get_tuner_gain_mode(g_rtl, &gain_mode);
   const esp_err_t gain_err = esp_rtl_sdr_get_tuner_gain(g_rtl, &gain_tenth_db);
   const esp_err_t agc_err = esp_rtl_sdr_get_rtl_agc(g_rtl, &rtl_agc);
   const esp_err_t bias_err = esp_rtl_sdr_get_bias_tee(g_rtl, &bias_tee);
   const esp_err_t metrics_err = esp_rtl_sdr_get_metrics(g_rtl, &metrics);
+  const esp_err_t frequency_err = esp_rtl_sdr_get_center_freq(g_rtl, &frequency_hz);
+  const char* route = profile == ESP_RTL_SDR_PROFILE_BLOG_V3 &&
+                              frequency_hz < kRtlNoHfMinHz
+                          ? "DIRECT_Q"
+                          : profile == ESP_RTL_SDR_PROFILE_BLOG_V4 &&
+                                    frequency_hz < ESP_RTL_SDR_HF_UPCONV_LO_HZ
+                                ? "HF_UPCONVERTER"
+                                : "TUNER";
   Serial.printf(
       "RTL_DRIVER_STATUS installed=1 version=%s state=%s profile=%u profile_name=\"%s\" "
       "provisional=%d device_caps=0x%08x library_caps=0x%08x delivery=callback "
       "gain_auto_cap=%d rtl_agc_cap=%d gain_cap=%d bias_cap=%d mode=%s gain_tenth_db=%d "
       "rtl_agc=%d bias=%d bytes=%llu blocks=%u effective_sps=%u overruns=%u drops=%u "
-      "shadow_ok=%d metrics_ok=%d\n",
+      "shadow_ok=%d metrics_ok=%d frequency_hz=%u frequency_ok=%d route=%s\n",
       esp_rtl_sdr_get_version_string(),
       esp_rtl_sdr_state_to_name(esp_rtl_sdr_get_state(g_rtl)),
       static_cast<unsigned>(profile), esp_rtl_sdr_profile_to_name(profile),
@@ -13277,7 +13289,9 @@ void print_rtl_driver_status() {
       static_cast<unsigned>(metrics.overruns),
       static_cast<unsigned>(metrics.consumer_drops),
       mode_err == ESP_OK && gain_err == ESP_OK && agc_err == ESP_OK && bias_err == ESP_OK,
-      metrics_err == ESP_OK);
+      metrics_err == ESP_OK, static_cast<unsigned>(frequency_hz),
+      frequency_err == ESP_OK && metrics_err == ESP_OK && metrics.frequency_hz == frequency_hz,
+      route);
 }
 
 void process_command(char* command) {
@@ -14318,14 +14332,20 @@ void process_command(char* command) {
     return;
   }
   if (strcmp(command, "RTL_DRIVER SELF_CHECK") == 0) {
-    const uint32_t required = ESP_RTL_SDR_CAP_STREAM | ESP_RTL_SDR_CAP_HF_UPCONVERTER |
-                              ESP_RTL_SDR_CAP_GAIN | ESP_RTL_SDR_CAP_GAIN_AUTO |
-                              ESP_RTL_SDR_CAP_RTL_AGC | ESP_RTL_SDR_CAP_BIAS_TEE |
-                              ESP_RTL_SDR_CAP_DELIVERY_MODE;
     const auto profile = g_rtl_profile.load(std::memory_order_acquire);
+    uint32_t required = ESP_RTL_SDR_CAP_STREAM | ESP_RTL_SDR_CAP_RETUNE |
+                        ESP_RTL_SDR_CAP_METRICS | ESP_RTL_SDR_CAP_FREQ_CORRECTION |
+                        ESP_RTL_SDR_CAP_DELIVERY_MODE;
+    if (profile == ESP_RTL_SDR_PROFILE_BLOG_V4)
+      required |= ESP_RTL_SDR_CAP_HF_UPCONVERTER | ESP_RTL_SDR_CAP_GAIN |
+                  ESP_RTL_SDR_CAP_GAIN_AUTO | ESP_RTL_SDR_CAP_RTL_AGC |
+                  ESP_RTL_SDR_CAP_BIAS_TEE;
+    else if (profile == ESP_RTL_SDR_PROFILE_BLOG_V3)
+      required |= ESP_RTL_SDR_CAP_DIRECT_SAMPLING | ESP_RTL_SDR_CAP_GAIN;
     const uint32_t caps = rtl_device_capabilities();
     const bool pass = g_rtl != nullptr && ESP_RTL_SDR_VERSION_NUMBER >= 800 &&
-                      profile == ESP_RTL_SDR_PROFILE_BLOG_V4 &&
+                      (profile == ESP_RTL_SDR_PROFILE_BLOG_V4 ||
+                       profile == ESP_RTL_SDR_PROFILE_BLOG_V3) &&
                       (caps & required) == required;
     Serial.printf("RTL_DRIVER_SELF_CHECK pass=%d version=%s profile=%u "
                   "device_caps=0x%08x required=0x%08x\n",
@@ -14371,8 +14391,18 @@ void process_command(char* command) {
       err = rtl_has_device_capability(ESP_RTL_SDR_CAP_BIAS_TEE)
                 ? esp_rtl_sdr_set_bias_tee(g_rtl, strcmp(action + 5, "ON") == 0)
                 : ESP_RTL_SDR_ERR_UNSUPPORTED;
+    else if (strncmp(action, "TUNE ", 5) == 0) {
+      char* end = nullptr;
+      const unsigned long frequency_hz = strtoul(action + 5, &end, 10);
+      if (end == action + 5 || *end != '\0' || frequency_hz < ESP_RTL_SDR_FREQ_MIN_HZ ||
+          frequency_hz > ESP_RTL_SDR_FREQ_MAX_HZ) {
+        Serial.println("RTL_DRIVER_INVALID use TUNE <24000..1766000000>");
+        return;
+      }
+      err = esp_rtl_sdr_retune_hz(g_rtl, static_cast<uint32_t>(frequency_hz));
+    }
     else {
-      Serial.println("RTL_DRIVER_INVALID use STATUS|SELF_CHECK|GAINMODE AUTO|MANUAL|GAIN <0..496>|RTLAGC ON|OFF|BIAS ON|OFF");
+      Serial.println("RTL_DRIVER_INVALID use STATUS|SELF_CHECK|TUNE <HZ>|GAINMODE AUTO|MANUAL|GAIN <0..496>|RTLAGC ON|OFF|BIAS ON|OFF");
       return;
     }
     Serial.printf("RTL_DRIVER_RESULT action=\"%s\" accepted=%d result=%s\n", action,
