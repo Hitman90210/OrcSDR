@@ -65,6 +65,7 @@ void update(const Snapshot& snapshot);
 void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
                    float floor, bool audio_stressed = false);
 Action handle_touch(int32_t x, int32_t y, bool pressed);
+uint32_t step_span(uint32_t span_hz, int direction);
 bool active();
 bool browser_active();
 bool self_check();

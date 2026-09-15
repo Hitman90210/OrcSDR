@@ -8,13 +8,12 @@ enum class Action : uint8_t {
   none,
   opened,
   closed,
-  volume_down,
-  sound_toggle,
-  volume_up,
+  volume_set,
 };
 
 struct Control {
   bool expanded = false;
+  uint8_t volume = 0;
   uint32_t hide_at_ms = 0;
 };
 
@@ -31,7 +30,8 @@ void draw_visualizer_button(bool enabled);
 bool visualizer_hit(int32_t x, int32_t y);
 void draw_settings_button();
 bool settings_hit(int32_t x, int32_t y);
-Action handle_touch(Control& control, int32_t x, int32_t y, uint32_t now_ms);
+Action handle_touch(Control& control, int32_t x, int32_t y, uint32_t now_ms,
+                    uint8_t current_volume);
 bool service_timeout(Control& control, uint32_t now_ms);
 bool self_check();
 

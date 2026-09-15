@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 
 namespace orcsdr::home {
 namespace {
@@ -36,6 +37,8 @@ constexpr int kAllY = 590;
 constexpr int kTapDragThreshold = 10;
 constexpr int kHeaderStatusX = 420;
 constexpr int kHeaderStatusW = 446;
+constexpr uint32_t kSpanSteps[] = {
+    120000, 240000, 480000, 960000, 1200000, 2400000};
 
 Snapshot current{};
 bool shown = false;
@@ -491,6 +494,17 @@ Action tap_action(int32_t x, int32_t y) {
 
 }  // namespace
 
+uint32_t step_span(uint32_t span_hz, int direction) {
+  if (direction < 0) {
+    for (auto it = std::rbegin(kSpanSteps); it != std::rend(kSpanSteps); ++it)
+      if (*it < span_hz) return *it;
+    return kSpanSteps[0];
+  }
+  for (uint32_t step : kSpanSteps)
+    if (step > span_hz) return step;
+  return kSpanSteps[std::size(kSpanSteps) - 1];
+}
+
 void enter(const Snapshot& snapshot) {
   current = snapshot;
   shown = true;
@@ -656,6 +670,10 @@ bool self_check() {
          dashboards::count() > static_cast<size_t>(kVisibleRows) &&
          kHeaderStatusX + kHeaderStatusW <= 1099 &&
          waterfall_range_db(1) == 48 && waterfall_range_db(7) == 12 &&
+         step_span(2400000, -1) == 1200000 &&
+         step_span(1200000, -1) == 960000 &&
+         step_span(960000, 1) == 1200000 &&
+         step_span(120000, 1) == 240000 &&
          tap_action(kContrastDownX + 1, kContrastY + 1).kind ==
              ActionKind::waterfall_contrast_down &&
          tap_action(kContrastUpX + 1, kContrastY + 1).kind ==

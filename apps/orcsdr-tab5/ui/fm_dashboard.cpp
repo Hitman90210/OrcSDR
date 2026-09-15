@@ -589,20 +589,6 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
 
 Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return {};
-  const auto audio_action = audio_header::handle_touch(g_audio_control, x, y, millis());
-  if (audio_action != audio_header::Action::none) {
-    if (audio_action == audio_header::Action::opened ||
-        audio_action == audio_header::Action::closed) {
-      audio_header::draw(g_audio_control, g_snapshot.volume, g_snapshot.sound_enabled,
-                         g_snapshot.battery_percent);
-      return {};
-    }
-    if (audio_action == audio_header::Action::volume_down)
-      return {ActionKind::volume_down};
-    if (audio_action == audio_header::Action::sound_toggle)
-      return {ActionKind::sound_toggle};
-    return {ActionKind::volume_up};
-  }
   if (audio_header::settings_hit(x, y)) return {ActionKind::open_device_settings};
   if (g_keypad) {
     if (hit(x, y, 380, 525, 250, 55)) {

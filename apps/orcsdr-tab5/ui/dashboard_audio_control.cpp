@@ -18,13 +18,9 @@ constexpr uint16_t kGreen = 0x6fe8;
 constexpr uint16_t kMuted = 0x8c71;
 constexpr uint16_t kGrid = 0x2945;
 constexpr int kRegionX = 866;
-constexpr int kRegionY = 8;
+constexpr int kRegionY = 12;
 constexpr int kRegionW = 174;
-constexpr int kRegionH = 58;
-constexpr int kButtonY = 10;
-constexpr int kButtonH = 54;
-constexpr int kButtonW = 54;
-constexpr int kButtonX[] = {868, 926, 984};
+constexpr int kRegionH = 54;
 constexpr int kHomeX = 1040;
 constexpr int kHomeY = 8;
 constexpr int kHomeW = 58;
@@ -41,6 +37,13 @@ constexpr int kSettingsX = 1217;
 constexpr int kSettingsY = 12;
 constexpr int kSettingsW = 51;
 constexpr int kSettingsH = 54;
+constexpr int kTrayX = 900;
+constexpr int kTrayY = 72;
+constexpr int kTrayW = 280;
+constexpr int kTrayH = 68;
+constexpr int kSliderX = 924;
+constexpr int kSliderY = 113;
+constexpr int kSliderW = 232;
 constexpr uint32_t kTrayTimeoutMs = 4000;
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
@@ -76,10 +79,22 @@ void draw_battery(int x, int y, int32_t battery_percent) {
     M5.Display.fillRect(x + 7 + i * 14, y + 6, 11, 20, i < cells ? kGreen : kGrid);
 }
 
-void draw_button(int x, const char* label, uint16_t color) {
-  M5.Display.fillRoundRect(x, kButtonY, kButtonW, kButtonH, 9, kPanel);
-  M5.Display.drawRoundRect(x, kButtonY, kButtonW, kButtonH, 9, color);
-  text(label, x + kButtonW / 2, kButtonY + kButtonH / 2, color, 2);
+void draw_volume_slider(uint8_t volume, bool sound_enabled) {
+  M5.Display.fillRoundRect(kTrayX, kTrayY, kTrayW, kTrayH, 9, kPanel);
+  M5.Display.drawRoundRect(kTrayX, kTrayY, kTrayW, kTrayH, 9, kCyan);
+  text(sound_enabled ? "VOLUME" : "MUTED", kTrayX + 51, kTrayY + 20,
+       sound_enabled ? kCyan : kMuted, 1);
+  char value[8];
+  snprintf(value, sizeof(value), "%u%%",
+           static_cast<unsigned>((static_cast<uint16_t>(volume) * 100u + 127u) / 255u));
+  text(value, kTrayX + kTrayW - 36, kTrayY + 20, TFT_WHITE, 1);
+  M5.Display.fillRoundRect(kSliderX, kSliderY - 4, kSliderW, 8, 4, kGrid);
+  const int fill = static_cast<int>((static_cast<uint32_t>(volume) * kSliderW) / 255u);
+  if (fill > 0)
+    M5.Display.fillRoundRect(kSliderX, kSliderY - 4, fill, 8, 4,
+                             sound_enabled ? kGreen : kMuted);
+  M5.Display.fillCircle(kSliderX + fill, kSliderY, 9,
+                        sound_enabled ? kGreen : kMuted);
 }
 
 }  // namespace
@@ -109,17 +124,8 @@ void draw_battery(int32_t battery_percent) {
 void draw(const Control& control, uint8_t volume, bool sound_enabled,
           int32_t battery_percent) {
   M5.Display.fillRect(kRegionX, kRegionY, kRegionW, kRegionH, kBg);
-  if (control.expanded) {
-    draw_button(kButtonX[0], "-", kCyan);
-    draw_button(kButtonX[1], sound_enabled ? "MUTE" : "UNMUTE",
-                sound_enabled ? kGreen : kMuted);
-    draw_button(kButtonX[2], "+", kCyan);
-    return;
-  }
-
-  (void)volume;
-  (void)sound_enabled;
   draw_battery(battery_percent);
+  if (control.expanded) draw_volume_slider(volume, sound_enabled);
 }
 
 void draw_home_button() {
@@ -176,22 +182,28 @@ bool settings_hit(int32_t x, int32_t y) {
   return hit(x, y, kSettingsX, kSettingsY, kSettingsW, kSettingsH);
 }
 
-Action handle_touch(Control& control, int32_t x, int32_t y, uint32_t now_ms) {
+Action handle_touch(Control& control, int32_t x, int32_t y, uint32_t now_ms,
+                    uint8_t current_volume) {
   if (!control.expanded) {
     if (!mute_hit(x, y)) return Action::none;
     control.expanded = true;
+    control.volume = current_volume;
     control.hide_at_ms = now_ms + kTrayTimeoutMs;
     return Action::opened;
   }
 
+  if (hit(x, y, kSliderX - 12, kSliderY - 20, kSliderW + 24, 40)) {
+    control.volume = static_cast<uint8_t>(std::clamp<int32_t>(
+        ((x - kSliderX) * 255 + kSliderW / 2) / kSliderW, 0, 255));
+    control.hide_at_ms = now_ms + kTrayTimeoutMs;
+    return Action::volume_set;
+  }
+  if (mute_hit(x, y)) {
+    control.hide_at_ms = now_ms + kTrayTimeoutMs;
+    return Action::opened;
+  }
   // Leave the Settings gear live while the tray is open.
   if (settings_hit(x, y)) return Action::none;
-  for (size_t i = 0; i < 3; ++i) {
-    if (!hit(x, y, kButtonX[i], kButtonY, kButtonW, kButtonH)) continue;
-    control.hide_at_ms = now_ms + kTrayTimeoutMs;
-    return i == 0 ? Action::volume_down
-                  : i == 1 ? Action::sound_toggle : Action::volume_up;
-  }
   control.expanded = false;
   control.hide_at_ms = 0;
   return Action::closed;
@@ -207,21 +219,22 @@ bool service_timeout(Control& control, uint32_t now_ms) {
 
 bool self_check() {
   Control control{};
-  if (handle_touch(control, kMuteX + 1, kMuteY + 1, 100) != Action::opened ||
-      !control.expanded)
+  if (handle_touch(control, kMuteX + 1, kMuteY + 1, 100, 128) != Action::opened ||
+      !control.expanded || control.volume != 128)
     return false;
-  if (handle_touch(control, kButtonX[0] + 1, kButtonY + 1, 200) != Action::volume_down)
+  if (handle_touch(control, kSliderX, kSliderY, 200, 128) != Action::volume_set ||
+      control.volume != 0)
     return false;
-  if (handle_touch(control, kButtonX[1] + 1, kButtonY + 1, 300) != Action::sound_toggle)
+  if (handle_touch(control, kSliderX + kSliderW, kSliderY, 300, 0) !=
+          Action::volume_set ||
+      control.volume != 255)
     return false;
-  if (handle_touch(control, kButtonX[2] + 1, kButtonY + 1, 400) != Action::volume_up)
-    return false;
-  if (handle_touch(control, kSettingsX + 1, kSettingsY + 1, 500) != Action::none)
-    return false;
-  if (service_timeout(control, 4399) || !service_timeout(control, 4400)) return false;
+  if (service_timeout(control, 4299) || !service_timeout(control, 4300)) return false;
   reset(control);
-  if (handle_touch(control, 900, 60, 0) != Action::none) return false;
-  return kRegionX + kRegionW <= kHomeX && kButtonX[2] + kButtonW <= kHomeX &&
+  if (handle_touch(control, 900, 60, 0, 128) != Action::none) return false;
+  return kRegionX + kRegionW <= kHomeX && kTrayX >= 0 &&
+         kTrayX + kTrayW <= 1280 && kTrayY > kMuteY + kMuteH &&
+         kTrayY + kTrayH <= 720 &&
          kHomeX + kHomeW <= kMuteX && kMuteX + kMuteW <= kVisualizerX &&
          kVisualizerX + kVisualizerW <= kSettingsX &&
          home_hit(kHomeX + 1, kHomeY + 1) &&
