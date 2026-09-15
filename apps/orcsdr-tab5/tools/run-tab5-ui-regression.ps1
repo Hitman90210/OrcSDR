@@ -144,7 +144,7 @@ function Read-BinaryMatchingLine([string]$Pattern, [int]$Seconds = $TimeoutSecon
     $line = (Read-BinaryProtocolLine $script:serial $remaining).Trim()
     if (!$line) { continue }
     $script:linesSeen++
-    Write-SoakLine $line
+    if ($line -notmatch '^RTL_IQ_GET_DATA bytes=') { Write-SoakLine $line }
     if ($line -match 'V3C_RF_STATE ') { $script:lastV3cRfState = $line }
     if (Test-FatalLine $line) { throw "Device crash/reset detected: $line" }
     if ($line -match $Pattern) { return $line }
@@ -1038,6 +1038,11 @@ function Invoke-IqDiagnosticCapture {
   }
   Wait-DeviceReady 60 11000
   Connect-Authenticated
+  $staleCapture = Send-And-Wait 'RTL_IQ_DIAG_STATUS' '^RTL_IQ_DIAG_STATUS ' 10
+  if ($staleCapture -match ' active=1 ') { throw 'An IQ diagnostic capture is already active.' }
+  if ($staleCapture -match ' ready=1 ') {
+    [void](Send-And-Wait 'RTL_IQ_RETRIEVE_END' '^RTL_IQ_RETRIEVE_(?:DONE|RESUMING)$' 10)
+  }
   $beforeTune = Get-DriverStatus
   if ($IqHotTune) {
     $current = Get-RadioFrequency
@@ -1067,6 +1072,9 @@ function Invoke-IqDiagnosticCapture {
   if ($startLine -notmatch '^RTL_IQ_DIAG_START ') { throw "IQ capture rejected: $startLine" }
   $start = ConvertFrom-IqDiagnosticStart $startLine
   $doneLine = Read-MatchingLine '^RTL_IQ_DONE storage=psram source=diagnostic ' 15
+  $driverAfterCapture = Get-DriverStatus
+  $healthAfterCapture = Get-HealthStatus
+  [void](Send-And-Wait 'RTL_STOP' '^RTL_STOP_RESULT ' 10)
 
   $output = if ($IqOutputPath) {
     [IO.Path]::GetFullPath($IqOutputPath)
@@ -1121,8 +1129,8 @@ function Invoke-IqDiagnosticCapture {
   Move-Item -LiteralPath $partial -Destination $output
   [void](Send-And-Wait 'RTL_IQ_RETRIEVE_END' '^RTL_IQ_RETRIEVE_(?:DONE|RESUMING)$' 10)
 
-  $driverAfter = Get-DriverStatus
-  $healthAfter = Get-HealthStatus
+  $driverAfterRetrieval = Get-DriverStatus
+  $healthAfterRetrieval = Get-HealthStatus
   $rfState = if ($script:lastV3cRfState) {
     ConvertFrom-V3cRfState $script:lastV3cRfState
   } else { $null }
@@ -1133,28 +1141,28 @@ function Invoke-IqDiagnosticCapture {
     tune_method = if ($IqHotTune) { 'hot' } else { 'restart' }
     sequence = $start.Sequence
     capture_started_ms = $start.StartedMs
-    dongle_profile = $driverAfter.ProfileName
-    driver_version = $driverAfter.Version
+    dongle_profile = $driverAfterCapture.ProfileName
+    driver_version = $driverAfterCapture.Version
     driver_base_commit = 'e1ca40e04f8140245d56837cd149bf901f771441'
     driver_instrumentation_commit = '39a812aa8a22047cda471bfe46797b8d9033a4c8'
     requested_display_rf_hz = $IqFrequency
-    reported_driver_lo_hz = $driverAfter.Frequency
+    reported_driver_lo_hz = $driverAfterCapture.Frequency
     expected_driver_lo_hz = $expectedDriverFrequency
     sample_rate_sps = $start.Rate
-    tuner_mode = $driverAfter.Route
-    direct_sampling = $driverAfter.Route -eq 'DIRECT_Q'
+    tuner_mode = $driverAfterCapture.Route
+    direct_sampling = $driverAfterCapture.Route -eq 'DIRECT_Q'
     driver_rf_state = $script:lastV3cRfState
     pll_if_hz = if ($rfState) { $rfState.PllIf } else { $null }
     demod_if_hz = if ($rfState) { $rfState.DemodIf } else { $null }
     demod_nco = if ($rfState) { $rfState.Nco } else { $null }
     rtl_input = if ($rfState) { $rfState.Input } else { $null }
-    gain_mode = $driverAfter.Mode
-    gain_tenth_db = $driverAfter.Gain
-    rtl_agc = $driverAfter.RtlAgc
+    gain_mode = $driverAfterCapture.Mode
+    gain_tenth_db = $driverAfterCapture.Gain
+    rtl_agc = $driverAfterCapture.RtlAgc
     usb_overruns_before = $driver.Overruns
-    usb_overruns_after = $driverAfter.Overruns
+    usb_overruns_after = $driverAfterCapture.Overruns
     consumer_drops_before = $driver.Drops
-    consumer_drops_after = $driverAfter.Drops
+    consumer_drops_after = $driverAfterCapture.Drops
     short_transfers = if ($rfState) { $rfState.ShortTransfers } else { $null }
     short_transfers_note = if ($rfState) { 'driver counter at most recent RF transition' } else { 'not exposed for this profile' }
     capture_bytes = $totalBytes
@@ -1162,7 +1170,9 @@ function Invoke-IqDiagnosticCapture {
     antenna = $IqAntenna
     antenna_band_suitability = $IqAntennaSuitability
     health_before = $healthBefore
-    health_after = $healthAfter
+    health_after_capture = $healthAfterCapture
+    driver_after_retrieval = $driverAfterRetrieval.Line
+    health_after_retrieval = $healthAfterRetrieval
     capture_done_line = $doneLine
     orcsdr_commit = (& git -C (Join-Path $PSScriptRoot '..\..\..') rev-parse HEAD).Trim()
   }
@@ -1170,6 +1180,7 @@ function Invoke-IqDiagnosticCapture {
   $metadata | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $metadataPath -Encoding utf8
   & python (Join-Path $PSScriptRoot 'analyze_rtl_iq.py') $output --rate $start.Rate --csv
   if ($LASTEXITCODE -ne 0) { throw "IQ analyzer failed with exit code $LASTEXITCODE" }
+  [void](Send-And-Wait "RTL_TUNE $IqBand $IqFrequency" '^RTL_TUNE_OK ' 20)
   Write-SoakLine "RTL_IQ_DIAGNOSTIC_RESULT pass=1 transition=$($start.Transition) bytes=$totalBytes sha256=$localSha capture=\"$output\" metadata=\"$metadataPath\""
 }
 
