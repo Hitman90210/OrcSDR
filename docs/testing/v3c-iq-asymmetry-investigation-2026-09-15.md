@@ -210,6 +210,15 @@ overruns, drops, or short transfers. CU8 SHA-256:
 The user separately confirmed clear audio, RDS "99.1 The Beat of Eugene", and
 PTY "Adult Hit".
 
+With the MLA-30+ active loop, the V4 cold 1.450 MHz capture reported exact
+frequency at 2.4 MS/s through `HF_UPCONVERTER`, with zero clipping, overruns,
+drops, or short transfers. CU8 SHA-256:
+`8efac3ba6afae7074a90abb0ab5355ba31ea44c722bbb510a0ad333d9d67a3b7`.
+The driver route suite passed exact-frequency transitions across 28.8 MHz in
+both directions with continuous IQ and zero transport faults. The user
+separately confirmed understandable 1.450 MHz audio and the correct on-screen
+frequency/route.
+
 Open acceptance gates are the V3c final-candidate audio/RDS claim, explicit V4
-physical-spectrum confirmation, the strict V3c cold clipping threshold, and the
-V4 MLA-30+ 1.450 MHz HF-upconverter plus LF/HF-to-normal transition regression.
+99.1 MHz physical-spectrum confirmation, and the strict V3c cold clipping
+threshold.
