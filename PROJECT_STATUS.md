@@ -8,6 +8,9 @@ M5Burner package was installed and booted on the owner Tab5 before publication.
 That release evidence does not automatically prove later `main` commits or
 other hardware.
 
+The candidate pins `esp_rtl_sdr` v0.8.0-rc3 at
+`52edd9b6e591fbd5f3985af4dc51e9da60e04cad`.
+
 This is the authoritative current capability and evidence summary. Release
 notes and validation reports are immutable, dated evidence; they do not
 override this document for current state. Future work belongs in
