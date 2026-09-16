@@ -1,4 +1,5 @@
 #include "web_console.hpp"
+#include "web_command.hpp"
 
 #include <esp_attr.h>
 #include <esp_heap_caps.h>
@@ -24,7 +25,7 @@ bool g_listening = false;
 bool g_mdns_started = false;
 httpd_handle_t g_server = nullptr;
 Snapshot g_snapshot{};
-Command g_pending{};
+CommandSlot g_pending{};
 portMUX_TYPE g_mux = portMUX_INITIALIZER_UNLOCKED;
 constexpr size_t kAudioRing = 16384;
 constexpr size_t kAudioClip = 4800;
@@ -42,7 +43,6 @@ std::atomic<uint32_t> g_audio_r{0};
 std::atomic<int> g_audio_clients{0};
 uint8_t g_spec[kSpectrumBins]{};
 uint8_t g_spec_count = 0;
-uint32_t g_last_action_ms = 0;
 
 void json_escape(char* out, size_t out_size, const char* in) {
   if (out_size == 0) return;
@@ -58,19 +58,6 @@ void json_escape(char* out, size_t out_size, const char* in) {
     }
   }
   out[o] = '\0';
-}
-
-CommandKind parse_kind(const char* body) {
-  if (strncmp(body, "volume_down", 11) == 0) return CommandKind::volume_down;
-  if (strncmp(body, "volume_up", 9) == 0) return CommandKind::volume_up;
-  if (strncmp(body, "sound_toggle", 12) == 0) return CommandKind::sound_toggle;
-  if (strncmp(body, "span_down", 9) == 0) return CommandKind::span_down;
-  if (strncmp(body, "span_up", 7) == 0) return CommandKind::span_up;
-  if (strncmp(body, "step_down", 9) == 0) return CommandKind::step_down;
-  if (strncmp(body, "step_up", 7) == 0) return CommandKind::step_up;
-  if (strncmp(body, "tune=", 5) == 0) return CommandKind::tune;
-  if (strncmp(body, "open=", 5) == 0) return CommandKind::open;
-  return CommandKind::none;
 }
 
 esp_err_t handle_root(httpd_req_t* req) {
@@ -215,30 +202,52 @@ esp_err_t handle_spectrum(httpd_req_t* req) {
 }
 
 esp_err_t handle_action(httpd_req_t* req) {
+  httpd_resp_set_type(req, "text/plain");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  const auto reject_unread = [&](const char* status, const char* message) {
+    httpd_resp_set_status(req, status);
+    httpd_resp_set_hdr(req, "Connection", "close");
+    (void)httpd_resp_send(req, message, HTTPD_RESP_USE_STRLEN);
+    // An error return closes the session, rather than draining an untrusted
+    // oversized/incomplete body in httpd_req_delete on the HTTP server task.
+    return ESP_FAIL;
+  };
+  const size_t origin_size = httpd_req_get_hdr_value_len(req, "Origin");
+  if (origin_size) {
+    char origin[128]{}, host[96]{};
+    if (origin_size >= sizeof(origin) ||
+        httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK ||
+        httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK ||
+        !same_origin(origin, host)) {
+      return reject_unread("403 Forbidden", "origin rejected");
+    }
+  }
   char body[48]{};
-  const int got = httpd_req_recv(req, body, sizeof(body) - 1);
-  if (got <= 0) {
-    httpd_resp_set_status(req, "400 Bad Request");
-    return httpd_resp_send(req, "bad", 3);
+  if (!req->content_len || req->content_len >= sizeof(body)) {
+    return reject_unread("400 Bad Request", "invalid length");
+  }
+  size_t received = 0;
+  while (received < req->content_len) {
+    const int got = httpd_req_recv(req, body + received, req->content_len - received);
+    if (got <= 0) {
+      return reject_unread("408 Request Timeout", "incomplete command");
+    }
+    received += static_cast<size_t>(got);
   }
   Command command{};
-  command.kind = parse_kind(body);
-  if (command.kind == CommandKind::tune) command.value = static_cast<uint32_t>(atoi(body + 5));
-  if (command.kind == CommandKind::open) strlcpy(command.id, body + 5, sizeof(command.id));
-  if (command.kind == CommandKind::none) {
+  if (!parse_command(std::string_view(body, received), command)) {
     httpd_resp_set_status(req, "400 Bad Request");
     return httpd_resp_send(req, "unknown", 7);
   }
-  const uint32_t now = millis();
-  if (now - g_last_action_ms < 350) {
-    httpd_resp_set_type(req, "text/plain");
+  portENTER_CRITICAL(&g_mux);
+  const bool accepted = g_pending.submit(command);
+  portEXIT_CRITICAL(&g_mux);
+  if (!accepted) {
+    httpd_resp_set_status(req, "409 Conflict");
     return httpd_resp_send(req, "busy", 4);
   }
-  g_last_action_ms = now;
-  portENTER_CRITICAL(&g_mux);
-  g_pending = command;
-  portEXIT_CRITICAL(&g_mux);
-  httpd_resp_set_type(req, "text/plain");
+  // Accepted for main-loop dispatch, not a claim of successful RF tuning.
+  httpd_resp_set_status(req, "202 Accepted");
   return httpd_resp_send(req, "ok", 2);
 }
 
@@ -370,11 +379,7 @@ void update(const Snapshot& snapshot) {
 bool take_command(Command* command) {
   if (command == nullptr) return false;
   portENTER_CRITICAL(&g_mux);
-  const bool have = g_pending.kind != CommandKind::none;
-  if (have) {
-    *command = g_pending;
-    g_pending = {};
-  }
+  const bool have = g_pending.take(*command);
   portEXIT_CRITICAL(&g_mux);
   return have;
 }
