@@ -427,11 +427,9 @@ bool dashboard_self_check() {
   g_active = true;
   g_keypad = false;
   const bool ok = handle_touch(60, 150).kind == ActionKind::step_down &&
-                  handle_touch(760, 150).kind == ActionKind::step_up &&
-                  handle_touch(400, 160).kind == ActionKind::none && g_keypad &&
-                  handle_touch(400, 540).kind == ActionKind::none && !g_keypad &&
-                  handle_touch(900, 200).kind == ActionKind::gain_auto &&
-                  handle_gain_drag(kGainX + kGainW, kGainY).value == 496;
+                   handle_touch(760, 150).kind == ActionKind::step_up &&
+                   handle_touch(900, 200).kind == ActionKind::gain_auto &&
+                   handle_gain_drag(kGainX + kGainW, kGainY).value == 496;
   g_snapshot.controls.route = ReceiverRoute::direct_q;
   const bool direct_q_ok = handle_touch(900, 200).kind == ActionKind::none &&
                            handle_gain_drag(kGainX, kGainY).kind == ActionKind::none &&

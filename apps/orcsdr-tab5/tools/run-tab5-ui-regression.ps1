@@ -35,6 +35,8 @@ param(
   [string]$IqBand = 'FM',
   [ValidateRange(24000, 1766000000)]
   [uint32]$IqFrequency = 99100000,
+  [ValidateRange(0, 496)]
+  [Nullable[int]]$IqGainTenthDb,
   [string]$IqOutputPath,
   [string]$IqAntenna,
   [string]$IqAntennaSuitability,
@@ -861,7 +863,7 @@ function ConvertFrom-V3cRfState([string]$Line) {
 }
 
 function Test-IqDriverReady($Before, $Current, [uint64]$ExpectedFrequency,
-                            [bool]$RestartObserved, [bool]$HotTune = $false) {
+                             [bool]$RestartObserved, [bool]$HotTune = $false) {
   if ($Current.State -ne 'STREAMING' -or $Current.Frequency -ne $ExpectedFrequency -or
       $Current.Bytes -le 0) { return $false }
   if ($HotTune) {
@@ -869,6 +871,11 @@ function Test-IqDriverReady($Before, $Current, [uint64]$ExpectedFrequency,
   }
   return $RestartObserved -or $Before.State -ne 'STREAMING' -or
          $Current.Bytes -lt $Before.Bytes
+}
+
+function Test-IqGainApplied($Driver, [int]$ExpectedGain) {
+  return $Driver.State -eq 'STREAMING' -and $Driver.Mode -eq 'MANUAL' -and
+         $Driver.Gain -eq $ExpectedGain
 }
 
 function Invoke-SelfCheck {
@@ -951,6 +958,10 @@ function Invoke-SelfCheck {
   $hotAfter = [pscustomobject]@{ State = 'STREAMING'; Frequency = 24100000; Bytes = 1100000 }
   if (!(Test-IqDriverReady $hotBefore $hotAfter 24100000 $false $true)) {
     throw 'IQ hot-tune guard failed.'
+  }
+  $gainReady = [pscustomobject]@{ State = 'STREAMING'; Mode = 'MANUAL'; Gain = 229 }
+  if (!(Test-IqGainApplied $gainReady 229) -or (Test-IqGainApplied $gainReady 280)) {
+    throw 'IQ explicit-gain guard failed.'
   }
   $lineBytes = [Text.Encoding]::ASCII.GetBytes("RTL_IQ_GET_DATA bytes=4`r`n")
   $protocolBytes = [byte[]]($lineBytes + [byte[]](13, 10, 255, 0))
@@ -1065,6 +1076,18 @@ function Invoke-IqDiagnosticCapture {
   } while ([DateTime]::UtcNow -lt $deadline)
   if (!(Test-IqDriverReady $beforeTune $driver $expectedDriverFrequency $restartObserved $IqHotTune)) {
     throw "Requested IQ state did not stabilize: state=$($driver.State) display_hz=$IqFrequency driver_lo_hz=$($driver.Frequency) expected_lo_hz=$expectedDriverFrequency"
+  }
+  if ($null -ne $IqGainTenthDb) {
+    [void](Send-And-Wait "RTL_DRIVER GAIN $IqGainTenthDb" '^RTL_DRIVER_RESULT .*accepted=1 result=ESP_OK$' 10)
+    $gainDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+      $driver = Get-DriverStatus
+      if (Test-IqGainApplied $driver $IqGainTenthDb) { break }
+      Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $gainDeadline)
+    if (!(Test-IqGainApplied $driver $IqGainTenthDb)) {
+      throw "Requested IQ gain did not apply: mode=$($driver.Mode) gain_tenth_db=$($driver.Gain) expected=$IqGainTenthDb"
+    }
   }
 
   $healthBefore = Get-HealthStatus
