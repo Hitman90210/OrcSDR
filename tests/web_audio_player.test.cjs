@@ -1,5 +1,5 @@
 const assert = require('node:assert/strict');
-const { parsePacket, Player } = require('../apps/orcsdr-tab5/ui/web_audio.js');
+const { parsePacket, Player, Connection } = require('../apps/orcsdr-tab5/ui/web_audio.js');
 
 function packet() {
   // Independent fixture: matches documented wire bytes, not encoder helpers.
@@ -30,9 +30,10 @@ console.log('WEB_AUDIO_PARSER_OK');
 // Audio-device boundary only: the real Player owns queue/timing decisions.
 function audioContext() {
   return {
-    currentTime: 0, state: 'running', destination: {}, created: [],
-    createGain() { return { connect() {}, gain: { value: 1,
-      cancelScheduledValues() {}, setValueAtTime() {}, linearRampToValueAtTime() {} } }; },
+    currentTime: 0, state: 'running', destination: {}, created: [], gains: [],
+    createGain() { const gain = { connect() {}, disconnect() { this.disconnected = true; },
+      gain: { value: 1, cancelScheduledValues() {}, setValueAtTime() {}, linearRampToValueAtTime() {} } };
+      this.gains.push(gain); return gain; },
     createBuffer(channels, frames, rate) {
       assert.equal(channels, 1); assert.equal(rate, 48000);
       const samples = new Float32Array(frames);
@@ -124,3 +125,50 @@ for (const drift of [0.999, 1.001]) {
   assert.ok(clock.created.every(n => n.playbackRate.value >= 0.995 && n.playbackRate.value <= 1.005));
 }
 console.log('WEB_AUDIO_TIMELINE_OK');
+
+const sockets = [], timeouts = new Map(), intervals = new Map();
+let timerId = 0;
+const environment = {
+  WebSocket: class {
+    constructor(url) { this.url = url; sockets.push(this); }
+    close() { this.closed = true; if (this.onclose) this.onclose(); }
+  },
+  setTimeout(fn, ms) { const id = ++timerId; timeouts.set(id, { fn, ms }); return id; },
+  clearTimeout(id) { timeouts.delete(id); },
+  setInterval(fn) { const id = ++timerId; intervals.set(id, fn); return id; },
+  clearInterval(id) { intervals.delete(id); }
+};
+const connectionClock = audioContext(), states = [];
+const connection = new Connection(connectionClock, state => states.push(state), environment);
+connection.start('ws://radio/api/audio/stream');
+assert.equal(states.at(-1), 'connecting');
+const firstSocket = sockets.at(-1);
+firstSocket.onopen();
+assert.equal(states.at(-1), 'buffering');
+for (let i = 0; i < 15; i++) firstSocket.onmessage({ data: frame(i * 960) });
+connectionClock.currentTime = 0.03;
+for (const tick of intervals.values()) tick();
+assert.equal(states.at(-1), 'live');
+firstSocket.onclose();
+assert.equal(states.at(-1), 'reconnecting');
+assert.equal(intervals.size, 0);
+assert.equal(timeouts.size, 1);
+const pendingRetry = [...timeouts.values()][0].fn;
+connection.stop();
+assert.equal(timeouts.size, 0);
+pendingRetry();
+firstSocket.onmessage({ data: frame(0, 2) });
+assert.equal(sockets.length, 1, 'stale retry cannot reopen after OFF');
+assert.equal(states.at(-1), 'off');
+connection.start('ws://radio/api/audio/stream');
+const secondSocket = sockets.at(-1);
+firstSocket.onerror();
+assert.equal(states.at(-1), 'connecting', 'old socket cannot affect new session');
+secondSocket.onopen();
+secondSocket.onmessage({ data: new ArrayBuffer(1) });
+assert.equal(states.at(-1), 'error');
+assert.ok(secondSocket.closed);
+assert.equal(intervals.size, 0);
+assert.equal(timeouts.size, 0, 'malformed protocol is not an endless retry loop');
+assert.ok(connectionClock.gains.every(gain => gain.disconnected), 'closed sessions must release output nodes');
+console.log('WEB_AUDIO_CONNECTION_OK');

@@ -1,5 +1,6 @@
 #include "web_console.hpp"
 #include "web_command.hpp"
+#include "web_audio_transport.hpp"
 
 #include <esp_attr.h>
 #include <esp_heap_caps.h>
@@ -13,6 +14,8 @@
 
 extern const uint8_t web_console_html_start[] asm("_binary_web_console_html_start");
 extern const uint8_t web_console_html_end[] asm("_binary_web_console_html_end");
+extern const uint8_t web_audio_js_start[] asm("_binary_web_audio_js_start");
+extern const uint8_t web_audio_js_end[] asm("_binary_web_audio_js_end");
 extern const uint8_t orc_badge_start[] asm("_binary_orc_badge_104_png_start");
 extern const uint8_t orc_badge_end[] asm("_binary_orc_badge_104_png_end");
 
@@ -41,6 +44,7 @@ uint32_t g_wifi_up_ms = 0;
 std::atomic<uint32_t> g_audio_w{0};
 std::atomic<uint32_t> g_audio_r{0};
 std::atomic<int> g_audio_clients{0};
+std::atomic<uint32_t> g_spectrum_requested_ms{0};
 uint8_t g_spec[kSpectrumBins]{};
 uint8_t g_spec_count = 0;
 
@@ -73,6 +77,13 @@ esp_err_t handle_badge(httpd_req_t* req) {
   httpd_resp_set_type(req, "image/png");
   httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=86400");
   return httpd_resp_send(req, reinterpret_cast<const char*>(orc_badge_start), bytes);
+}
+
+esp_err_t handle_audio_script(httpd_req_t* req) {
+  httpd_resp_set_type(req, "application/javascript");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  return httpd_resp_send(req, reinterpret_cast<const char*>(web_audio_js_start),
+                        web_audio_js_end - web_audio_js_start);
 }
 
 esp_err_t handle_status(httpd_req_t* req) {
@@ -194,6 +205,7 @@ esp_err_t handle_audio(httpd_req_t* req) {
 }
 
 esp_err_t handle_spectrum(httpd_req_t* req) {
+  g_spectrum_requested_ms.store(millis(), std::memory_order_release);
   uint8_t bins[kSpectrumBins];
   const size_t n = copy_spectrum(bins, kSpectrumBins);
   httpd_resp_set_type(req, "application/octet-stream");
@@ -281,6 +293,7 @@ void start_mdns() {
 
 void stop_server() {
   if (g_server != nullptr) {
+    orcsdr::web_audio::stop();
     httpd_stop(g_server);
     g_server = nullptr;
   }
@@ -299,7 +312,7 @@ bool start_server() {
   config.server_port = 80;
   // 3 sockets are reserved; 5 leaves two clients (status + audio).
   config.max_open_sockets = 5;
-  config.max_uri_handlers = 8;
+  config.max_uri_handlers = 10;
   config.lru_purge_enable = true;
   config.stack_size = 8192;
   config.core_id = tskNO_AFFINITY;
@@ -343,6 +356,15 @@ bool start_server() {
   httpd_register_uri_handler(g_server, &audio);
   httpd_register_uri_handler(g_server, &audiowav);
   httpd_register_uri_handler(g_server, &spectrum);
+  httpd_uri_t audio_script{};
+  audio_script.uri = "/web_audio.js";
+  audio_script.method = HTTP_GET;
+  audio_script.handler = handle_audio_script;
+  httpd_register_uri_handler(g_server, &audio_script);
+  if (!orcsdr::web_audio::start(g_server)) {
+    stop_server();
+    return false;
+  }
   start_mdns();
   g_listening = true;
   ESP_LOGI(kLogTag, "RTL_WEB_LISTEN port=80");
@@ -356,6 +378,11 @@ void set_enabled(bool enabled) { g_enabled.store(enabled, std::memory_order_rele
 bool enabled() { return g_enabled.load(std::memory_order_acquire); }
 
 bool listening() { return g_listening; }
+
+bool spectrum_demanded() {
+  const uint32_t requested = g_spectrum_requested_ms.load(std::memory_order_acquire);
+  return g_listening && requested != 0 && millis() - requested < 1000;
+}
 
 void poll(bool wifi_connected) {
   const bool want = g_enabled.load(std::memory_order_acquire) && wifi_connected;

@@ -64,6 +64,7 @@
     stop() {
       this.state = 'off';
       this.clear();
+      this.gain.disconnect();
     }
 
     tick() {
@@ -147,7 +148,94 @@
     }
   }
 
-  const api = { parsePacket, Player };
+  class Connection {
+    constructor(context, onState, environment = root) {
+      this.context = context;
+      this.onState = onState;
+      this.env = environment;
+      this.run = 0;
+      this.socket = null;
+      this.player = null;
+      this.timer = this.interval = null;
+      this.state = 'off';
+      this.retries = 0;
+    }
+    setState(state) {
+      if (this.state === state) return;
+      this.state = state;
+      this.onState(state);
+    }
+    cleanup() {
+      if (this.timer !== null) this.env.clearTimeout(this.timer);
+      if (this.interval !== null) this.env.clearInterval(this.interval);
+      this.timer = this.interval = null;
+      const old = this.socket;
+      this.socket = null;
+      if (old) old.close();
+      if (this.player) this.player.stop();
+      this.player = null;
+    }
+    stop() {
+      ++this.run;
+      this.cleanup();
+      this.setState('off');
+    }
+    start(url) {
+      this.stop();
+      this.url = url;
+      this.retries = 0;
+      this.connect(this.run);
+    }
+    connect(run) {
+      if (run !== this.run) return;
+      this.timer = null;
+      this.setState(this.retries ? 'reconnecting' : 'connecting');
+      let socket;
+      try { socket = new this.env.WebSocket(this.url); }
+      catch (_) { this.setState('error'); return; }
+      this.socket = socket;
+      socket.binaryType = 'arraybuffer';
+      const current = () => this.run === run && this.socket === socket;
+      const reconnect = () => {
+        if (!current()) return;
+        this.cleanup();
+        this.setState('reconnecting');
+        const delay = Math.min(5000, 500 * Math.pow(2, Math.min(this.retries++, 4)));
+        this.timer = this.env.setTimeout(() => this.connect(run), delay);
+      };
+      this.timer = this.env.setTimeout(reconnect, 5000);
+      socket.onopen = () => {
+        if (!current()) return;
+        this.env.clearTimeout(this.timer);
+        this.timer = null;
+        this.player = new Player(this.context);
+        this.setState('buffering');
+        this.interval = this.env.setInterval(() => {
+          if (!current()) return;
+          this.player.tick();
+          if (this.player.state === 'suspended') {
+            this.cleanup();
+            this.setState('error'); // Requires a new user gesture, not autoplay retries.
+          } else this.setState(this.player.state);
+        }, 25);
+      };
+      socket.onmessage = event => {
+        if (!current() || !this.player) return;
+        try {
+          this.player.push(event.data);
+          this.retries = 0;
+          this.setState(this.player.state);
+        } catch (_) {
+          this.cleanup();
+          this.setState('error');
+        }
+      };
+      socket.onerror = reconnect;
+      socket.onclose = reconnect;
+    }
+  }
+
+  const api = { parsePacket, Player, Connection };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OrcAudio = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);

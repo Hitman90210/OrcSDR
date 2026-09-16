@@ -85,6 +85,7 @@
 #include "time_service.hpp"
 #include "ui_capture.hpp"
 #include "web_console.hpp"
+#include "web_audio_transport.hpp"
 #include "rf24_dashboard.hpp"
 #include "wifi_service.hpp"
 #include "esp_rtl_sdr.h"
@@ -4749,7 +4750,8 @@ bool rds_replay(const char* path) {
 void spectrum_offer_iq_snapshot(const uint8_t* iq, size_t bytes) {
   if (iq == nullptr || bytes < kRtlSpectrumBins * 2) return;
   orcsdr::visualizer::offer_iq(iq, bytes);
-  if (!rtl_graphics_enabled.load(std::memory_order_relaxed)) return;
+  if (!rtl_graphics_enabled.load(std::memory_order_relaxed) &&
+      !orcsdr::web_console::spectrum_demanded()) return;
   const size_t need = sizeof(rtl_spectrum_iq_snap);
   const size_t n = bytes < need ? bytes : need;
   portENTER_CRITICAL(&rtl_spectrum_snap_mux);
@@ -6730,13 +6732,14 @@ void draw_band_edges() {
  * Two-window Welch averaging keeps the single render core responsive.
  */
 void draw_spectrum(const uint8_t* iq, size_t bytes) {
-  if (!orcsdr::home::active() && rtl_ui_band == RtlBand::lora &&
+  const bool web_scope = orcsdr::web_console::spectrum_demanded();
+  if (!web_scope && !orcsdr::home::active() && rtl_ui_band == RtlBand::lora &&
       !orcsdr::lora::spectrum_active()) return;
-  if (!orcsdr::home::active() && rtl_ui_band == RtlBand::fm &&
+  if (!web_scope && !orcsdr::home::active() && rtl_ui_band == RtlBand::fm &&
       !orcsdr::fm::spectrum_active()) return;
-  if (!orcsdr::home::active() && rtl_ui_band == RtlBand::shortwave &&
+  if (!web_scope && !orcsdr::home::active() && rtl_ui_band == RtlBand::shortwave &&
       !orcsdr::shortwave::spectrum_active()) return;
-  if (!orcsdr::home::active() && rtl_ui_band == RtlBand::p25 &&
+  if (!web_scope && !orcsdr::home::active() && rtl_ui_band == RtlBand::p25 &&
       !orcsdr::p25::spectrum_active()) return;
   if (!rtl_spectrum_window_ready) {
     constexpr float kPi = 3.14159265358979323846f;
@@ -7086,12 +7089,17 @@ int16_t shape_audio_sample(float demodulated, float base_scale) {
 
 void queue_audio_samples(int16_t* audio, size_t audio_count) {
   if (audio_count == 0) return;
+  orcsdr::web_audio::publish(audio, audio_count);
   orcsdr::visualizer::offer_audio(audio, nullptr, audio_count, 48000);
   /* Capture the post-DSP mono stream before expanding it for the stereo codec. */
   if (g_audio_rec_active.load(std::memory_order_acquire)) {
     audio_rec_append(audio, audio_count);
   }
   /* M5Unified retains playRaw pointers, so fill one owned stereo block at a time. */
+  if (!rtl_audio_enabled.load(std::memory_order_acquire)) {
+    rtl_audio.buffer = (rtl_audio.buffer + 1) % std::size(rtl_audio_buffers);
+    return;
+  }
   for (size_t i = 0; i < audio_count; ++i) {
     if (!rtl_audio_select_writable_block(millis())) break;
     if (rtl_audio_play_count >= kRtlAudioPlayBlockFrames) {
@@ -7139,7 +7147,8 @@ void p25_voice_task(void*) {
       p25_encrypted_voice_pending.store(true, std::memory_order_release);
       continue;
     }
-    if (!rtl_audio_user_enabled.load(std::memory_order_acquire)) continue;
+    if (!rtl_audio_user_enabled.load(std::memory_order_acquire) &&
+        !orcsdr::web_audio::demanded()) continue;
 
     const int64_t started_us = esp_timer_get_time();
     orcsdr::p25voice::Result result{};
@@ -8287,6 +8296,7 @@ static void rtl_dsp_task(void *) {
         block.band != RtlBand::lora && block.band != RtlBand::p25 &&
         block.band != RtlBand::pocsag &&
         (rtl_audio_enabled.load(std::memory_order_relaxed) ||
+         orcsdr::web_audio::demanded() ||
          g_audio_rec_active.load(std::memory_order_relaxed)) &&
         !rtl_audio_test_tone.load(std::memory_order_relaxed)) {
       if (block.band == RtlBand::cb) {
@@ -8651,9 +8661,10 @@ static void rtl_driver_app_task(void *) {
               rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
           }
           const bool gfx_on = rtl_graphics_enabled.load(std::memory_order_acquire);
-          if (!orcsdr::settings::active() && !orcsdr::home::active() &&
+          const bool web_scope = orcsdr::web_console::spectrum_demanded();
+          if (web_scope || (!orcsdr::settings::active() && !orcsdr::home::active() &&
               g_stream_band != RtlBand::adsb && gfx_on &&
-              orc_tool_current() != OrcTool::Capture) {
+              orc_tool_current() != OrcTool::Capture)) {
             const bool sound_on = rtl_audio_enabled.load(std::memory_order_relaxed);
             const bool audio_stressed =
                 sound_on && rtl_audio.dropped_chunks > 0 &&
@@ -8661,7 +8672,7 @@ static void rtl_driver_app_task(void *) {
             const uint32_t normal_visual_interval = g_stream_band == RtlBand::lora
                                                         ? kRtlLoraSpectrumIntervalMs
                                                         : kRtlSpectrumIntervalMs;
-            const uint32_t visual_interval = audio_stressed
+            const uint32_t visual_interval = web_scope ? 250u : audio_stressed
                                                  ? kRtlSpectrumStressedIntervalMs
                                                  : normal_visual_interval;
             if (now - rtl_session_started_ms >= kRtlAudioPrimeMs &&
@@ -16276,7 +16287,7 @@ void loop() {
   service_rf_lab();
   if (rtl_stream_spectrum_pending.exchange(false, std::memory_order_acq_rel) &&
       !orcsdr::visualizer::active() && !orcsdr::rf_lab::active() &&
-      (fm_ui || am_ui || shortwave_ui || p25_ui ||
+      (orcsdr::web_console::spectrum_demanded() || fm_ui || am_ui || shortwave_ui || p25_ui ||
        (rtl_ui_band == RtlBand::lora && orcsdr::lora::active()))) {
     draw_spectrum(nullptr, 0);
   }
