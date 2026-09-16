@@ -255,7 +255,7 @@ GainLayout gain_layout() {
 void draw_gain_control(bool compact) {
   const GainLayout layout = gain_layout();
   if (!g_snapshot.gain_available) {
-    button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "AUTO", kMuted, false);
+    button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "SMART", kMuted, false);
     text(compact ? "GAIN" : "RF GAIN", layout.slider_x,
          layout.slider_y - (compact ? 15 : 33), kMuted, 2, middle_left);
     text("DIRECT Q", layout.slider_x + layout.slider_w,
@@ -265,19 +265,24 @@ void draw_gain_control(bool compact) {
     return;
   }
   char value[24];
-  if (g_snapshot.gain_auto)
-    snprintf(value, sizeof(value), g_snapshot.gain_auto_selecting ? "AUTO..." : "AUTO %.1f",
+  if (g_snapshot.clipping_percent > kSmartGainClippingLimitPercent)
+    snprintf(value, sizeof(value), "CLIP %.2f%%",
+             static_cast<double>(g_snapshot.clipping_percent));
+  else if (g_snapshot.gain_auto)
+    snprintf(value, sizeof(value), g_snapshot.gain_auto_selecting ? "SMART..." : "SMART %.1f",
              static_cast<double>(g_snapshot.gain_tenth_db) / 10.0);
   else
     snprintf(value, sizeof(value), "%.1f dB",
              static_cast<double>(g_snapshot.gain_tenth_db) / 10.0);
-  button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "AUTO", kGreen,
+  button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "SMART", kGreen,
          g_snapshot.gain_auto);
   text(compact ? "GAIN" : "RF GAIN", layout.slider_x,
        layout.slider_y - (compact ? 15 : 33), kCyan, 2, middle_left);
   text(value, layout.slider_x + layout.slider_w,
        layout.slider_y - (compact ? 15 : 33),
-       g_snapshot.gain_auto ? kGreen : TFT_WHITE, 2, middle_right);
+       g_snapshot.clipping_percent > kSmartGainClippingLimitPercent
+           ? TFT_RED : g_snapshot.gain_auto ? kGreen : TFT_WHITE,
+       2, middle_right);
   M5.Display.fillRoundRect(layout.slider_x, layout.slider_y, layout.slider_w, 18, 9, kGrid);
   const int gain_x = layout.slider_x + std::clamp(g_snapshot.gain_tenth_db, 0, 496) *
                                          layout.slider_w / 496;
@@ -878,8 +883,14 @@ void clear_scan_results() { reset_scan_results(); }
 
 bool scan_prompt_active() { return g_scan_prompt; }
 
-bool auto_gain_should_advance(float level_dbfs, size_t step, size_t step_count) {
-  return step + 1 < step_count && level_dbfs < kAutoGainTargetDbfs;
+bool auto_gain_should_advance(float level_dbfs, float clipping_percent,
+                              size_t step, size_t step_count) {
+  return clipping_percent <= kSmartGainClippingLimitPercent &&
+         step + 1 < step_count && level_dbfs < kAutoGainTargetDbfs;
+}
+
+bool auto_gain_should_reduce(float clipping_percent, size_t step) {
+  return step > 0 && clipping_percent > kSmartGainClippingLimitPercent;
 }
 
 void populate_presets(Snapshot& snapshot) {
@@ -914,9 +925,13 @@ bool self_check() {
           baseline == -80.0f && candidates[0].index == 3 && candidates[1].index == 5 &&
           select_scan_candidates(quiet_levels, std::size(quiet_levels), candidates,
                                  std::size(candidates), nullptr) == 0 &&
-          auto_gain_should_advance(-30.0f, 0, 3) &&
-          !auto_gain_should_advance(kAutoGainTargetDbfs, 0, 3) &&
-          !auto_gain_should_advance(-30.0f, 2, 3) &&
+          auto_gain_should_advance(-30.0f, 0.0f, 0, 3) &&
+          !auto_gain_should_advance(kAutoGainTargetDbfs, 0.0f, 0, 3) &&
+          !auto_gain_should_advance(-30.0f, 0.0f, 2, 3) &&
+          !auto_gain_should_advance(-30.0f, 0.2f, 0, 3) &&
+          auto_gain_should_reduce(0.2f, 1) &&
+          !auto_gain_should_reduce(0.1f, 1) &&
+          !auto_gain_should_reduce(0.2f, 0) &&
           bandwidth_for_x(kBandwidthSliderX) == 3000 &&
           bandwidth_for_x(kBandwidthSliderX + kBandwidthSliderW) == 30000 &&
           erase_preset(presets, preset_count, 1) && preset_count == 2 &&

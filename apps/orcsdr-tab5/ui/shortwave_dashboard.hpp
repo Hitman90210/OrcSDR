@@ -13,6 +13,7 @@ struct Snapshot {
   uint32_t filter_bandwidth_hz = 6000;
   uint32_t span_hz = 480000;
   float relative_dbfs = -90.0f;
+  float clipping_percent = 0.0f;
   bool running = false;
   bool driver_ready = false;
   bool sound_enabled = true;

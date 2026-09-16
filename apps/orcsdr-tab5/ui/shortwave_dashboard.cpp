@@ -97,11 +97,15 @@ void draw_status() {
        g_snapshot.driver_ready ? TFT_WHITE : TFT_ORANGE, 1);
   M5.Display.fillRect(35, 294, 760, 34, TFT_BLACK);
   char status[96];
-  snprintf(status, sizeof(status), "%s  |  %+.1f dBFS  |  %lu kHz span",
+  snprintf(status, sizeof(status), "%s  |  %+.1f dBFS  |  %lu kHz span%s",
            g_snapshot.running ? "LIVE IQ" : "WAITING",
            static_cast<double>(g_snapshot.relative_dbfs),
-           static_cast<unsigned long>(g_snapshot.span_hz / 1000u));
-  text(status, 415, 311, g_snapshot.running ? kGreen : TFT_ORANGE, 2);
+           static_cast<unsigned long>(g_snapshot.span_hz / 1000u),
+           g_snapshot.clipping_percent > 0.1f ? "  |  CLIP" : "");
+  text(status, 415, 311,
+       g_snapshot.clipping_percent > 0.1f ? TFT_RED
+                                         : g_snapshot.running ? kGreen : TFT_ORANGE,
+       2);
 }
 
 void draw_quick_controls() {

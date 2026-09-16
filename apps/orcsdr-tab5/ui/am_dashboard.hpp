@@ -28,6 +28,7 @@ struct Snapshot {
   bool gain_available = false;
   bool gain_auto = true;
   bool gain_auto_selecting = false;
+  float clipping_percent = 0.0f;
   int gain_tenth_db = 0;
   int gain_steps_tenth_db[32]{};
   uint8_t gain_step_count = 0;
@@ -104,7 +105,10 @@ uint8_t prepare_scan_results(uint32_t start_hz, uint32_t step_hz,
 void clear_scan_results();
 bool scan_prompt_active();
 constexpr float kAutoGainTargetDbfs = -24.0f;
-bool auto_gain_should_advance(float level_dbfs, size_t step, size_t step_count);
+constexpr float kSmartGainClippingLimitPercent = 0.1f;
+bool auto_gain_should_advance(float level_dbfs, float clipping_percent,
+                              size_t step, size_t step_count);
+bool auto_gain_should_reduce(float clipping_percent, size_t step);
 void populate_presets(Snapshot& snapshot);
 bool self_check();
 

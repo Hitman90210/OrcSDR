@@ -949,6 +949,7 @@ static std::atomic<uint32_t> rtl_iq_sequence{0};
 static uint8_t rtl_iq_processing[32768 + 512];
 /* Relative RF level from IQ power (dBFS-ish, 0 = full-scale CU8). */
 static std::atomic<float> rtl_signal_dbfs{-90.0f};
+static std::atomic<float> rtl_iq_clipping_percent{0.0f};
 /** WBFM stereo: fresh-per-callback dBFS (same granularity as rtl_signal_dbfs);
  * dashboard snapshots apply their own EMA at redraw cadence. */
 static std::atomic<float> rtl_audio_left_dbfs{-90.0f};
@@ -5889,8 +5890,12 @@ void update_signal_level_from_iq(const uint8_t* iq, size_t bytes) {
   if (iq == nullptr || bytes < 4) return;
   uint64_t sum = 0;
   size_t pairs = 0;
-  /* Stride keeps this light on the audio path. */
-  for (size_t i = 0; i + 1 < bytes; i += 32) {
+  size_t clipped = 0;
+  for (size_t i = 0; i + 1 < bytes; i += 2) {
+    if (iq[i] == 0 || iq[i] == 255 || iq[i + 1] == 0 || iq[i + 1] == 255)
+      ++clipped;
+    /* Power remains strided; clipping needs every sample near the 0.1% limit. */
+    if ((i & 31u) != 0) continue;
     const int32_t ii = static_cast<int32_t>(iq[i]) - 128;
     const int32_t qq = static_cast<int32_t>(iq[i + 1]) - 128;
     sum += static_cast<uint32_t>(ii * ii + qq * qq);
@@ -5903,6 +5908,11 @@ void update_signal_level_from_iq(const uint8_t* iq, size_t bytes) {
   const float dbfs = 10.0f * log10f((power / kFullScale) + 1.0e-12f);
   rtl_signal_dbfs.store(dbfs, std::memory_order_relaxed);
   rtl_signal_dbfs_smooth = 0.88f * rtl_signal_dbfs_smooth + 0.12f * dbfs;
+  const float clipping = 100.0f * static_cast<float>(clipped) /
+                         static_cast<float>(bytes / 2u);
+  const float previous = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
+  rtl_iq_clipping_percent.store(0.98f * previous + 0.02f * clipping,
+                                std::memory_order_relaxed);
 }
 
 void draw_global_header_controls() {
@@ -8358,6 +8368,7 @@ static void rtl_driver_app_task(void *) {
       rtl_audio_ring_overruns.store(0, std::memory_order_relaxed);
       rtl_audio_submit_failures.store(0, std::memory_order_relaxed);
       rtl_signal_dbfs.store(-90.0f, std::memory_order_relaxed);
+      rtl_iq_clipping_percent.store(0.0f, std::memory_order_relaxed);
       if (band == RtlBand::p25) {
         orcsdr::p25decoder::suspend_voice();
         p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
@@ -9216,6 +9227,7 @@ orcsdr::fm::Snapshot fm_dashboard_snapshot() {
       rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.relative_dbfs = rtl_signal_dbfs_smooth;
+  snapshot.clipping_percent = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
   snapshot.left_dbfs = rtl_audio_left_dbfs.load(std::memory_order_relaxed);
   snapshot.right_dbfs = rtl_audio_right_dbfs.load(std::memory_order_relaxed);
   snapshot.running =
@@ -9427,6 +9439,7 @@ orcsdr::am::Snapshot am_dashboard_snapshot() {
   snapshot.filter_bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.relative_dbfs = rtl_signal_dbfs_smooth;
+  snapshot.clipping_percent = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
   snapshot.running = rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running;
   snapshot.driver_ready = rtl_device_ready();
   snapshot.sound_enabled = rtl_audio_user_enabled.load(std::memory_order_relaxed);
@@ -9572,6 +9585,7 @@ orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot() {
   snapshot.filter_bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.relative_dbfs = rtl_signal_dbfs_smooth;
+  snapshot.clipping_percent = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
   snapshot.running = rtl_capture_state.load(std::memory_order_acquire) ==
                      RtlCaptureState::running;
   snapshot.driver_ready = rtl_device_ready();
@@ -10652,19 +10666,30 @@ void service_audio_auto_gain(uint32_t now) {
                   label, gains[step], static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
     return;
   }
-  if (!selecting.load(std::memory_order_relaxed) ||
-      static_cast<int32_t>(now - sample_at_ms[state]) < 0) return;
+  if (static_cast<int32_t>(now - sample_at_ms[state]) < 0) return;
 
   const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
-  if (orcsdr::am::auto_gain_should_advance(level, step, count)) {
+  const float clipping = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
+  if (!selecting.load(std::memory_order_relaxed)) {
+    if (!orcsdr::am::auto_gain_should_reduce(clipping, step)) return;
+    --step;
+    (void)esp_rtl_sdr_set_tuner_gain(g_rtl, gains[step]);
+    sample_at_ms[state] = now + 500;
+    Serial.printf("RTL_%s_SMART_GAIN reduce gain_tenth_db=%d clipping_percent=%.3f\n",
+                  label, gains[step], static_cast<double>(clipping));
+    return;
+  }
+  if (orcsdr::am::auto_gain_should_advance(level, clipping, step, count)) {
     ++step;
     (void)esp_rtl_sdr_set_tuner_gain(g_rtl, gains[step]);
     sample_at_ms[state] = now + 500;
     return;
   }
   selecting.store(false, std::memory_order_relaxed);
-  Serial.printf("RTL_%s_AUTO_GAIN selected gain_tenth_db=%d level_dbfs=%.1f\n",
-                label, gains[step], static_cast<double>(level));
+  Serial.printf("RTL_%s_AUTO_GAIN selected gain_tenth_db=%d level_dbfs=%.1f "
+                "clipping_percent=%.3f\n",
+                label, gains[step], static_cast<double>(level),
+                static_cast<double>(clipping));
 #else
   (void)now;
 #endif
@@ -14658,19 +14683,23 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_AM_GAIN STATUS") == 0) {
     int gain = 0;
     if (g_rtl != nullptr) (void)esp_rtl_sdr_get_tuner_gain(g_rtl, &gain);
-    Serial.printf("RTL_AM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d target_dbfs=%.1f\n",
+    Serial.printf("RTL_AM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d "
+                  "target_dbfs=%.1f clipping_percent=%.3f\n",
                   rtl_am_gain_auto_enabled.load(std::memory_order_relaxed) ? "AUTO" : "MANUAL",
                   rtl_am_gain_auto_selecting.load(std::memory_order_relaxed) ? 1 : 0, gain,
-                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
+                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs),
+                  static_cast<double>(rtl_iq_clipping_percent.load(std::memory_order_relaxed)));
     return;
   }
   if (strcmp(command, "RTL_FM_GAIN STATUS") == 0) {
     int gain = 0;
     if (g_rtl != nullptr) (void)esp_rtl_sdr_get_tuner_gain(g_rtl, &gain);
-    Serial.printf("RTL_FM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d target_dbfs=%.1f\n",
+    Serial.printf("RTL_FM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d "
+                  "target_dbfs=%.1f clipping_percent=%.3f\n",
                   rtl_fm_gain_auto_enabled.load(std::memory_order_relaxed) ? "AUTO" : "MANUAL",
                   rtl_fm_gain_auto_selecting.load(std::memory_order_relaxed) ? 1 : 0, gain,
-                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
+                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs),
+                  static_cast<double>(rtl_iq_clipping_percent.load(std::memory_order_relaxed)));
     return;
   }
   if (strcmp(command, "RTL_DRIVER SELF_CHECK") == 0) {
@@ -15361,7 +15390,7 @@ void process_command(char* command) {
     Serial.printf(
         "RTL_SIGNAL_STATUS band=%s frequency_hz=%u signal_dbfs_tenths=%d "
         "stereo_locked=%d left_dbfs_tenths=%d right_dbfs_tenths=%d "
-        "rds_carrier=%d rds_signal_tenths=%d pilot_env_thou=%d "
+        "rds_carrier=%d rds_signal_tenths=%d pilot_env_thou=%d clipping_percent=%.3f "
         "filter_hz=%u lo_nudge=%d\n",
         rtl_band_name(rtl_ui_band), rtl_ui_frequency_hz, signal_tenths,
         rtl_stereo_locked.load(std::memory_order_relaxed) ? 1 : 0,
@@ -15370,6 +15399,7 @@ void process_command(char* command) {
         rds_tenths,
         static_cast<int>(lroundf(
             rtl_pilot_env.load(std::memory_order_relaxed) * 1000.0f)),
+        static_cast<double>(rtl_iq_clipping_percent.load(std::memory_order_relaxed)),
         rtl_filter_bandwidth_hz.load(std::memory_order_relaxed), 0);
     return;
   }

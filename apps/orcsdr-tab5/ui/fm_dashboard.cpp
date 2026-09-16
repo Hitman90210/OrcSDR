@@ -182,19 +182,24 @@ GainLayout gain_layout() {
 void draw_gain_control(bool compact) {
   const GainLayout layout = gain_layout();
   char value[24];
-  if (g_snapshot.gain_auto)
-    snprintf(value, sizeof(value), g_snapshot.gain_auto_selecting ? "AUTO..." : "AUTO %.1f",
+  if (g_snapshot.clipping_percent > 0.1f)
+    snprintf(value, sizeof(value), "CLIP %.2f%%",
+             static_cast<double>(g_snapshot.clipping_percent));
+  else if (g_snapshot.gain_auto)
+    snprintf(value, sizeof(value), g_snapshot.gain_auto_selecting ? "SMART..." : "SMART %.1f",
              static_cast<double>(g_snapshot.gain_tenth_db) / 10.0);
   else
     snprintf(value, sizeof(value), "%.1f dB",
              static_cast<double>(g_snapshot.gain_tenth_db) / 10.0);
-  button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "AUTO", kGreen,
+  button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "SMART", kGreen,
          g_snapshot.gain_auto);
   text(compact ? "GAIN" : "RF GAIN", layout.slider_x,
        layout.slider_y - (compact ? 14 : 28), kCyan, 2, middle_left);
   text(value, layout.slider_x + layout.slider_w,
        layout.slider_y - (compact ? 14 : 28),
-       g_snapshot.gain_auto ? kGreen : TFT_WHITE, 2, middle_right);
+       g_snapshot.clipping_percent > 0.1f
+           ? TFT_RED : g_snapshot.gain_auto ? kGreen : TFT_WHITE,
+       2, middle_right);
   M5.Display.fillRoundRect(layout.slider_x, layout.slider_y, layout.slider_w, 18, 9, kGrid);
   const int gain_x = layout.slider_x + std::clamp(g_snapshot.gain_tenth_db, 0, 496) *
                                          layout.slider_w / 496;

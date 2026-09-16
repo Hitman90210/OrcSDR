@@ -249,3 +249,23 @@ gate and preferred 0.02% margin was 14.4 dB. The result isolates the remaining
 failure as strong-signal clipping at forced 22.9 dB, not a recurrence of the
 cold-start asymmetry. No gain-table or IF/VGA change is justified by this
 sweep alone.
+
+### Clipping-aware Smart Gain follow-up
+
+OrcSDR now measures raw CU8 endpoint clipping in the shared IQ path. FM and AM
+software gain selection will not increase gain while clipping exceeds 0.1%,
+and an already-selected automatic gain backs down one supported step every
+500 ms until the overload clears or the lowest gain is reached. The control is
+labelled `SMART` to distinguish it from the driver's hardware `TUNER AGC`.
+FM, AM, and Shortwave show a red `CLIP` indication above the same limit.
+
+The final native build passed with a 2,403,264-byte application image. On the
+V3c at exact 99.100 MHz with the FM-suitable 27-inch-per-leg dipole, a focused
+22.9 dB run remained transport-clean and measured only 0.003-0.005% live
+clipping under the then-current reception conditions. A bounded 49.6 dB run
+deliberately crossed the warning limit, rising from 1.342% to 5.309% and ending
+at 4.783%, while still reporting zero overruns and drops. The harness restored
+software Smart Gain after both tests. This proves the live meter and warning
+input respond to real overload; the step-down policy is covered by the AM
+dashboard self-check. Physical visibility of the `CLIP` label remains a
+separate UI acceptance claim.

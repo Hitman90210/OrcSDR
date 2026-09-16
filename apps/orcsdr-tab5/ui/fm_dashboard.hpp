@@ -35,6 +35,7 @@ struct Snapshot {
   bool preset_scanning = false;
   bool gain_auto = true;
   bool gain_auto_selecting = false;
+  float clipping_percent = 0.0f;
   int gain_tenth_db = 0;
   int gain_steps_tenth_db[32]{};
   uint8_t gain_step_count = 0;
