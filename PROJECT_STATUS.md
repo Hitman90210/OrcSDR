@@ -1,12 +1,15 @@
 # OrcSDR current project status
 
-Current source snapshot: **2026-09-12**, `main` at
-**`c5b3423fbdeb129ebd63d8ffd5c1bced9c913c04`**.
+Current source snapshot: **2026-09-15**, release branch at
+**`d30a033`**.
 
-Current published firmware: **`v0.2.0-beta.6-multidongle-rc4`**. Its exact
+Current release candidate: **`v0.2.0-beta7`**. Its exact
 M5Burner package was installed and booted on the owner Tab5 before publication.
 That release evidence does not automatically prove later `main` commits or
 other hardware.
+
+The candidate pins `esp_rtl_sdr` v0.8.0-rc3 at
+`52edd9b6e591fbd5f3985af4dc51e9da60e04cad`.
 
 This is the authoritative current capability and evidence summary. Release
 notes and validation reports are immutable, dated evidence; they do not

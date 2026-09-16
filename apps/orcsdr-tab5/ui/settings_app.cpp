@@ -20,9 +20,9 @@ constexpr uint16_t kPanel = 0x1082;
 constexpr uint16_t kBlue = 0x04ff;
 constexpr uint16_t kGreen = 0x6fe8;
 constexpr uint16_t kMuted = 0x9cf3;
-constexpr int kHeaderH = 72;
+constexpr int kHeaderH = 100;
 constexpr int kRailW = 286;
-constexpr int kRailY = 82;
+constexpr int kRailY = 106;
 constexpr int kRailRowH = 64;
 constexpr uint8_t kSettingsMinTextSize = 2;
 constexpr uint16_t kRanges[] = {10, 25, 50, 100};
@@ -74,7 +74,8 @@ void button(const char* label, int x, int y, int w, int h, uint16_t fill) {
   M5.Display.fillRoundRect(x, y, w, h, 8, fill);
   M5.Display.drawRoundRect(x, y, w, h, 8, TFT_LIGHTGREY);
   M5.Display.setTextDatum(middle_center);
-  M5.Display.setTextSize(2);
+  const uint8_t size = label && std::strlen(label) * 18 <= static_cast<size_t>(w - 16) ? 3 : 2;
+  M5.Display.setTextSize(size);
   M5.Display.setTextColor(TFT_WHITE, fill);
   M5.Display.drawString(label, x + w / 2, y + h / 2);
 }
@@ -88,8 +89,7 @@ void value_row(const char* label, const char* value, int y,
 
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, TFT_BLACK);
-  text("OrcSDR", 28, 36, TFT_WHITE, 3);
-  text("SETTINGS", 180, 36, kBlue, 3);
+  audio_header::draw_brand("SETTINGS");
   char status[96];
   if (g_state.wifi_connected)
     snprintf(status, sizeof(status), "%s  %s", g_state.wifi_ssid, g_state.wifi_ip);
@@ -98,9 +98,12 @@ void draw_header() {
                     : g_state.wifi_connecting ? "Wi-Fi connecting"
                     : g_state.wifi_scanning ? "Wi-Fi scanning" : "Wi-Fi offline",
             sizeof(status));
-  text(status, 950, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
-  button("CLOSE", 970, 13, 116, 46, TFT_MAROON);
+  text(status, 690, 36, g_state.wifi_connected ? kGreen : kMuted, 2, middle_right);
+  button("CLOSE", 720, 13, 126, 46, TFT_MAROON);
+  audio_header::draw_battery(g_state.battery_level);
   audio_header::draw_mute_button(g_state.sound_default);
+  audio_header::draw_visualizer_button(false);
+  audio_header::draw_settings_button();
 }
 
 void draw_rail() {
@@ -146,45 +149,46 @@ void draw_connectivity() {
   snprintf(value, sizeof(value), "%s  %s  %s", status,
            g_state.wifi_ssid[0] ? g_state.wifi_ssid : "--",
            g_state.wifi_connected ? g_state.wifi_ip : "");
-  text(value, 330, 155, status_color, 2);
-  if (g_state.wifi_message[0]) text(g_state.wifi_message, 1218, 155, kMuted, 1, middle_right);
-  button(g_state.wifi_scanning ? "SCANNING..." : "SCAN", 330, 180, 170, 46,
+  text(value, 330, 150, status_color,
+       std::strlen(value) * 18 <= 888 ? 3 : 2);
+  if (g_state.wifi_message[0]) text(g_state.wifi_message, 330, 178, kMuted, 2);
+  button(g_state.wifi_scanning ? "SCANNING..." : "SCAN", 330, 198, 280, 48,
          g_state.wifi_scanning ? TFT_DARKGREY : TFT_DARKCYAN);
-  button("ADD HIDDEN", 520, 180, 210, 46, TFT_NAVY);
-  button(g_state.wifi_power_enabled ? "POWER OFF" : "POWER ON", 750, 180, 170, 46,
+  button("ADD HIDDEN", 634, 198, 280, 48, TFT_NAVY);
+  button(g_state.wifi_power_enabled ? "POWER OFF" : "POWER ON", 938, 198, 280, 48,
          g_state.wifi_power_enabled ? TFT_MAROON : TFT_DARKGREEN);
-  text("CONNECT ON BOOT", 330, 251, kMuted, 2);
-  button(g_state.wifi_start_at_boot ? "ON" : "OFF", 820, 228, 398, 46,
+  text("CONNECT ON BOOT", 330, 274, kMuted, 3);
+  button(g_state.wifi_start_at_boot ? "ON" : "OFF", 930, 250, 288, 48,
          g_state.wifi_start_at_boot ? TFT_DARKGREEN : TFT_DARKGREY);
-  text("WI-FI ANTENNA", 330, 305, kMuted, 2);
+  text("WI-FI ANTENNA", 330, 332, kMuted, 3);
   button(g_state.wifi_external_antenna ? "EXTERNAL (MMCX)" : "INTERNAL",
-         820, 278, 398, 54,
+         930, 308, 288, 48,
          g_state.wifi_external_antenna ? TFT_DARKGREEN : TFT_NAVY);
 
-  text("SAVED NETWORKS (PRIORITY ORDER)", 330, 350, kBlue, 2);
+  text("SAVED NETWORKS (PRIORITY ORDER)", 330, 374, kBlue, 2);
   for (uint8_t i = 0; i < g_state.saved_network_count && i < 4; ++i) {
-    const int y = 378 + i * 48;
+    const int y = 394 + i * 44;
     snprintf(value, sizeof(value), "%u  %.24s%s", i + 1, g_state.profiles[i].ssid,
              g_state.profiles[i].connected ? "  CONNECTED" : "");
-    text(value, 340, y + 23, g_state.profiles[i].connected ? kGreen : TFT_WHITE, 2);
-    button("USE", 720, y, 90, 44, TFT_DARKCYAN);
-    button("UP", 820, y, 76, 44, i ? TFT_NAVY : TFT_DARKGREY);
-    button("DOWN", 906, y, 90, 44,
+    text(value, 340, y + 20, g_state.profiles[i].connected ? kGreen : TFT_WHITE, 2);
+    button("CONNECT", 674, y, 144, 40, TFT_DARKCYAN);
+    button("UP", 830, y, 88, 40, i ? TFT_NAVY : TFT_DARKGREY);
+    button("DOWN", 930, y, 106, 40,
            i + 1 < g_state.saved_network_count ? TFT_NAVY : TFT_DARKGREY);
-    button("FORGET", 1006, y, 170, 44, TFT_MAROON);
+    button("FORGET", 1048, y, 170, 40, TFT_MAROON);
   }
   if (g_state.saved_network_count == 0)
-    text("NO SAVED NETWORKS", 340, 342, kMuted, 2);
+    text("NO SAVED NETWORKS", 340, 414, kMuted, 2);
 
-  text("AVAILABLE NETWORKS", 330, 572, kBlue, 2);
+  text("AVAILABLE NETWORKS", 330, 582, kBlue, 2);
   const uint8_t shown = std::min<uint8_t>(g_state.network_count, 6);
   for (uint8_t i = 0; i < shown; ++i) {
     const int x = 330 + (i % 2) * 428;
-    const int y = 596 + (i / 2) * 36;
+    const int y = 604 + (i / 2) * 34;
     snprintf(value, sizeof(value), "%.18s  %d%s%s", g_state.networks[i].ssid,
              g_state.networks[i].rssi, g_state.networks[i].secure ? "  LOCK" : "  OPEN",
              g_state.networks[i].saved ? "  SAVED" : "");
-    button(value, x, y, 418, 36,
+    button(value, x, y, 418, 32,
            g_state.networks[i].saved ? 0x2945 : TFT_DARKCYAN);
   }
 }
@@ -289,22 +293,34 @@ void draw_display_audio() {
   text("DISPLAY & AUDIO", 330, 115, kBlue, 3);
   char value[32];
   snprintf(value, sizeof(value), "%u / 255", g_state.brightness);
-  value_row("BRIGHTNESS", value, 180);
-  button("-", 850, 205, 90, 48, TFT_DARKGREY);
-  button("+", 960, 205, 90, 48, TFT_DARKCYAN);
+  text("BRIGHTNESS", 330, 170, kMuted, 3);
+  text(value, 880, 170, TFT_WHITE, 3, middle_right);
+  button("-", 930, 144, 134, 52, TFT_DARKGREY);
+  button("+", 1084, 144, 134, 52, TFT_DARKCYAN);
+  M5.Display.drawFastHLine(330, 210, 888, 0x2945);
   snprintf(value, sizeof(value), g_state.screen_timeout_sec ? "%u SEC" : "NEVER",
            g_state.screen_timeout_sec);
-  value_row("SCREEN TIMEOUT", value, 300);
-  button("CYCLE", 960, 325, 160, 48, TFT_DARKCYAN);
+  text("SCREEN TIMEOUT", 330, 270, kMuted, 3);
+  text(value, 880, 270, TFT_WHITE, 3, middle_right);
+  button("CHANGE", 930, 244, 288, 52, TFT_DARKCYAN);
+  M5.Display.drawFastHLine(330, 310, 888, 0x2945);
   snprintf(value, sizeof(value), "%u / 255", g_state.volume);
-  value_row("MASTER VOLUME", value, 420);
-  button("-", 850, 445, 90, 48, TFT_DARKGREY);
-  button("+", 960, 445, 90, 48, TFT_DARKCYAN);
-  value_row("DEFAULT SOUND", g_state.sound_default ? "ON" : "OFF", 555,
-            g_state.sound_default ? kGreen : kMuted);
-  button("TOGGLE", 960, 580, 160, 48, TFT_DARKCYAN);
-  value_row("SCREEN ORIENTATION", g_state.rotation == 3 ? "LANDSCAPE 180" : "LANDSCAPE", 635);
-  button("ROTATE", 960, 660, 160, 48, TFT_DARKCYAN);
+  text("MASTER VOLUME", 330, 370, kMuted, 3);
+  text(value, 880, 370, TFT_WHITE, 3, middle_right);
+  button("-", 930, 344, 134, 52, TFT_DARKGREY);
+  button("+", 1084, 344, 134, 52, TFT_DARKCYAN);
+  M5.Display.drawFastHLine(330, 410, 888, 0x2945);
+  text("DEFAULT SOUND", 330, 470, kMuted, 3);
+  text(g_state.sound_default ? "ON" : "OFF", 880, 470,
+       g_state.sound_default ? kGreen : kMuted, 3, middle_right);
+  button(g_state.sound_default ? "ON" : "OFF", 930, 444, 288, 52,
+         g_state.sound_default ? TFT_DARKGREEN : TFT_DARKGREY);
+  M5.Display.drawFastHLine(330, 510, 888, 0x2945);
+  text("SCREEN ORIENTATION", 330, 570, kMuted, 3);
+  text(g_state.rotation == 3 ? "LANDSCAPE 180" : "LANDSCAPE", 880, 570,
+       TFT_WHITE, 3, middle_right);
+  button("ROTATE", 930, 544, 288, 52, TFT_DARKCYAN);
+  M5.Display.drawFastHLine(330, 610, 888, 0x2945);
 }
 
 void draw_radio_defaults() {
@@ -712,9 +728,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (g_location_edit) return handle_location_keyboard(x, y);
   if (g_wifi_edit != WifiEdit::none) return handle_wifi_keyboard(x, y);
   if (g_edit != EditField::none) return handle_keypad(x, y);
-  if (audio_header::mute_hit(x, y))
-    return {ActionKind::sound_changed, g_state.sound_default ? 0 : 1};
-  if (hit(x, y, 970, 13, 116, 46)) {
+  if (hit(x, y, 720, 13, 126, 46)) {
     g_active = false;
     return {ActionKind::close, 0};
   }
@@ -729,35 +743,35 @@ Action handle_touch(int32_t x, int32_t y) {
   }
   if (g_section == Section::connectivity) {
     if (g_state.wifi_hosted_update_required) return {};
-    if (hit(x, y, 750, 180, 170, 46))
+    if (hit(x, y, 938, 198, 280, 48))
       return {ActionKind::wifi_power_changed, g_state.wifi_power_enabled ? 0 : 1};
-    if (hit(x, y, 820, 228, 398, 46))
+    if (hit(x, y, 930, 250, 288, 48))
       return {ActionKind::wifi_start_at_boot_changed, g_state.wifi_start_at_boot ? 0 : 1};
-    if (hit(x, y, 820, 278, 398, 54))
+    if (hit(x, y, 930, 308, 288, 48))
       return {ActionKind::wifi_antenna_changed, g_state.wifi_external_antenna ? 0 : 1};
     if (!g_state.wifi_power_enabled) return {};
-    if (hit(x, y, 330, 180, 170, 46) && !g_state.wifi_scanning)
+    if (hit(x, y, 330, 198, 280, 48) && !g_state.wifi_scanning)
       return {ActionKind::scan_wifi, 0};
-    if (hit(x, y, 520, 180, 210, 46)) {
+    if (hit(x, y, 634, 198, 280, 48)) {
       begin_wifi_edit(WifiEdit::ssid);
       draw_wifi_keyboard();
       return {};
     }
     for (uint8_t i = 0; i < g_state.saved_network_count && i < 4; ++i) {
-      const int row_y = 378 + i * 48;
-      if (hit(x, y, 720, row_y, 90, 44))
+      const int row_y = 394 + i * 44;
+      if (hit(x, y, 674, row_y, 144, 40))
         return {ActionKind::connect_saved_wifi, i};
-      if (i && hit(x, y, 820, row_y, 76, 44))
+      if (i && hit(x, y, 830, row_y, 88, 40))
         return {ActionKind::move_wifi_up, i};
-      if (i + 1 < g_state.saved_network_count && hit(x, y, 906, row_y, 90, 44))
+      if (i + 1 < g_state.saved_network_count && hit(x, y, 930, row_y, 106, 40))
         return {ActionKind::move_wifi_down, i};
-      if (hit(x, y, 1006, row_y, 170, 44))
+      if (hit(x, y, 1048, row_y, 170, 40))
         return {ActionKind::forget_wifi, i};
     }
     for (uint8_t i = 0; i < std::min<uint8_t>(g_state.network_count, 6); ++i) {
       const int row_x = 330 + (i % 2) * 428;
-      const int row_y = 596 + (i / 2) * 36;
-      if (!hit(x, y, row_x, row_y, 418, 36)) continue;
+      const int row_y = 604 + (i / 2) * 34;
+      if (!hit(x, y, row_x, row_y, 418, 32)) continue;
       if (g_state.networks[i].saved) {
         for (uint8_t saved = 0; saved < g_state.saved_network_count; ++saved)
           if (strcmp(g_state.networks[i].ssid, g_state.profiles[saved].ssid) == 0)
@@ -812,29 +826,29 @@ Action handle_touch(int32_t x, int32_t y) {
       }
     }
   } else if (g_section == Section::display_audio) {
-    if (hit(x, y, 850, 205, 90, 48) || hit(x, y, 960, 205, 90, 48)) {
-      const int delta = x < 950 ? -16 : 16;
+    if (hit(x, y, 930, 144, 134, 52) || hit(x, y, 1084, 144, 134, 52)) {
+      const int delta = x < 1074 ? -16 : 16;
       g_state.brightness = static_cast<uint8_t>(std::clamp<int>(g_state.brightness + delta, 16, 255));
       draw_content();
       return {ActionKind::brightness_changed, g_state.brightness};
     }
-    if (hit(x, y, 960, 325, 160, 48)) {
+    if (hit(x, y, 930, 244, 288, 52)) {
       g_state.screen_timeout_sec = next_value(g_state.screen_timeout_sec, kTimeouts);
       draw_content();
       return {ActionKind::timeout_changed, g_state.screen_timeout_sec};
     }
-    if (hit(x, y, 850, 445, 90, 48) || hit(x, y, 960, 445, 90, 48)) {
-      const int delta = x < 950 ? -16 : 16;
+    if (hit(x, y, 930, 344, 134, 52) || hit(x, y, 1084, 344, 134, 52)) {
+      const int delta = x < 1074 ? -16 : 16;
       g_state.volume = static_cast<uint8_t>(std::clamp<int>(g_state.volume + delta, 0, 255));
       draw_content();
       return {ActionKind::volume_changed, g_state.volume};
     }
-    if (hit(x, y, 960, 580, 160, 48)) {
+    if (hit(x, y, 930, 444, 288, 52)) {
       g_state.sound_default = !g_state.sound_default;
       draw_content();
       return {ActionKind::sound_changed, g_state.sound_default};
     }
-    if (hit(x, y, 960, 660, 160, 48)) {
+    if (hit(x, y, 930, 544, 288, 52)) {
       g_state.rotation = g_state.rotation == 3 ? 1 : 3;
       return {ActionKind::rotation_changed, g_state.rotation};
     }

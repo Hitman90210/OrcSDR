@@ -3,6 +3,7 @@
 #include "dashboard_audio_control.hpp"
 #include "fm_config.hpp"
 #include "orc_badge.hpp"
+#include "spectrum_resample.hpp"
 
 #include <M5Unified.h>
 
@@ -108,11 +109,7 @@ void draw_gear(int cx, int cy, uint16_t color) {
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(8, kHeaderH - 1, 1264, kCyan);
-  if (!badge::draw(18, 13, 104)) {
-    M5.Display.drawRoundRect(18, 13, 104, 104, 18, kGreen);
-  }
-  text("OrcSDR", 142, 38, TFT_WHITE, 4, middle_left);
-  text("FM Broadcast", 142, 82, kCyan, 2, middle_left);
+  audio_header::draw_brand("FM BROADCAST");
   M5.Display.drawFastVLine(365, 25, 82, kCyan);
   draw_radio_icon(456, 70, kCyan);
   text("FM Broadcast", 530, 66, TFT_WHITE, 4, middle_left);
@@ -183,19 +180,24 @@ GainLayout gain_layout() {
 void draw_gain_control(bool compact) {
   const GainLayout layout = gain_layout();
   char value[24];
-  if (g_snapshot.gain_auto)
-    snprintf(value, sizeof(value), g_snapshot.gain_auto_selecting ? "AUTO..." : "AUTO %.1f",
+  if (g_snapshot.clipping_percent > 0.1f)
+    snprintf(value, sizeof(value), "CLIP %.2f%%",
+             static_cast<double>(g_snapshot.clipping_percent));
+  else if (g_snapshot.gain_auto)
+    snprintf(value, sizeof(value), g_snapshot.gain_auto_selecting ? "SMART..." : "SMART %.1f",
              static_cast<double>(g_snapshot.gain_tenth_db) / 10.0);
   else
     snprintf(value, sizeof(value), "%.1f dB",
              static_cast<double>(g_snapshot.gain_tenth_db) / 10.0);
-  button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "AUTO", kGreen,
+  button(layout.auto_x, layout.auto_y, layout.auto_w, layout.auto_h, "SMART", kGreen,
          g_snapshot.gain_auto);
   text(compact ? "GAIN" : "RF GAIN", layout.slider_x,
        layout.slider_y - (compact ? 14 : 28), kCyan, 2, middle_left);
   text(value, layout.slider_x + layout.slider_w,
        layout.slider_y - (compact ? 14 : 28),
-       g_snapshot.gain_auto ? kGreen : TFT_WHITE, 2, middle_right);
+       g_snapshot.clipping_percent > 0.1f
+           ? TFT_RED : g_snapshot.gain_auto ? kGreen : TFT_WHITE,
+       2, middle_right);
   M5.Display.fillRoundRect(layout.slider_x, layout.slider_y, layout.slider_w, 18, 9, kGrid);
   const int gain_x = layout.slider_x + std::clamp(g_snapshot.gain_tenth_db, 0, 496) *
                                          layout.slider_w / 496;
@@ -564,17 +566,16 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
   }
   int px = kSpectrumX;
   int py = kSpectrumY + kSpectrumH - 2;
-  for (size_t i = 0; i < visible_bins; ++i) {
-    const float normalized = std::clamp((levels[first_bin + i] - floor) / 48.0f, 0.0f, 1.0f);
-    const int x = kSpectrumX + static_cast<int>(i * (kSpectrumW - 1) / (visible_bins - 1));
+  for (size_t i = 0; i < kSpectrumW; ++i) {
+    const float level = spectrum::peak_for_pixel(
+        levels, first_bin, visible_bins, i, kSpectrumW);
+    const float normalized = std::clamp((level - floor) / 48.0f, 0.0f, 1.0f);
+    const int x = kSpectrumX + static_cast<int>(i);
     const int y = kSpectrumY + kSpectrumH - 2 - static_cast<int>(normalized * (kSpectrumH - 4));
     if (i) M5.Display.drawLine(px, py, x, y, kGreen);
     px = x;
     py = y;
-    const int x0 = static_cast<int>(i * kSpectrumW / visible_bins);
-    const int x1 = static_cast<int>((i + 1) * kSpectrumW / visible_bins);
-    const uint16_t color = waterfall_color(normalized);
-    for (int p = x0; p < x1; ++p) g_waterfall_row[p] = color;
+    g_waterfall_row[i] = waterfall_color(normalized);
   }
   const int center = kSpectrumX + kSpectrumW / 2;
   const int half_filter = std::clamp(static_cast<int>(
@@ -591,20 +592,6 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
 
 Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return {};
-  const auto audio_action = audio_header::handle_touch(g_audio_control, x, y, millis());
-  if (audio_action != audio_header::Action::none) {
-    if (audio_action == audio_header::Action::opened ||
-        audio_action == audio_header::Action::closed) {
-      audio_header::draw(g_audio_control, g_snapshot.volume, g_snapshot.sound_enabled,
-                         g_snapshot.battery_percent);
-      return {};
-    }
-    if (audio_action == audio_header::Action::volume_down)
-      return {ActionKind::volume_down};
-    if (audio_action == audio_header::Action::sound_toggle)
-      return {ActionKind::sound_toggle};
-    return {ActionKind::volume_up};
-  }
   if (audio_header::settings_hit(x, y)) return {ActionKind::open_device_settings};
   if (g_keypad) {
     if (hit(x, y, 380, 525, 250, 55)) {

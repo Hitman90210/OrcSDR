@@ -45,6 +45,9 @@
 #include "orcsdr_splash.hpp"
 #include "orcsdr_storage.hpp"
 #include "am_dashboard.hpp"
+#include "shortwave_model.hpp"
+#include "shortwave_dashboard.hpp"
+#include "receiver_tuning_controls.hpp"
 #include "am_finder.hpp"
 #include "adsb_dashboard.hpp"
 #include "adsb_decoder.hpp"
@@ -235,6 +238,8 @@ constexpr int kWifiData2Pin = 9;
 constexpr int kWifiData3Pin = 8;
 constexpr int kWifiResetPin = 15;
 constexpr uint32_t kRtlSampleRateSps = 960000;
+constexpr uint32_t kRtlDashboardSampleRateSps = 2400000;
+constexpr uint32_t kRtlDemodRateSps = 240000;
 constexpr uint32_t kRtlNoHfMinHz = 24000000;
 constexpr uint32_t kRtlCaptureBytes = 9600000;
 constexpr size_t kRtlBulkBytes = 32768;
@@ -498,10 +503,12 @@ void rds_hypothesis_feed(RdsHypothesis& h, bool bit) {
   }
 }
 /*
- * Scope FFT size. 256 bins @ 960 kS/s ≈ 3.75 kHz/bin (was 128 / 7.5 kHz).
+ * Dashboard FFT: 2048 bins @ 2.4 MS/s = 1.17 kHz/bin.
+ * Buffers live in PSRAM so ESP-IDF can still reserve its early DMA pool.
  * Welch multi-window average runs only when GFX is on and audio is not stressed.
  */
-constexpr size_t kRtlSpectrumBins = 256;
+constexpr size_t kRtlSpectrumBins = 2048;
+static_assert(kRtlDashboardSampleRateSps / kRtlSpectrumBins < 1200);
 /** Average this many non-overlapping windows for a quieter, more precise trace. */
 constexpr size_t kRtlSpectrumWelchWindows = 2;
 // Keep scope cadence stable when sound is toggled; only back off if audio drops.
@@ -588,17 +595,14 @@ constexpr uint32_t kRtlHotRetuneQuantHz = 5000;
 /** Min time between LO applies (each apply drains bulk + EP0). */
 constexpr uint32_t kRtlHotRetuneMinIntervalMs = 280;
 constexpr uint32_t kRtlScopeSpanMinHz = 120000;
-constexpr uint32_t kRtlScopeSpanMaxHz = 960000;
+constexpr uint32_t kRtlScopeSpanMaxHz = kRtlDashboardSampleRateSps;
 /* 3 dB is at bandwidth/2. 180 kHz chopped stereo/RDS (±90 kHz).
  * Broadcast FM with 19/38/57 kHz MPX needs ~±130 kHz. */
 constexpr uint32_t kRtlFmFilterDefaultHz = 260000;
 constexpr uint32_t kRtlAmFilterDefaultHz = 10000;
 constexpr uint32_t kRtlWxFilterDefaultHz = 25000;
 static_assert(kRtlScopeSpanMinHz < kRtlScopeSpanMaxHz);
-/* Display/nominal FM channel. LO is biased separately (this dongle sat
- * 13 kHz low — 96.100 only peaked when commanded 96.113). */
 constexpr uint32_t kRtlFmDefaultHz = 96100000;
-constexpr int32_t kRtlFmLoBiasHz = 13000;
 constexpr uint32_t kRtlAmMinHz = orcsdr::receiver_bands::kAmBroadcast.min_hz;
 constexpr uint32_t kRtlAmMaxHz = orcsdr::receiver_bands::kAmBroadcast.max_hz;
 constexpr uint32_t kRtlAmStepHz = orcsdr::receiver_bands::kAmBroadcast.default_step_hz;
@@ -945,14 +949,13 @@ static std::atomic<uint32_t> rtl_iq_sequence{0};
 static uint8_t rtl_iq_processing[32768 + 512];
 /* Relative RF level from IQ power (dBFS-ish, 0 = full-scale CU8). */
 static std::atomic<float> rtl_signal_dbfs{-90.0f};
+static std::atomic<float> rtl_iq_clipping_percent{0.0f};
 /** WBFM stereo: fresh-per-callback dBFS (same granularity as rtl_signal_dbfs);
  * dashboard snapshots apply their own EMA at redraw cadence. */
 static std::atomic<float> rtl_audio_left_dbfs{-90.0f};
 static std::atomic<float> rtl_audio_right_dbfs{-90.0f};
 static std::atomic<bool> rtl_stereo_locked{false};
 static std::atomic<float> rtl_pilot_env{0.0f};
-static std::atomic<int32_t> rtl_fm_lo_nudge_hz{0};
-static std::atomic<uint32_t> rtl_fm_last_user_tune_ms{0};
 static std::atomic<bool> rtl_fm_force_lo_apply{false};
 // RDS Stage 1 carrier presence and Stage 2 block sync telemetry.
 static std::atomic<float> rtl_rds_signal_dbfs{-90.0f};
@@ -1151,6 +1154,8 @@ static std::atomic<bool> rtl_am_gain_auto_restart{true};
 static std::atomic<bool> rtl_fm_gain_auto_enabled{true};
 static std::atomic<bool> rtl_fm_gain_auto_selecting{false};
 static std::atomic<bool> rtl_fm_gain_auto_restart{true};
+static uint32_t rtl_shortwave_step_hz = 1000;
+static std::atomic<bool> rtl_shortwave_audio_boost{false};
 
 enum class ActiveScan : uint8_t { none, fm_presets, am_presets, p25_survey, pocsag_discovery };
 orcsdr::radio::Session radio_session;
@@ -1363,14 +1368,15 @@ static std::atomic<uint32_t> rtl_active_sample_rate_sps{kRtlSampleRateSps};
 // repaint; loop() owns the actual draw.
 static std::atomic<bool> rtl_stream_ui_refresh_pending{false};
 static std::atomic<bool> rtl_stream_spectrum_pending{false};
-float rtl_spectrum_real[kRtlSpectrumBins];
-float rtl_spectrum_imaginary[kRtlSpectrumBins];
-float rtl_spectrum_levels[kRtlSpectrumBins];
-float rtl_spectrum_smooth[kRtlSpectrumBins];
-float rtl_spectrum_peak[kRtlSpectrumBins];
-float rtl_spectrum_window[kRtlSpectrumBins];
-int16_t rtl_spectrum_y[kRtlSpectrumBins];
-int16_t rtl_spectrum_peak_y[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_real[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_imaginary[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_levels[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_smooth[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_peak[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_window[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR float rtl_spectrum_power[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR int16_t rtl_spectrum_y[kRtlSpectrumBins];
+EXT_RAM_BSS_ATTR int16_t rtl_spectrum_peak_y[kRtlSpectrumBins];
 uint16_t rtl_waterfall_row[kSpectrumWidth];
 bool rtl_spectrum_window_ready = false;
 bool rtl_spectrum_trace_valid = false;
@@ -1380,7 +1386,10 @@ uint32_t rtl_spectrum_frames = 0;
 uint32_t rtl_spectrum_fps_window_ms = 0;
 uint16_t rtl_spectrum_fps = 0;
 /** IQ snapshot for scope only (never taken from the live demod buffer mid-write). */
-static uint8_t rtl_spectrum_iq_snap[kRtlSpectrumBins * 2 * kRtlSpectrumWelchWindows];
+EXT_RAM_BSS_ATTR uint8_t
+    rtl_spectrum_iq_snap[kRtlSpectrumBins * 2 * kRtlSpectrumWelchWindows];
+EXT_RAM_BSS_ATTR uint8_t
+    rtl_spectrum_iq_work[kRtlSpectrumBins * 2 * kRtlSpectrumWelchWindows];
 static size_t rtl_spectrum_iq_snap_bytes = 0;
 static portMUX_TYPE rtl_spectrum_snap_mux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -1434,7 +1443,7 @@ static std::atomic<bool> g_iq_rec_export_pending{false};
 static std::atomic<bool> g_iq_rec_export_busy{false};
 static std::atomic<bool> g_iq_rec_auto_triggered{false};
 static std::atomic<bool> g_iq_retrieve_resume{false};
-enum class IqCaptureKind : uint8_t { none, lora, p25, pocsag };
+enum class IqCaptureKind : uint8_t { none, lora, p25, pocsag, diagnostic };
 static std::atomic<IqCaptureKind> g_iq_rec_kind{IqCaptureKind::none};
 static uint32_t g_iq_rec_frequency_hz = 0;
 static uint8_t g_iq_rec_sf = 11;
@@ -1442,7 +1451,10 @@ static uint32_t g_iq_rec_bandwidth_hz = 250000;
 static uint32_t g_iq_rec_file_seq = 0;
 static char g_iq_rec_last_path[96] = "";
 static uint32_t g_iq_rec_sequence = 0;
+static uint32_t g_iq_diag_next_sequence = 0;
 static uint32_t g_iq_rec_started_ms = 0;
+static uint32_t g_iq_rec_sample_rate_sps = kRtlSampleRateSps;
+static char g_iq_rec_transition[32] = "none";
 static size_t g_iq_rec_trigger_offset_samples = 0;
 static size_t g_lora_pre_roll_write = 0;
 static size_t g_lora_pre_roll_fill = 0;
@@ -1673,6 +1685,7 @@ std::atomic<bool> rtl_volume_changed{false};
 std::atomic<uint32_t> rtl_audio_settings_persist_due_ms{0};
 /** When false: no scope/waterfall updates (audio + SIG meter still run). A/B for chop diagnosis. */
 std::atomic<bool> rtl_graphics_enabled{true};
+orcsdr::audio_header::Control rtl_header_audio_control{};
 enum class SdrPinchMode : uint8_t { Span, Filter };
 enum class SdrNavDropdown : uint8_t { None, Band, Pinch, Step };
 std::atomic<uint32_t> rtl_scope_span_hz{kRtlScopeSpanMaxHz};
@@ -2250,6 +2263,8 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
                             bool persist_navigation = true);
 void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume);
 void refresh_active_screen();
+orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot();
+void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action);
 void adjust_rtl_volume(int delta);
 void draw_nav_panel();
 bool handle_nav_touch(int32_t x, int32_t y);
@@ -2293,7 +2308,9 @@ void close_global_settings();
 void handle_global_settings_touch(int32_t x, int32_t y);
 void update_global_settings();
 void redraw_global_settings();
-void draw_global_settings_gear();
+void draw_global_header_controls();
+bool handle_global_header_audio_touch(int32_t x, int32_t y);
+void navigation_restore_screen(orcsdr::screens::Id restore);
 void draw_global_bias_warning();
 orcsdr::fm::Snapshot fm_dashboard_snapshot();
 void handle_fm_dashboard_action(const orcsdr::fm::Action& action);
@@ -2405,11 +2422,25 @@ void set_rtl_sdr_status(const char* status) {
 
 #if !RTL_USE_LEGACY_USB
 constexpr bool rtl_frequency_supported_for_caps(uint32_t frequency_hz, uint32_t caps) {
-  return frequency_hz >= kRtlNoHfMinHz || (caps & ESP_RTL_SDR_CAP_HF_UPCONVERTER) != 0;
+  return frequency_hz >= kRtlNoHfMinHz ||
+         (caps & (ESP_RTL_SDR_CAP_HF_UPCONVERTER |
+                  ESP_RTL_SDR_CAP_DIRECT_SAMPLING)) != 0;
 }
 static_assert(!rtl_frequency_supported_for_caps(1000000, ESP_RTL_SDR_CAP_STREAM));
 static_assert(rtl_frequency_supported_for_caps(1000000, ESP_RTL_SDR_CAP_HF_UPCONVERTER));
+static_assert(rtl_frequency_supported_for_caps(1000000, ESP_RTL_SDR_CAP_DIRECT_SAMPLING));
 static_assert(rtl_frequency_supported_for_caps(kRtlNoHfMinHz, ESP_RTL_SDR_CAP_STREAM));
+
+constexpr bool rtl_tuner_gain_available_for_caps(uint32_t frequency_hz, uint32_t caps) {
+  return (caps & ESP_RTL_SDR_CAP_GAIN) != 0 &&
+         !((caps & ESP_RTL_SDR_CAP_DIRECT_SAMPLING) != 0 &&
+           frequency_hz < kRtlNoHfMinHz);
+}
+static_assert(rtl_tuner_gain_available_for_caps(1000000, ESP_RTL_SDR_CAP_GAIN));
+static_assert(!rtl_tuner_gain_available_for_caps(
+    1000000, ESP_RTL_SDR_CAP_GAIN | ESP_RTL_SDR_CAP_DIRECT_SAMPLING));
+static_assert(rtl_tuner_gain_available_for_caps(
+    kRtlNoHfMinHz, ESP_RTL_SDR_CAP_GAIN | ESP_RTL_SDR_CAP_DIRECT_SAMPLING));
 
 uint32_t rtl_device_capabilities() {
   return g_rtl_device_capabilities.load(std::memory_order_acquire);
@@ -2417,6 +2448,10 @@ uint32_t rtl_device_capabilities() {
 
 bool rtl_has_device_capability(uint32_t capability) {
   return (rtl_device_capabilities() & capability) != 0;
+}
+
+bool rtl_tuner_gain_available(uint32_t frequency_hz) {
+  return rtl_tuner_gain_available_for_caps(frequency_hz, rtl_device_capabilities());
 }
 
 bool rtl_frequency_supported(uint32_t frequency_hz) {
@@ -2623,6 +2658,7 @@ bool run_control_records(const RtlControlRecord (&records)[Count], bool best_eff
 const char* rtl_band_name(RtlBand band) {
   switch (band) {
     case RtlBand::am: return "AM";
+    case RtlBand::shortwave: return "SHORTWAVE";
     case RtlBand::wx: return "WX";
     case RtlBand::cb: return "CB";
     case RtlBand::lora: return "LORA";
@@ -2639,6 +2675,7 @@ const char* rtl_band_name(RtlBand band) {
 bool rtl_band_from_name(const char* name, RtlBand* out_band) {
   if (strcmp(name, "FM") == 0) { *out_band = RtlBand::fm; return true; }
   if (strcmp(name, "AM") == 0) { *out_band = RtlBand::am; return true; }
+  if (strcmp(name, "SHORTWAVE") == 0) { *out_band = RtlBand::shortwave; return true; }
   if (strcmp(name, "WX") == 0) { *out_band = RtlBand::wx; return true; }
   if (strcmp(name, "CB") == 0) { *out_band = RtlBand::cb; return true; }
   if (strcmp(name, "LORA") == 0) { *out_band = RtlBand::lora; return true; }
@@ -2652,6 +2689,7 @@ bool rtl_band_from_name(const char* name, RtlBand* out_band) {
 const char* rtl_mode_name(RtlBand band) {
   switch (band) {
     case RtlBand::am: return "AM";
+    case RtlBand::shortwave: return "AM";
     case RtlBand::wx: return "NFM";
     case RtlBand::cb:
       return cb_mode.load(std::memory_order_relaxed) == CbMode::usb ? "USB"
@@ -2672,6 +2710,7 @@ const char* rtl_mode_name(RtlBand band) {
 uint32_t rtl_band_default_frequency(RtlBand band) {
   switch (band) {
     case RtlBand::am: return kRtlAmDefaultHz;
+    case RtlBand::shortwave: return orcsdr::shortwave::saved_frequency();
     case RtlBand::wx: return kRtlWxHz;
     case RtlBand::cb: return kCbDefaultHz;
     case RtlBand::lora: return kLoraDefaultHz;
@@ -2685,6 +2724,7 @@ uint32_t rtl_band_default_frequency(RtlBand band) {
 
 uint32_t rtl_filter_default_hz(RtlBand band) {
   if (band == RtlBand::lora) return lora_bandwidth_hz.load(std::memory_order_relaxed);
+  if (band == RtlBand::shortwave) return orcsdr::receiver_bands::kShortwave.default_bandwidth_hz;
   if (band == RtlBand::am || band == RtlBand::cb) return kRtlAmFilterDefaultHz;
   if (band == RtlBand::p25) return kP25StepHz;
   if (band == RtlBand::wx || band == RtlBand::browse || band == RtlBand::adsb ||
@@ -2701,17 +2741,17 @@ uint32_t rtl_clamp_filter_hz(RtlBand band, uint32_t bandwidth_hz) {
     return 500000;
   }
   if (band == RtlBand::p25) return kP25StepHz;
-  const bool am = band == RtlBand::am;
+  const bool am = band == RtlBand::am || band == RtlBand::shortwave;
   const uint32_t low = band == RtlBand::cb ? 2400 : am ? 3000 : band == RtlBand::fm ? 50000 : 8000;
   const uint32_t high = band == RtlBand::cb ? 12000 : am ? 30000 : band == RtlBand::fm ? 300000 : 100000;
   return constrain((bandwidth_hz / 1000u) * 1000u, low, high);
 }
 
-float rtl_filter_alpha(RtlBand band) {
+float rtl_filter_alpha(RtlBand band, uint32_t sample_rate_sps = kRtlSampleRateSps) {
   constexpr float kPi = 3.14159265358979323846f;
   const float bandwidth = static_cast<float>(
       rtl_clamp_filter_hz(band, rtl_filter_bandwidth_hz.load(std::memory_order_relaxed)));
-  return 1.0f - expf(-kPi * bandwidth / static_cast<float>(kRtlSampleRateSps));
+  return 1.0f - expf(-kPi * bandwidth / static_cast<float>(sample_rate_sps));
 }
 
 uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
@@ -2735,6 +2775,9 @@ uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
       if (frequency_hz < kRtlAmMinHz) return kRtlAmMinHz;
       if (frequency_hz > kRtlAmMaxHz) return kRtlAmMaxHz;
       return frequency_hz;
+    case RtlBand::shortwave:
+      return constrain(frequency_hz, orcsdr::receiver_bands::kShortwave.min_hz,
+                       orcsdr::receiver_bands::kShortwave.max_hz);
     case RtlBand::wx:
       return kRtlWxHz;
     case RtlBand::adsb:
@@ -2757,12 +2800,8 @@ uint32_t rtl_clamp_frequency(RtlBand band, uint32_t frequency_hz) {
 
 uint32_t rtl_fm_sanitize_display_hz(uint32_t frequency_hz) {
   frequency_hz = rtl_clamp_frequency(RtlBand::fm, frequency_hz);
-  /* Command LO is display + 13 kHz. That value must never become the
-   * channel shown or saved (home was rebooting to 96.113). */
-  if (kRtlFmLoBiasHz > 0 &&
-      (frequency_hz % 100000u) == static_cast<uint32_t>(kRtlFmLoBiasHz)) {
-    frequency_hz -= static_cast<uint32_t>(kRtlFmLoBiasHz);
-  }
+  // Clean development builds that persisted the former +13 kHz LO offset.
+  if ((frequency_hz % 100000u) == 13000u) frequency_hz -= 13000u;
   return frequency_hz;
 }
 
@@ -2809,7 +2848,10 @@ uint32_t rtl_step_frequency(RtlBand band, uint32_t frequency_hz, int direction) 
                  : rtl_clamp_frequency(band, frequency_hz - kP25StepHz);
     return rtl_clamp_frequency(band, frequency_hz + kP25StepHz);
   }
-  const uint32_t step = band == RtlBand::am ? rtl_am_step_hz : rtl_fm_step_hz;
+  const uint32_t step = band == RtlBand::am
+                            ? rtl_am_step_hz
+                            : band == RtlBand::shortwave ? rtl_shortwave_step_hz
+                                                        : rtl_fm_step_hz;
   if (direction < 0) {
     if (frequency_hz <= step) return rtl_clamp_frequency(band, 0);
     return rtl_clamp_frequency(band, frequency_hz - step);
@@ -3019,6 +3061,28 @@ void allow_boot_speaker() {
 bool rtl_band_has_audio(RtlBand band) {
   return band != RtlBand::adsb && band != RtlBand::lora;
 }
+
+bool rtl_wide_dashboard_band(RtlBand band) {
+  return band == RtlBand::fm || band == RtlBand::am ||
+         band == RtlBand::shortwave || band == RtlBand::wx ||
+         band == RtlBand::cb || band == RtlBand::browse;
+}
+
+uint32_t rtl_default_sample_rate(RtlBand band) {
+  if (band == RtlBand::adsb) return ESP_RTL_SDR_RATE_2048K;
+  return rtl_wide_dashboard_band(band) ? ESP_RTL_SDR_RATE_2400K
+                                       : ESP_RTL_SDR_RATE_960K;
+}
+
+constexpr uint8_t rtl_rf_decimation(uint32_t sample_rate_sps) {
+  if (sample_rate_sps < kRtlDemodRateSps ||
+      sample_rate_sps % kRtlDemodRateSps != 0) return 0;
+  const uint32_t decimation = sample_rate_sps / kRtlDemodRateSps;
+  return decimation <= UINT8_MAX ? static_cast<uint8_t>(decimation) : 0;
+}
+static_assert(rtl_rf_decimation(ESP_RTL_SDR_RATE_960K) == 4);
+static_assert(rtl_rf_decimation(ESP_RTL_SDR_RATE_2400K) == 10);
+static_assert(rtl_rf_decimation(ESP_RTL_SDR_RATE_2048K) == 0);
 
 void sync_rtl_audio_for_band(RtlBand band) {
   const bool enabled = rtl_audio_user_enabled.load(std::memory_order_acquire) &&
@@ -3789,15 +3853,20 @@ size_t lora_copy_pre_roll() {
 
 const char* iq_capture_kind_name(IqCaptureKind kind) {
   if (kind == IqCaptureKind::pocsag) return "pocsag";
+  if (kind == IqCaptureKind::diagnostic) return "diagnostic";
   return kind == IqCaptureKind::lora ? "lora" : kind == IqCaptureKind::p25 ? "p25" : "none";
 }
 
 size_t iq_capture_max_bytes(IqCaptureKind kind) {
+  if (kind == IqCaptureKind::diagnostic) return g_iq_rec_sample_rate_sps * 2u;
   return kind == IqCaptureKind::p25 ? kP25IqRecMaxBytes : kIqRecMaxBytes;
 }
 
 void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
   g_iq_rec_kind.store(kind, std::memory_order_release);
+  g_iq_rec_sample_rate_sps = kind == IqCaptureKind::diagnostic
+                                 ? rtl_active_sample_rate_sps.load(std::memory_order_acquire)
+                                 : kRtlSampleRateSps;
   g_iq_rec_frequency_hz = rtl_ui_frequency_hz;
   g_iq_rec_sf = kind == IqCaptureKind::lora ? lora_sf.load(std::memory_order_relaxed) : 0;
   g_iq_rec_bandwidth_hz = kind == IqCaptureKind::lora
@@ -3809,7 +3878,7 @@ void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
   g_iq_rec_write.store(initial_bytes, std::memory_order_release);
   g_iq_rec_sequence = automatic && kind == IqCaptureKind::lora
                           ? lora_capture_sequence.fetch_add(1, std::memory_order_relaxed) + 1
-                          : 0;
+                          : kind == IqCaptureKind::diagnostic ? ++g_iq_diag_next_sequence : 0;
   g_iq_rec_started_ms = millis();
   g_iq_rec_trigger_offset_samples = initial_bytes / 2;
   g_lora_quiet_tail_bytes = 0;
@@ -3820,9 +3889,9 @@ void iq_rec_begin(IqCaptureKind kind, bool automatic, size_t initial_bytes) {
                 "noise_dbfs=%.1f trigger_dbfs=%.1f sequence=%lu trigger_offset_samples=%u\n",
                 iq_capture_kind_name(kind), automatic ? "energy" : "manual",
                 static_cast<unsigned>(max_bytes),
-                static_cast<unsigned>(max_bytes / (2u * kRtlSampleRateSps)),
-                static_cast<unsigned>((max_bytes / 2u * 1000u) / kRtlSampleRateSps),
-                kRtlSampleRateSps,
+                static_cast<unsigned>(max_bytes / (2u * g_iq_rec_sample_rate_sps)),
+                static_cast<unsigned>((max_bytes / 2u * 1000u) / g_iq_rec_sample_rate_sps),
+                g_iq_rec_sample_rate_sps,
                 g_iq_rec_frequency_hz, static_cast<unsigned>(g_iq_rec_sf),
                 static_cast<unsigned>(g_iq_rec_bandwidth_hz),
                 static_cast<double>(rtl_signal_dbfs.load(std::memory_order_relaxed)),
@@ -3931,7 +4000,7 @@ void iq_rec_finish() {
   Serial.printf("RTL_IQ_DONE storage=psram source=%s bytes=%u samples=%u rate=%u frequency_hz=%u sf=%u bw=%u mode=%s sequence=%lu capture_ms=%lu trigger_offset_samples=%u drops=%lu\n",
                 iq_capture_kind_name(g_iq_rec_kind.load(std::memory_order_acquire)),
                 static_cast<unsigned>(written), static_cast<unsigned>(written / 2),
-                kRtlSampleRateSps, g_iq_rec_frequency_hz,
+                g_iq_rec_sample_rate_sps, g_iq_rec_frequency_hz,
                 static_cast<unsigned>(g_iq_rec_sf),
                 static_cast<unsigned>(g_iq_rec_bandwidth_hz),
                 g_iq_rec_auto_triggered.load(std::memory_order_relaxed) ? "energy" : "manual",
@@ -4872,7 +4941,11 @@ void draw_nav_panel() {
   snprintf(label, sizeof(label), "PINCH: %s  v",
            rtl_pinch_mode == SdrPinchMode::Span ? "SPAN" : "FILTER");
   button(780, 265, 416, 48, label, TFT_DARKCYAN, 3);
-  const uint32_t step = rtl_ui_band == RtlBand::am ? rtl_am_step_hz : rtl_fm_step_hz;
+  const uint32_t step = rtl_ui_band == RtlBand::am
+                            ? rtl_am_step_hz
+                            : rtl_ui_band == RtlBand::shortwave
+                                  ? rtl_shortwave_step_hz
+                                  : rtl_fm_step_hz;
   snprintf(label, sizeof(label), "STEP: %lu kHz  v",
            static_cast<unsigned long>(step / 1000u));
   button(780, 325, 416, 48, label, TFT_DARKCYAN, 3);
@@ -4923,6 +4996,8 @@ bool handle_nav_touch(int32_t x, int32_t y) {
         const double requested_hz = entered * scale;
         const uint32_t band_max = rtl_ui_band == RtlBand::am
                                       ? kRtlAmMaxHz
+                                      : rtl_ui_band == RtlBand::shortwave
+                                          ? orcsdr::receiver_bands::kShortwave.max_hz
                                       : rtl_ui_band == RtlBand::wx ? kRtlWxHz
                                       : rtl_ui_band == RtlBand::browse
                                           ? kRtlBrowseMaxHz
@@ -4990,6 +5065,7 @@ bool handle_nav_touch(int32_t x, int32_t y) {
     for (int index = 0; index < 6; ++index) {
       if (!hit(780 + (index % 2) * 216, 385 + (index / 2) * 54, 200, 48)) continue;
       if (rtl_ui_band == RtlBand::am) rtl_am_step_hz = steps[index];
+      else if (rtl_ui_band == RtlBand::shortwave) rtl_shortwave_step_hz = steps[index];
       else rtl_fm_step_hz = steps[index];
       break;
     }
@@ -5814,8 +5890,12 @@ void update_signal_level_from_iq(const uint8_t* iq, size_t bytes) {
   if (iq == nullptr || bytes < 4) return;
   uint64_t sum = 0;
   size_t pairs = 0;
-  /* Stride keeps this light on the audio path. */
-  for (size_t i = 0; i + 1 < bytes; i += 32) {
+  size_t clipped = 0;
+  for (size_t i = 0; i + 1 < bytes; i += 2) {
+    if (iq[i] == 0 || iq[i] == 255 || iq[i + 1] == 0 || iq[i + 1] == 255)
+      ++clipped;
+    /* Power remains strided; clipping needs every sample near the 0.1% limit. */
+    if ((i & 31u) != 0) continue;
     const int32_t ii = static_cast<int32_t>(iq[i]) - 128;
     const int32_t qq = static_cast<int32_t>(iq[i + 1]) - 128;
     sum += static_cast<uint32_t>(ii * ii + qq * qq);
@@ -5828,13 +5908,85 @@ void update_signal_level_from_iq(const uint8_t* iq, size_t bytes) {
   const float dbfs = 10.0f * log10f((power / kFullScale) + 1.0e-12f);
   rtl_signal_dbfs.store(dbfs, std::memory_order_relaxed);
   rtl_signal_dbfs_smooth = 0.88f * rtl_signal_dbfs_smooth + 0.12f * dbfs;
+  const float clipping = 100.0f * static_cast<float>(clipped) /
+                         static_cast<float>(bytes / 2u);
+  const float previous = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
+  rtl_iq_clipping_percent.store(0.98f * previous + 0.02f * clipping,
+                                std::memory_order_relaxed);
 }
 
-void draw_global_settings_gear() {
+void draw_global_header_controls() {
+  orcsdr::audio_header::draw(rtl_header_audio_control, rtl_ui_volume,
+                             rtl_audio_user_enabled.load(std::memory_order_acquire),
+                             M5.Power.getBatteryLevel());
+  orcsdr::audio_header::draw_home_button();
   orcsdr::audio_header::draw_settings_button();
   orcsdr::audio_header::draw_mute_button(
       rtl_audio_user_enabled.load(std::memory_order_acquire));
+  orcsdr::audio_header::draw_visualizer_button(
+      rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running);
   draw_global_bias_warning();
+}
+
+bool handle_global_header_audio_touch(int32_t x, int32_t y) {
+  const auto action = orcsdr::audio_header::handle_touch(
+      rtl_header_audio_control, x, y, millis(),
+      rtl_live_volume.load(std::memory_order_acquire));
+  if (action == orcsdr::audio_header::Action::none) return false;
+  if (action == orcsdr::audio_header::Action::opened) {
+    orcsdr::audio_header::capture_volume_background();
+  } else if (action == orcsdr::audio_header::Action::volume_set) {
+    const int current = rtl_live_volume.load(std::memory_order_acquire);
+    adjust_rtl_volume(static_cast<int>(rtl_header_audio_control.volume) - current);
+    set_rtl_audio_user_enabled(rtl_header_audio_control.volume > 0);
+  } else if (action == orcsdr::audio_header::Action::mute_toggle) {
+    set_rtl_audio_user_enabled(
+        !rtl_audio_user_enabled.load(std::memory_order_acquire));
+  } else if (action == orcsdr::audio_header::Action::closed) {
+    orcsdr::audio_header::restore_volume_background();
+    return true;
+  }
+  draw_global_header_controls();
+  return true;
+}
+
+bool diagnostic_iq_rec_start(const char* transition) {
+  const size_t length = transition == nullptr ? 0 : strlen(transition);
+  if (length == 0 || length >= sizeof(g_iq_rec_transition)) {
+    Serial.println("RTL_IQ_DIAG_ERROR invalid_transition");
+    return false;
+  }
+  for (size_t i = 0; i < length; ++i) {
+    const unsigned char value = static_cast<unsigned char>(transition[i]);
+    if (!isalnum(value) && value != '_' && value != '-') {
+      Serial.println("RTL_IQ_DIAG_ERROR invalid_transition");
+      return false;
+    }
+  }
+  if (rtl_capture_state.load(std::memory_order_acquire) != RtlCaptureState::running) {
+    Serial.println("RTL_IQ_DIAG_ERROR radio_required");
+    return false;
+  }
+  if (g_iq_rec_active.load(std::memory_order_acquire) ||
+      g_iq_rec_ready.load(std::memory_order_acquire) ||
+      lora_native_decode_busy.load(std::memory_order_acquire)) {
+    Serial.println("RTL_IQ_DIAG_ERROR capture_or_decode_busy");
+    return false;
+  }
+  if (!iq_rec_ensure_buffer()) {
+    Serial.println("RTL_IQ_DIAG_ERROR no_psram_buffer");
+    return false;
+  }
+  strlcpy(g_iq_rec_transition, transition, sizeof(g_iq_rec_transition));
+  iq_rec_begin(IqCaptureKind::diagnostic, false, 0);
+  Serial.printf(
+      "RTL_IQ_DIAG_START transition=\"%s\" sequence=%lu bytes=%u rate=%u "
+      "frequency_hz=%u started_ms=%lu\n",
+      g_iq_rec_transition, static_cast<unsigned long>(g_iq_rec_sequence),
+      static_cast<unsigned>(iq_capture_max_bytes(IqCaptureKind::diagnostic)),
+      g_iq_rec_sample_rate_sps,
+      g_iq_rec_frequency_hz, static_cast<unsigned long>(g_iq_rec_started_ms));
+  return true;
 }
 
 void draw_global_bias_warning() {
@@ -5927,6 +6079,7 @@ void draw_adsb_dashboard(bool static_panel) {
   }
   else if (static_panel) orcsdr::adsb::draw();
   else orcsdr::adsb::update();
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_pocsag_dashboard(bool static_panel) {
@@ -5939,6 +6092,7 @@ void draw_pocsag_dashboard(bool static_panel) {
   if (!orcsdr::pocsag::active()) orcsdr::pocsag::enter(pocsag_dashboard_settings);
   else if (static_panel) orcsdr::pocsag::draw();
   else orcsdr::pocsag::update();
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_lora_dashboard(bool static_panel) {
@@ -5948,6 +6102,7 @@ void draw_lora_dashboard(bool static_panel) {
   const auto snapshot = lora_dashboard_snapshot();
   if (static_panel || !orcsdr::lora::active()) orcsdr::lora::enter(snapshot);
   else orcsdr::lora::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 orcsdr::rf24::Snapshot rf24_dashboard_snapshot() {
@@ -5991,6 +6146,7 @@ void draw_rf24_dashboard(bool static_panel) {
   const auto snapshot = rf24_dashboard_snapshot();
   if (static_panel || !orcsdr::rf24::active()) orcsdr::rf24::enter(snapshot);
   else orcsdr::rf24::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 
@@ -6000,6 +6156,7 @@ void draw_fm_dashboard(bool static_panel) {
   const auto snapshot = fm_dashboard_snapshot();
   if (static_panel) orcsdr::fm::enter(snapshot);
   else if (orcsdr::fm::active()) orcsdr::fm::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_am_dashboard(bool static_panel) {
@@ -6008,6 +6165,16 @@ void draw_am_dashboard(bool static_panel) {
   const auto snapshot = am_dashboard_snapshot();
   if (static_panel) orcsdr::am::enter(snapshot);
   else if (orcsdr::am::active()) orcsdr::am::update(snapshot);
+  if (static_panel) draw_global_header_controls();
+}
+
+void draw_shortwave_dashboard(bool static_panel) {
+  if (!static_panel && !orcsdr::screens::may_draw(orcsdr::screens::Id::shortwave)) return;
+  if (!static_panel) orcsdr::screens::note_visible_update(orcsdr::screens::Id::shortwave);
+  const auto snapshot = shortwave_dashboard_snapshot();
+  if (static_panel) orcsdr::shortwave::enter(snapshot);
+  else if (orcsdr::shortwave::active()) orcsdr::shortwave::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 void draw_p25_dashboard(bool static_panel) {
@@ -6016,12 +6183,14 @@ void draw_p25_dashboard(bool static_panel) {
   const auto snapshot = p25_dashboard_snapshot();
   if (static_panel) orcsdr::p25::enter(snapshot);
   else if (orcsdr::p25::active()) orcsdr::p25::update(snapshot);
+  if (static_panel) draw_global_header_controls();
 }
 
 orcsdr::screens::Id screen_for_band(RtlBand band) {
   switch (band) {
     case RtlBand::fm: return orcsdr::screens::Id::fm;
     case RtlBand::am: return orcsdr::screens::Id::am;
+    case RtlBand::shortwave: return orcsdr::screens::Id::shortwave;
     case RtlBand::p25: return orcsdr::screens::Id::p25;
     case RtlBand::adsb: return orcsdr::screens::Id::adsb;
     case RtlBand::pocsag: return orcsdr::screens::Id::pocsag;
@@ -6036,6 +6205,7 @@ void refresh_active_screen() {
     case Id::home: draw_home_dashboard(); break;
     case Id::fm: draw_fm_dashboard(false); break;
     case Id::am: draw_am_dashboard(false); break;
+    case Id::shortwave: draw_shortwave_dashboard(false); break;
     case Id::p25: draw_p25_dashboard(false); break;
     case Id::adsb: draw_adsb_dashboard(false); break;
     case Id::pocsag: draw_pocsag_dashboard(false); break;
@@ -6107,6 +6277,7 @@ void close_visualizer() {
     case orcsdr::screens::Id::home: orcsdr::home::draw(); break;
     case orcsdr::screens::Id::fm: orcsdr::fm::draw(); break;
     case orcsdr::screens::Id::am: orcsdr::am::draw(); break;
+    case orcsdr::screens::Id::shortwave: orcsdr::shortwave::draw(); break;
     case orcsdr::screens::Id::p25: orcsdr::p25::draw(); break;
     case orcsdr::screens::Id::adsb: orcsdr::adsb::draw(); break;
     case orcsdr::screens::Id::lora: orcsdr::lora::draw(); break;
@@ -6125,7 +6296,7 @@ void service_visualizer() {
   runtime.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   runtime.sample_rate_sps = metrics.effective_sps;
   runtime.audio_rate_sps = 48000;
-  runtime.audio_demod = rtl_ui_band == RtlBand::am ||
+  runtime.audio_demod = rtl_ui_band == RtlBand::am || rtl_ui_band == RtlBand::shortwave ||
                                 (rtl_ui_band == RtlBand::cb &&
                                  cb_mode.load(std::memory_order_relaxed) == CbMode::am)
                             ? orcsdr::visualizer::AudioDemod::am
@@ -6256,6 +6427,7 @@ void close_rf_lab() {
     case orcsdr::screens::Id::home: show_home(); break;
     case orcsdr::screens::Id::fm: orcsdr::fm::draw(); break;
     case orcsdr::screens::Id::am: orcsdr::am::draw(); break;
+    case orcsdr::screens::Id::shortwave: orcsdr::shortwave::draw(); break;
     case orcsdr::screens::Id::p25: orcsdr::p25::draw(); break;
     case orcsdr::screens::Id::adsb: orcsdr::adsb::draw(); break;
     case orcsdr::screens::Id::lora: orcsdr::lora::draw(); break;
@@ -6313,15 +6485,16 @@ void service_rf_lab() {
                                   RtlCaptureState::running)
         request_hot_retune(rtl_ui_frequency_hz);
     } else if (action.kind == Kind::gain_mode) {
-      const uint32_t capability = action.value ? ESP_RTL_SDR_CAP_GAIN
-                                               : ESP_RTL_SDR_CAP_GAIN_AUTO;
-      result = rtl_has_device_capability(capability)
+      const bool available = action.value
+                                 ? rtl_tuner_gain_available(rtl_ui_frequency_hz)
+                                 : rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO);
+      result = available
                    ? esp_rtl_sdr_set_tuner_gain_mode(
                          g_rtl, action.value ? ESP_RTL_SDR_GAIN_MODE_MANUAL
                                              : ESP_RTL_SDR_GAIN_MODE_AUTO)
                    : ESP_RTL_SDR_ERR_UNSUPPORTED;
     } else if (action.kind == Kind::gain_tenth_db) {
-      result = rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)
+      result = rtl_tuner_gain_available(rtl_ui_frequency_hz)
                    ? esp_rtl_sdr_set_tuner_gain(g_rtl, action.value)
                    : ESP_RTL_SDR_ERR_UNSUPPORTED;
     } else if (action.kind == Kind::rtl_agc) {
@@ -6382,32 +6555,33 @@ void service_headphone_speaker_route() {
 void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume) {
   // Home is the common receiver workspace until a band has its own dashboard.
   // Do not resurrect the retired generic Browse surface for AM/WX/CB/Airband.
-  if (band != RtlBand::fm && band != RtlBand::am && band != RtlBand::p25 && band != RtlBand::adsb &&
+  if (band != RtlBand::fm && band != RtlBand::am && band != RtlBand::shortwave &&
+      band != RtlBand::p25 && band != RtlBand::adsb &&
       band != RtlBand::pocsag && band != RtlBand::lora) {
     if (adsb_atc_listening) { draw_adsb_dashboard(true); return; }
     show_home();
     return;
   }
   const auto screen = screen_for_band(band);
+  orcsdr::audio_header::reset(rtl_header_audio_control);
   orcsdr::screens::begin_transition(screen, millis());
   orcsdr::home::leave();
   orcsdr::rf24::leave();
   orcsdr::settings::leave();
   if (band != RtlBand::fm) orcsdr::fm::leave();
   if (band != RtlBand::am) orcsdr::am::leave();
+  if (band != RtlBand::shortwave) orcsdr::shortwave::leave();
   if (band != RtlBand::p25) orcsdr::p25::leave();
   if (band != RtlBand::adsb) orcsdr::adsb::leave();
   if (band != RtlBand::pocsag) orcsdr::pocsag::leave();
   if (band != RtlBand::lora) orcsdr::lora::leave();
   if (band == RtlBand::adsb) {
     draw_adsb_dashboard(true);
-    draw_global_settings_gear();
     orcsdr::screens::finish_transition();
     return;
   }
   if (band == RtlBand::pocsag) {
     draw_pocsag_dashboard(true);
-    draw_global_settings_gear();
     orcsdr::screens::finish_transition();
     return;
   }
@@ -6422,6 +6596,13 @@ void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume) {
     reset_spectrum_renderer();
     resume_rtl_speaker();
     draw_am_dashboard(true);
+    orcsdr::screens::finish_transition();
+    return;
+  }
+  if (band == RtlBand::shortwave) {
+    reset_spectrum_renderer();
+    resume_rtl_speaker();
+    draw_shortwave_dashboard(true);
     orcsdr::screens::finish_transition();
     return;
   }
@@ -6544,12 +6725,7 @@ void draw_band_edges() {
 }
 
 /**
- * RF scope: 256-bin FFT, Welch multi-window average, peak-hold envelope.
- * Prefer a frozen IQ snapshot so demod can keep writing the live buffer.
- * Two-window Welch averaging keeps the single render core responsive.
- */
-/**
- * RF scope: 256-bin FFT, Welch multi-window average, peak-hold envelope.
+ * RF scope: PSRAM-backed FFT, Welch multi-window average, peak-hold envelope.
  * Prefer a frozen IQ snapshot so demod can keep writing the live buffer.
  * Two-window Welch averaging keeps the single render core responsive.
  */
@@ -6558,6 +6734,8 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
       !orcsdr::lora::spectrum_active()) return;
   if (!orcsdr::home::active() && rtl_ui_band == RtlBand::fm &&
       !orcsdr::fm::spectrum_active()) return;
+  if (!orcsdr::home::active() && rtl_ui_band == RtlBand::shortwave &&
+      !orcsdr::shortwave::spectrum_active()) return;
   if (!orcsdr::home::active() && rtl_ui_band == RtlBand::p25 &&
       !orcsdr::p25::spectrum_active()) return;
   if (!rtl_spectrum_window_ready) {
@@ -6568,18 +6746,19 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     }
     rtl_spectrum_window_ready = true;
   }
-  uint8_t local_iq[sizeof(rtl_spectrum_iq_snap)];
   size_t local_bytes = 0;
   portENTER_CRITICAL(&rtl_spectrum_snap_mux);
   if (rtl_spectrum_iq_snap_bytes >= kRtlSpectrumBins * 2) {
     local_bytes = rtl_spectrum_iq_snap_bytes;
-    memcpy(local_iq, rtl_spectrum_iq_snap, local_bytes);
+    memcpy(rtl_spectrum_iq_work, rtl_spectrum_iq_snap, local_bytes);
   }
   portEXIT_CRITICAL(&rtl_spectrum_snap_mux);
   if (local_bytes < kRtlSpectrumBins * 2) {
     if (iq == nullptr || bytes < kRtlSpectrumBins * 2) return;
-    local_bytes = bytes < sizeof(local_iq) ? bytes : sizeof(local_iq);
-    memcpy(local_iq, iq, local_bytes);
+    local_bytes = bytes < sizeof(rtl_spectrum_iq_work)
+                      ? bytes
+                      : sizeof(rtl_spectrum_iq_work);
+    memcpy(rtl_spectrum_iq_work, iq, local_bytes);
   }
 
   const uint32_t now = millis();
@@ -6599,12 +6778,11 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   const size_t windows =
       welch_n < max_windows ? welch_n : (max_windows > 0 ? max_windows : 1);
 
-  float power_acc[kRtlSpectrumBins];
-  for (size_t b = 0; b < kRtlSpectrumBins; ++b) power_acc[b] = 0.0f;
+  for (size_t b = 0; b < kRtlSpectrumBins; ++b) rtl_spectrum_power[b] = 0.0f;
 
   constexpr float kPi = 3.14159265358979323846f;
   for (size_t w = 0; w < windows; ++w) {
-    const uint8_t* base = local_iq + w * window_bytes;
+    const uint8_t* base = rtl_spectrum_iq_work + w * window_bytes;
     float mean_i = 0.0f;
     float mean_q = 0.0f;
     for (size_t index = 0; index < kRtlSpectrumBins; ++index) {
@@ -6661,14 +6839,14 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
       const float p =
           rtl_spectrum_real[shifted] * rtl_spectrum_real[shifted] +
           rtl_spectrum_imaginary[shifted] * rtl_spectrum_imaginary[shifted];
-      power_acc[bin] += p;
+      rtl_spectrum_power[bin] += p;
     }
   }
 
   size_t visible_bins = static_cast<size_t>(
       (static_cast<uint64_t>(rtl_scope_span_hz.load(std::memory_order_relaxed)) *
        kRtlSpectrumBins) /
-      kRtlScopeSpanMaxHz);
+      std::max<uint32_t>(1, rtl_active_sample_rate_sps.load(std::memory_order_relaxed)));
   visible_bins = constrain(visible_bins, static_cast<size_t>(32), kRtlSpectrumBins);
   const size_t first_bin = (kRtlSpectrumBins - visible_bins) / 2;
   const size_t last_bin = first_bin + visible_bins;
@@ -6679,7 +6857,7 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   const float inv_w = 1.0f / static_cast<float>(windows);
   const bool home_active = orcsdr::home::active();
   for (size_t bin = 0; bin < kRtlSpectrumBins; ++bin) {
-    const float level = 10.0f * log10f(power_acc[bin] * inv_w + 1.0f);
+    const float level = 10.0f * log10f(rtl_spectrum_power[bin] * inv_w + 1.0f);
     /* EMA average (cyan) + slow peak-hold (orange) for interference spotting. */
     rtl_spectrum_smooth[bin] = rtl_spectrum_trace_valid
                                    ? (0.78f * rtl_spectrum_smooth[bin] + 0.22f * level)
@@ -6700,7 +6878,8 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   }
   const int32_t peak_offset_hz = static_cast<int32_t>(
       (static_cast<int64_t>(strongest_bin) - static_cast<int64_t>(kRtlSpectrumBins / 2)) *
-      static_cast<int64_t>(kRtlSampleRateSps) / static_cast<int64_t>(kRtlSpectrumBins));
+      static_cast<int64_t>(rtl_active_sample_rate_sps.load(std::memory_order_relaxed)) /
+      static_cast<int64_t>(kRtlSpectrumBins));
   rtl_scope_peak_offset_hz.store(peak_offset_hz, std::memory_order_relaxed);
   rtl_scope_peak_level.store(strongest, std::memory_order_relaxed);
   const float floor = maximum - 48.0f;
@@ -6710,6 +6889,33 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
       !rtl_spectrum_trace_valid ||
       (now - rtl_spectrum_trace_last_ms) >= spectrum_interval;
   const bool show_peak = (tool == OrcTool::Scope || tool == OrcTool::Radio);
+
+  ++rtl_spectrum_frames;
+  if (now - rtl_spectrum_fps_window_ms >= 1000) {
+    const uint32_t window_ms = now - rtl_spectrum_fps_window_ms;
+    rtl_spectrum_fps = static_cast<uint16_t>(rtl_spectrum_frames);
+    rtl_spectrum_frames = 0;
+    rtl_spectrum_fps_window_ms = now;
+    const uint32_t dsp_us = rtl_dsp_window_us.exchange(0, std::memory_order_acq_rel);
+    const uint32_t dsp_blocks =
+        rtl_dsp_window_blocks.exchange(0, std::memory_order_acq_rel);
+    const uint32_t dsp_max_us =
+        rtl_dsp_block_us_max.exchange(0, std::memory_order_acq_rel);
+    const uint32_t dsp_load_pct =
+        window_ms == 0 ? 0 : static_cast<uint32_t>(
+                                  (static_cast<uint64_t>(dsp_us) * 100u) /
+                                  (static_cast<uint64_t>(window_ms) * 1000u));
+    if (serial_verbosity_at(SerialVerbosity::trace)) {
+      Serial.printf("RTL_SPECTRUM_FPS fps=%u bins=%u welch=%u tool=%s iq_dropped=%u "
+                    "audio_dropped=%u audio_chunks=%u audio_peak=%d dsp_load_pct=%u dsp_blocks=%u "
+                    "dsp_block_us_max=%u\n",
+                    rtl_spectrum_fps, static_cast<unsigned>(kRtlSpectrumBins),
+                    static_cast<unsigned>(windows), orc_tool_name(tool),
+                    rtl_iq_pipeline_drops.load(std::memory_order_relaxed),
+                    rtl_audio.dropped_chunks, rtl_audio.queued_chunks, rtl_audio.peak,
+                    dsp_load_pct, dsp_blocks, dsp_max_us);
+    }
+  }
 
   const bool home_scope =
       orcsdr::home::active() &&
@@ -6721,7 +6927,6 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
                                 floor, audio_stressed);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
 
@@ -6730,28 +6935,31 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     orcsdr::lora::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
   if (rtl_ui_band == RtlBand::fm && orcsdr::screens::owns(orcsdr::screens::Id::fm)) {
     orcsdr::fm::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
   if (rtl_ui_band == RtlBand::am && orcsdr::screens::owns(orcsdr::screens::Id::am)) {
     orcsdr::am::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
+    return;
+  }
+  if (rtl_ui_band == RtlBand::shortwave &&
+      orcsdr::screens::owns(orcsdr::screens::Id::shortwave)) {
+    orcsdr::shortwave::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
+    rtl_spectrum_trace_last_ms = now;
+    rtl_spectrum_trace_valid = true;
     return;
   }
   if (rtl_ui_band == RtlBand::p25 && orcsdr::screens::owns(orcsdr::screens::Id::p25)) {
     orcsdr::p25::draw_spectrum(rtl_spectrum_levels, first_bin, visible_bins, floor);
     rtl_spectrum_trace_last_ms = now;
     rtl_spectrum_trace_valid = true;
-    ++rtl_spectrum_frames;
     return;
   }
 
@@ -6816,32 +7024,6 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   draw_band_edges();
   M5.Display.endWrite();
 
-  ++rtl_spectrum_frames;
-  if (now - rtl_spectrum_fps_window_ms >= 1000) {
-    const uint32_t window_ms = now - rtl_spectrum_fps_window_ms;
-    rtl_spectrum_fps = static_cast<uint16_t>(rtl_spectrum_frames);
-    rtl_spectrum_frames = 0;
-    rtl_spectrum_fps_window_ms = now;
-    const uint32_t dsp_us = rtl_dsp_window_us.exchange(0, std::memory_order_acq_rel);
-    const uint32_t dsp_blocks =
-        rtl_dsp_window_blocks.exchange(0, std::memory_order_acq_rel);
-    const uint32_t dsp_max_us =
-        rtl_dsp_block_us_max.exchange(0, std::memory_order_acq_rel);
-    const uint32_t dsp_load_pct =
-        window_ms == 0 ? 0 : static_cast<uint32_t>(
-                                  (static_cast<uint64_t>(dsp_us) * 100u) /
-                                  (static_cast<uint64_t>(window_ms) * 1000u));
-    if (serial_verbosity_at(SerialVerbosity::trace)) {
-      Serial.printf("RTL_SPECTRUM_FPS fps=%u bins=%u welch=%u tool=%s iq_dropped=%u "
-                    "audio_dropped=%u audio_chunks=%u audio_peak=%d dsp_load_pct=%u dsp_blocks=%u "
-                    "dsp_block_us_max=%u\n",
-                    rtl_spectrum_fps, static_cast<unsigned>(kRtlSpectrumBins),
-                    static_cast<unsigned>(windows), orc_tool_name(tool),
-                    rtl_iq_pipeline_drops.load(std::memory_order_relaxed),
-                    rtl_audio.dropped_chunks, rtl_audio.queued_chunks, rtl_audio.peak,
-                    dsp_load_pct, dsp_blocks, dsp_max_us);
-    }
-  }
 }
 
 float fast_phase(float cross, float dot) {
@@ -6888,6 +7070,9 @@ int16_t shape_audio_sample(float demodulated, float base_scale) {
     if (rtl_audio.agc_gain < 0.15f) rtl_audio.agc_gain = 0.15f;
     if (rtl_audio.agc_gain > 2.8f) rtl_audio.agc_gain = 2.8f;
   }
+  if (g_stream_band == RtlBand::shortwave &&
+      rtl_shortwave_audio_boost.load(std::memory_order_relaxed))
+    x *= 4.0f;
   x = fm_soft_limit(x);
   if (rtl_audio.fade_in < 192) {
     x *= static_cast<float>(rtl_audio.fade_in) / 192.0f;
@@ -7151,12 +7336,17 @@ void rds_log_status() {
  * wbfm=false: NFM/WX — tighter audio LPF, light de-emphasis only, no stereo.
  * No blanker / heavy post-LPF (those muffled on prior A/B).
  */
-void demodulate_fm(const uint8_t* iq, size_t bytes, float audio_scale, bool wbfm) {
+void demodulate_fm(const uint8_t* iq, size_t bytes, float audio_scale, bool wbfm,
+                   uint32_t sample_rate_sps) {
   int16_t* audio = rtl_audio_buffers[rtl_audio.buffer];
   size_t audio_count = 0;
-  const float iq_lpf_k = rtl_filter_alpha(wbfm ? RtlBand::fm : RtlBand::wx);
+  const uint8_t rf_decimation = rtl_rf_decimation(sample_rate_sps);
+  if (!rf_decimation) return;
+  const float iq_lpf_k = rtl_filter_alpha(wbfm ? RtlBand::fm : RtlBand::wx,
+                                          sample_rate_sps);
   const float audio_lpf_k = wbfm ? kWbfmAudioLpfK : kNfmAudioLpfK;
   const float deemph_k = wbfm ? kWbfmDeemphK : kNfmDeemphK;
+  const float inv_rf_decim = 1.0f / static_cast<float>(rf_decimation);
   const float inv_audio_decim = 1.0f / static_cast<float>(kFmAudioDecim);
 
   /* Stereo meter accumulators, local to this IQ chunk (same call granularity
@@ -7185,10 +7375,10 @@ void demodulate_fm(const uint8_t* iq, size_t bytes, float audio_scale, bool wbfm
 
     rtl_audio.i_sum += rtl_audio.iq_i_lpf;
     rtl_audio.q_sum += rtl_audio.iq_q_lpf;
-    if (++rtl_audio.rf_phase != kFmRfDecim) continue;
+    if (++rtl_audio.rf_phase != rf_decimation) continue;
 
-    const float i = rtl_audio.i_sum;
-    const float q = rtl_audio.q_sum;
+    const float i = rtl_audio.i_sum * inv_rf_decim;
+    const float q = rtl_audio.q_sum * inv_rf_decim;
     rtl_audio.i_sum = 0;
     rtl_audio.q_sum = 0;
     rtl_audio.rf_phase = 0;
@@ -7340,10 +7530,14 @@ void demodulate_fm(const uint8_t* iq, size_t bytes, float audio_scale, bool wbfm
   queue_audio_samples(audio, audio_count);
 }
 
-void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale) {
+void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale,
+                   uint32_t sample_rate_sps) {
   int16_t* audio = rtl_audio_buffers[rtl_audio.buffer];
   size_t audio_count = 0;
-  const float iq_lpf_k = rtl_filter_alpha(RtlBand::am);
+  const uint8_t rf_decimation = rtl_rf_decimation(sample_rate_sps);
+  if (!rf_decimation) return;
+  const float inv_rf_decim = 1.0f / static_cast<float>(rf_decimation);
+  const float iq_lpf_k = rtl_filter_alpha(RtlBand::am, sample_rate_sps);
   for (size_t offset = 0; offset + 1 < bytes; offset += 2) {
     const float i_in = static_cast<float>(static_cast<int32_t>(iq[offset]) - 128);
     const float q_in = static_cast<float>(static_cast<int32_t>(iq[offset + 1]) - 128);
@@ -7353,10 +7547,10 @@ void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale) {
     rtl_audio.iq_q_lpf2 += iq_lpf_k * (rtl_audio.iq_q_lpf - rtl_audio.iq_q_lpf2);
     rtl_audio.i_sum += rtl_audio.iq_i_lpf2;
     rtl_audio.q_sum += rtl_audio.iq_q_lpf2;
-    if (++rtl_audio.rf_phase != 4) continue;
+    if (++rtl_audio.rf_phase != rf_decimation) continue;
 
-    const float i = rtl_audio.i_sum * 0.25f;
-    const float q = rtl_audio.q_sum * 0.25f;
+    const float i = rtl_audio.i_sum * inv_rf_decim;
+    const float q = rtl_audio.q_sum * inv_rf_decim;
     rtl_audio.i_sum = 0;
     rtl_audio.q_sum = 0;
     rtl_audio.rf_phase = 0;
@@ -7380,14 +7574,18 @@ void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale) {
   queue_audio_samples(audio, audio_count);
 }
 
-void demodulate_ssb(const uint8_t* iq, size_t bytes, float audio_scale, CbMode mode) {
+void demodulate_ssb(const uint8_t* iq, size_t bytes, float audio_scale, CbMode mode,
+                    uint32_t sample_rate_sps) {
   int16_t* audio = rtl_audio_buffers[rtl_audio.buffer];
   size_t audio_count = 0;
-  const float iq_lpf_k = rtl_filter_alpha(RtlBand::cb);
+  const uint8_t rf_decimation = rtl_rf_decimation(sample_rate_sps);
+  if (!rf_decimation) return;
+  const float inv_rf_decim = 1.0f / static_cast<float>(rf_decimation);
+  const float iq_lpf_k = rtl_filter_alpha(RtlBand::cb, sample_rate_sps);
   constexpr float kPi = 3.14159265358979323846f;
   const float bfo_hz = 1500.0f + cb_clarifier_hz.load(std::memory_order_relaxed);
   const float direction = mode == CbMode::usb ? -1.0f : 1.0f;
-  const float step = direction * 2.0f * kPi * bfo_hz / 240000.0f;
+  const float step = direction * 2.0f * kPi * bfo_hz / kRtlDemodRateSps;
   const float step_cos = cosf(step);
   const float step_sin = sinf(step);
 
@@ -7398,10 +7596,10 @@ void demodulate_ssb(const uint8_t* iq, size_t bytes, float audio_scale, CbMode m
     rtl_audio.iq_q_lpf += iq_lpf_k * (q_in - rtl_audio.iq_q_lpf);
     rtl_audio.i_sum += rtl_audio.iq_i_lpf;
     rtl_audio.q_sum += rtl_audio.iq_q_lpf;
-    if (++rtl_audio.rf_phase != 4) continue;
+    if (++rtl_audio.rf_phase != rf_decimation) continue;
 
-    const float i = rtl_audio.i_sum * 0.25f;
-    const float q = rtl_audio.q_sum * 0.25f;
+    const float i = rtl_audio.i_sum * inv_rf_decim;
+    const float q = rtl_audio.q_sum * inv_rf_decim;
     rtl_audio.i_sum = 0;
     rtl_audio.q_sum = 0;
     rtl_audio.rf_phase = 0;
@@ -7458,7 +7656,8 @@ void run_rtl_capture() {
   // Base scale is modest; shape_audio_sample AGC + soft limiter set loudness.
   const float audio_scale = (band == RtlBand::wx || band == RtlBand::browse)
                                 ? 12000.0f
-                                : (band == RtlBand::am || band == RtlBand::cb) ? 9000.0f : 5500.0f;
+                                : (band == RtlBand::am || band == RtlBand::shortwave ||
+                                   band == RtlBand::cb) ? 9000.0f : 5500.0f;
   rtl_capture_state.store(RtlCaptureState::running, std::memory_order_release);
   rtl_ui_active.store(true, std::memory_order_release);
   set_rtl_sdr_status(continuous ? "RTL-SDR V4: continuous listening"
@@ -7599,16 +7798,21 @@ void run_rtl_capture() {
     } else if (band == RtlBand::cb) {
       if (cb_audio_gate_open()) {
         const CbMode mode = cb_mode.load(std::memory_order_relaxed);
-        if (mode == CbMode::am) demodulate_am(rtl_iq_processing, completed_bytes, audio_scale);
-        else demodulate_ssb(rtl_iq_processing, completed_bytes, audio_scale, mode);
+        if (mode == CbMode::am)
+          demodulate_am(rtl_iq_processing, completed_bytes, audio_scale,
+                        kRtlSampleRateSps);
+        else
+          demodulate_ssb(rtl_iq_processing, completed_bytes, audio_scale, mode,
+                         kRtlSampleRateSps);
       } else {
         rtl_audio_play_count = 0;
       }
-    } else if (band == RtlBand::am) {
-      demodulate_am(rtl_iq_processing, completed_bytes, audio_scale);
+    } else if (band == RtlBand::am || band == RtlBand::shortwave) {
+      demodulate_am(rtl_iq_processing, completed_bytes, audio_scale,
+                    kRtlSampleRateSps);
     } else if (band != RtlBand::lora) {
       demodulate_fm(rtl_iq_processing, completed_bytes, audio_scale,
-                    band == RtlBand::fm);
+                    band == RtlBand::fm, kRtlSampleRateSps);
     }
 
     // CRITICAL: never issue EP0 PLL writes while a bulk URB is outstanding.
@@ -7978,9 +8182,7 @@ static void on_rtl_driver_event(esp_rtl_sdr_event_t event, const void *payload, 
       }
       std::memcpy(rtl_ring_slots[slot], iq->data, n);
       const uint32_t active_rate = rtl_active_sample_rate_sps.load(std::memory_order_relaxed);
-      const uint32_t decoder_rate = g_stream_band == RtlBand::adsb
-                                        ? ESP_RTL_SDR_RATE_2048K
-                                        : ESP_RTL_SDR_RATE_960K;
+      const uint32_t decoder_rate = rtl_default_sample_rate(g_stream_band);
       const RtlIqBlock block{
           rtl_ring_slots[slot], n,
           rtl_iq_sequence.fetch_add(1, std::memory_order_relaxed), slot, g_stream_band,
@@ -7997,8 +8199,7 @@ static void on_rtl_driver_event(esp_rtl_sdr_event_t event, const void *payload, 
     case ESP_RTL_SDR_EVT_RETUNED: {
       if (g_stream_band == RtlBand::p25) orcsdr::p25decoder::reset();
       const auto *hz = static_cast<const uint32_t *>(payload);
-      /* FM UI is the channel. Payload is the commanded LO (display + 13 kHz
-       * + nudge). Writing it back is why Home showed 96.113 after a lock. */
+      /* FM UI owns the displayed channel; driver callbacks report hardware state. */
       if (hz != nullptr && g_stream_band != RtlBand::fm) {
         rtl_ui_frequency_hz = *hz;
         rtl_requested_frequency_hz.store(*hz, std::memory_order_release);
@@ -8074,6 +8275,9 @@ static void rtl_dsp_task(void *) {
     if (!block.custom_rate && block.band == RtlBand::p25 &&
         g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::p25)
       iq_rec_append(block.data, block.bytes);
+    if (!block.custom_rate &&
+        g_iq_rec_kind.load(std::memory_order_relaxed) == IqCaptureKind::diagnostic)
+      iq_rec_append(block.data, block.bytes);
     if (block.band != RtlBand::adsb || orcsdr::home::active() ||
         orcsdr::visualizer::active() || lab_active)
       spectrum_offer_iq_snapshot(block.data, block.bytes);
@@ -8088,15 +8292,21 @@ static void rtl_dsp_task(void *) {
       if (block.band == RtlBand::cb) {
         if (cb_audio_gate_open()) {
           const CbMode mode = cb_mode.load(std::memory_order_relaxed);
-          if (mode == CbMode::am) demodulate_am(block.data, block.bytes, block.audio_scale);
-          else demodulate_ssb(block.data, block.bytes, block.audio_scale, mode);
+          if (mode == CbMode::am)
+            demodulate_am(block.data, block.bytes, block.audio_scale,
+                          block.sample_rate_sps);
+          else
+            demodulate_ssb(block.data, block.bytes, block.audio_scale, mode,
+                           block.sample_rate_sps);
         } else {
           rtl_audio_play_count = 0;
         }
-      } else if (block.band == RtlBand::am) {
-        demodulate_am(block.data, block.bytes, block.audio_scale);
+      } else if (block.band == RtlBand::am || block.band == RtlBand::shortwave) {
+        demodulate_am(block.data, block.bytes, block.audio_scale,
+                      block.sample_rate_sps);
       } else if (block.band != RtlBand::adsb) {
-        demodulate_fm(block.data, block.bytes, block.audio_scale, block.band == RtlBand::fm);
+        demodulate_fm(block.data, block.bytes, block.audio_scale,
+                      block.band == RtlBand::fm, block.sample_rate_sps);
       }
     }
     const uint32_t dsp_elapsed_us = micros() - dsp_started_us;
@@ -8143,7 +8353,8 @@ static void rtl_driver_app_task(void *) {
       g_stream_band = band;
       g_stream_audio_scale = (band == RtlBand::wx || band == RtlBand::browse)
                                  ? 12000.0f
-                                 : (band == RtlBand::am || band == RtlBand::cb) ? 9000.0f : 5500.0f;
+                                 : (band == RtlBand::am || band == RtlBand::shortwave ||
+                                    band == RtlBand::cb) ? 9000.0f : 5500.0f;
       rtl_live_volume.store(volume, std::memory_order_release);
       rtl_ui_band = band;
       rtl_ui_frequency_hz = frequency_hz;
@@ -8161,6 +8372,7 @@ static void rtl_driver_app_task(void *) {
       rtl_audio_ring_overruns.store(0, std::memory_order_relaxed);
       rtl_audio_submit_failures.store(0, std::memory_order_relaxed);
       rtl_signal_dbfs.store(-90.0f, std::memory_order_relaxed);
+      rtl_iq_clipping_percent.store(0.0f, std::memory_order_relaxed);
       if (band == RtlBand::p25) {
         orcsdr::p25decoder::suspend_voice();
         p25_voice_session.fetch_add(1, std::memory_order_acq_rel);
@@ -8206,9 +8418,7 @@ static void rtl_driver_app_task(void *) {
       st.frequency_hz =
           band == RtlBand::fm ? rtl_fm_command_lo_hz(frequency_hz) : frequency_hz;
       const uint32_t lab_rate = rtl_rate_override_sps.load(std::memory_order_acquire);
-      st.sample_rate_sps = lab_rate ? lab_rate
-                                    : band == RtlBand::adsb ? ESP_RTL_SDR_RATE_2048K
-                                                            : ESP_RTL_SDR_RATE_960K;
+      st.sample_rate_sps = lab_rate ? lab_rate : rtl_default_sample_rate(band);
       rtl_active_sample_rate_sps.store(st.sample_rate_sps, std::memory_order_release);
       esp_err_t err = esp_rtl_sdr_start(g_rtl, &st);
       Serial.printf("RTL_START %s rate=%u display_hz=%u lo_hz=%u\n",
@@ -8222,14 +8432,14 @@ static void rtl_driver_app_task(void *) {
                       esp_rtl_sdr_err_to_name(err), st.sample_rate_sps, frequency_hz);
       }
       if (err == ESP_OK && band == RtlBand::fm) {
-        rtl_fm_last_user_tune_ms.store(millis(), std::memory_order_relaxed);
         Serial.printf("RTL_WBFM_DSP rate=%u filter_hz=%u iq_lpf_k=%.2f audio_lpf_k=%.2f "
                       "decim=%u/%u note=app_side_filter\n",
-                      kRtlSampleRateSps,
+                      st.sample_rate_sps,
                       rtl_filter_bandwidth_hz.load(std::memory_order_relaxed),
-                      static_cast<double>(rtl_filter_alpha(RtlBand::fm)),
+                      static_cast<double>(rtl_filter_alpha(RtlBand::fm,
+                                                           st.sample_rate_sps)),
                       static_cast<double>(kWbfmAudioLpfK),
-                      static_cast<unsigned>(kFmRfDecim),
+                      static_cast<unsigned>(rtl_rf_decimation(st.sample_rate_sps)),
                       static_cast<unsigned>(kFmAudioDecim));
       }
       if (err != ESP_OK) {
@@ -8359,8 +8569,7 @@ static void rtl_driver_app_task(void *) {
             last_lo_apply_ms = now_retune;
             if (te == ESP_OK) {
               last_lo_applied_hz = next;
-              /* Channel changes need a demod/RDS wipe. Auto-center nudges
-               * must not — that was an audible hole every time the LO walked. */
+              /* Channel changes need a demod/RDS wipe. */
               if (force_lo || g_stream_band != RtlBand::fm) {
                 rtl_audio_reset_demod_filters();
               }
@@ -8426,45 +8635,7 @@ static void rtl_driver_app_task(void *) {
             rtl_signal_meter_last_ms = now;
             rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
           }
-          if (g_stream_band == RtlBand::fm) {
-            rds_log_status();
-            const uint32_t center_now = now;
-            /* Home is listen-only. Walking the LO every ~1 s drained USB and
-             * punched a hole in audio and the scope. Stereo lock means we
-             * are already close enough. */
-            if (!orcsdr::home::active() &&
-                !rtl_fm_preset_scan_active.load(std::memory_order_relaxed) &&
-                !auto_fm_scanning &&
-                !rtl_stereo_locked.load(std::memory_order_relaxed) &&
-                center_now - rtl_fm_last_user_tune_ms.load(std::memory_order_relaxed) >= 900) {
-              static uint32_t last_center_ms = 0;
-              if (center_now - last_center_ms >= 900) {
-                const int32_t peak_off =
-                    rtl_scope_peak_offset_hz.load(std::memory_order_relaxed);
-                if (peak_off <= -12000 || peak_off >= 12000) {
-                  if (peak_off >= -45000 && peak_off <= 45000 &&
-                      rtl_signal_dbfs_smooth > -50.0f) {
-                    const int32_t next_nudge =
-                        rtl_fm_lo_nudge_hz.load(std::memory_order_relaxed) + peak_off;
-                    if (next_nudge >= -40000 && next_nudge <= 40000) {
-                      rtl_fm_lo_nudge_hz.store(next_nudge, std::memory_order_relaxed);
-                      const uint32_t lo = rtl_fm_command_lo_hz(rtl_ui_frequency_hz);
-                      rtl_hot_retune_hz.store(lo, std::memory_order_release);
-                      last_center_ms = center_now;
-                      if (serial_verbosity_at(SerialVerbosity::debug))
-                        Serial.printf(
-                            "RTL_FM_CENTER display=%u lo=%u peak_off=%d nudge=%d "
-                            "pilot=%.3f stereo=%d\n",
-                            rtl_ui_frequency_hz, lo, peak_off, next_nudge,
-                            static_cast<double>(
-                                rtl_pilot_env.load(std::memory_order_relaxed)),
-                            rtl_stereo_locked.load(std::memory_order_relaxed) ? 1 : 0);
-                    }
-                  }
-                }
-              }
-            }
-          }
+          if (g_stream_band == RtlBand::fm) rds_log_status();
           /* Auto-export WAV after buffer fills (never write SD on the IQ callback). */
           if (g_audio_rec_export_pending.exchange(false, std::memory_order_acq_rel)) {
             (void)audio_rec_stop_and_export();
@@ -9060,6 +9231,7 @@ orcsdr::fm::Snapshot fm_dashboard_snapshot() {
       rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.relative_dbfs = rtl_signal_dbfs_smooth;
+  snapshot.clipping_percent = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
   snapshot.left_dbfs = rtl_audio_left_dbfs.load(std::memory_order_relaxed);
   snapshot.right_dbfs = rtl_audio_right_dbfs.load(std::memory_order_relaxed);
   snapshot.running =
@@ -9271,6 +9443,7 @@ orcsdr::am::Snapshot am_dashboard_snapshot() {
   snapshot.filter_bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
   snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
   snapshot.relative_dbfs = rtl_signal_dbfs_smooth;
+  snapshot.clipping_percent = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
   snapshot.running = rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running;
   snapshot.driver_ready = rtl_device_ready();
   snapshot.sound_enabled = rtl_audio_user_enabled.load(std::memory_order_relaxed);
@@ -9284,7 +9457,8 @@ orcsdr::am::Snapshot am_dashboard_snapshot() {
   snapshot.scan_found = rtl_am_scan_found.load(std::memory_order_relaxed);
   snapshot.scan_frequency_hz = rtl_am_scan_freq_hz.load(std::memory_order_relaxed);
 #if !RTL_USE_LEGACY_USB
-  if (g_rtl != nullptr) {
+  snapshot.gain_available = rtl_tuner_gain_available(snapshot.frequency_hz);
+  if (g_rtl != nullptr && snapshot.gain_available) {
     snapshot.gain_auto = rtl_am_gain_auto_enabled.load(std::memory_order_relaxed);
     snapshot.gain_auto_selecting =
         rtl_am_gain_auto_selecting.load(std::memory_order_relaxed);
@@ -9365,7 +9539,7 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
       break;
     case ActionKind::gain_auto:
 #if !RTL_USE_LEGACY_USB
-      if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) {
+      if (g_rtl != nullptr && rtl_tuner_gain_available(rtl_ui_frequency_hz)) {
         const esp_err_t result = esp_rtl_sdr_set_tuner_gain_mode(
             g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
         if (result == ESP_OK) {
@@ -9382,7 +9556,7 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
       rtl_am_gain_auto_enabled.store(false, std::memory_order_relaxed);
       rtl_am_gain_auto_selecting.store(false, std::memory_order_relaxed);
       rtl_am_gain_auto_restart.store(false, std::memory_order_relaxed);
-      if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN))
+      if (g_rtl != nullptr && rtl_tuner_gain_available(rtl_ui_frequency_hz))
         Serial.printf("RTL_AM_GAIN mode=MANUAL gain_tenth_db=%lu result=%s\n",
                       static_cast<unsigned long>(action.value), esp_rtl_sdr_err_to_name(
                           esp_rtl_sdr_set_tuner_gain(g_rtl, static_cast<int>(action.value))));
@@ -9403,6 +9577,151 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
       orcsdr::am::leave();
       show_home();
       break;
+    case ActionKind::none: break;
+  }
+  refresh_active_screen();
+}
+
+orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot() {
+  orcsdr::shortwave::Snapshot snapshot{};
+  snapshot.frequency_hz = rtl_ui_frequency_hz;
+  snapshot.step_hz = rtl_shortwave_step_hz;
+  snapshot.filter_bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
+  snapshot.span_hz = rtl_scope_span_hz.load(std::memory_order_relaxed);
+  snapshot.relative_dbfs = rtl_signal_dbfs_smooth;
+  snapshot.clipping_percent = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
+  snapshot.running = rtl_capture_state.load(std::memory_order_acquire) ==
+                     RtlCaptureState::running;
+  snapshot.driver_ready = rtl_device_ready();
+  snapshot.sound_enabled = rtl_audio_user_enabled.load(std::memory_order_relaxed);
+  snapshot.battery_percent = M5.Power.getBatteryLevel();
+  snapshot.controls.audio_boost =
+      rtl_shortwave_audio_boost.load(std::memory_order_relaxed);
+  snapshot.controls.volume = rtl_ui_volume;
+  const uint32_t caps = rtl_device_capabilities();
+  snapshot.controls.route =
+      (caps & ESP_RTL_SDR_CAP_DIRECT_SAMPLING) && snapshot.frequency_hz < 24000000u
+          ? orcsdr::shortwave::ReceiverRoute::direct_q
+          : (caps & ESP_RTL_SDR_CAP_HF_UPCONVERTER) &&
+                    snapshot.frequency_hz < 28800000u
+                ? orcsdr::shortwave::ReceiverRoute::hf_upconverter
+                : orcsdr::shortwave::ReceiverRoute::tuner;
+  const bool tuner_gain = rtl_tuner_gain_available(snapshot.frequency_hz);
+  snapshot.controls.capabilities.rf_gain = tuner_gain;
+  snapshot.controls.capabilities.tuner_agc =
+      tuner_gain && rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO);
+  snapshot.controls.capabilities.rtl_agc =
+      rtl_has_device_capability(ESP_RTL_SDR_CAP_RTL_AGC);
+#if !RTL_USE_LEGACY_USB
+  if (g_rtl != nullptr) {
+    esp_rtl_sdr_gain_mode_t mode = ESP_RTL_SDR_GAIN_MODE_AUTO;
+    if (esp_rtl_sdr_get_tuner_gain_mode(g_rtl, &mode) == ESP_OK)
+      snapshot.controls.tuner_agc = mode == ESP_RTL_SDR_GAIN_MODE_AUTO;
+    (void)esp_rtl_sdr_get_rtl_agc(g_rtl, &snapshot.controls.rtl_agc);
+    int gain_tenth_db = 0;
+    if (esp_rtl_sdr_get_tuner_gain(g_rtl, &gain_tenth_db) == ESP_OK)
+      snapshot.controls.gain_tenth_db = static_cast<int16_t>(gain_tenth_db);
+    size_t count = 0;
+    if (esp_rtl_sdr_get_tuner_gains(g_rtl, snapshot.gain_steps_tenth_db,
+                                    std::size(snapshot.gain_steps_tenth_db),
+                                    &count) == ESP_OK)
+      snapshot.gain_step_count = static_cast<uint8_t>(
+          std::min(count, std::size(snapshot.gain_steps_tenth_db)));
+    esp_rtl_sdr_device_info_t device{};
+    if (esp_rtl_sdr_get_device_info(g_rtl, &device) == ESP_OK && device.present)
+      snprintf(snapshot.device, sizeof(snapshot.device), "%.30s", device.product);
+  }
+#endif
+  return snapshot;
+}
+
+void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) {
+  using orcsdr::shortwave::ActionKind;
+  auto tune = [](uint32_t hz) {
+    const uint32_t frequency = rtl_clamp_frequency(RtlBand::shortwave, hz);
+    orcsdr::shortwave::note_tuned(frequency);
+    if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running)
+      request_hot_retune(frequency);
+    else
+      queue_local_rtl_listen(RtlBand::shortwave, frequency);
+  };
+  switch (action.kind) {
+    case ActionKind::tune_hz: tune(static_cast<uint32_t>(action.value)); break;
+    case ActionKind::open_frequency:
+      rtl_nav_open = true;
+      rtl_frequency_keypad_open = true;
+      rtl_frequency_entry[0] = '\0';
+      draw_nav_panel();
+      return;
+    case ActionKind::step_down:
+      tune(rtl_step_frequency(RtlBand::shortwave, rtl_ui_frequency_hz, -1));
+      break;
+    case ActionKind::step_up:
+      tune(rtl_step_frequency(RtlBand::shortwave, rtl_ui_frequency_hz, 1));
+      break;
+    case ActionKind::step_cycle:
+      rtl_shortwave_step_hz = orcsdr::shortwave::next_tuning_step(rtl_shortwave_step_hz);
+      break;
+    case ActionKind::filter_cycle: {
+      const uint32_t current = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
+      const uint32_t next = current <= 4000u ? 6000u : current <= 6000u ? 9000u : 4000u;
+      rtl_filter_bandwidth_hz.store(next, std::memory_order_relaxed);
+      rtl_audio_reset_demod_filters();
+      reset_spectrum_renderer();
+      break;
+    }
+    case ActionKind::sound_toggle:
+      set_rtl_audio_user_enabled(!rtl_audio_user_enabled.load(std::memory_order_acquire));
+      break;
+    case ActionKind::volume_down: adjust_rtl_volume(-static_cast<int>(kRtlVolumeStep)); break;
+    case ActionKind::volume_up: adjust_rtl_volume(static_cast<int>(kRtlVolumeStep)); break;
+    case ActionKind::gain_auto:
+#if !RTL_USE_LEGACY_USB
+      if (g_rtl != nullptr && rtl_tuner_gain_available(rtl_ui_frequency_hz)) {
+        esp_rtl_sdr_gain_mode_t mode = ESP_RTL_SDR_GAIN_MODE_AUTO;
+        (void)esp_rtl_sdr_get_tuner_gain_mode(g_rtl, &mode);
+        const auto next = mode == ESP_RTL_SDR_GAIN_MODE_AUTO
+                              ? ESP_RTL_SDR_GAIN_MODE_MANUAL
+                              : ESP_RTL_SDR_GAIN_MODE_AUTO;
+        const esp_err_t result = esp_rtl_sdr_set_tuner_gain_mode(g_rtl, next);
+        Serial.printf("RTL_SHORTWAVE_TUNER_AGC enabled=%d result=%s\n",
+                      next == ESP_RTL_SDR_GAIN_MODE_AUTO,
+                      esp_rtl_sdr_err_to_name(result));
+      }
+#endif
+      break;
+    case ActionKind::gain_tenth_db:
+#if !RTL_USE_LEGACY_USB
+      if (g_rtl != nullptr && rtl_tuner_gain_available(rtl_ui_frequency_hz)) {
+        (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
+        Serial.printf("RTL_SHORTWAVE_RF_GAIN gain_tenth_db=%ld result=%s\n",
+                      static_cast<long>(action.value),
+                      esp_rtl_sdr_err_to_name(esp_rtl_sdr_set_tuner_gain(
+                          g_rtl, static_cast<int>(action.value))));
+      }
+#endif
+      break;
+    case ActionKind::rtl_agc:
+#if !RTL_USE_LEGACY_USB
+      if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_RTL_AGC))
+        Serial.printf("RTL_SHORTWAVE_RTL_AGC enabled=%ld result=%s\n",
+                      static_cast<long>(action.value),
+                      esp_rtl_sdr_err_to_name(esp_rtl_sdr_set_rtl_agc(
+                          g_rtl, action.value != 0)));
+#endif
+      break;
+    case ActionKind::audio_boost:
+      rtl_shortwave_audio_boost.store(action.value != 0, std::memory_order_release);
+      Serial.printf("RTL_SHORTWAVE_AUDIO_BOOST enabled=%ld gain_db=12\n",
+                    static_cast<long>(action.value));
+      break;
+    case ActionKind::open_settings:
+      open_global_settings(orcsdr::settings::Section::radio_defaults);
+      return;
+    case ActionKind::exit_home:
+      orcsdr::shortwave::leave();
+      show_home();
+      return;
     case ActionKind::none: break;
   }
   refresh_active_screen();
@@ -10325,7 +10644,7 @@ void service_audio_auto_gain(uint32_t now) {
   const bool fm = g_stream_band == RtlBand::fm;
   const bool am = g_stream_band == RtlBand::am;
   if ((!fm && !am) || g_rtl == nullptr ||
-      !rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) return;
+      !rtl_tuner_gain_available(rtl_ui_frequency_hz)) return;
   auto& enabled = fm ? rtl_fm_gain_auto_enabled : rtl_am_gain_auto_enabled;
   auto& selecting = fm ? rtl_fm_gain_auto_selecting : rtl_am_gain_auto_selecting;
   auto& restart = fm ? rtl_fm_gain_auto_restart : rtl_am_gain_auto_restart;
@@ -10351,19 +10670,30 @@ void service_audio_auto_gain(uint32_t now) {
                   label, gains[step], static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
     return;
   }
-  if (!selecting.load(std::memory_order_relaxed) ||
-      static_cast<int32_t>(now - sample_at_ms[state]) < 0) return;
+  if (static_cast<int32_t>(now - sample_at_ms[state]) < 0) return;
 
   const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
-  if (orcsdr::am::auto_gain_should_advance(level, step, count)) {
+  const float clipping = rtl_iq_clipping_percent.load(std::memory_order_relaxed);
+  if (!selecting.load(std::memory_order_relaxed)) {
+    if (!orcsdr::am::auto_gain_should_reduce(clipping, step)) return;
+    --step;
+    (void)esp_rtl_sdr_set_tuner_gain(g_rtl, gains[step]);
+    sample_at_ms[state] = now + 500;
+    Serial.printf("RTL_%s_SMART_GAIN reduce gain_tenth_db=%d clipping_percent=%.3f\n",
+                  label, gains[step], static_cast<double>(clipping));
+    return;
+  }
+  if (orcsdr::am::auto_gain_should_advance(level, clipping, step, count)) {
     ++step;
     (void)esp_rtl_sdr_set_tuner_gain(g_rtl, gains[step]);
     sample_at_ms[state] = now + 500;
     return;
   }
   selecting.store(false, std::memory_order_relaxed);
-  Serial.printf("RTL_%s_AUTO_GAIN selected gain_tenth_db=%d level_dbfs=%.1f\n",
-                label, gains[step], static_cast<double>(level));
+  Serial.printf("RTL_%s_AUTO_GAIN selected gain_tenth_db=%d level_dbfs=%.1f "
+                "clipping_percent=%.3f\n",
+                label, gains[step], static_cast<double>(level),
+                static_cast<double>(clipping));
 #else
   (void)now;
 #endif
@@ -10677,12 +11007,13 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
                                      ? 200000
                                      : rtl_filter_bandwidth_hz.load(
                                            std::memory_order_relaxed);
-  snapshot.step_hz = rtl_ui_band == RtlBand::fm       ? rtl_fm_step_hz
-                     : rtl_ui_band == RtlBand::p25    ? kP25StepHz
-                     : rtl_ui_band == RtlBand::cb     ? 10000
-                     : rtl_ui_band == RtlBand::lora   ? 125000
-                     : rtl_ui_band == RtlBand::am     ? kRtlAmStepHz
-                                                       : 12500;
+  snapshot.step_hz = rtl_ui_band == RtlBand::fm          ? rtl_fm_step_hz
+                     : rtl_ui_band == RtlBand::am        ? rtl_am_step_hz
+                     : rtl_ui_band == RtlBand::shortwave ? rtl_shortwave_step_hz
+                     : rtl_ui_band == RtlBand::p25       ? kP25StepHz
+                     : rtl_ui_band == RtlBand::cb        ? 10000
+                     : rtl_ui_band == RtlBand::lora      ? 125000
+                                                          : 12500;
   strlcpy(snapshot.mode, demo ? "FM" : rtl_band_name(rtl_ui_band),
           sizeof(snapshot.mode));
 #if !RTL_USE_LEGACY_USB
@@ -10795,7 +11126,6 @@ void navigation_restore_screen(orcsdr::screens::Id restore) {
     orcsdr::home::draw();
   } else if (restore == orcsdr::screens::Id::adsb) {
     draw_adsb_dashboard(true);
-    draw_global_settings_gear();
   } else if (restore == orcsdr::screens::Id::fm) {
     resume_rtl_speaker();
     orcsdr::fm::draw();
@@ -10803,6 +11133,10 @@ void navigation_restore_screen(orcsdr::screens::Id restore) {
   } else if (restore == orcsdr::screens::Id::am) {
     resume_rtl_speaker();
     orcsdr::am::draw();
+    bump_rtl_ui();
+  } else if (restore == orcsdr::screens::Id::shortwave) {
+    resume_rtl_speaker();
+    orcsdr::shortwave::draw();
     bump_rtl_ui();
   } else if (restore == orcsdr::screens::Id::p25) {
     resume_rtl_speaker();
@@ -10837,6 +11171,7 @@ void configure_navigation_service() {
 }
 
 void show_home(bool demo) {
+  orcsdr::audio_header::reset(rtl_header_audio_control);
   orcsdr::navigation::show_home(demo);
 }
 
@@ -10856,6 +11191,7 @@ orcsdr::dashboards::Id dashboard_for_band(RtlBand band, uint32_t frequency_hz) {
     case RtlBand::cb: return Id::cb;
     case RtlBand::lora: return Id::lora;
     case RtlBand::am: return Id::am;
+    case RtlBand::shortwave: return Id::shortwave;
     case RtlBand::browse:
       if (frequency_hz >= 118000000 && frequency_hz <= 137000000) return Id::airband;
       if (frequency_hz >= 156000000 && frequency_hz <= 162025000) return Id::marine;
@@ -10913,8 +11249,10 @@ void open_dashboard(orcsdr::dashboards::Id id) {
     case Id::adsb: band = RtlBand::adsb; frequency = kAdsbDefaultHz; break;
     case Id::pocsag: band = RtlBand::pocsag; frequency = pocsag_config_frequency_hz; break;
     case Id::shortwave:
-      band = RtlBand::browse;
-      frequency = orcsdr::receiver_bands::kShortwave.default_hz;
+      band = RtlBand::shortwave;
+      frequency = rtl_ui_band == RtlBand::shortwave
+                      ? rtl_ui_frequency_hz
+                      : orcsdr::shortwave::saved_frequency();
       break;
     case Id::weather: band = RtlBand::wx; frequency = kRtlWxHz; break;
     case Id::cb: band = RtlBand::cb; frequency = kCbDefaultHz; break;
@@ -10961,10 +11299,10 @@ void handle_home_action(const orcsdr::home::Action& action) {
     case ActionKind::span_down:
     case ActionKind::span_up: {
       const uint32_t current_span = rtl_scope_span_hz.load(std::memory_order_relaxed);
-      rtl_scope_span_hz.store(action.kind == ActionKind::span_down
-                                  ? std::max(kRtlScopeSpanMinHz, current_span / 2)
-                                  : std::min(kRtlScopeSpanMaxHz, current_span * 2),
-                              std::memory_order_relaxed);
+      rtl_scope_span_hz.store(
+          orcsdr::home::step_span(current_span,
+                                  action.kind == ActionKind::span_down ? -1 : 1),
+          std::memory_order_relaxed);
       reset_spectrum_renderer();
       break;
     }
@@ -10978,6 +11316,27 @@ void handle_home_action(const orcsdr::home::Action& action) {
         request_hot_retune(next);
       else
         queue_local_rtl_listen(rtl_ui_band, next, false);
+      break;
+    }
+    case ActionKind::step_size_down:
+    case ActionKind::step_size_up: {
+      const bool up = action.kind == ActionKind::step_size_up;
+      if (rtl_ui_band == RtlBand::fm) {
+        static constexpr uint32_t steps[] = {50000, 100000, 200000, 500000, 1000000};
+        size_t i = 0;
+        while (i < std::size(steps) && steps[i] != rtl_fm_step_hz) ++i;
+        if (i == std::size(steps)) i = 0;
+        rtl_fm_step_hz = steps[(i + (up ? 1 : std::size(steps) - 1)) % std::size(steps)];
+      } else if (rtl_ui_band == RtlBand::am) {
+        const size_t turns = up ? 1 : 5;
+        for (size_t i = 0; i < turns; ++i)
+          rtl_am_step_hz = orcsdr::am::cycle_tune_step();
+      } else if (rtl_ui_band == RtlBand::shortwave) {
+        const size_t turns = up ? 1 : 3;
+        for (size_t i = 0; i < turns; ++i)
+          rtl_shortwave_step_hz =
+              orcsdr::shortwave::next_tuning_step(rtl_shortwave_step_hz);
+      }
       break;
     }
     case ActionKind::sound_toggle:
@@ -11547,7 +11906,7 @@ void load_state() {
   rtl_graphics_enabled.store(settings_graphics_default, std::memory_order_release);
   M5.Display.setBrightness(settings_brightness);
   M5.Display.setRotation(settings_rotation);
-  // Display is the channel. LO bias is applied at tune time.
+  // Display and commanded LO use the same exact channel frequency.
   // FM.cfg may still carry a baked-in 96.113 from an older build — load it
   // first for presets, then let NVS last-station win.
   load_p25_config();
@@ -11597,6 +11956,7 @@ void load_state() {
     const auto stored_band = static_cast<RtlBand>(
         preferences.getUInt("last_band", static_cast<uint32_t>(RtlBand::fm)));
     if (stored_band == RtlBand::fm || stored_band == RtlBand::am ||
+        stored_band == RtlBand::shortwave ||
         stored_band == RtlBand::wx || stored_band == RtlBand::cb ||
         stored_band == RtlBand::lora || stored_band == RtlBand::browse ||
         stored_band == RtlBand::adsb || stored_band == RtlBand::p25) {
@@ -11765,7 +12125,7 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
       rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO))
     (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO);
   if ((band == RtlBand::am || band == RtlBand::fm) &&
-      rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN)) {
+      rtl_tuner_gain_available(frequency_hz)) {
     (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_MANUAL);
     auto& enabled = band == RtlBand::fm ? rtl_fm_gain_auto_enabled
                                        : rtl_am_gain_auto_enabled;
@@ -11774,24 +12134,25 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     if (enabled.load(std::memory_order_relaxed))
       restart.store(true, std::memory_order_release);
   }
+  if (band == RtlBand::shortwave && rtl_tuner_gain_available(frequency_hz) &&
+      rtl_has_device_capability(ESP_RTL_SDR_CAP_GAIN_AUTO))
+    (void)esp_rtl_sdr_set_tuner_gain_mode(g_rtl, ESP_RTL_SDR_GAIN_MODE_AUTO);
 #endif
-  if (band == RtlBand::cb) {
-    rtl_scope_span_hz.store(480000, std::memory_order_relaxed);
-  }
-  if (band == RtlBand::am) {
-    rtl_scope_span_hz.store(480000, std::memory_order_relaxed);
-  }
-  if (band == RtlBand::lora) {
-    rtl_scope_span_hz.store(500000, std::memory_order_relaxed);
-  }
-  if (band == RtlBand::p25) {
-    rtl_scope_span_hz.store(kRtlScopeSpanMaxHz, std::memory_order_relaxed);
-  }
+  const uint32_t default_span = rtl_wide_dashboard_band(band)
+                                    ? kRtlDashboardSampleRateSps
+                                    : band == RtlBand::adsb
+                                          ? ESP_RTL_SDR_RATE_2048K
+                                          : band == RtlBand::lora ? 500000u
+                                                                  : kRtlSampleRateSps;
+  rtl_scope_span_hz.store(default_span, std::memory_order_relaxed);
   if (band == RtlBand::fm && persist_navigation) {
     persist_fm_frequency(frequency_hz);
   }
   if (band == RtlBand::am && persist_navigation) {
     orcsdr::am::note_tuned(frequency_hz);
+  }
+  if (band == RtlBand::shortwave && persist_navigation) {
+    orcsdr::shortwave::note_tuned(frequency_hz);
   }
   cancel_scan_for_takeover.store(true, std::memory_order_release);
   rtl_fm_preset_scan_requested.store(false, std::memory_order_release);
@@ -11800,7 +12161,7 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   const uint32_t rate_override = rtl_rate_override_sps.load(std::memory_order_relaxed);
   const auto session_token = radio_session.acquire(
       orcsdr::radio::owner_for_band(band), band, frequency_hz,
-      rate_override ? rate_override : kRtlSampleRateSps);
+      rate_override ? rate_override : rtl_default_sample_rate(band));
   (void)radio_session.set_state(session_token, orcsdr::radio::ReceiverState::starting);
   if (persist_navigation) {
     preferences.putUInt("last_band", static_cast<uint32_t>(band));
@@ -11857,6 +12218,7 @@ bool point_in_scope(int32_t x, int32_t y) {
   if (rtl_ui_band == RtlBand::adsb) return false;
   // Dashboard modules own their complete touch surfaces, including spectrum views.
   if (rtl_ui_band == RtlBand::fm || rtl_ui_band == RtlBand::am ||
+      rtl_ui_band == RtlBand::shortwave ||
       (rtl_ui_band == RtlBand::p25 && orcsdr::p25::active())) return false;
   // Spectrum + waterfall hit target for pan/flick (not the control rows).
   return x >= kSpectrumX && x < kSpectrumX + spectrum_draw_width() && y >= kSpectrumY &&
@@ -11934,11 +12296,7 @@ bool handle_lora_touch(int32_t x, int32_t y) {
 }
 
 uint32_t rtl_fm_command_lo_hz(uint32_t display_hz) {
-  const int64_t lo = static_cast<int64_t>(display_hz) + kRtlFmLoBiasHz +
-                     rtl_fm_lo_nudge_hz.load(std::memory_order_relaxed);
-  if (lo < static_cast<int64_t>(kRtlFmMinHz)) return kRtlFmMinHz;
-  if (lo > static_cast<int64_t>(kRtlFmMaxHz) + 50000) return kRtlFmMaxHz + 50000;
-  return static_cast<uint32_t>(lo);
+  return rtl_clamp_frequency(RtlBand::fm, display_hz);
 }
 
 bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
@@ -11950,7 +12308,8 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
 #if !RTL_USE_LEGACY_USB
   if (!validate_rtl_tune_frequency(frequency_hz)) return false;
 #endif
-  const uint32_t ui_quant_hz = rtl_ui_band == RtlBand::am ? 100u : 1000u;
+  const uint32_t ui_quant_hz =
+      (rtl_ui_band == RtlBand::am || rtl_ui_band == RtlBand::shortwave) ? 100u : 1000u;
   uint32_t ui_hz = rtl_ui_band == RtlBand::p25
                        ? frequency_hz
                        : (frequency_hz / ui_quant_hz) * ui_quant_hz;
@@ -11963,8 +12322,6 @@ bool request_hot_retune_for(orcsdr::radio::Token token, uint32_t frequency_hz) {
   if (ui_changed && rtl_ui_band == RtlBand::fm) {
     if (rtl_fm_gain_auto_enabled.load(std::memory_order_relaxed))
       rtl_fm_gain_auto_restart.store(true, std::memory_order_release);
-    rtl_fm_lo_nudge_hz.store(0, std::memory_order_relaxed);
-    rtl_fm_last_user_tune_ms.store(millis(), std::memory_order_relaxed);
     rtl_fm_force_lo_apply.store(true, std::memory_order_release);
     if (!rtl_auto_fm_active.load(std::memory_order_relaxed) &&
         !rtl_fm_preset_scan_active.load(std::memory_order_relaxed)) {
@@ -12035,6 +12392,12 @@ void poll_sdr_touch(bool from_stream) {
     return;
   }
 
+  if (rtl_header_audio_control.expanded && pressed) {
+    (void)handle_global_header_audio_touch(touch.x, touch.y);
+    was_pressed = pressed;
+    return;
+  }
+
   // The LoRa dashboard owns its plot and controls. Generic SDR scope gestures
   // overlap the channel-picker arrows and must not turn those taps into retunes.
   if (rtl_ui_band == RtlBand::lora && orcsdr::lora::active()) {
@@ -12068,6 +12431,14 @@ void poll_sdr_touch(bool from_stream) {
     const auto action = orcsdr::fm::handle_gain_drag(touch.x, touch.y);
     if (action.kind != orcsdr::fm::ActionKind::none) {
       handle_fm_dashboard_action(action);
+      was_pressed = true;
+      return;
+    }
+  }
+  if (pressed && rtl_ui_band == RtlBand::shortwave && orcsdr::shortwave::active()) {
+    const auto action = orcsdr::shortwave::handle_gain_drag(touch.x, touch.y);
+    if (action.kind != orcsdr::shortwave::ActionKind::none) {
+      handle_shortwave_dashboard_action(action);
       was_pressed = true;
       return;
     }
@@ -12230,9 +12601,12 @@ void poll_sdr_touch(bool from_stream) {
 
 void handle_sdr_touch(int32_t x, int32_t y) {
   if (orcsdr::settings::active()) {
-    handle_global_settings_touch(x, y);
+    if (!handle_global_header_audio_touch(x, y))
+      handle_global_settings_touch(x, y);
     return;
   }
+
+  if (handle_global_header_audio_touch(x, y)) return;
   if (orcsdr::rf24::active()) {
     const auto action = orcsdr::rf24::handle_touch(x, y, rf24_dashboard_snapshot());
     if (action.kind == orcsdr::rf24::ActionKind::close) close_rf24_dashboard();
@@ -12255,13 +12629,6 @@ void handle_sdr_touch(int32_t x, int32_t y) {
   }
   if (orcsdr::audio_header::home_hit(x, y)) {
     show_home();
-    return;
-  }
-  if (orcsdr::audio_header::mute_hit(x, y)) {
-    const bool enabled = !rtl_audio_user_enabled.load(std::memory_order_acquire);
-    set_rtl_audio_user_enabled(enabled);
-    orcsdr::audio_header::draw_mute_button(enabled);
-    Serial.printf("RTL_SOUND %s\n", enabled ? "on" : "off");
     return;
   }
   if (orcsdr::audio_header::settings_hit(x, y)) {
@@ -12332,6 +12699,10 @@ void handle_sdr_touch(int32_t x, int32_t y) {
 
   if (rtl_ui_band == RtlBand::am && orcsdr::am::active()) {
     handle_am_dashboard_action(orcsdr::am::handle_touch(x, y));
+    return;
+  }
+  if (rtl_ui_band == RtlBand::shortwave && orcsdr::shortwave::active()) {
+    handle_shortwave_dashboard_action(orcsdr::shortwave::handle_touch(x, y));
     return;
   }
   if (rtl_ui_band == RtlBand::p25 && orcsdr::p25::active()) {
@@ -13163,6 +13534,7 @@ bool ui_regression_restore_screen(const UiRegressionSnapshot& before) {
       return true;
     case orcsdr::screens::Id::fm:
     case orcsdr::screens::Id::am:
+    case orcsdr::screens::Id::shortwave:
     case orcsdr::screens::Id::p25:
     case orcsdr::screens::Id::adsb:
     case orcsdr::screens::Id::lora:
@@ -13188,6 +13560,7 @@ void run_ui_regression(bool workflow) {
     const bool supported_screen = before.screen == orcsdr::screens::Id::home ||
                                   before.screen == orcsdr::screens::Id::fm ||
                                   before.screen == orcsdr::screens::Id::am ||
+                                  before.screen == orcsdr::screens::Id::shortwave ||
                                   before.screen == orcsdr::screens::Id::p25 ||
                                   before.screen == orcsdr::screens::Id::adsb ||
                                   before.screen == orcsdr::screens::Id::lora ||
@@ -13203,6 +13576,7 @@ void run_ui_regression(bool workflow) {
     home_font_ok = M5.Display.getFont() == &fonts::Font0;
     draw_home_dashboard();
     const bool dashboard_band = before.band == RtlBand::fm || before.band == RtlBand::am ||
+                                before.band == RtlBand::shortwave ||
                                 before.band == RtlBand::p25 ||
                                 before.band == RtlBand::adsb || before.band == RtlBand::lora ||
                                 before.band == RtlBand::pocsag;
@@ -13250,17 +13624,26 @@ void print_rtl_driver_status() {
   bool rtl_agc = false;
   bool bias_tee = false;
   esp_rtl_sdr_metrics_t metrics{};
+  uint32_t frequency_hz = 0;
   const esp_err_t mode_err = esp_rtl_sdr_get_tuner_gain_mode(g_rtl, &gain_mode);
   const esp_err_t gain_err = esp_rtl_sdr_get_tuner_gain(g_rtl, &gain_tenth_db);
   const esp_err_t agc_err = esp_rtl_sdr_get_rtl_agc(g_rtl, &rtl_agc);
   const esp_err_t bias_err = esp_rtl_sdr_get_bias_tee(g_rtl, &bias_tee);
   const esp_err_t metrics_err = esp_rtl_sdr_get_metrics(g_rtl, &metrics);
+  const esp_err_t frequency_err = esp_rtl_sdr_get_center_freq(g_rtl, &frequency_hz);
+  const char* route = profile == ESP_RTL_SDR_PROFILE_BLOG_V3 &&
+                              frequency_hz < kRtlNoHfMinHz
+                          ? "DIRECT_Q"
+                          : profile == ESP_RTL_SDR_PROFILE_BLOG_V4 &&
+                                    frequency_hz < ESP_RTL_SDR_HF_UPCONV_LO_HZ
+                                ? "HF_UPCONVERTER"
+                                : "TUNER";
   Serial.printf(
       "RTL_DRIVER_STATUS installed=1 version=%s state=%s profile=%u profile_name=\"%s\" "
       "provisional=%d device_caps=0x%08x library_caps=0x%08x delivery=callback "
       "gain_auto_cap=%d rtl_agc_cap=%d gain_cap=%d bias_cap=%d mode=%s gain_tenth_db=%d "
       "rtl_agc=%d bias=%d bytes=%llu blocks=%u effective_sps=%u overruns=%u drops=%u "
-      "shadow_ok=%d metrics_ok=%d\n",
+      "shadow_ok=%d metrics_ok=%d frequency_hz=%u frequency_ok=%d route=%s\n",
       esp_rtl_sdr_get_version_string(),
       esp_rtl_sdr_state_to_name(esp_rtl_sdr_get_state(g_rtl)),
       static_cast<unsigned>(profile), esp_rtl_sdr_profile_to_name(profile),
@@ -13277,7 +13660,9 @@ void print_rtl_driver_status() {
       static_cast<unsigned>(metrics.overruns),
       static_cast<unsigned>(metrics.consumer_drops),
       mode_err == ESP_OK && gain_err == ESP_OK && agc_err == ESP_OK && bias_err == ESP_OK,
-      metrics_err == ESP_OK);
+      metrics_err == ESP_OK, static_cast<unsigned>(frequency_hz),
+      frequency_err == ESP_OK && metrics_err == ESP_OK && metrics.frequency_hz == frequency_hz,
+      route);
 }
 
 void process_command(char* command) {
@@ -13485,13 +13870,14 @@ void process_command(char* command) {
     if (strcmp(name, "HOME") == 0) show_home();
     else if (strcmp(name, "FM") == 0) open_dashboard(Id::fm);
     else if (strcmp(name, "AM") == 0) open_dashboard(Id::am);
+    else if (strcmp(name, "SHORTWAVE") == 0) open_dashboard(Id::shortwave);
     else if (strcmp(name, "P25") == 0) open_dashboard(Id::p25);
     else if (strcmp(name, "ADSB") == 0) open_dashboard(Id::adsb);
     else if (strcmp(name, "LORA") == 0) open_dashboard(Id::lora);
     else if (strcmp(name, "RF_LAB") == 0) open_dashboard(Id::rf_lab);
     else if (strcmp(name, "WIFI_ANALYSIS") == 0) open_dashboard(Id::wifi_analysis);
     else if (strcmp(name, "SETTINGS") == 0) open_dashboard(Id::settings);
-    else { Serial.println("RTL_UI_OPEN_INVALID use HOME|FM|AM|P25|ADSB|LORA|RF_LAB|WIFI_ANALYSIS|SETTINGS"); return; }
+    else { Serial.println("RTL_UI_OPEN_INVALID use HOME|FM|AM|SHORTWAVE|P25|ADSB|LORA|RF_LAB|WIFI_ANALYSIS|SETTINGS"); return; }
     Serial.printf("RTL_UI_OPEN_OK target=%s\n", name);
     return;
   }
@@ -13949,6 +14335,27 @@ void process_command(char* command) {
     (void)iq_rec_start();
     return;
   }
+  if (strncmp(command, "RTL_IQ_DIAG_START ", 18) == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_IQ_DIAG_ERROR auth_required");
+    } else {
+      (void)diagnostic_iq_rec_start(command + 18);
+    }
+    return;
+  }
+  if (strcmp(command, "RTL_IQ_DIAG_STATUS") == 0) {
+    Serial.printf(
+        "RTL_IQ_DIAG_STATUS transition=\"%s\" sequence=%lu active=%d ready=%d "
+        "bytes=%u max_bytes=%u rate=%u frequency_hz=%u started_ms=%lu\n",
+        g_iq_rec_transition, static_cast<unsigned long>(g_iq_rec_sequence),
+        g_iq_rec_active.load(std::memory_order_acquire) ? 1 : 0,
+        g_iq_rec_ready.load(std::memory_order_acquire) ? 1 : 0,
+        static_cast<unsigned>(g_iq_rec_write.load(std::memory_order_acquire)),
+        static_cast<unsigned>(iq_capture_max_bytes(IqCaptureKind::diagnostic)),
+        g_iq_rec_sample_rate_sps,
+        g_iq_rec_frequency_hz, static_cast<unsigned long>(g_iq_rec_started_ms));
+    return;
+  }
   if (strcmp(command, "RTL_IQ_STOP") == 0 || strcmp(command, "RTL_IQ_SAVE") == 0) {
     g_sd_tried = false;
     g_sd_ready = false;
@@ -14302,30 +14709,40 @@ void process_command(char* command) {
   if (strcmp(command, "RTL_AM_GAIN STATUS") == 0) {
     int gain = 0;
     if (g_rtl != nullptr) (void)esp_rtl_sdr_get_tuner_gain(g_rtl, &gain);
-    Serial.printf("RTL_AM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d target_dbfs=%.1f\n",
+    Serial.printf("RTL_AM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d "
+                  "target_dbfs=%.1f clipping_percent=%.3f\n",
                   rtl_am_gain_auto_enabled.load(std::memory_order_relaxed) ? "AUTO" : "MANUAL",
                   rtl_am_gain_auto_selecting.load(std::memory_order_relaxed) ? 1 : 0, gain,
-                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
+                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs),
+                  static_cast<double>(rtl_iq_clipping_percent.load(std::memory_order_relaxed)));
     return;
   }
   if (strcmp(command, "RTL_FM_GAIN STATUS") == 0) {
     int gain = 0;
     if (g_rtl != nullptr) (void)esp_rtl_sdr_get_tuner_gain(g_rtl, &gain);
-    Serial.printf("RTL_FM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d target_dbfs=%.1f\n",
+    Serial.printf("RTL_FM_GAIN_STATUS mode=%s selecting=%d gain_tenth_db=%d "
+                  "target_dbfs=%.1f clipping_percent=%.3f\n",
                   rtl_fm_gain_auto_enabled.load(std::memory_order_relaxed) ? "AUTO" : "MANUAL",
                   rtl_fm_gain_auto_selecting.load(std::memory_order_relaxed) ? 1 : 0, gain,
-                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs));
+                  static_cast<double>(orcsdr::am::kAutoGainTargetDbfs),
+                  static_cast<double>(rtl_iq_clipping_percent.load(std::memory_order_relaxed)));
     return;
   }
   if (strcmp(command, "RTL_DRIVER SELF_CHECK") == 0) {
-    const uint32_t required = ESP_RTL_SDR_CAP_STREAM | ESP_RTL_SDR_CAP_HF_UPCONVERTER |
-                              ESP_RTL_SDR_CAP_GAIN | ESP_RTL_SDR_CAP_GAIN_AUTO |
-                              ESP_RTL_SDR_CAP_RTL_AGC | ESP_RTL_SDR_CAP_BIAS_TEE |
-                              ESP_RTL_SDR_CAP_DELIVERY_MODE;
     const auto profile = g_rtl_profile.load(std::memory_order_acquire);
+    uint32_t required = ESP_RTL_SDR_CAP_STREAM | ESP_RTL_SDR_CAP_RETUNE |
+                        ESP_RTL_SDR_CAP_METRICS | ESP_RTL_SDR_CAP_FREQ_CORRECTION |
+                        ESP_RTL_SDR_CAP_DELIVERY_MODE;
+    if (profile == ESP_RTL_SDR_PROFILE_BLOG_V4)
+      required |= ESP_RTL_SDR_CAP_HF_UPCONVERTER | ESP_RTL_SDR_CAP_GAIN |
+                  ESP_RTL_SDR_CAP_GAIN_AUTO | ESP_RTL_SDR_CAP_RTL_AGC |
+                  ESP_RTL_SDR_CAP_BIAS_TEE;
+    else if (profile == ESP_RTL_SDR_PROFILE_BLOG_V3)
+      required |= ESP_RTL_SDR_CAP_DIRECT_SAMPLING | ESP_RTL_SDR_CAP_GAIN;
     const uint32_t caps = rtl_device_capabilities();
     const bool pass = g_rtl != nullptr && ESP_RTL_SDR_VERSION_NUMBER >= 800 &&
-                      profile == ESP_RTL_SDR_PROFILE_BLOG_V4 &&
+                      (profile == ESP_RTL_SDR_PROFILE_BLOG_V4 ||
+                       profile == ESP_RTL_SDR_PROFILE_BLOG_V3) &&
                       (caps & required) == required;
     Serial.printf("RTL_DRIVER_SELF_CHECK pass=%d version=%s profile=%u "
                   "device_caps=0x%08x required=0x%08x\n",
@@ -14371,8 +14788,18 @@ void process_command(char* command) {
       err = rtl_has_device_capability(ESP_RTL_SDR_CAP_BIAS_TEE)
                 ? esp_rtl_sdr_set_bias_tee(g_rtl, strcmp(action + 5, "ON") == 0)
                 : ESP_RTL_SDR_ERR_UNSUPPORTED;
+    else if (strncmp(action, "TUNE ", 5) == 0) {
+      char* end = nullptr;
+      const unsigned long frequency_hz = strtoul(action + 5, &end, 10);
+      if (end == action + 5 || *end != '\0' || frequency_hz < ESP_RTL_SDR_FREQ_MIN_HZ ||
+          frequency_hz > ESP_RTL_SDR_FREQ_MAX_HZ) {
+        Serial.println("RTL_DRIVER_INVALID use TUNE <24000..1766000000>");
+        return;
+      }
+      err = esp_rtl_sdr_retune_hz(g_rtl, static_cast<uint32_t>(frequency_hz));
+    }
     else {
-      Serial.println("RTL_DRIVER_INVALID use STATUS|SELF_CHECK|GAINMODE AUTO|MANUAL|GAIN <0..496>|RTLAGC ON|OFF|BIAS ON|OFF");
+      Serial.println("RTL_DRIVER_INVALID use STATUS|SELF_CHECK|TUNE <HZ>|GAINMODE AUTO|MANUAL|GAIN <0..496>|RTLAGC ON|OFF|BIAS ON|OFF");
       return;
     }
     Serial.printf("RTL_DRIVER_RESULT action=\"%s\" accepted=%d result=%s\n", action,
@@ -14439,6 +14866,7 @@ void process_command(char* command) {
     Serial.println("RTL_P25_ENCRYPTION_STATUS      - last LDU2 encryption and mute/return counters");
     Serial.println("RTL_P25_SCAN                   - survey configured control-channel candidates (auth)");
     Serial.println("RTL_P25_IQ_START|STOP|STATUS   - bounded control-channel IQ capture (mutations auth)");
+    Serial.println("RTL_IQ_DIAG_START <transition>|STATUS - one-second pre-DSP CU8 capture (start auth)");
     Serial.println("RTL_P25_REPLAY <path.orciq>    - replay a stopped-radio P25 capture (auth)");
     Serial.println("RTL_LORA_REPLAY_*              - replay host IQ from PSRAM (auth, stopped)");
     Serial.println("RTL_REC_START/STOP/STATUS/SAVE - audio capture-to-WAV control");
@@ -14988,7 +15416,7 @@ void process_command(char* command) {
     Serial.printf(
         "RTL_SIGNAL_STATUS band=%s frequency_hz=%u signal_dbfs_tenths=%d "
         "stereo_locked=%d left_dbfs_tenths=%d right_dbfs_tenths=%d "
-        "rds_carrier=%d rds_signal_tenths=%d pilot_env_thou=%d "
+        "rds_carrier=%d rds_signal_tenths=%d pilot_env_thou=%d clipping_percent=%.3f "
         "filter_hz=%u lo_nudge=%d\n",
         rtl_band_name(rtl_ui_band), rtl_ui_frequency_hz, signal_tenths,
         rtl_stereo_locked.load(std::memory_order_relaxed) ? 1 : 0,
@@ -14997,8 +15425,8 @@ void process_command(char* command) {
         rds_tenths,
         static_cast<int>(lroundf(
             rtl_pilot_env.load(std::memory_order_relaxed) * 1000.0f)),
-        rtl_filter_bandwidth_hz.load(std::memory_order_relaxed),
-        rtl_fm_lo_nudge_hz.load(std::memory_order_relaxed));
+        static_cast<double>(rtl_iq_clipping_percent.load(std::memory_order_relaxed)),
+        rtl_filter_bandwidth_hz.load(std::memory_order_relaxed), 0);
     return;
   }
   if (strcmp(command, "RTL_PRESET_SCAN") == 0 && authenticated) {
@@ -15584,6 +16012,21 @@ void setup() {
     Serial.println("RTL_AM_DASHBOARD_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_AM_DASHBOARD_SELF_CHECK_OK");
+  if (!orcsdr::shortwave::model_self_check()) {
+    Serial.println("RTL_SHORTWAVE_MODEL_SELF_CHECK_FAIL");
+    return;
+  }
+  Serial.println("RTL_SHORTWAVE_MODEL_SELF_CHECK_OK");
+  if (!orcsdr::shortwave::dashboard_self_check()) {
+    Serial.println("RTL_SHORTWAVE_DASHBOARD_SELF_CHECK_FAIL");
+    return;
+  }
+  Serial.println("RTL_SHORTWAVE_DASHBOARD_SELF_CHECK_OK");
+  if (!orcsdr::receiver_controls::self_check()) {
+    Serial.println("RTL_RECEIVER_CONTROLS_SELF_CHECK_FAIL");
+    return;
+  }
+  Serial.println("RTL_RECEIVER_CONTROLS_SELF_CHECK_OK");
   if (!orcsdr::am_finder::self_check()) {
     Serial.println("RTL_AM_FINDER_SELF_CHECK_FAIL");
   }
@@ -15813,6 +16256,8 @@ void loop() {
   const bool home_ui = orcsdr::home::active();
   const bool fm_ui = rtl_ui_band == RtlBand::fm && orcsdr::fm::active();
   const bool am_ui = rtl_ui_band == RtlBand::am && orcsdr::am::active();
+  const bool shortwave_ui =
+      rtl_ui_band == RtlBand::shortwave && orcsdr::shortwave::active();
   const bool p25_ui = rtl_ui_band == RtlBand::p25 && orcsdr::p25::active();
   const bool visualizer_ui = orcsdr::visualizer::active();
   const bool rf_lab_ui = orcsdr::rf_lab::active();
@@ -15831,7 +16276,7 @@ void loop() {
   service_rf_lab();
   if (rtl_stream_spectrum_pending.exchange(false, std::memory_order_acq_rel) &&
       !orcsdr::visualizer::active() && !orcsdr::rf_lab::active() &&
-      (fm_ui || am_ui || p25_ui ||
+      (fm_ui || am_ui || shortwave_ui || p25_ui ||
        (rtl_ui_band == RtlBand::lora && orcsdr::lora::active()))) {
     draw_spectrum(nullptr, 0);
   }
@@ -16108,6 +16553,9 @@ void loop() {
   }
 
   if (radio_ui) service_rtl_speaker_watchdog();
+  if (orcsdr::audio_header::service_timeout(rtl_header_audio_control, millis())) {
+    orcsdr::audio_header::restore_volume_background();
+  }
 
   if (orcsdr::visualizer::active()) {
     // service_visualizer() above owns the complete full-screen surface.
@@ -16119,11 +16567,17 @@ void loop() {
     }
     const auto touch = M5.Touch.getDetail(0);
     const bool pressed = touch.isPressed() || touch.wasPressed();
-    if (pressed && !was_pressed) handle_global_settings_touch(touch.x, touch.y);
+    if (pressed && (!was_pressed || rtl_header_audio_control.expanded) &&
+        !handle_global_header_audio_touch(touch.x, touch.y))
+      handle_global_settings_touch(touch.x, touch.y);
     was_pressed = pressed;
   } else if (home_ui) {
     const auto touch = M5.Touch.getDetail(0);
-    if (touch.wasPressed() && orcsdr::audio_header::visualizer_hit(touch.x, touch.y))
+    if ((touch.wasPressed() ||
+         (rtl_header_audio_control.expanded && touch.isPressed())) &&
+        handle_global_header_audio_touch(touch.x, touch.y)) {
+    } else if (touch.wasPressed() &&
+               orcsdr::audio_header::visualizer_hit(touch.x, touch.y))
       open_visualizer();
     else
       handle_home_action(orcsdr::home::handle_touch(touch.x, touch.y, touch.isPressed()));
@@ -16141,7 +16595,8 @@ void loop() {
   } else if (adsb_ui && orcsdr::screens::owns(orcsdr::screens::Id::adsb)) {
     const auto touch = M5.Touch.getDetail(0);
     const bool pressed = touch.isPressed() || touch.wasPressed();
-    if (pressed && !was_pressed) handle_sdr_touch(touch.x, touch.y);
+    if (pressed && (!was_pressed || rtl_header_audio_control.expanded))
+      handle_sdr_touch(touch.x, touch.y);
     was_pressed = pressed;
     // Navigation wins over a pending live-aircraft repaint. Drawing ADS-B and
     // Home back-to-back in one loop can overlap M5GFX display transactions.
@@ -16153,7 +16608,8 @@ void loop() {
   } else if (pocsag_ui && orcsdr::screens::owns(orcsdr::screens::Id::pocsag)) {
     const auto touch = M5.Touch.getDetail(0);
     const bool pressed = touch.isPressed() || touch.wasPressed();
-    if (pressed && !was_pressed) handle_sdr_touch(touch.x, touch.y);
+    if (pressed && (!was_pressed || rtl_header_audio_control.expanded))
+      handle_sdr_touch(touch.x, touch.y);
     was_pressed = pressed;
     if (orcsdr::pocsag::active() && orcsdr::screens::owns(orcsdr::screens::Id::pocsag)) {
       publish_pocsag_snapshot(millis());

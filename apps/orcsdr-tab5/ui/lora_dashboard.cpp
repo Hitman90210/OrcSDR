@@ -217,10 +217,7 @@ void draw_star(int cx, int cy, uint16_t color) {
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(8, kHeaderH - 1, 1264, kCyan);
-  if (!badge::draw(18, 8, 104))
-    M5.Display.drawRoundRect(18, 8, 104, 104, 18, kGreen);
-  text("OrcSDR", 142, 38, TFT_WHITE, 4, middle_left);
-  text("M5STACK TAB5", 142, 81, kCyan, 2, middle_left);
+  audio_header::draw_brand("M5STACK TAB5");
   M5.Display.drawFastVLine(362, 20, 80, kCyan);
   draw_radio_icon(458, 64, kGreen);
   text("LORA MESH", 520, 47, TFT_WHITE, 4, middle_left);
@@ -235,6 +232,7 @@ void draw_header() {
   text(g_snapshot.key_loaded ? "KEY LOADED" : "PUBLIC ONLY", 1050, 73,
        g_snapshot.key_loaded ? kGreen : kMuted, 1, middle_left);
   audio_header::draw_home_button();
+  audio_header::draw_battery(M5.Power.getBatteryLevel());
   audio_header::draw_mute_button(g_snapshot.sound_enabled);
   audio_header::draw_visualizer_button(g_snapshot.running);
   audio_header::draw_settings_button();
