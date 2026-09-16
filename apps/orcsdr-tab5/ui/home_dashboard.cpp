@@ -431,7 +431,6 @@ void draw_receiver_chrome() {
 
 void draw_browser() {
   M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.drawRoundRect(10, 10, 1260, 700, 14, kCyan);
   audio_header::draw_brand("ALL DASHBOARDS");
   audio_header::draw_battery(current.battery_percent);
   audio_header::draw_home_button();
@@ -468,17 +467,18 @@ void draw_browser() {
     text("NEXT", 739, kBrowserNavY + 22,
          browser_page + 1 < pages ? TFT_WHITE : kDim, 2, middle_center);
   }
+  M5.Display.drawRoundRect(10, 10, 1260, 700, 14, kCyan);
 }
 
 void draw_all() {
   // Dashboards may select custom M5GFX fonts; Home owns the built-in font.
   M5.Display.setFont(nullptr);
   M5.Display.fillScreen(TFT_BLACK);
-  M5.Display.drawRoundRect(10, 10, 1260, 700, 14, kCyan);
   draw_header();
   draw_rail();
   draw_receiver_chrome();
   draw_footer();
+  M5.Display.drawRoundRect(10, 10, 1260, 700, 14, kCyan);
 }
 
 Action tap_action(int32_t x, int32_t y) {

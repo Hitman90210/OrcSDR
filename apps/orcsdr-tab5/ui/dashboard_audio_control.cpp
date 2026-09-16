@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
+#include <cstring>
 
 namespace orcsdr::audio_header {
 namespace {
@@ -108,24 +109,26 @@ void reset(Control& control) {
 }
 
 void draw_badge() {
-  constexpr int size = 96;
-  M5.Display.fillRect(8, 0, size, size, kBg);
-  if (!badge::draw(8, 0, size)) {
-    M5.Display.drawRoundRect(8, 0, size, size, 10, kGreen);
-    text("O", 56, 48, kGreen, 4);
+  constexpr int x = 24;
+  constexpr int y = 14;
+  constexpr int size = 88;
+  M5.Display.fillRect(x, y, size, size, kBg);
+  if (!badge::draw(x, y, size)) {
+    M5.Display.drawRoundRect(x, y, size, size, 10, kGreen);
+    text("O", x + size / 2, y + size / 2, kGreen, 4);
   }
 }
 
 void draw_brand(const char* subtitle) {
-  M5.Display.fillRect(8, 0, 350, 100, kBg);
+  M5.Display.fillRect(20, 12, 350, 92, kBg);
   draw_badge();
   M5.Display.setTextDatum(middle_left);
   M5.Display.setTextColor(TFT_WHITE, kBg);
-  M5.Display.setTextSize(4);
-  M5.Display.drawString("OrcSDR", 120, 30);
+  M5.Display.setTextSize(5);
+  M5.Display.drawString("OrcSDR", 128, 38);
   M5.Display.setTextColor(kCyan, kBg);
-  M5.Display.setTextSize(2);
-  M5.Display.drawString(subtitle ? subtitle : "", 120, 72);
+  M5.Display.setTextSize(subtitle && std::strlen(subtitle) <= 10 ? 3 : 2);
+  M5.Display.drawString(subtitle ? subtitle : "", 128, 82);
 }
 
 void draw_battery(int32_t battery_percent) {
