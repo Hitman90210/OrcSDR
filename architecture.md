@@ -1,7 +1,6 @@
 # OrcSDR current architecture
 
-This describes `main` at
-`c5b3423fbdeb129ebd63d8ffd5c1bced9c913c04` on 2026-09-12. Historical plans
+This describes the release branch at `d30a033` on 2026-09-15. Historical plans
 and validation reports explain how the design arrived here but are not current
 architecture contracts.
 
@@ -13,8 +12,8 @@ ESP32-P4. The onboard ESP32-C6 runs matching ESP-Hosted 3.0.6 firmware and uses
 historical and unsupported.
 
 The portable receiver boundary is the external `esp-rtl-sdr` component,
-0.8.0-rc2, pinned immutably at
-`7ec9825e31653eaa5692978e3e5d44032d621417` by
+0.8.0-rc3, pinned immutably at
+`52edd9b6e591fbd5f3985af4dc51e9da60e04cad` by
 `apps/orcsdr-tab5/main/idf_component.yml` and
 `apps/orcsdr-tab5/dependencies.lock`. OrcSDR uses callback delivery and owns
 DSP, UI, storage, and product behavior above that driver. The old local USB
@@ -30,7 +29,7 @@ Wi-Fi pause/resume orchestration; catalog operations; serial and authenticated
 device commands; SD/IQ/audio transfers; LAN console command dispatch;
 documentation capture; screen transitions; and top-level touch routing.
 
-main.cpp measurement (Git-normalized): 713,890 bytes (~697.2 KiB), 15,751 lines.
+main.cpp measurement (Git-normalized): 775,945 bytes (~757.8 KiB), 16,675 lines.
 
 The measurement uses LF-normalized repository bytes so it is stable across
 Windows and Linux checkouts. The intended modular endpoint—roughly 500 lines of
@@ -44,7 +43,7 @@ screen permission to draw while radio/decoder work continues independently.
 `navigation_service` owns Home/Settings handoff mechanics; feature dashboards
 render snapshots rather than owning receiver state.
 
-ScreenController IDs: `none`, `home`, `fm`, `p25`, `adsb`, `lora`, `radio`, `visualizer`, `rf_lab`, `wifi_analysis`, `pocsag`, `settings`, `am`, `documentation`.
+ScreenController IDs: `none`, `home`, `fm`, `p25`, `adsb`, `lora`, `shortwave`, `radio`, `visualizer`, `rf_lab`, `wifi_analysis`, `pocsag`, `settings`, `am`, `documentation`.
 
 Dashboard IDs: `home`, `fm`, `p25`, `adsb`, `shortwave`, `weather`, `cb`, `lora`, `airband`, `marine`, `satellite`, `utilities`, `settings`, `rf_lab`, `wifi_analysis`, `pocsag`, `am`.
 
