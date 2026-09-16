@@ -77,11 +77,9 @@ void scan_detail(const Snapshot& snapshot, char* out, size_t size) {
 }
 
 void draw_header(const Snapshot& snapshot) {
-  M5.Display.fillRect(0, 0, 1280, 82, kBg);
-  M5.Display.drawFastHLine(20, 80, 1240, kCyan);
-  audio_header::draw_badge();
-  text("OrcSDR", 96, 34, kGreen, 2);
-  text("2.4 GHz ANALYZER", 270, 34, TFT_WHITE, 3);
+  M5.Display.fillRect(0, 0, 1280, 100, kBg);
+  M5.Display.drawFastHLine(20, 98, 1240, kCyan);
+  audio_header::draw_brand("2.4 GHz ANALYZER");
   text(snapshot.ready ? "READY" : "OFFLINE", 808, 34,
        snapshot.scanning ? kYellow : snapshot.ready ? kGreen : kRed, 1, middle_right);
   panel(830, 16, 190, 46, snapshot.scanning ? kMuted : kGreen);
@@ -93,7 +91,7 @@ void draw_header(const Snapshot& snapshot) {
   audio_header::draw_visualizer_button(snapshot.visualizer_available);
   audio_header::draw_settings_button();
   char detail[64]{}; scan_detail(snapshot, detail, sizeof(detail));
-  text(detail, 270, 66, kMuted, 1);
+  text(detail, 370, 72, kMuted, 1);
   snprintf(detail, sizeof(detail), "FOUND %u / SHOWING %u", snapshot.total_access_point_count,
            snapshot.access_point_count);
   text(detail, 1240, 66, kCyan, 1, middle_right);

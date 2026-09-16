@@ -37,12 +37,20 @@ constexpr int kAllY = 590;
 constexpr int kTapDragThreshold = 10;
 constexpr int kHeaderStatusX = 420;
 constexpr int kHeaderStatusW = 446;
+constexpr size_t kBrowserColumns = 3;
+constexpr size_t kBrowserRows = 4;
+constexpr size_t kBrowserPageSize = kBrowserColumns * kBrowserRows;
+constexpr int kBrowserCardX = 30, kBrowserCardY = 96;
+constexpr int kBrowserCardW = 390, kBrowserCardH = 118;
+constexpr int kBrowserColumnPitch = 410, kBrowserRowPitch = 136;
+constexpr int kBrowserNavY = 650;
 constexpr uint32_t kSpanSteps[] = {
     120000, 240000, 480000, 960000, 1200000, 2400000};
 
 Snapshot current{};
 bool shown = false;
 bool browser = false;
+size_t browser_page = 0;
 int32_t scroll_offset_px = 0;
 uint32_t last_spectrum_ms = 0;
 EXT_RAM_BSS_ATTR float spectrum_levels[512]{};
@@ -122,6 +130,20 @@ void draw_menu_icon(dashboards::Id id, int x, int y, uint16_t color) {
     M5.Display.drawCircle(x, y, 17, color);
     M5.Display.drawFastHLine(x - 17, y, 34, color);
     M5.Display.drawFastVLine(x, y - 17, 34, color);
+  } else if (id == dashboards::Id::lora) {
+    M5.Display.fillCircle(x, y - 2, 3, color);
+    M5.Display.drawFastVLine(x, y + 1, 16, color);
+    M5.Display.drawArc(x, y - 2, 11, 9, 300, 60, color);
+    M5.Display.drawArc(x, y - 2, 11, 9, 120, 240, color);
+    M5.Display.drawArc(x, y - 2, 18, 16, 300, 60, color);
+    M5.Display.drawArc(x, y - 2, 18, 16, 120, 240, color);
+  } else if (id == dashboards::Id::rf_lab) {
+    M5.Display.drawRoundRect(x - 18, y - 14, 36, 28, 4, color);
+    M5.Display.drawLine(x - 14, y + 3, x - 8, y + 3, color);
+    M5.Display.drawLine(x - 8, y + 3, x - 3, y - 8, color);
+    M5.Display.drawLine(x - 3, y - 8, x + 3, y + 9, color);
+    M5.Display.drawLine(x + 3, y + 9, x + 8, y - 3, color);
+    M5.Display.drawLine(x + 8, y - 3, x + 14, y - 3, color);
   } else if (id == dashboards::Id::settings) {
     M5.Display.drawCircle(x, y, 15, color);
     M5.Display.fillCircle(x, y, 5, color);
@@ -156,11 +178,7 @@ void draw_header_status() {
 }
 
 void draw_header() {
-  audio_header::draw_badge();
-  text("OrcSDR", 82, 28, kGreen, 3);
-  text("M5STACK TAB5", 82, 56, kCyan, 1);
-  M5.Display.drawFastVLine(260, 18, 58, kCyan);
-  text("HOME", 292, 42, TFT_WHITE, 4);
+  audio_header::draw_brand("HOME");
   draw_header_status();
   audio_header::draw_battery(current.battery_percent);
   audio_header::draw_home_button();
@@ -312,19 +330,17 @@ void draw_tuning_controls() {
   panel(864, 571, 60, 48, kCyan, 7); text(">", 894, 595, kGreen, 3, middle_center);
 }
 
-void draw_audio_controls() {
+void draw_step_size_controls() {
   M5.Display.fillRect(998, 468, 236, 72, TFT_BLACK);
   panel(998, 468, 70, 72, kCyan, 8);
-  text("-", 1033, 504, kGreen, 4, middle_center);
+  text("<", 1033, 504, kGreen, 4, middle_center);
   panel(1076, 468, 80, 72, kCyan, 8);
-  text(current.sound_enabled ? "VOL" : "MUTE", 1116, 486,
-       current.sound_enabled ? kCyan : TFT_ORANGE, 2, middle_center);
-  char value[8];
-  snprintf(value, sizeof(value), "%u", current.volume);
-  text(value, 1116, 515, current.sound_enabled ? kGreen : TFT_LIGHTGREY, 2,
-       middle_center);
+  text("STEP", 1116, 486, kCyan, 2, middle_center);
+  char value[16];
+  snprintf(value, sizeof(value), "%.1f k", current.step_hz / 1000.0);
+  text(value, 1116, 515, kGreen, 2, middle_center);
   panel(1164, 468, 70, 72, kCyan, 8);
-  text("+", 1199, 504, kGreen, 4, middle_center);
+  text(">", 1199, 504, kGreen, 4, middle_center);
 }
 
 void footer_text(const char* value, int x, uint16_t color) {
@@ -401,7 +417,7 @@ void draw_receiver_chrome() {
   text("STEP", 930, 484, kCyan, 2, middle_center);
   char value[24]; snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
   text(value, 930, 516, kGreen, 2, middle_center);
-  draw_audio_controls();
+  draw_step_size_controls();
   draw_tuning_controls();
   panel(950, 564, 128, 62, kCyan, 7);
   text("FILTER", 1014, 582, kCyan, 2, middle_center);
@@ -416,22 +432,41 @@ void draw_receiver_chrome() {
 void draw_browser() {
   M5.Display.fillScreen(TFT_BLACK);
   M5.Display.drawRoundRect(10, 10, 1260, 700, 14, kCyan);
-  audio_header::draw_badge();
-  text("ALL DASHBOARDS", 82, 38, TFT_WHITE, 3);
+  audio_header::draw_brand("ALL DASHBOARDS");
   audio_header::draw_battery(current.battery_percent);
   audio_header::draw_home_button();
   audio_header::draw_settings_button();
   audio_header::draw_mute_button(current.sound_enabled);
   audio_header::draw_visualizer_button(current.receiving);
-  for (size_t i = 0; i < dashboards::count(); ++i) {
+  const size_t pages = std::max<size_t>(1, (dashboards::count() + kBrowserPageSize - 1) /
+                                              kBrowserPageSize);
+  browser_page = std::min(browser_page, pages - 1);
+  const size_t first = browser_page * kBrowserPageSize;
+  const size_t last = std::min(first + kBrowserPageSize, dashboards::count());
+  for (size_t i = first; i < last; ++i) {
     const auto* entry = dashboards::descriptor(i);
     if (!entry) continue;
-    const int col = static_cast<int>(i % 3), row = static_cast<int>(i / 3);
-    const int x = 30 + col * 410, y = 104 + row * 140;
-    panel(x, y, 390, 118, entry->available ? kCyan : kDim, 10);
+    const size_t slot = i - first;
+    const int col = static_cast<int>(slot % kBrowserColumns);
+    const int row = static_cast<int>(slot / kBrowserColumns);
+    const int x = kBrowserCardX + col * kBrowserColumnPitch;
+    const int y = kBrowserCardY + row * kBrowserRowPitch;
+    panel(x, y, kBrowserCardW, kBrowserCardH, entry->available ? kCyan : kDim, 10);
     draw_menu_icon(entry->id, x + 42, y + 46, entry->available ? kCyan : kDim);
     text(entry->title, x + 78, y + 38, entry->available ? TFT_WHITE : kDim, 2);
     text(entry->subtitle, x + 78, y + 70, entry->available ? TFT_LIGHTGREY : kDim, 1);
+  }
+  if (pages > 1) {
+    panel(486, kBrowserNavY, 110, 44, browser_page ? kCyan : kDim, 8);
+    text("PREV", 541, kBrowserNavY + 22, browser_page ? TFT_WHITE : kDim, 2,
+         middle_center);
+    char page[24];
+    snprintf(page, sizeof(page), "PAGE %u / %u", static_cast<unsigned>(browser_page + 1),
+             static_cast<unsigned>(pages));
+    text(page, 640, kBrowserNavY + 22, kCyan, 2, middle_center);
+    panel(684, kBrowserNavY, 110, 44, browser_page + 1 < pages ? kCyan : kDim, 8);
+    text("NEXT", 739, kBrowserNavY + 22,
+         browser_page + 1 < pages ? TFT_WHITE : kDim, 2, middle_center);
   }
 }
 
@@ -452,9 +487,21 @@ Action tap_action(int32_t x, int32_t y) {
   if (audio_header::mute_hit(x, y)) return {ActionKind::sound_toggle};
   if (browser) {
     if (audio_header::home_hit(x, y)) return {ActionKind::close_browser};
-    for (size_t i = 0; i < dashboards::count(); ++i) {
-      const int col = static_cast<int>(i % 3), row = static_cast<int>(i / 3);
-      if (inside(x, y, 30 + col * 410, 104 + row * 140, 390, 118)) {
+    const size_t pages = std::max<size_t>(1, (dashboards::count() + kBrowserPageSize - 1) /
+                                                kBrowserPageSize);
+    if (inside(x, y, 486, kBrowserNavY, 110, 44) && browser_page > 0)
+      return {ActionKind::browser_previous};
+    if (inside(x, y, 684, kBrowserNavY, 110, 44) && browser_page + 1 < pages)
+      return {ActionKind::browser_next};
+    const size_t first = browser_page * kBrowserPageSize;
+    const size_t last = std::min(first + kBrowserPageSize, dashboards::count());
+    for (size_t i = first; i < last; ++i) {
+      const size_t slot = i - first;
+      const int col = static_cast<int>(slot % kBrowserColumns);
+      const int row = static_cast<int>(slot / kBrowserColumns);
+      if (inside(x, y, kBrowserCardX + col * kBrowserColumnPitch,
+                 kBrowserCardY + row * kBrowserRowPitch,
+                 kBrowserCardW, kBrowserCardH)) {
         const auto* entry = dashboards::descriptor(i);
         if (entry && entry->available)
           return {ActionKind::open_dashboard, entry->id};
@@ -486,9 +533,8 @@ Action tap_action(int32_t x, int32_t y) {
   if (inside(x, y, 548, 571, 60, 48)) return {ActionKind::span_up};
   if (inside(x, y, 640, 571, 60, 48)) return {ActionKind::step_down};
   if (inside(x, y, 864, 571, 60, 48)) return {ActionKind::step_up};
-  if (inside(x, y, 998, 468, 70, 72)) return {ActionKind::volume_down};
-  if (inside(x, y, 1076, 468, 80, 72)) return {ActionKind::sound_toggle};
-  if (inside(x, y, 1164, 468, 70, 72)) return {ActionKind::volume_up};
+  if (inside(x, y, 998, 468, 70, 72)) return {ActionKind::step_size_down};
+  if (inside(x, y, 1164, 468, 70, 72)) return {ActionKind::step_size_up};
   return {};
 }
 
@@ -550,7 +596,7 @@ void update(const Snapshot& snapshot) {
     text("STEP", 930, 484, kCyan, 2, middle_center);
     text(value, 930, 516, kGreen, 2, middle_center);
   }
-  if (audio_changed) draw_audio_controls();
+  if (audio_changed || tuning_controls_changed) draw_step_size_controls();
   if (tuning_controls_changed) draw_tuning_controls();
   if (status_changed) draw_header_status();
   if (receiver_changed) draw_footer_receiver();
@@ -639,12 +685,20 @@ Action handle_touch(int32_t x, int32_t y, bool pressed) {
     const Action action = tap_action(tap_x, tap_y);
     if (action.kind == ActionKind::open_browser) {
       browser = true;
+      browser_page = 0;
       draw_browser();
       return {};
     }
     if (action.kind == ActionKind::close_browser) {
       browser = false;
       draw_all();
+      return {};
+    }
+    if (action.kind == ActionKind::browser_previous ||
+        action.kind == ActionKind::browser_next) {
+      if (action.kind == ActionKind::browser_next) ++browser_page;
+      else --browser_page;
+      draw_browser();
       return {};
     }
     if (action.kind == ActionKind::waterfall_contrast_down ||
@@ -666,8 +720,28 @@ bool browser_active() { return shown && browser; }
 
 bool self_check() {
   const float levels[] = {60.0f, 60.0f, 60.0f, 84.0f};
-  return dashboards::self_check() && kVisibleRows == 7 && kTapDragThreshold == 10 &&
+  const size_t browser_pages = (dashboards::count() + kBrowserPageSize - 1) /
+                               kBrowserPageSize;
+  const bool saved_browser = browser;
+  const size_t saved_page = browser_page;
+  browser = true;
+  browser_page = 0;
+  const bool first_page_ok =
+      tap_action(kBrowserCardX + 1, kBrowserCardY + 1).dashboard == dashboards::Id::fm &&
+      tap_action(685, kBrowserNavY + 1).kind == ActionKind::browser_next;
+  browser_page = 1;
+  const bool second_page_ok =
+      tap_action(kBrowserCardX + 1, kBrowserCardY + 1).dashboard == dashboards::Id::rf_lab &&
+      tap_action(487, kBrowserNavY + 1).kind == ActionKind::browser_previous;
+  browser = saved_browser;
+  browser_page = saved_page;
+  return dashboards::self_check() && first_page_ok && second_page_ok &&
+         kVisibleRows == 7 && kTapDragThreshold == 10 &&
          dashboards::count() > static_cast<size_t>(kVisibleRows) &&
+         browser_pages == 2 &&
+         kBrowserCardY + static_cast<int>(kBrowserRows - 1) * kBrowserRowPitch +
+                 kBrowserCardH <= kBrowserNavY &&
+         kBrowserNavY + 44 < 710 &&
          kHeaderStatusX + kHeaderStatusW <= 1099 &&
          waterfall_range_db(1) == 48 && waterfall_range_db(7) == 12 &&
          step_span(2400000, -1) == 1200000 &&
@@ -680,7 +754,7 @@ bool self_check() {
              ActionKind::waterfall_contrast_up &&
          tap_action(339, 572).kind == ActionKind::span_down &&
          tap_action(865, 572).kind == ActionKind::step_up &&
-         tap_action(999, 469).kind == ActionKind::volume_down &&
+         tap_action(999, 469).kind == ActionKind::step_size_down &&
          tap_action(1223, 13).kind == ActionKind::open_device_settings &&
          tap_action(1100, 13).kind == ActionKind::sound_toggle &&
          std::abs(home_spectrum_floor(levels, std::size(levels), 10.0f) - 62.0f) < 0.01f;

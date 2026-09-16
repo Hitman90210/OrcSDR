@@ -174,9 +174,7 @@ void draw_controls() {
 void draw_static() {
   M5.Display.clearScrollRect();
   M5.Display.fillScreen(TFT_BLACK);
-  audio_header::draw_badge();
-  text("OrcSDR", 82, 28, TFT_WHITE, 3, middle_left);
-  text("SHORTWAVE EXPLORER", 82, 58, kCyan, 1, middle_left);
+  audio_header::draw_brand("SHORTWAVE EXPLORER");
   M5.Display.drawFastVLine(350, 18, 58, kCyan);
   text("SHORTWAVE", 390, 42, TFT_WHITE, 4, middle_left);
   audio_header::draw_battery(g_snapshot.battery_percent);

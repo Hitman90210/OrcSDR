@@ -88,9 +88,7 @@ void draw_radio_icon(int cx, int cy, uint16_t color) {
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(8, kHeaderH - 1, 1264, kCyan);
-  audio_header::draw_badge();
-  text("OrcSDR", 142, 38, TFT_WHITE, 4, middle_left);
-  text("P25 Trunking", 142, 82, kCyan, 2, middle_left);
+  audio_header::draw_brand("P25 TRUNKING");
   M5.Display.drawFastVLine(365, 25, 82, kCyan);
   draw_radio_icon(456, 70, kCyan);
   text("P25 Trunking", 530, 66, TFT_WHITE, 4, middle_left);

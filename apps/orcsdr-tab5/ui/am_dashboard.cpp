@@ -210,9 +210,7 @@ void button(int x, int y, int w, int h, const char* title, uint16_t color = kCya
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(8, kHeaderH - 1, 1264, kCyan);
-  audio_header::draw_badge();
-  text("OrcSDR", 142, 38, TFT_WHITE, 4, middle_left);
-  text("AM Broadcast", 142, 82, kCyan, 2, middle_left);
+  audio_header::draw_brand("AM BROADCAST");
   M5.Display.drawFastVLine(365, 25, 82, kCyan);
   text("AM RADIO", 415, 66, TFT_WHITE, 4, middle_left);
   M5.Display.drawFastVLine(865, 25, 82, kCyan);

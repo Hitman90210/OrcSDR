@@ -3,6 +3,7 @@
 #include "orc_badge.hpp"
 
 #include <M5Unified.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -44,7 +45,9 @@ constexpr int kTrayH = 68;
 constexpr int kSliderX = 924;
 constexpr int kSliderY = 113;
 constexpr int kSliderW = 232;
-constexpr uint32_t kTrayTimeoutMs = 4000;
+constexpr uint32_t kTrayTimeoutMs = 5000;
+uint16_t* g_tray_background = nullptr;
+bool g_tray_background_valid = false;
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
   return x >= bx && x < bx + bw && y >= by && y < by + bh;
@@ -99,14 +102,30 @@ void draw_volume_slider(uint8_t volume, bool sound_enabled) {
 
 }  // namespace
 
-void reset(Control& control) { control = {}; }
+void reset(Control& control) {
+  control = {};
+  g_tray_background_valid = false;
+}
 
 void draw_badge() {
-  M5.Display.fillRect(12, 8, 58, 58, kBg);
-  if (!badge::draw(12, 8, 58)) {
-    M5.Display.drawRoundRect(12, 8, 58, 58, 8, kGreen);
-    text("O", 41, 37, kGreen, 3);
+  constexpr int size = 96;
+  M5.Display.fillRect(8, 0, size, size, kBg);
+  if (!badge::draw(8, 0, size)) {
+    M5.Display.drawRoundRect(8, 0, size, size, 10, kGreen);
+    text("O", 56, 48, kGreen, 4);
   }
+}
+
+void draw_brand(const char* subtitle) {
+  M5.Display.fillRect(8, 0, 350, 100, kBg);
+  draw_badge();
+  M5.Display.setTextDatum(middle_left);
+  M5.Display.setTextColor(TFT_WHITE, kBg);
+  M5.Display.setTextSize(4);
+  M5.Display.drawString("OrcSDR", 120, 30);
+  M5.Display.setTextColor(kCyan, kBg);
+  M5.Display.setTextSize(2);
+  M5.Display.drawString(subtitle ? subtitle : "", 120, 72);
 }
 
 void draw_battery(int32_t battery_percent) {
@@ -126,6 +145,22 @@ void draw(const Control& control, uint8_t volume, bool sound_enabled,
   M5.Display.fillRect(kRegionX, kRegionY, kRegionW, kRegionH, kBg);
   draw_battery(battery_percent);
   if (control.expanded) draw_volume_slider(volume, sound_enabled);
+}
+
+void capture_volume_background() {
+  if (g_tray_background == nullptr) {
+    g_tray_background = static_cast<uint16_t*>(heap_caps_malloc(
+        kTrayW * kTrayH * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (g_tray_background == nullptr) return;
+  M5.Display.readRect(kTrayX, kTrayY, kTrayW, kTrayH, g_tray_background);
+  g_tray_background_valid = true;
+}
+
+void restore_volume_background() {
+  if (!g_tray_background_valid) return;
+  M5.Display.pushImage(kTrayX, kTrayY, kTrayW, kTrayH, g_tray_background);
+  g_tray_background_valid = false;
 }
 
 void draw_home_button() {
@@ -200,7 +235,7 @@ Action handle_touch(Control& control, int32_t x, int32_t y, uint32_t now_ms,
   }
   if (mute_hit(x, y)) {
     control.hide_at_ms = now_ms + kTrayTimeoutMs;
-    return Action::opened;
+    return Action::mute_toggle;
   }
   // Leave the Settings gear live while the tray is open.
   if (settings_hit(x, y)) return Action::none;
@@ -229,7 +264,10 @@ bool self_check() {
           Action::volume_set ||
       control.volume != 255)
     return false;
-  if (service_timeout(control, 4299) || !service_timeout(control, 4300)) return false;
+  if (handle_touch(control, kMuteX + 1, kMuteY + 1, 400, 255) !=
+      Action::mute_toggle)
+    return false;
+  if (service_timeout(control, 5399) || !service_timeout(control, 5400)) return false;
   reset(control);
   if (handle_touch(control, 900, 60, 0, 128) != Action::none) return false;
   return kRegionX + kRegionW <= kHomeX && kTrayX >= 0 &&

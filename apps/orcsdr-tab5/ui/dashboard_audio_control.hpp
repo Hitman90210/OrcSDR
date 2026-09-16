@@ -9,6 +9,7 @@ enum class Action : uint8_t {
   opened,
   closed,
   volume_set,
+  mute_toggle,
 };
 
 struct Control {
@@ -19,9 +20,12 @@ struct Control {
 
 void reset(Control& control);
 void draw_badge();
+void draw_brand(const char* subtitle);
 void draw_battery(int32_t battery_percent);
 void draw(const Control& control, uint8_t volume, bool sound_enabled,
           int32_t battery_percent);
+void capture_volume_background();
+void restore_volume_background();
 void draw_home_button();
 bool home_hit(int32_t x, int32_t y);
 void draw_mute_button(bool sound_enabled);

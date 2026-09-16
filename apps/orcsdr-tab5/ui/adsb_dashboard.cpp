@@ -20,7 +20,7 @@ constexpr uint16_t kBorder = 0x2945;
 constexpr uint16_t kBlue = 0x04ff;
 constexpr uint16_t kGreen = 0x6fe8;
 constexpr uint16_t kMuted = 0x9cf3;
-constexpr int kHeaderH = 76;
+constexpr int kHeaderH = 100;
 constexpr int kTabsY = 646;
 constexpr int kTabW = 256;
 constexpr int kRadarPanelX = 234;
@@ -293,19 +293,17 @@ void plane(int x, int y, int scale, uint16_t color) {
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(20, kHeaderH - 1, 1240, kBorder);
-  audio_header::draw_badge();
-  text("OrcSDR", 82, 28, kGreen, 3, middle_left);
-  text("ADS-B 1090", 82, 56, kBlue, 1, middle_left);
-  M5.Display.drawFastVLine(250, 12, 52, kBorder);
-  M5.Display.fillCircle(318, 36, 7, kGreen);
+  audio_header::draw_brand("ADS-B 1090");
+  M5.Display.drawFastVLine(370, 12, 76, kBorder);
+  M5.Display.fillCircle(390, 36, 7, kGreen);
   char count[24];
   snprintf(count, sizeof(count), "%u AIRCRAFT", static_cast<unsigned>(displayed_aircraft_count()));
-  text(count, 337, 36, TFT_WHITE, 2, middle_left);
-  M5.Display.drawFastVLine(510, 12, 52, kBorder);
-  text("MSG RATE", 545, 36, kMuted, 1, middle_left);
+  text(count, 409, 36, TFT_WHITE, 2, middle_left);
+  M5.Display.drawFastVLine(570, 12, 76, kBorder);
+  text("MSG RATE", 595, 36, kMuted, 1, middle_left);
   char rate[20];
   snprintf(rate, sizeof(rate), "%.1f/s", displayed_message_rate());
-  text(rate, 655, 36, kGreen, 2, middle_left);
+  text(rate, 690, 36, kGreen, 2, middle_left);
   button(g_atc_listening ? "ATC" : (g_live ? "LIVE" : "WAIT"), 755, 14, 92, 44,
          g_atc_listening ? TFT_DARKCYAN : (g_live ? TFT_DARKGREEN : TFT_DARKGREY));
   text("USB", 905, 29, TFT_WHITE, 1, middle_left);
@@ -318,13 +316,13 @@ void draw_header() {
 }
 
 void draw_header_live_values() {
-  M5.Display.fillRect(330, 12, 175, 48, kBg);
-  M5.Display.fillRect(650, 12, 100, 48, kBg);
+  M5.Display.fillRect(400, 12, 165, 48, kBg);
+  M5.Display.fillRect(685, 12, 65, 48, kBg);
   char value[24];
   snprintf(value, sizeof(value), "%u AIRCRAFT", static_cast<unsigned>(displayed_aircraft_count()));
-  text(value, 337, 36, TFT_WHITE, 2, middle_left);
+  text(value, 409, 36, TFT_WHITE, 2, middle_left);
   snprintf(value, sizeof(value), "%.1f/s", displayed_message_rate());
-  text(value, 655, 36, kGreen, 2, middle_left);
+  text(value, 690, 36, kGreen, 2, middle_left);
   button(g_atc_listening ? "ATC" : (g_live ? "LIVE" : "WAIT"), 755, 14, 92, 44,
          g_atc_listening ? TFT_DARKCYAN : (g_live ? TFT_DARKGREEN : TFT_DARKGREY));
 }

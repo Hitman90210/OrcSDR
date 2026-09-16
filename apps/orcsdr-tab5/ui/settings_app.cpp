@@ -20,9 +20,9 @@ constexpr uint16_t kPanel = 0x1082;
 constexpr uint16_t kBlue = 0x04ff;
 constexpr uint16_t kGreen = 0x6fe8;
 constexpr uint16_t kMuted = 0x9cf3;
-constexpr int kHeaderH = 72;
+constexpr int kHeaderH = 100;
 constexpr int kRailW = 286;
-constexpr int kRailY = 82;
+constexpr int kRailY = 106;
 constexpr int kRailRowH = 64;
 constexpr uint8_t kSettingsMinTextSize = 2;
 constexpr uint16_t kRanges[] = {10, 25, 50, 100};
@@ -88,9 +88,7 @@ void value_row(const char* label, const char* value, int y,
 
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, TFT_BLACK);
-  audio_header::draw_badge();
-  text("OrcSDR", 82, 24, TFT_WHITE, 2);
-  text("SETTINGS", 82, 50, kBlue, 2);
+  audio_header::draw_brand("SETTINGS");
   char status[96];
   if (g_state.wifi_connected)
     snprintf(status, sizeof(status), "%s  %s", g_state.wifi_ssid, g_state.wifi_ip);

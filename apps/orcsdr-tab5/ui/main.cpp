@@ -5933,13 +5933,17 @@ bool handle_global_header_audio_touch(int32_t x, int32_t y) {
       rtl_header_audio_control, x, y, millis(),
       rtl_live_volume.load(std::memory_order_acquire));
   if (action == orcsdr::audio_header::Action::none) return false;
-  if (action == orcsdr::audio_header::Action::volume_set) {
+  if (action == orcsdr::audio_header::Action::opened) {
+    orcsdr::audio_header::capture_volume_background();
+  } else if (action == orcsdr::audio_header::Action::volume_set) {
     const int current = rtl_live_volume.load(std::memory_order_acquire);
     adjust_rtl_volume(static_cast<int>(rtl_header_audio_control.volume) - current);
     set_rtl_audio_user_enabled(rtl_header_audio_control.volume > 0);
+  } else if (action == orcsdr::audio_header::Action::mute_toggle) {
+    set_rtl_audio_user_enabled(
+        !rtl_audio_user_enabled.load(std::memory_order_acquire));
   } else if (action == orcsdr::audio_header::Action::closed) {
-    if (orcsdr::settings::active()) redraw_global_settings();
-    else navigation_restore_screen(orcsdr::screens::status().active);
+    orcsdr::audio_header::restore_volume_background();
     return true;
   }
   draw_global_header_controls();
@@ -11003,12 +11007,13 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
                                      ? 200000
                                      : rtl_filter_bandwidth_hz.load(
                                            std::memory_order_relaxed);
-  snapshot.step_hz = rtl_ui_band == RtlBand::fm       ? rtl_fm_step_hz
-                     : rtl_ui_band == RtlBand::p25    ? kP25StepHz
-                     : rtl_ui_band == RtlBand::cb     ? 10000
-                     : rtl_ui_band == RtlBand::lora   ? 125000
-                     : rtl_ui_band == RtlBand::am     ? kRtlAmStepHz
-                                                       : 12500;
+  snapshot.step_hz = rtl_ui_band == RtlBand::fm          ? rtl_fm_step_hz
+                     : rtl_ui_band == RtlBand::am        ? rtl_am_step_hz
+                     : rtl_ui_band == RtlBand::shortwave ? rtl_shortwave_step_hz
+                     : rtl_ui_band == RtlBand::p25       ? kP25StepHz
+                     : rtl_ui_band == RtlBand::cb        ? 10000
+                     : rtl_ui_band == RtlBand::lora      ? 125000
+                                                          : 12500;
   strlcpy(snapshot.mode, demo ? "FM" : rtl_band_name(rtl_ui_band),
           sizeof(snapshot.mode));
 #if !RTL_USE_LEGACY_USB
@@ -11311,6 +11316,27 @@ void handle_home_action(const orcsdr::home::Action& action) {
         request_hot_retune(next);
       else
         queue_local_rtl_listen(rtl_ui_band, next, false);
+      break;
+    }
+    case ActionKind::step_size_down:
+    case ActionKind::step_size_up: {
+      const bool up = action.kind == ActionKind::step_size_up;
+      if (rtl_ui_band == RtlBand::fm) {
+        static constexpr uint32_t steps[] = {50000, 100000, 200000, 500000, 1000000};
+        size_t i = 0;
+        while (i < std::size(steps) && steps[i] != rtl_fm_step_hz) ++i;
+        if (i == std::size(steps)) i = 0;
+        rtl_fm_step_hz = steps[(i + (up ? 1 : std::size(steps) - 1)) % std::size(steps)];
+      } else if (rtl_ui_band == RtlBand::am) {
+        const size_t turns = up ? 1 : 5;
+        for (size_t i = 0; i < turns; ++i)
+          rtl_am_step_hz = orcsdr::am::cycle_tune_step();
+      } else if (rtl_ui_band == RtlBand::shortwave) {
+        const size_t turns = up ? 1 : 3;
+        for (size_t i = 0; i < turns; ++i)
+          rtl_shortwave_step_hz =
+              orcsdr::shortwave::next_tuning_step(rtl_shortwave_step_hz);
+      }
       break;
     }
     case ActionKind::sound_toggle:
@@ -16528,8 +16554,7 @@ void loop() {
 
   if (radio_ui) service_rtl_speaker_watchdog();
   if (orcsdr::audio_header::service_timeout(rtl_header_audio_control, millis())) {
-    if (orcsdr::settings::active()) redraw_global_settings();
-    else navigation_restore_screen(orcsdr::screens::status().active);
+    orcsdr::audio_header::restore_volume_background();
   }
 
   if (orcsdr::visualizer::active()) {
