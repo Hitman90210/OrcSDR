@@ -178,4 +178,38 @@ Before release, the candidate must pass:
 7. V4 cold 99.1 MHz and LF/HF regression; and
 8. power-cycle and USB detach/reattach checks.
 
-Driver behavior remains unchanged pending explicit approval.
+## Final clean-candidate results
+
+The approved correction was implemented on driver branch
+`codex/v3c-cold-init-fix` from `e1ca40e04f8140245d56837cd149bf901f771441`.
+Commit `9d2b33d681ab4c860d1c1b260547b00b762d93a7` preserves the captured tuner-
+repeater ordering around the bounded reinitialization replay. No hardcoded
+`0x83` write, gain-table change, public API change, version bump, or dependency
+change was made.
+
+Driver host tests passed 2/2, truth hygiene returned `TRUTH_HYGIENE_OK`, the
+ESP-IDF 5.5.4 P4 smoke build passed, the IQ analyzer passed 3/3, the Tab5 UI
+self-check passed, and the native Tab5 build passed. The flashed application
+was 2,402,272 bytes with SHA-256
+`97293f1000a5e88ce4f25dc50a012e3d3c673253a4c74ffb4756355541816854`.
+
+All accepted V3c 99.100 MHz cold, power-cycle, USB-reattach, and direct-Q-return
+captures used the 27-inch-per-leg dipole and measured less than 2 dB spectrum-
+half separation and half-power delta with zero transport faults. The repeated
+cold 22.9 dB capture clipped 0.101271%, narrowly above the strict <0.1% gate;
+the returned capture clipped 0.075958%. The gain did not reintroduce asymmetry.
+The 10 MHz dipole capture is transition-only because the antenna is unsuitable
+for a reception claim at that frequency. Boot-to-Home and the corrected physical
+spectrum were user-confirmed separately.
+
+The V4 cold 99.100 MHz regression used the same FM-suitable dipole. It identified
+`blog_v4_r828d`, reported exact frequency at 2.4 MS/s, and measured 0.859 dB
+median-half separation, -1.129 dB half-power delta, 0% clipping, and zero
+overruns, drops, or short transfers. CU8 SHA-256:
+`9a8f0e2be6a478c37d892efdcbcba907666fcb2676878b813720105cb6b5aab4`.
+The user separately confirmed clear audio, RDS "99.1 The Beat of Eugene", and
+PTY "Adult Hit".
+
+Open acceptance gates are the V3c final-candidate audio/RDS claim, explicit V4
+physical-spectrum confirmation, the strict V3c cold clipping threshold, and the
+V4 MLA-30+ 1.450 MHz HF-upconverter plus LF/HF-to-normal transition regression.
