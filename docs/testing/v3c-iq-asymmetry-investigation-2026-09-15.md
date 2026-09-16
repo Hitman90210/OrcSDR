@@ -197,7 +197,11 @@ All accepted V3c 99.100 MHz cold, power-cycle, USB-reattach, and direct-Q-return
 captures used the 27-inch-per-leg dipole and measured less than 2 dB spectrum-
 half separation and half-power delta with zero transport faults. The repeated
 cold 22.9 dB capture clipped 0.101271%, narrowly above the strict <0.1% gate;
-the returned capture clipped 0.075958%. The gain did not reintroduce asymmetry.
+the returned capture clipped 0.075958%. A final cold repeat clipped 0.340042%
+while measuring 0.194 dB median-half separation and -0.652 dB half-power delta.
+CU8 SHA-256:
+`5b3ae0ccbd0101383f3620c09a6cc47be135c55e59c62b9c0d86faaacd6b442c`.
+The gain did not reintroduce asymmetry.
 The 10 MHz dipole capture is transition-only because the antenna is unsuitable
 for a reception claim at that frequency. Boot-to-Home and the corrected physical
 spectrum were user-confirmed separately.
@@ -219,6 +223,10 @@ both directions with continuous IQ and zero transport faults. The user
 separately confirmed understandable 1.450 MHz audio and the correct on-screen
 frequency/route.
 
-Open acceptance gates are the V3c final-candidate audio/RDS claim, explicit V4
-99.1 MHz physical-spectrum confirmation, and the strict V3c cold clipping
-threshold.
+The user separately confirmed normal understandable V3c audio, complete RDS
+information, and a physically restored two-sided spectrum at 99.1 MHz. The
+user also confirmed that the V4 99.1 MHz physical spectrum looked normal.
+
+The strict V3c cold 22.9 dB clipping threshold remains open. True LF reception
+also remains unverified because no appropriate LF antenna and signal source
+were used.
