@@ -47,7 +47,7 @@ foreach ($path in $requiredPaths) {
 
 $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
 if (-not $Version) { $Version = "v$($manifest.version)" }
-if ($Version -notmatch '^v\d+\.\d+\.\d+(-(alpha|beta)\.\d+)?(-(candidate\.\d+|multidongle-rc\d+))?$') { throw "Invalid version: $Version" }
+if ($Version -notmatch '^v\d+\.\d+\.\d+(-(alpha|beta|rc)\.?\d+)?(-(candidate\.\d+|multidongle-rc\d+))?$') { throw "Invalid version: $Version" }
 if ($manifest.version -ne $Version.TrimStart('v')) { throw 'Manifest version does not match the expected release.' }
 if ($Bridge) {
   if ($manifest.name -ne 'OrcSDR Hosted 3.0.6 Bridge' -or -not $manifest.temporary) { throw 'Manifest is not the temporary Hosted bridge.' }
