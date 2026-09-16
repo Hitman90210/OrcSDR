@@ -230,3 +230,22 @@ user also confirmed that the V4 99.1 MHz physical spectrum looked normal.
 The strict V3c cold 22.9 dB clipping threshold remains open. True LF reception
 also remains unverified because no appropriate LF antenna and signal source
 were used.
+
+### Fixed-gain clipping sweep
+
+A follow-up cold-start sweep used the same V3c and FM-suitable 27-inch-per-leg
+dipole at exact 99.100 MHz:
+
+| Gain | Clipping | Median-half separation | Half-power delta |
+| ---: | ---: | ---: | ---: |
+| 0.0 dB | 0.000000% | 0.634 dB | -0.155 dB |
+| 0.9 dB | 0.000000% | 0.885 dB | -0.501 dB |
+| 7.7 dB | 0.000000% | 0.026 dB | -0.439 dB |
+| 14.4 dB | 0.007021% | 0.303 dB | -0.351 dB |
+| 22.9 dB | 0.340042% | 0.194 dB | -0.652 dB |
+
+All points were transport-clean. The highest tested setting below the 0.1%
+gate and preferred 0.02% margin was 14.4 dB. The result isolates the remaining
+failure as strong-signal clipping at forced 22.9 dB, not a recurrence of the
+cold-start asymmetry. No gain-table or IF/VGA change is justified by this
+sweep alone.
