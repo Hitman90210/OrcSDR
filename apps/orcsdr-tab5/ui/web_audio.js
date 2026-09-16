@@ -21,7 +21,133 @@
       discontinuity: v.getUint32(28, true) === 1, samples };
   }
 
-  const api = { parsePacket };
+  class Player {
+    constructor(context) {
+      this.context = context;
+      this.gain = context.createGain();
+      this.gain.connect(context.destination);
+      this.state = 'buffering';
+      this.stats = { underruns: 0, overflows: 0, gaps: 0, stale: 0 };
+      this.queue = [];
+      this.queuedSeconds = 0;
+      this.nodes = [];
+      this.end = context.currentTime;
+      this.start = Infinity;
+      this.generation = null;
+      this.expected = null;
+      this.running = false;
+    }
+
+    get bufferSeconds() {
+      return this.queuedSeconds + Math.max(0, this.end - this.context.currentTime);
+    }
+    get nodeCount() { return this.queue.length + this.nodes.length; }
+
+    clear() {
+      const now = this.context.currentTime;
+      this.gain.gain.cancelScheduledValues(now);
+      this.gain.gain.setValueAtTime(this.gain.gain.value, now);
+      this.gain.gain.linearRampToValueAtTime(0, now + 0.005);
+      for (const item of this.nodes) {
+        item.node.onended = () => item.node.disconnect();
+        item.node.stop(now + 0.005);
+      }
+      this.nodes = [];
+      this.queue = [];
+      this.queuedSeconds = 0;
+      this.end = now;
+      this.start = Infinity;
+      this.running = false;
+      if (this.state !== 'off') this.state = 'buffering';
+    }
+
+    stop() {
+      this.state = 'off';
+      this.clear();
+    }
+
+    tick() {
+      if (this.state === 'off') return;
+      const now = this.context.currentTime;
+      this.nodes = this.nodes.filter(item => {
+        if (item.end > now) return true;
+        item.node.disconnect();
+        return false;
+      });
+      if (this.context.state !== 'running') {
+        this.clear();
+        this.state = 'suspended';
+        return;
+      }
+      if (this.running && now >= this.end) {
+        this.stats.underruns++;
+        this.clear();
+      } else if (this.running && now >= this.start) this.state = 'live';
+    }
+
+    push(bytes) {
+      if (this.state === 'off') return;
+      const packet = parsePacket(bytes);
+      this.tick();
+      if (this.context.state !== 'running') return;
+      if (this.state === 'suspended') this.state = 'buffering';
+      if (this.generation !== null && packet.generation !== this.generation) {
+        // uint32 generation ordering, including wrap; reconnect creates a new Player.
+        if (((packet.generation - this.generation) | 0) <= 0) {
+          this.stats.stale++;
+          return;
+        }
+        this.clear();
+        this.expected = null;
+      }
+      this.generation = packet.generation;
+      if (this.expected !== null && packet.position < this.expected) {
+        this.stats.stale++;
+        return;
+      }
+      if (packet.discontinuity || (this.expected !== null && packet.position !== this.expected)) {
+        this.stats.gaps++;
+        this.clear();
+      }
+      this.expected = packet.position + packet.samples.length;
+      const duration = packet.samples.length / packet.rate;
+      if (this.bufferSeconds + duration > 0.6 || this.nodeCount >= 64) {
+        this.stats.overflows++;
+        this.clear();
+      }
+      this.queue.push(packet.samples);
+      this.queuedSeconds += duration;
+      if (!this.running && this.queuedSeconds < 0.3 - 1e-9) return;
+      const now = this.context.currentTime;
+      if (!this.running) {
+        this.start = this.end = now + 0.02;
+        this.running = true;
+        this.gain.gain.cancelScheduledValues(this.start);
+        this.gain.gain.setValueAtTime(0, this.start);
+        this.gain.gain.linearRampToValueAtTime(1, this.start + 0.005);
+      }
+      // Bounded correction follows buffered duration, not arrival packet intervals.
+      // +/-0.5% is a recovery ceiling, not a promise of calibrated audio pitch.
+      const rate = Math.max(0.995, Math.min(1.005,
+        1 + (this.bufferSeconds - 0.3) * 0.01));
+      for (const samples of this.queue) {
+        const buffer = this.context.createBuffer(1, samples.length, 48000);
+        buffer.getChannelData(0).set(samples);
+        const node = this.context.createBufferSource();
+        node.buffer = buffer;
+        node.playbackRate.value = rate;
+        node.connect(this.gain);
+        node.onended = () => node.disconnect();
+        node.start(this.end);
+        this.end += samples.length / 48000 / rate;
+        this.nodes.push({ node, end: this.end });
+      }
+      this.queue = [];
+      this.queuedSeconds = 0;
+    }
+  }
+
+  const api = { parsePacket, Player };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.OrcAudio = api;
 })(typeof globalThis !== 'undefined' ? globalThis : this);
