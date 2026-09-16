@@ -17,7 +17,7 @@ param(
   [int]$Seed = 0,
   [string]$LogPath,
   [switch]$SelfCheck,
-  [switch]$Driver080Rc2,
+  [switch]$Driver080Rc3,
   [switch]$ResetDevice,
   [switch]$WifiOnly,
   [switch]$WifiCoexistence,
@@ -930,8 +930,8 @@ function Invoke-SelfCheck {
       $signal.SignalTenths -ne -321 -or $signal.FilterHz -ne 6000) {
     throw 'AM signal parser failed.'
   }
-  $driver = ConvertFrom-DriverStatus 'RTL_DRIVER_STATUS installed=1 version=0.8.0-rc2 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=1 device_caps=0x0001fbd9 library_caps=0x000fffff delivery=callback gain_auto_cap=0 rtl_agc_cap=0 gain_cap=1 bias_cap=0 mode=MANUAL gain_tenth_db=297 rtl_agc=0 bias=0 bytes=123456 blocks=42 effective_sps=959488 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=23999999 frequency_ok=1 route=DIRECT_Q'
-  if ($driver.Version -ne '0.8.0-rc2' -or $driver.Profile -ne 2 -or
+  $driver = ConvertFrom-DriverStatus 'RTL_DRIVER_STATUS installed=1 version=0.8.0-rc3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=1 device_caps=0x0001fbd9 library_caps=0x000fffff delivery=callback gain_auto_cap=0 rtl_agc_cap=0 gain_cap=1 bias_cap=0 mode=MANUAL gain_tenth_db=297 rtl_agc=0 bias=0 bytes=123456 blocks=42 effective_sps=959488 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=23999999 frequency_ok=1 route=DIRECT_Q'
+  if ($driver.Version -ne '0.8.0-rc3' -or $driver.Profile -ne 2 -or
       $driver.Frequency -ne 23999999 -or $driver.FrequencyOk -ne 1 -or
       $driver.Route -ne 'DIRECT_Q') {
     throw 'Driver acceptance parser failed.'
@@ -1536,11 +1536,11 @@ function Invoke-AmBroadcastTest {
   }
 }
 
-function Invoke-Driver080Rc2Test {
+function Invoke-Driver080Rc3Test {
   Wait-DeviceReady
   Connect-Authenticated
   $selfCheck = Send-And-Wait 'RTL_DRIVER SELF_CHECK' '^RTL_DRIVER_SELF_CHECK '
-  if ($selfCheck -notmatch 'pass=1 version=0\.8\.0-rc2 profile=(1|2) ') { throw "Driver self-check failed: $selfCheck" }
+  if ($selfCheck -notmatch 'pass=1 version=0\.8\.0-rc3 profile=(1|2) ') { throw "Driver self-check failed: $selfCheck" }
   $deadline = [DateTime]::UtcNow.AddSeconds(30)
   do {
     $initial = Get-DriverStatus
@@ -1562,7 +1562,7 @@ function Invoke-Driver080Rc2Test {
       ($isV3 -and ($initial.Provisional -ne 1 -or !$hasDirectSampling -or
                    $initial.GainCap -ne 1 -or $initial.GainAutoCap -ne 0 -or
                    $initial.RtlAgcCap -ne 0 -or $initial.BiasCap -ne 0))) {
-    throw 'Required Blog V4/V3c v0.8.0-rc2 profile, capabilities, or status getter is unavailable.'
+    throw 'Required Blog V4/V3c v0.8.0-rc3 profile, capabilities, or status getter is unavailable.'
   }
 
   $last = $initial
@@ -1717,7 +1717,7 @@ try {
 
   if ($ResetDevice) { Reset-DeviceBaseline }
 
-  if ($Driver080Rc2) { Invoke-Driver080Rc2Test; exit 0 }
+  if ($Driver080Rc3) { Invoke-Driver080Rc3Test; exit 0 }
   if ($WifiOnly) {
     Wait-DeviceReady 60 11000
     $initialUi = Get-UiState
