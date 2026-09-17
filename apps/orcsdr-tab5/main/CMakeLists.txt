@@ -27,6 +27,7 @@ idf_component_register(
         "../ui/shortwave_model.cpp"
         "../ui/shortwave_library.cpp"
         "../ui/shortwave_library_io.cpp"
+        "../ui/shortwave_hunt.cpp"
         "../ui/shortwave_dashboard.cpp"
         "../ui/shortwave_dashboard_state.cpp"
         "../ui/receiver_tuning_controls.cpp"
