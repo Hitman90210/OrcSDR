@@ -79,6 +79,7 @@ class MemoryTable {
  public:
   static constexpr size_t kCapacity = 128;
   RecordResult upsert(const Memory& memory);
+  void clear() { size_ = 0; }
   size_t size() const { return size_; }
   const Memory* at(size_t index) const;
 
@@ -91,6 +92,7 @@ class LogTable {
  public:
   static constexpr size_t kCapacity = 128;
   RecordResult append(const LogEntry& entry);
+  void clear() { size_ = 0; }
   size_t size() const { return size_; }
   const LogEntry* at(size_t index) const;
 
