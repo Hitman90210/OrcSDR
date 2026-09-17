@@ -4,8 +4,6 @@
 #include <esp_mac.h>
 #include <esp_intr_alloc.h>
 #include <esp_heap_caps.h>
-#include <esp_cache.h>
-#include <esp_private/esp_cache_private.h>
 #include <esp_log.h>
 #include <esp_attr.h>
 #include <esp_app_desc.h>
@@ -3368,16 +3366,13 @@ bool audio_rec_ensure_buffer() {
     g_audio_rec_buf = nullptr;
     g_audio_rec_capacity = 0;
   }
-  size_t cache_alignment = 0;
-  if (esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &cache_alignment) == ESP_OK &&
-      cache_alignment > 0) {
-    g_audio_rec_buf = static_cast<int16_t*>(heap_caps_aligned_alloc(
-        cache_alignment, kAudioRecMaxSamples * sizeof(int16_t),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  }
+  g_audio_rec_buf = static_cast<int16_t*>(heap_caps_malloc(
+      kAudioRecMaxSamples * sizeof(int16_t),
+      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT | MALLOC_CAP_CACHE_ALIGNED));
   if (g_audio_rec_buf == nullptr) {
     g_audio_rec_buf = static_cast<int16_t*>(
-        heap_caps_malloc(kAudioRecMaxSamples * sizeof(int16_t), MALLOC_CAP_8BIT));
+        heap_caps_malloc(kAudioRecMaxSamples * sizeof(int16_t),
+                         MALLOC_CAP_8BIT | MALLOC_CAP_CACHE_ALIGNED));
   }
   if (g_audio_rec_buf == nullptr) {
     Serial.println("RTL_REC_ERR no_buffer");
@@ -3853,12 +3848,9 @@ static void write_le32(File& f, uint32_t v) {
 
 bool iq_rec_ensure_buffer() {
   if (g_iq_rec_buf == nullptr) {
-    size_t cache_alignment = 0;
-    if (esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &cache_alignment) == ESP_OK &&
-        cache_alignment > 0) {
-      g_iq_rec_buf = static_cast<uint8_t*>(heap_caps_aligned_alloc(
-          cache_alignment, kIqRecMaxBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    }
+    g_iq_rec_buf = static_cast<uint8_t*>(heap_caps_malloc(
+        kIqRecMaxBytes,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT | MALLOC_CAP_CACHE_ALIGNED));
   }
   return g_iq_rec_buf != nullptr;
 }
@@ -15196,6 +15188,14 @@ void process_command(char* command) {
   // equivalent (state changes require `authenticated`, status queries do
   // not, matching RTL_STATUS/RTL_REC_STATUS/RTL_TOOL above).
   // ---------------------------------------------------------------------
+  if (strcmp(command, "RTL_SD_SELF_CHECK") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_SD_SELF_CHECK_ERROR auth_required");
+      return;
+    }
+    (void)orcsdr::storage::run_file_semantics_check();
+    return;
+  }
   if (strncmp(command, "RTL_SD_BENCH", 12) == 0) {
     if (!authenticated) {
       Serial.println("RTL_SD_BENCH_ERROR auth_required");
@@ -15219,6 +15219,7 @@ void process_command(char* command) {
     Serial.println("RTL_DRIVER STATUS|SELF_CHECK  - driver capabilities, shadows and stream metrics");
     Serial.println("RTL_DRIVER GAINMODE AUTO|MANUAL | GAIN <0..496> | RTLAGC ON|OFF | BIAS ON|OFF (auth)");
     Serial.println("RTL_HEALTH                    - heap, task and reset diagnostics");
+    Serial.println("RTL_SD_SELF_CHECK             - authenticated file semantics check");
     Serial.println("RTL_SD_BENCH [4..64]          - authenticated temporary-file SD write benchmark");
     Serial.println("RTL_RESET                     - authenticated software reset");
     Serial.println("RTL_USB_SAFE_MODE_STATUS      - USB crash-guard state");

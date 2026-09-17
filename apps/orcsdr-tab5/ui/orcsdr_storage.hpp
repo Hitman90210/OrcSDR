@@ -58,6 +58,7 @@ bool mounted();
 FileSystem& filesystem();
 uint64_t total_bytes();
 uint64_t used_bytes();
+bool run_file_semantics_check();
 bool run_write_benchmark(uint32_t file_mib = 32);
 
 }  // namespace orcsdr::storage

@@ -16,6 +16,7 @@
 #include <esp_cache.h>
 #include <esp_private/esp_cache_private.h>
 #include <esp_heap_caps.h>
+#include <esp_memory_utils.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -30,6 +31,7 @@ bool g_mounted = false;
 sdmmc_card_t* g_card = nullptr;
 sd_pwr_ctrl_handle_t g_sd_power = nullptr;
 orcsdr::storage::FileSystem g_filesystem;
+bool g_report_next_write_buffer = false;
 
 std::string mounted_path(const char* path) {
   if (!path || strncmp(path, "/sd/", 4) == 0 || strcmp(path, "/sd") == 0) return path ? path : "";
@@ -53,6 +55,7 @@ struct File::State {
   }
   FILE* stream = nullptr;
   uint8_t* write_buffer = nullptr;
+  bool write_buffer_configured = false;
   DIR* directory = nullptr;
   std::string path;
 };
@@ -118,17 +121,32 @@ File FileSystem::open(const char* path, const char* mode, bool) const {
   const bool writing = mode && mode[0] == 'w';
   state->stream = fopen(mounted.c_str(), writing ? "wb" : "rb");
   if (state->stream && writing) {
-    size_t alignment = 0;
-    if (esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &alignment) == ESP_OK && alignment > 0) {
-      state->write_buffer = static_cast<uint8_t*>(heap_caps_aligned_alloc(
-          alignment, kWriteBufferBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-      if (state->write_buffer &&
+    state->write_buffer = static_cast<uint8_t*>(heap_caps_malloc(
+        kWriteBufferBytes,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT | MALLOC_CAP_CACHE_ALIGNED));
+    if (state->write_buffer) {
+      state->write_buffer_configured =
           setvbuf(state->stream, reinterpret_cast<char*>(state->write_buffer), _IOFBF,
-                  kWriteBufferBytes) != 0) {
+                  kWriteBufferBytes) == 0;
+      if (!state->write_buffer_configured) {
         heap_caps_free(state->write_buffer);
         state->write_buffer = nullptr;
       }
     }
+  }
+  if (writing && g_report_next_write_buffer) {
+    g_report_next_write_buffer = false;
+    size_t alignment = 0;
+    const bool alignment_ok =
+        esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &alignment) == ESP_OK && alignment > 0;
+    printf("RTL_SD_BUFFER bytes=%u alignment=%u ptr_aligned=%d size_aligned=%d "
+           "psram=%d setvbuf=%d\n",
+           static_cast<unsigned>(kWriteBufferBytes), static_cast<unsigned>(alignment),
+           state->write_buffer && alignment_ok &&
+                   reinterpret_cast<uintptr_t>(state->write_buffer) % alignment == 0,
+           alignment_ok && kWriteBufferBytes % alignment == 0,
+           state->write_buffer && esp_ptr_external_ram(state->write_buffer),
+           state->write_buffer_configured ? 1 : 0);
   }
   state->path = path;
   return File{std::move(state)};
@@ -183,6 +201,38 @@ FileSystem& filesystem() { return g_filesystem; }
 uint64_t total_bytes() { return g_card ? static_cast<uint64_t>(g_card->csd.capacity) * g_card->csd.sector_size : 0; }
 uint64_t used_bytes() { return 0; }
 
+bool run_file_semantics_check() {
+  if (!mount_tab5_sd() || !g_filesystem.mkdir("/orcsdr")) return false;
+  constexpr const char* kPath = "/orcsdr/sdcheck.bin";
+  constexpr const char* kRenamed = "/orcsdr/sdcheck.renamed";
+  constexpr uint8_t kPayload[] = "OrcSDR storage semantics check";
+  if (g_filesystem.exists(kPath)) (void)g_filesystem.remove(kPath);
+  if (g_filesystem.exists(kRenamed)) (void)g_filesystem.remove(kRenamed);
+
+  File file = g_filesystem.open(kPath, FILE_WRITE, true);
+  const bool create_ok = static_cast<bool>(file);
+  const bool write_ok = create_ok && file.write(kPayload, sizeof(kPayload)) == sizeof(kPayload);
+  const bool flush_ok = write_ok && file.flush();
+  const bool write_close_ok = create_ok && file.close();
+
+  uint8_t actual[sizeof(kPayload)]{};
+  File reader = write_close_ok ? g_filesystem.open(kPath, FILE_READ) : File{};
+  const bool read_ok = reader && reader.read(actual, sizeof(actual)) == sizeof(actual) &&
+                       memcmp(actual, kPayload, sizeof(kPayload)) == 0;
+  const bool close_ok = write_close_ok && reader.close();
+  const bool rename_ok = read_ok && close_ok && g_filesystem.rename(kPath, kRenamed);
+  const bool remove_ok = rename_ok && g_filesystem.remove(kRenamed);
+  const bool pass = create_ok && write_ok && flush_ok && close_ok && read_ok && rename_ok &&
+                    remove_ok;
+  if (g_filesystem.exists(kPath)) (void)g_filesystem.remove(kPath);
+  if (g_filesystem.exists(kRenamed)) (void)g_filesystem.remove(kRenamed);
+  printf("RTL_SD_SELF_CHECK_RESULT create=%d write=%d flush=%d close=%d read=%d "
+         "rename=%d remove=%d pass=%d\n",
+         create_ok, write_ok, flush_ok, close_ok, read_ok, rename_ok, remove_ok, pass);
+  fflush(stdout);
+  return pass;
+}
+
 bool run_write_benchmark(uint32_t file_mib) {
   if (file_mib < 4 || file_mib > 64 || !mount_tab5_sd()) return false;
   constexpr const char* kDirectory = "/orcsdr";
@@ -196,8 +246,8 @@ bool run_write_benchmark(uint32_t file_mib) {
     printf("RTL_SD_BENCH_ERROR reason=cache_alignment\n");
     return false;
   }
-  uint8_t* buffer = static_cast<uint8_t*>(heap_caps_aligned_alloc(
-      cache_alignment, kMaxChunk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  uint8_t* buffer = static_cast<uint8_t*>(heap_caps_malloc(
+      kMaxChunk, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT | MALLOC_CAP_CACHE_ALIGNED));
   if (!buffer) {
     printf("RTL_SD_BENCH_ERROR reason=psram_buffer bytes=%u\n",
            static_cast<unsigned>(kMaxChunk));
@@ -214,6 +264,7 @@ bool run_write_benchmark(uint32_t file_mib) {
          reinterpret_cast<uintptr_t>(buffer) % cache_alignment == 0 ? 1 : 0);
   sdmmc_card_print_info(stdout, g_card);
   bool pass = true;
+  g_report_next_write_buffer = true;
   for (const size_t chunk : benchmark::kChunkBytes) {
     double loop_sum = 0.0;
     double durable_sum = 0.0;

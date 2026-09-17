@@ -29,6 +29,7 @@ param(
   [switch]$GainSweep,
   [switch]$IqDiagnostic,
   [switch]$IqHotTune,
+  [switch]$SdSelfCheck,
   [switch]$SdBenchmark,
   [ValidateRange(4, 64)]
   [int]$SdBenchmarkMiB = 32,
@@ -1737,6 +1738,14 @@ try {
   $script:serial.DiscardInBuffer()
 
   if ($ResetDevice) { Reset-DeviceBaseline }
+
+  if ($SdSelfCheck) {
+    Wait-DeviceReady 60 11000
+    Connect-Authenticated
+    $result = Send-And-Wait 'RTL_SD_SELF_CHECK' '^RTL_SD_SELF_CHECK_RESULT ' 30
+    if ($result -notmatch ' pass=1$') { throw "SD self-check failed: $result" }
+    exit 0
+  }
 
   if ($SdBenchmark) {
     Wait-DeviceReady 60 11000
