@@ -230,7 +230,7 @@ esp_err_t handle_action(httpd_req_t* req) {
     if (origin_size >= sizeof(origin) ||
         httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK ||
         httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK ||
-        !same_origin(origin, host)) {
+        !origin_allowed(origin, host)) {
       return reject_unread("403 Forbidden", "origin rejected");
     }
   }
@@ -378,6 +378,14 @@ void set_enabled(bool enabled) { g_enabled.store(enabled, std::memory_order_rele
 bool enabled() { return g_enabled.load(std::memory_order_acquire); }
 
 bool listening() { return g_listening; }
+
+bool origin_allowed(const char* origin, const char* host) {
+  Snapshot snap;
+  portENTER_CRITICAL(&g_mux);
+  snap = g_snapshot;
+  portEXIT_CRITICAL(&g_mux);
+  return same_origin(origin ? origin : "", host ? host : "", snap.wifi_ip);
+}
 
 bool spectrum_demanded() {
   const uint32_t requested = g_spectrum_requested_ms.load(std::memory_order_acquire);

@@ -4,6 +4,7 @@
 #include "web_command.hpp"
 
 #include <atomic>
+#include <cerrno>
 #include <esp_attr.h>
 #include <esp_timer.h>
 #include <esp_heap_caps.h>
@@ -28,7 +29,12 @@ std::atomic<uint32_t> clients{0}, queue_failures{0}, errors{0};
 std::atomic<uint64_t> producer{0}, ring_written{0}, ring_read{0};
 std::atomic<uint64_t> sent{0}, sent_frames{0}, contention{0}, dropped{0};
 httpd_handle_t server = nullptr;
-struct Client { int fd = -1; bool closing = false; AudioBuffer::Cursor cursor{}; };
+struct Client {
+  int fd = -1;
+  bool closing = false;
+  int64_t send_deadline_us = 0;
+  AudioBuffer::Cursor cursor{};
+};
 Client listeners[2]; // Only the HTTP task accesses these sessions and staging buffers.
 
 void release_client(void* context) {
@@ -41,11 +47,31 @@ void release_client(void* context) {
 }
 
 int complete_send(httpd_handle_t, int fd, const char* data, size_t length, int flags) {
+  Client* client = nullptr;
+  for (auto& item : listeners) if (item.fd == fd) { client = &item; break; }
+  const int64_t deadline = client ? client->send_deadline_us : 0;
   size_t written = 0;
   while (written < length) {
-    const int result = send(fd, data + written, length - written, flags);
-    if (result <= 0) return HTTPD_SOCK_ERR_FAIL;
-    written += static_cast<size_t>(result);
+    const int64_t remaining = deadline - esp_timer_get_time();
+    if (deadline && remaining <= 0) return HTTPD_SOCK_ERR_TIMEOUT;
+    fd_set writable;
+    FD_ZERO(&writable);
+    FD_SET(fd, &writable);
+    timeval wait{static_cast<time_t>(remaining / 1000000),
+                 static_cast<suseconds_t>(remaining % 1000000)};
+    const int ready = select(fd + 1, nullptr, &writable, nullptr, deadline ? &wait : nullptr);
+    if (ready == 0) return HTTPD_SOCK_ERR_TIMEOUT;
+    if (ready < 0) {
+      if (errno == EINTR) continue;
+      return HTTPD_SOCK_ERR_FAIL;
+    }
+    const int result = send(fd, data + written, length - written, flags | MSG_DONTWAIT);
+    if (result > 0) {
+      written += static_cast<size_t>(result);
+      continue;
+    }
+    if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) continue;
+    return HTTPD_SOCK_ERR_FAIL;
   }
   return static_cast<int>(written);
 }
@@ -70,7 +96,9 @@ void send_pending(void*) {
         frame.type = HTTPD_WS_TYPE_BINARY;
         frame.payload = packet;
         frame.len = size;
+        client.send_deadline_us = esp_timer_get_time() + 100000;
         const esp_err_t send_result = httpd_ws_send_frame_async(server, client.fd, &frame);
+        client.send_deadline_us = 0;
         if (send_result == ESP_OK) {
           sent.fetch_add(result.count, std::memory_order_relaxed);
           sent_frames.fetch_add(1, std::memory_order_relaxed);
@@ -108,7 +136,7 @@ esp_err_t handle_stream(httpd_req_t* req) {
   char origin[128]{}, host[96]{};
   if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK ||
       httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK ||
-      !same_origin(origin, host)) return ESP_FAIL;
+      !origin_allowed(origin, host)) return ESP_FAIL;
   Client* available = nullptr;
   for (auto& client : listeners) if (client.fd < 0) { available = &client; break; }
   if (!available || stopping.load(std::memory_order_acquire)) return ESP_FAIL;

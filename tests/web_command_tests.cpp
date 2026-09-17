@@ -35,11 +35,12 @@ int main() {
   assert(slot.submit(next));
   assert(slot.take(received) && received.kind == CommandKind::sound_toggle);
 
-  assert(same_origin("http://192.168.1.75", "192.168.1.75"));
-  assert(same_origin("http://orcsdr.local", "orcsdr.local"));
-  assert(!same_origin("http://orcsdr.local.evil", "orcsdr.local"));
-  assert(!same_origin("null", "orcsdr.local"));
-  assert(!same_origin("https://evil.example", "192.168.1.75"));
-  assert(!same_origin("http://", ""));
+  assert(same_origin("http://192.168.1.75", "192.168.1.75", "192.168.1.75"));
+  assert(same_origin("http://orcsdr.local", "orcsdr.local", "192.168.1.75"));
+  assert(!same_origin("http://evil.example", "evil.example", "192.168.1.75"));
+  assert(!same_origin("http://orcsdr.local.evil", "orcsdr.local", "192.168.1.75"));
+  assert(!same_origin("null", "orcsdr.local", "192.168.1.75"));
+  assert(!same_origin("https://evil.example", "192.168.1.75", "192.168.1.75"));
+  assert(!same_origin("http://", "", "192.168.1.75"));
   std::puts("WEB_COMMAND_OK");
 }

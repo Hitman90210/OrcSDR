@@ -50,8 +50,11 @@ inline bool parse_command(std::string_view body, Command& out) {
 
 // Browser Origin is checked when present. Missing Origin is handled separately
 // by the HTTP adapter for existing non-browser LAN clients; this is not auth.
-inline bool same_origin(std::string_view origin, std::string_view host) {
-  return !host.empty() && origin.substr(0, 7) == "http://" && origin.substr(7) == host;
+inline bool same_origin(std::string_view origin, std::string_view host,
+                        std::string_view wifi_ip) {
+  if (host != "orcsdr.local" && (wifi_ip.empty() || host != wifi_ip)) return false;
+  return origin.size() == host.size() + 7 && origin.substr(0, 7) == "http://" &&
+         origin.substr(7) == host;
 }
 
 // Caller serializes submit/take under the existing web-console mutex.

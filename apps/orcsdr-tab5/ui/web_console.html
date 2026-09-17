@@ -276,10 +276,11 @@ function pollSpectrum(){
   if(specBusy) return;
   specBusy=true;
   var x=new XMLHttpRequest();
+  x.timeout=2000;
   x.responseType='arraybuffer';
+  x.onloadend=function(){ specBusy=false; };
   x.onreadystatechange=function(){
     if(x.readyState!==4) return;
-    specBusy=false;
     if(x.status!==200||!x.response) return;
     var data=new Uint8Array(x.response);
     for(var i=0;i<Math.min(64,data.length);i++){
