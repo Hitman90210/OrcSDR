@@ -26,6 +26,7 @@ idf_component_register(
         "../ui/am_finder.cpp"
         "../ui/shortwave_model.cpp"
         "../ui/shortwave_dashboard.cpp"
+        "../ui/shortwave_dashboard_state.cpp"
         "../ui/receiver_tuning_controls.cpp"
         "../ui/adsb_dashboard.cpp"
         "../ui/adsb_decoder.cpp"

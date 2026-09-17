@@ -1,4 +1,5 @@
 #include "shortwave_dashboard.hpp"
+#include "shortwave_dashboard_state.hpp"
 
 #include "dashboard_audio_control.hpp"
 #include "shortwave_model.hpp"
@@ -34,7 +35,7 @@ constexpr int kGainW = 350;
 
 Snapshot g_snapshot{};
 bool g_active = false;
-bool g_keypad = false;
+DashboardState g_state{};
 uint32_t g_saved_frequency = 7100000;
 char g_entry[12]{};
 EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kSpectrumW]{};
@@ -239,7 +240,7 @@ void enter(const Snapshot& snapshot) {
   g_snapshot = snapshot;
   g_saved_frequency = snapshot.frequency_hz;
   g_active = true;
-  g_keypad = false;
+  g_state.close_modal();
   g_entry[0] = '\0';
   draw();
 }
@@ -252,7 +253,7 @@ void leave() {
 void draw() {
   if (!g_active) return;
   draw_static();
-  if (g_keypad) {
+  if (g_state.modal() == Modal::frequency) {
     draw_keypad();
     return;
   }
@@ -277,6 +278,7 @@ void update(const Snapshot& snapshot) {
       snapshot.gain_step_count != g_snapshot.gain_step_count;
   g_snapshot = snapshot;
   g_saved_frequency = snapshot.frequency_hz;
+  if (!g_state.background_redraw_allowed()) return;
   draw_frequency();
   draw_status();
   draw_quick_controls();
@@ -320,9 +322,9 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
 
 Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return {};
-  if (g_keypad) {
+  if (g_state.modal() == Modal::frequency) {
     if (hit(x, y, 380, 525, 250, 55)) {
-      g_keypad = false;
+      g_state.close_modal();
       g_entry[0] = '\0';
       draw();
       return {};
@@ -331,7 +333,7 @@ Action handle_touch(int32_t x, int32_t y) {
       char* end = nullptr;
       const double mhz = strtod(g_entry, &end);
       if (end != g_entry && *end == '\0' && mhz >= 0.024 && mhz <= 30.0) {
-        g_keypad = false;
+        g_state.close_modal();
         const uint32_t hz = static_cast<uint32_t>(llround(mhz * 1000000.0));
         g_entry[0] = '\0';
         draw();
@@ -360,7 +362,7 @@ Action handle_touch(int32_t x, int32_t y) {
   if (hit(x, y, 42, 128, 64, 72)) return {ActionKind::step_down};
   if (hit(x, y, 734, 128, 64, 72)) return {ActionKind::step_up};
   if (hit(x, y, 120, 120, 565, 92)) {
-    g_keypad = true;
+    g_state.open(Modal::frequency);
     g_entry[0] = '\0';
     draw();
     return {};
@@ -408,14 +410,14 @@ Action handle_gain_drag(int32_t x, int32_t y) {
 }
 
 bool active() { return g_active; }
-bool spectrum_active() { return g_active && !g_keypad; }
+bool spectrum_active() { return g_active && g_state.spectrum_allowed(); }
 uint32_t saved_frequency() { return g_saved_frequency; }
 void note_tuned(uint32_t frequency_hz) { g_saved_frequency = frequency_hz; }
 
 bool dashboard_self_check() {
   const Snapshot saved = g_snapshot;
   const bool was_active = g_active;
-  const bool had_keypad = g_keypad;
+  const Modal saved_modal = g_state.modal();
   char saved_entry[sizeof(g_entry)];
   memcpy(saved_entry, g_entry, sizeof(g_entry));
   Snapshot test{};
@@ -427,7 +429,7 @@ bool dashboard_self_check() {
   test.gain_step_count = 3;
   g_snapshot = test;
   g_active = true;
-  g_keypad = false;
+  g_state.close_modal();
   const bool ok = handle_touch(60, 150).kind == ActionKind::step_down &&
                    handle_touch(760, 150).kind == ActionKind::step_up &&
                    handle_touch(900, 200).kind == ActionKind::gain_auto &&
@@ -458,7 +460,7 @@ bool dashboard_self_check() {
       handle_touch(830, 400).kind == ActionKind::none;
   g_snapshot = saved;
   g_active = was_active;
-  g_keypad = had_keypad;
+  g_state.open(saved_modal);
   memcpy(g_entry, saved_entry, sizeof(g_entry));
   return ok && direct_q_ok && spectrum_layout_ok && peak_pool_ok &&
          touch_tune_bounds_ok &&
