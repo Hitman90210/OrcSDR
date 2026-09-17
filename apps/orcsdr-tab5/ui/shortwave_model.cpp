@@ -142,6 +142,25 @@ ModeGuide mode_guide_for(uint32_t frequency_hz) {
   return {"CHECK", "Frequency alone cannot identify a signal. Check a band guide or schedule.", false};
 }
 
+bool schedule_matches(const StationCard& card, uint32_t frequency_hz,
+                      uint16_t utc_minute, uint8_t utc_weekday) {
+  if (utc_minute >= 24 * 60 || utc_weekday >= 7 || card.frequency_hz == 0)
+    return false;
+  const uint32_t delta = frequency_hz > card.frequency_hz
+                             ? frequency_hz - card.frequency_hz
+                             : card.frequency_hz - frequency_hz;
+  if (delta > card.tolerance_hz) return false;
+  if (card.days_mask == 0) return false;
+  if (card.start_utc_minute <= card.end_utc_minute)
+    return (card.days_mask & (1u << utc_weekday)) &&
+           utc_minute >= card.start_utc_minute && utc_minute < card.end_utc_minute;
+  if (utc_minute >= card.start_utc_minute)
+    return (card.days_mask & (1u << utc_weekday)) != 0;
+  const uint8_t previous_day = static_cast<uint8_t>((utc_weekday + 6) % 7);
+  return utc_minute < card.end_utc_minute &&
+         (card.days_mask & (1u << previous_day));
+}
+
 bool valid(const Memory& memory) {
   return receiver_frequency(memory.frequency_hz) &&
          receiver_bandwidth(memory.bandwidth_hz) &&
@@ -154,6 +173,32 @@ bool valid(const LogEntry& entry) {
          entry.local_offset_minutes >= -14 * 60 &&
          entry.local_offset_minutes <= 14 * 60 && std::isfinite(entry.signal_dbfs) &&
          text_valid(entry);
+}
+
+RecordResult MemoryTable::upsert(const Memory& memory) {
+  if (!valid(memory)) return RecordResult::invalid;
+  for (size_t i = 0; i < size_; ++i)
+    if (records_[i].frequency_hz == memory.frequency_hz &&
+        strcmp(records_[i].mode, memory.mode) == 0)
+      return RecordResult::duplicate;
+  if (size_ == kCapacity) return RecordResult::full;
+  records_[size_++] = memory;
+  return RecordResult::ok;
+}
+
+const Memory* MemoryTable::at(size_t index) const {
+  return index < size_ ? &records_[index] : nullptr;
+}
+
+RecordResult LogTable::append(const LogEntry& entry) {
+  if (!valid(entry)) return RecordResult::invalid;
+  if (size_ == kCapacity) return RecordResult::full;
+  records_[size_++] = entry;
+  return RecordResult::ok;
+}
+
+const LogEntry* LogTable::at(size_t index) const {
+  return index < size_ ? &records_[index] : nullptr;
 }
 
 bool model_self_check() {

@@ -32,6 +32,36 @@ int main() {
   CHECK(!amateur_usb.supported_now);
   CHECK(std::strcmp(unknown.likely_mode, "CHECK") == 0);
   CHECK(!unknown.supported_now);
+
+  StationCard card{};
+  card.frequency_hz = 9800000;
+  card.tolerance_hz = 5000;
+  card.start_utc_minute = 23 * 60;
+  card.end_utc_minute = 60;
+  card.days_mask = 1u << 2;
+  CHECK(schedule_matches(card, 9803000, 23 * 60 + 30, 2));
+  CHECK(schedule_matches(card, 9798000, 30, 3));
+  CHECK(!schedule_matches(card, 9810000, 23 * 60 + 30, 2));
+  CHECK(!schedule_matches(card, 9800000, 90, 3));
+
+  Memory memory{};
+  memory.frequency_hz = 9800000;
+  memory.bandwidth_hz = 6000;
+  std::strcpy(memory.mode, "AM");
+  MemoryTable memories;
+  CHECK(memories.upsert(memory) == RecordResult::ok);
+  CHECK(memories.upsert(memory) == RecordResult::duplicate);
+  CHECK(memories.size() == 1);
+
+  LogEntry log{};
+  log.timestamp_utc = 1789440000;
+  log.frequency_hz = 9800000;
+  log.bandwidth_hz = 6000;
+  log.signal_dbfs = -42.0f;
+  std::strcpy(log.mode, "AM");
+  LogTable logs;
+  CHECK(logs.append(log) == RecordResult::ok);
+  CHECK(logs.size() == 1);
   std::puts("SHORTWAVE_MODEL_HOST_TEST pass=1");
   return 0;
 }
