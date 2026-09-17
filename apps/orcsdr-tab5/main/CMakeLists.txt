@@ -25,6 +25,7 @@ idf_component_register(
         "../ui/am_dashboard.cpp"
         "../ui/am_finder.cpp"
         "../ui/shortwave_model.cpp"
+        "../ui/shortwave_audio_dsp.cpp"
         "../ui/shortwave_library.cpp"
         "../ui/shortwave_library_io.cpp"
         "../ui/shortwave_hunt.cpp"

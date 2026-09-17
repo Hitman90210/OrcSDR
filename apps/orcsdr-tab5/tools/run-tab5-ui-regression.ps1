@@ -29,6 +29,9 @@ param(
   [switch]$GainSweep,
   [switch]$IqDiagnostic,
   [switch]$IqHotTune,
+  [switch]$SdBenchmark,
+  [ValidateRange(4, 64)]
+  [int]$SdBenchmarkMiB = 32,
   [ValidatePattern('^[A-Za-z0-9_-]{1,31}$')]
   [string]$IqTransition = 'manual',
   [ValidateSet('FM', 'AM', 'BROWSE')]
@@ -227,6 +230,24 @@ function Connect-Authenticated {
   }
   Write-SoakLine 'RTL_UI_SOAK_AUTH verified=1'
   Drain-SerialOutput
+}
+
+function Invoke-SdBenchmark {
+  $script:serial.WriteLine("RTL_SD_BENCH $SdBenchmarkMiB")
+  $deadline = [DateTime]::UtcNow.AddMinutes(5)
+  while ([DateTime]::UtcNow -lt $deadline) {
+    try {
+      $line = $script:serial.ReadLine().Trim()
+      if (!$line) { continue }
+      Write-SoakLine $line
+      if (Test-FatalLine $line) { throw "Device crash/reset detected: $line" }
+      if ($line -match '^RTL_SD_BENCH_DONE pass=([01])$') {
+        if ($Matches[1] -ne '1') { throw 'SD benchmark failed.' }
+        return
+      }
+    } catch [System.TimeoutException] {}
+  }
+  throw 'Timed out waiting for SD benchmark.'
 }
 
 function Get-UiState {
@@ -1717,6 +1738,13 @@ try {
 
   if ($ResetDevice) { Reset-DeviceBaseline }
 
+  if ($SdBenchmark) {
+    Wait-DeviceReady 60 11000
+    Connect-Authenticated
+    Invoke-SdBenchmark
+    exit 0
+  }
+
   if ($Driver080Rc3) { Invoke-Driver080Rc3Test; exit 0 }
   if ($WifiOnly) {
     Wait-DeviceReady 60 11000
@@ -1758,7 +1786,10 @@ try {
   }
 
   if (-not $Soak) {
-    if ($Run) { Connect-Authenticated }
+    if ($Run) {
+      Wait-DeviceReady 60 11000
+      Connect-Authenticated
+    }
     $command = if ($Run) { 'RTL_UI_REGRESSION RUN' } else { 'RTL_UI_REGRESSION CHECK' }
     $line = Send-And-Wait $command '^RTL_UI_REGRESSION_RESULT '
     if ($line -notmatch ' pass=1 ') { throw "UI regression failed: $line" }

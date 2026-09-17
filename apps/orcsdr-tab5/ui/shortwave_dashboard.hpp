@@ -1,6 +1,7 @@
 #pragma once
 
 #include "receiver_tuning_controls.hpp"
+#include "shortwave_audio_dsp.hpp"
 #include "shortwave_hunt.hpp"
 #include "shortwave_library.hpp"
 
@@ -19,6 +20,8 @@ struct Snapshot {
   bool running = false;
   bool driver_ready = false;
   bool sound_enabled = true;
+  audio_dsp::Settings dsp{};
+  audio_dsp::Metrics dsp_metrics{};
   int32_t battery_percent = -1;
   char device[48]{};
   receiver_controls::State controls{};
@@ -57,6 +60,12 @@ enum class ActionKind : uint8_t {
   gain_tenth_db,
   rtl_agc,
   audio_boost,
+  clean_audio,
+  noise_reduction_cycle,
+  auto_notch_toggle,
+  squelch_cycle,
+  squelch_down,
+  squelch_up,
   hunt_start,
   hunt_cancel,
   save_memory,

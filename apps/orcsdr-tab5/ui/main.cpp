@@ -4,6 +4,8 @@
 #include <esp_mac.h>
 #include <esp_intr_alloc.h>
 #include <esp_heap_caps.h>
+#include <esp_cache.h>
+#include <esp_private/esp_cache_private.h>
 #include <esp_log.h>
 #include <esp_attr.h>
 #include <esp_app_desc.h>
@@ -46,6 +48,7 @@
 #include "orcsdr_storage.hpp"
 #include "am_dashboard.hpp"
 #include "shortwave_model.hpp"
+#include "shortwave_audio_dsp.hpp"
 #include "shortwave_dashboard.hpp"
 #include "receiver_tuning_controls.hpp"
 #include "am_finder.hpp"
@@ -2368,6 +2371,7 @@ void draw_session_state(const char* message, uint32_t color) {
   // Session notices are useful on the landing surface, but must never paint
   // over an active radio dashboard (notably a received pager message).
   if (g_suppress_home_paint || rtl_ui_active.load(std::memory_order_acquire) ||
+      orcsdr::screens::status().active != orcsdr::screens::Id::none ||
       orcsdr::settings::active() || orcsdr::home::active()) return;
   M5.Display.fillRect(250, 210, 780, 55, TFT_BLACK);
   M5.Display.setTextColor(color, TFT_BLACK);
@@ -2378,6 +2382,7 @@ void draw_session_state(const char* message, uint32_t color) {
 
 void draw_wifi_state() {
   if (g_suppress_home_paint || rtl_ui_active.load(std::memory_order_acquire) ||
+      orcsdr::screens::status().active != orcsdr::screens::Id::none ||
       orcsdr::settings::active() || orcsdr::home::active()) return;
   char message[80];
   uint32_t color = TFT_ORANGE;
@@ -2419,7 +2424,8 @@ const char* charging_state() {
 
 void draw_power_state() {
   /* Never paint over the SDR control rows (tune row sits ~648–700). */
-  if (g_suppress_home_paint || orcsdr::settings::active() || orcsdr::home::active()) return;
+  if (g_suppress_home_paint || orcsdr::screens::status().active != orcsdr::screens::Id::none ||
+      orcsdr::settings::active() || orcsdr::home::active()) return;
   if (rtl_ui_active.load(std::memory_order_acquire)) {
     return;
   }
@@ -3362,9 +3368,13 @@ bool audio_rec_ensure_buffer() {
     g_audio_rec_buf = nullptr;
     g_audio_rec_capacity = 0;
   }
-  g_audio_rec_buf = static_cast<int16_t*>(
-      heap_caps_malloc(kAudioRecMaxSamples * sizeof(int16_t),
-                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  size_t cache_alignment = 0;
+  if (esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &cache_alignment) == ESP_OK &&
+      cache_alignment > 0) {
+    g_audio_rec_buf = static_cast<int16_t*>(heap_caps_aligned_alloc(
+        cache_alignment, kAudioRecMaxSamples * sizeof(int16_t),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
   if (g_audio_rec_buf == nullptr) {
     g_audio_rec_buf = static_cast<int16_t*>(
         heap_caps_malloc(kAudioRecMaxSamples * sizeof(int16_t), MALLOC_CAP_8BIT));
@@ -3843,8 +3853,12 @@ static void write_le32(File& f, uint32_t v) {
 
 bool iq_rec_ensure_buffer() {
   if (g_iq_rec_buf == nullptr) {
-    g_iq_rec_buf = static_cast<uint8_t*>(
-        heap_caps_malloc(kIqRecMaxBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    size_t cache_alignment = 0;
+    if (esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &cache_alignment) == ESP_OK &&
+        cache_alignment > 0) {
+      g_iq_rec_buf = static_cast<uint8_t*>(heap_caps_aligned_alloc(
+          cache_alignment, kIqRecMaxBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    }
   }
   return g_iq_rec_buf != nullptr;
 }
@@ -7634,6 +7648,9 @@ void demodulate_am(const uint8_t* iq, size_t bytes, float audio_scale,
       ++rtl_audio.samples;
     }
   }
+  if (g_stream_band == RtlBand::shortwave)
+    orcsdr::shortwave::audio_dsp::process(audio, audio_count,
+                                         rtl_signal_dbfs_smooth);
   queue_audio_samples(audio, audio_count);
 }
 
@@ -9680,6 +9697,8 @@ orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot() {
                      RtlCaptureState::running;
   snapshot.driver_ready = rtl_device_ready();
   snapshot.sound_enabled = rtl_audio_user_enabled.load(std::memory_order_relaxed);
+  snapshot.dsp = orcsdr::shortwave::audio_dsp::settings();
+  snapshot.dsp_metrics = orcsdr::shortwave::audio_dsp::metrics();
   snapshot.battery_percent = M5.Power.getBatteryLevel();
   snapshot.controls.audio_boost =
       rtl_shortwave_audio_boost.load(std::memory_order_relaxed);
@@ -9850,6 +9869,36 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       rtl_shortwave_audio_boost.store(action.value != 0, std::memory_order_release);
       Serial.printf("RTL_SHORTWAVE_AUDIO_BOOST enabled=%ld gain_db=12\n",
                     static_cast<long>(action.value));
+      break;
+    case ActionKind::clean_audio:
+      rtl_filter_bandwidth_hz.store(6000, std::memory_order_relaxed);
+      rtl_shortwave_audio_boost.store(false, std::memory_order_release);
+      orcsdr::shortwave::audio_dsp::apply_clean_preset();
+      orcsdr::shortwave::audio_dsp::reset();
+      rtl_audio_reset_demod_filters();
+      reset_spectrum_renderer();
+      Serial.println("RTL_SHORTWAVE_DSP clean=1 bandwidth_hz=6000 nr=low notch=auto sql=off");
+      break;
+    case ActionKind::noise_reduction_cycle:
+      orcsdr::shortwave::audio_dsp::cycle_noise_reduction();
+      Serial.printf("RTL_SHORTWAVE_DSP nr=%u\n", static_cast<unsigned>(
+          orcsdr::shortwave::audio_dsp::settings().noise_reduction));
+      break;
+    case ActionKind::auto_notch_toggle:
+      orcsdr::shortwave::audio_dsp::toggle_auto_notch();
+      Serial.printf("RTL_SHORTWAVE_DSP notch=%d\n",
+                    orcsdr::shortwave::audio_dsp::settings().auto_notch);
+      break;
+    case ActionKind::squelch_cycle:
+      orcsdr::shortwave::audio_dsp::cycle_squelch();
+      Serial.printf("RTL_SHORTWAVE_DSP squelch=%u\n", static_cast<unsigned>(
+          orcsdr::shortwave::audio_dsp::settings().squelch));
+      break;
+    case ActionKind::squelch_down:
+      orcsdr::shortwave::audio_dsp::adjust_squelch(-5);
+      break;
+    case ActionKind::squelch_up:
+      orcsdr::shortwave::audio_dsp::adjust_squelch(5);
       break;
     case ActionKind::hunt_start:
       if (action.value >= 0 && static_cast<size_t>(action.value) <
@@ -15147,6 +15196,21 @@ void process_command(char* command) {
   // equivalent (state changes require `authenticated`, status queries do
   // not, matching RTL_STATUS/RTL_REC_STATUS/RTL_TOOL above).
   // ---------------------------------------------------------------------
+  if (strncmp(command, "RTL_SD_BENCH", 12) == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_SD_BENCH_ERROR auth_required");
+      return;
+    }
+    unsigned file_mib = 32;
+    if (command[12] != '\0' &&
+        (command[12] != ' ' || sscanf(command + 13, "%u", &file_mib) != 1 ||
+         file_mib < 4 || file_mib > 64)) {
+      Serial.println("RTL_SD_BENCH_INVALID use RTL_SD_BENCH [4..64 MiB]");
+      return;
+    }
+    (void)orcsdr::storage::run_write_benchmark(file_mib);
+    return;
+  }
   if (strcmp(command, "RTL_HELP") == 0) {
     Serial.println("RTL_HELP_BEGIN");
     Serial.println("RTL_STATUS                    - device connection info");
@@ -15155,6 +15219,7 @@ void process_command(char* command) {
     Serial.println("RTL_DRIVER STATUS|SELF_CHECK  - driver capabilities, shadows and stream metrics");
     Serial.println("RTL_DRIVER GAINMODE AUTO|MANUAL | GAIN <0..496> | RTLAGC ON|OFF | BIAS ON|OFF (auth)");
     Serial.println("RTL_HEALTH                    - heap, task and reset diagnostics");
+    Serial.println("RTL_SD_BENCH [4..64]          - authenticated temporary-file SD write benchmark");
     Serial.println("RTL_RESET                     - authenticated software reset");
     Serial.println("RTL_USB_SAFE_MODE_STATUS      - USB crash-guard state");
     Serial.println("RTL_USB_SAFE_MODE_RESET CONFIRM - unplug receiver, then clear guard and restart (auth)");
