@@ -7,6 +7,13 @@ namespace orcsdr::shortwave {
 
 enum class ReceiverRoute : uint8_t { unknown, direct_q, hf_upconverter, tuner };
 enum class FilterPreset : uint8_t { narrow, normal, wide };
+enum class SpectrumRegion : uint8_t { vlf_edge, lf, mf, hf, outside };
+
+struct ModeGuide {
+  const char* likely_mode;
+  const char* reason;
+  bool supported_now;
+};
 
 struct BroadcastBand {
   const char* label;
@@ -72,6 +79,9 @@ const BroadcastBand* band_for(uint32_t frequency_hz);
 uint32_t adjacent_band_frequency(uint32_t frequency_hz, int direction);
 uint32_t next_tuning_step(uint32_t current_hz);
 uint32_t filter_bandwidth(FilterPreset preset);
+SpectrumRegion region_for(uint32_t frequency_hz);
+const char* region_label(SpectrumRegion region);
+ModeGuide mode_guide_for(uint32_t frequency_hz);
 bool valid(const Memory& memory);
 bool valid(const LogEntry& entry);
 bool model_self_check();
