@@ -40,11 +40,26 @@ void test_modal_switch_does_not_fall_through_to_live() {
   CHECK(!state.spectrum_allowed());
 }
 
+void test_all_tabs_are_selectable() {
+  using namespace orcsdr::shortwave;
+  DashboardState state;
+  CHECK(state.tab() == Tab::live);
+  state.select_tab(Tab::on_air);
+  CHECK(state.tab() == Tab::on_air);
+  state.select_tab(Tab::hunt);
+  CHECK(state.tab() == Tab::hunt);
+  state.select_tab(Tab::memory);
+  CHECK(state.tab() == Tab::memory);
+  state.select_tab(Tab::logbook);
+  CHECK(state.tab() == Tab::logbook);
+}
+
 }  // namespace
 
 int main() {
   test_frequency_modal_owns_content_updates();
   test_modal_switch_does_not_fall_through_to_live();
+  test_all_tabs_are_selectable();
   std::puts("shortwave_dashboard_state_tests: PASS");
   return 0;
 }

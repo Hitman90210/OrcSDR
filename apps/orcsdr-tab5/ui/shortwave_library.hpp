@@ -8,7 +8,7 @@
 
 namespace orcsdr::shortwave {
 
-enum class StorageStatus : uint8_t { ready, unavailable, read_failed, write_failed };
+enum class StorageStatus : uint8_t { unavailable, ready, read_failed, write_failed };
 
 constexpr char kLibraryRoot[] = "/OrcSDR/shortwave";
 constexpr char kMemoriesPath[] = "/OrcSDR/shortwave/memories.csv";

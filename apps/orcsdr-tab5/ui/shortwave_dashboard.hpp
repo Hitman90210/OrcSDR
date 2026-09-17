@@ -1,6 +1,8 @@
 #pragma once
 
 #include "receiver_tuning_controls.hpp"
+#include "shortwave_hunt.hpp"
+#include "shortwave_library.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +24,16 @@ struct Snapshot {
   receiver_controls::State controls{};
   int gain_steps_tenth_db[32]{};
   uint8_t gain_step_count = 0;
+  const MemoryTable* memories = nullptr;
+  const LogTable* logs = nullptr;
+  uint16_t memory_count = 0;
+  uint16_t log_count = 0;
+  StorageStatus storage_status = StorageStatus::unavailable;
+  Candidate hunt_candidates[Hunt::kCapacity]{};
+  uint8_t hunt_candidate_count = 0;
+  bool hunt_active = false;
+  uint16_t hunt_step = 0;
+  uint16_t hunt_total = 0;
 };
 
 enum class ActionKind : uint8_t {
@@ -39,6 +51,11 @@ enum class ActionKind : uint8_t {
   gain_tenth_db,
   rtl_agc,
   audio_boost,
+  hunt_start,
+  hunt_cancel,
+  save_memory,
+  save_log,
+  export_log,
   open_settings,
   exit_home,
 };
@@ -60,6 +77,9 @@ bool active();
 bool spectrum_active();
 uint32_t saved_frequency();
 void note_tuned(uint32_t frequency_hz);
+const char* pending_memory_label();
+const char* pending_log_antenna();
+const char* pending_log_notes();
 bool dashboard_self_check();
 
 }  // namespace orcsdr::shortwave

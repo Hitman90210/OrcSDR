@@ -4,6 +4,7 @@
 #include "dashboard_audio_control.hpp"
 #include "shortwave_model.hpp"
 #include "spectrum_resample.hpp"
+#include "text_editor.hpp"
 
 #include <M5Unified.h>
 
@@ -37,7 +38,11 @@ Snapshot g_snapshot{};
 bool g_active = false;
 DashboardState g_state{};
 uint32_t g_saved_frequency = 7100000;
+size_t g_hunt_band = 0;
 char g_entry[12]{};
+char g_pending_memory_label[64]{};
+char g_pending_log_antenna[64]{};
+char g_pending_log_notes[240]{};
 EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kSpectrumW]{};
 
 int spectrum_x_for_bin(size_t bin, size_t visible_bins) {
@@ -88,7 +93,12 @@ void draw_frequency() {
            static_cast<unsigned long>(g_snapshot.frequency_hz % 1000u));
   text(value, 402, 159, TFT_WHITE, 4);
   const BroadcastBand* sw_band = band_for(g_snapshot.frequency_hz);
-  text(sw_band ? sw_band->label : "GENERAL HF", 402, 198, kGreen, 2);
+  const ModeGuide guide = mode_guide_for(g_snapshot.frequency_hz);
+  char context[64];
+  snprintf(context, sizeof(context), "%s  |  %s %s",
+           sw_band ? sw_band->label : region_label(region_for(g_snapshot.frequency_hz)),
+           guide.likely_mode, guide.supported_now ? "READY" : "GUIDE");
+  text(context, 402, 198, guide.supported_now ? kGreen : kYellow, 2);
 }
 
 void draw_status() {
@@ -202,8 +212,137 @@ void draw_static() {
 
   constexpr const char* tabs[] = {"LIVE", "ON AIR", "HUNT", "MEMORY", "LOGBOOK"};
   for (int i = 0; i < 5; ++i) {
-    button(i * kTabW + 4, kTabsY + 4, kTabW - 8, 82, tabs[i], i == 0, i == 0);
-    if (i) text("LATER", i * kTabW + kTabW / 2, kTabsY + 68, kMuted, 1);
+    button(i * kTabW + 4, kTabsY + 4, kTabW - 8, 82, tabs[i],
+           static_cast<int>(g_state.tab()) == i);
+  }
+}
+
+void draw_page_title(const char* title, const char* subtitle) {
+  M5.Display.clearScrollRect();
+  M5.Display.fillRect(0, 93, 1280, kTabsY - 93, TFT_BLACK);
+  text(title, 36, 126, TFT_WHITE, 4, middle_left);
+  text(subtitle, 38, 166, kMuted, 2, middle_left);
+}
+
+void draw_storage_status() {
+  const bool ready = g_snapshot.storage_status == StorageStatus::ready;
+  text(ready ? "SD LIBRARY READY" : "SD LIBRARY UNAVAILABLE", 1220, 130,
+       ready ? kGreen : TFT_ORANGE, 2, middle_right);
+}
+
+void draw_guide_card(int y) {
+  const ModeGuide guide = mode_guide_for(g_snapshot.frequency_hz);
+  card(36, y, 1208, 122);
+  char heading[72];
+  snprintf(heading, sizeof(heading), "%s  |  TRY %s",
+           region_label(region_for(g_snapshot.frequency_hz)), guide.likely_mode);
+  text(heading, 62, y + 30, guide.supported_now ? kGreen : kYellow, 3,
+       middle_left);
+  text(guide.reason, 62, y + 78, TFT_WHITE, 2, middle_left);
+  if (!guide.supported_now)
+    text("This mode is guidance only until its demodulator is implemented.",
+         62, y + 103, kMuted, 1, middle_left);
+}
+
+void draw_on_air() {
+  draw_page_title("ON AIR", "Local schedules are suggestions, never decoded identity");
+  draw_storage_status();
+  draw_guide_card(194);
+  card(36, 340, 1208, 210);
+  text("NO LOCAL SCHEDULE CATALOG LOADED", 640, 404, TFT_ORANGE, 3);
+  text("Use LIVE to explore, or HUNT to scan an international broadcast band.",
+       640, 452, TFT_WHITE, 2);
+  text("A future catalog update can populate this page without changing the receiver.",
+       640, 494, kMuted, 2);
+}
+
+void draw_hunt() {
+  draw_page_title("HUNT", "Scan one broadcast band and keep the strongest candidates");
+  const BroadcastBand* selected = band(g_hunt_band);
+  char selection[64];
+  snprintf(selection, sizeof(selection), "BAND  %s  %.3f-%.3f MHz",
+           selected ? selected->label : "--",
+           selected ? static_cast<double>(selected->min_hz) / 1000000.0 : 0.0,
+           selected ? static_cast<double>(selected->max_hz) / 1000000.0 : 0.0);
+  button(36, 190, 80, 58, "<");
+  button(126, 190, 540, 58, selection, true);
+  button(676, 190, 80, 58, ">");
+  button(790, 190, 220, 58, g_snapshot.hunt_active ? "SCANNING" : "START",
+         g_snapshot.hunt_active);
+  button(1020, 190, 224, 58, "CANCEL", false, g_snapshot.hunt_active);
+  char progress[48];
+  snprintf(progress, sizeof(progress), "%u / %u", g_snapshot.hunt_step,
+           g_snapshot.hunt_total);
+  text(progress, 1170, 165, g_snapshot.hunt_active ? kGreen : kMuted, 2);
+  if (!g_snapshot.hunt_candidate_count) {
+    card(36, 280, 1208, 250);
+    text(g_snapshot.hunt_active ? "LISTENING FOR PEAKS..." : "NO HUNT RESULTS YET",
+         640, 370, g_snapshot.hunt_active ? kGreen : TFT_WHITE, 3);
+    text("Select a band, start the scan, then tap a result to listen.",
+         640, 420, kMuted, 2);
+    return;
+  }
+  for (size_t i = 0; i < std::min<size_t>(g_snapshot.hunt_candidate_count, 6); ++i) {
+    const Candidate& candidate = g_snapshot.hunt_candidates[i];
+    char row[96];
+    snprintf(row, sizeof(row), "%u.  %.3f MHz     %+.1f dBFS",
+             static_cast<unsigned>(i + 1),
+             static_cast<double>(candidate.frequency_hz) / 1000000.0,
+             static_cast<double>(candidate.level_dbfs));
+    button(36, 270 + static_cast<int>(i) * 52, 1208, 44, row);
+  }
+}
+
+void draw_memory() {
+  draw_page_title("MEMORY", "Saved frequencies live on the SD card");
+  draw_storage_status();
+  button(980, 170, 264, 58, "SAVE CURRENT", true,
+         g_snapshot.storage_status == StorageStatus::ready);
+  const size_t count = g_snapshot.memories ? g_snapshot.memories->size() : 0;
+  if (!count) {
+    card(36, 260, 1208, 270);
+    text("NO SHORTWAVE MEMORIES", 640, 355, TFT_WHITE, 3);
+    text("Tune a signal in LIVE, then save the current frequency here.",
+         640, 410, kMuted, 2);
+    return;
+  }
+  for (size_t i = 0; i < std::min<size_t>(count, 7); ++i) {
+    const Memory* memory = g_snapshot.memories->at(i);
+    if (!memory) continue;
+    char row[128];
+    snprintf(row, sizeof(row), "%u.  %.3f MHz  %-3s  %s",
+             static_cast<unsigned>(i + 1),
+             static_cast<double>(memory->frequency_hz) / 1000000.0,
+             memory->mode, memory->station[0] ? memory->station : "Unlabeled signal");
+    button(36, 250 + static_cast<int>(i) * 50, 1208, 42, row);
+  }
+}
+
+void draw_logbook() {
+  draw_page_title("LOGBOOK", "Reception history and community-friendly exports");
+  draw_storage_status();
+  button(720, 170, 250, 58, "LOG CURRENT", true,
+         g_snapshot.storage_status == StorageStatus::ready);
+  button(984, 170, 260, 58, "EXPORT CSV + ADIF", false,
+         g_snapshot.storage_status == StorageStatus::ready);
+  const size_t count = g_snapshot.logs ? g_snapshot.logs->size() : 0;
+  if (!count) {
+    card(36, 260, 1208, 270);
+    text("NO RECEPTION LOGS", 640, 355, TFT_WHITE, 3);
+    text("Log what you actually heard; station identity may remain unknown.",
+         640, 410, kMuted, 2);
+    return;
+  }
+  const size_t first = count > 7 ? count - 7 : 0;
+  for (size_t row_index = 0; row_index < count - first; ++row_index) {
+    const LogEntry* entry = g_snapshot.logs->at(first + row_index);
+    if (!entry) continue;
+    char row[144];
+    snprintf(row, sizeof(row), "%.3f MHz  %-3s  %+.1f dBFS  %s",
+             static_cast<double>(entry->frequency_hz) / 1000000.0,
+             entry->mode, static_cast<double>(entry->signal_dbfs),
+             entry->station[0] ? entry->station : "Unidentified reception");
+    button(36, 250 + static_cast<int>(row_index) * 50, 1208, 42, row);
   }
 }
 
@@ -241,6 +380,11 @@ void enter(const Snapshot& snapshot) {
   g_saved_frequency = snapshot.frequency_hz;
   g_active = true;
   g_state.close_modal();
+  g_state.select_tab(Tab::live);
+  if (const BroadcastBand* current = band_for(snapshot.frequency_hz)) {
+    for (size_t i = 0; i < band_count(); ++i)
+      if (band(i) == current) g_hunt_band = i;
+  }
   g_entry[0] = '\0';
   draw();
 }
@@ -257,14 +401,35 @@ void draw() {
     draw_keypad();
     return;
   }
-  draw_frequency();
-  draw_status();
-  draw_controls();
-  draw_quick_controls();
+  if (g_state.modal() != Modal::none) {
+    text_editor::draw();
+    return;
+  }
+  switch (g_state.tab()) {
+    case Tab::live:
+      draw_frequency();
+      draw_status();
+      draw_controls();
+      draw_quick_controls();
+      break;
+    case Tab::on_air: draw_on_air(); break;
+    case Tab::hunt: draw_hunt(); break;
+    case Tab::memory: draw_memory(); break;
+    case Tab::logbook: draw_logbook(); break;
+  }
 }
 
 void update(const Snapshot& snapshot) {
   if (!g_active) return;
+  const bool page_changed =
+      snapshot.storage_status != g_snapshot.storage_status ||
+      snapshot.memories != g_snapshot.memories || snapshot.logs != g_snapshot.logs ||
+      snapshot.memory_count != g_snapshot.memory_count ||
+      snapshot.log_count != g_snapshot.log_count ||
+      snapshot.hunt_active != g_snapshot.hunt_active ||
+      snapshot.hunt_step != g_snapshot.hunt_step ||
+      snapshot.hunt_total != g_snapshot.hunt_total ||
+      snapshot.hunt_candidate_count != g_snapshot.hunt_candidate_count;
   const bool controls_changed =
       snapshot.controls.route != g_snapshot.controls.route ||
       snapshot.controls.capabilities.rf_gain != g_snapshot.controls.capabilities.rf_gain ||
@@ -279,6 +444,18 @@ void update(const Snapshot& snapshot) {
   g_snapshot = snapshot;
   g_saved_frequency = snapshot.frequency_hz;
   if (!g_state.background_redraw_allowed()) return;
+  if (g_state.tab() != Tab::live) {
+    if (page_changed) {
+      switch (g_state.tab()) {
+        case Tab::on_air: draw_on_air(); break;
+        case Tab::hunt: draw_hunt(); break;
+        case Tab::memory: draw_memory(); break;
+        case Tab::logbook: draw_logbook(); break;
+        case Tab::live: break;
+      }
+    }
+    return;
+  }
   draw_frequency();
   draw_status();
   draw_quick_controls();
@@ -287,7 +464,7 @@ void update(const Snapshot& snapshot) {
 
 void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
                    float floor) {
-  if (!g_active || !levels || visible_bins < 2) return;
+  if (!spectrum_active() || !levels || visible_bins < 2) return;
   M5.Display.startWrite();
   M5.Display.fillRect(kSpectrumX + 1, kSpectrumY + 1, kSpectrumW - 2,
                       kSpectrumH - 2, TFT_BLACK);
@@ -322,6 +499,40 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
 
 Action handle_touch(int32_t x, int32_t y) {
   if (!g_active) return {};
+  if (g_state.modal() != Modal::none && g_state.modal() != Modal::frequency) {
+    const Modal modal = g_state.modal();
+    const auto result = text_editor::handle_touch(x, y);
+    if (result == text_editor::Result::cancelled) {
+      g_state.close_modal();
+      draw();
+      return {};
+    }
+    if (result != text_editor::Result::accepted) return {};
+    if (modal == Modal::memory_label) {
+      snprintf(g_pending_memory_label, sizeof(g_pending_memory_label), "%s",
+               text_editor::value());
+      g_state.close_modal();
+      draw();
+      return {ActionKind::save_memory};
+    }
+    if (modal == Modal::log_antenna) {
+      snprintf(g_pending_log_antenna, sizeof(g_pending_log_antenna), "%s",
+               text_editor::value());
+      g_state.open(Modal::log_notes);
+      text_editor::begin("RECEPTION NOTES", "", sizeof(g_pending_log_notes) - 1,
+                         false, "LOG");
+      text_editor::draw();
+      return {};
+    }
+    if (modal == Modal::log_notes) {
+      snprintf(g_pending_log_notes, sizeof(g_pending_log_notes), "%s",
+               text_editor::value());
+      g_state.close_modal();
+      draw();
+      return {ActionKind::save_log};
+    }
+    return {};
+  }
   if (g_state.modal() == Modal::frequency) {
     if (hit(x, y, 380, 525, 250, 55)) {
       g_state.close_modal();
@@ -359,6 +570,71 @@ Action handle_touch(int32_t x, int32_t y) {
   }
   if (audio_header::home_hit(x, y)) return {ActionKind::exit_home};
   if (audio_header::settings_hit(x, y)) return {ActionKind::open_settings};
+  if (y >= kTabsY) {
+    const int index = std::clamp<int32_t>(x / kTabW, 0, 4);
+    g_state.select_tab(static_cast<Tab>(index));
+    draw();
+    return {};
+  }
+
+  if (g_state.tab() == Tab::on_air) return {};
+
+  if (g_state.tab() == Tab::hunt) {
+    if (hit(x, y, 36, 190, 80, 58)) {
+      g_hunt_band = (g_hunt_band + band_count() - 1) % band_count();
+      draw();
+      return {};
+    }
+    if (hit(x, y, 676, 190, 80, 58)) {
+      g_hunt_band = (g_hunt_band + 1) % band_count();
+      draw();
+      return {};
+    }
+    if (hit(x, y, 790, 190, 220, 58) && !g_snapshot.hunt_active)
+      return {ActionKind::hunt_start, static_cast<int32_t>(g_hunt_band)};
+    if (hit(x, y, 1020, 190, 224, 58) && g_snapshot.hunt_active)
+      return {ActionKind::hunt_cancel};
+    for (size_t i = 0; !g_snapshot.hunt_active &&
+                       i < std::min<size_t>(g_snapshot.hunt_candidate_count, 6); ++i)
+      if (hit(x, y, 36, 270 + static_cast<int>(i) * 52, 1208, 44))
+        return {ActionKind::tune_hz,
+                static_cast<int32_t>(g_snapshot.hunt_candidates[i].frequency_hz)};
+    return {};
+  }
+
+  if (g_state.tab() == Tab::memory) {
+    if (g_snapshot.storage_status == StorageStatus::ready &&
+        hit(x, y, 980, 170, 264, 58)) {
+      g_state.open(Modal::memory_label);
+      text_editor::begin("MEMORY LABEL", "", sizeof(g_pending_memory_label) - 1,
+                         false, "SAVE");
+      text_editor::draw();
+      return {};
+    }
+    const size_t count = g_snapshot.memories ? g_snapshot.memories->size() : 0;
+    for (size_t i = 0; i < std::min<size_t>(count, 7); ++i) {
+      const Memory* memory = g_snapshot.memories->at(i);
+      if (memory && hit(x, y, 36, 250 + static_cast<int>(i) * 50, 1208, 42))
+        return {ActionKind::tune_hz, static_cast<int32_t>(memory->frequency_hz)};
+    }
+    return {};
+  }
+
+  if (g_state.tab() == Tab::logbook) {
+    if (g_snapshot.storage_status == StorageStatus::ready &&
+        hit(x, y, 720, 170, 250, 58)) {
+      g_state.open(Modal::log_antenna);
+      text_editor::begin("ANTENNA USED", "", sizeof(g_pending_log_antenna) - 1,
+                         false, "NEXT");
+      text_editor::draw();
+      return {};
+    }
+    if (g_snapshot.storage_status == StorageStatus::ready &&
+        hit(x, y, 984, 170, 260, 58))
+      return {ActionKind::export_log};
+    return {};
+  }
+
   if (hit(x, y, 42, 128, 64, 72)) return {ActionKind::step_down};
   if (hit(x, y, 734, 128, 64, 72)) return {ActionKind::step_up};
   if (hit(x, y, 120, 120, 565, 92)) {
@@ -397,7 +673,8 @@ Action handle_touch(int32_t x, int32_t y) {
 }
 
 Action handle_gain_drag(int32_t x, int32_t y) {
-  if (!g_active || !hit(x, y, kGainX - 16, kGainY - 20, kGainW + 32, 62) ||
+  if (!g_active || g_state.tab() != Tab::live ||
+      !hit(x, y, kGainX - 16, kGainY - 20, kGainW + 32, 62) ||
       g_snapshot.gain_step_count == 0 ||
       receiver_controls::item(receiver_controls::Control::rf_gain,
                               g_snapshot.controls).availability !=
@@ -413,11 +690,15 @@ bool active() { return g_active; }
 bool spectrum_active() { return g_active && g_state.spectrum_allowed(); }
 uint32_t saved_frequency() { return g_saved_frequency; }
 void note_tuned(uint32_t frequency_hz) { g_saved_frequency = frequency_hz; }
+const char* pending_memory_label() { return g_pending_memory_label; }
+const char* pending_log_antenna() { return g_pending_log_antenna; }
+const char* pending_log_notes() { return g_pending_log_notes; }
 
 bool dashboard_self_check() {
   const Snapshot saved = g_snapshot;
   const bool was_active = g_active;
   const Modal saved_modal = g_state.modal();
+  const Tab saved_tab = g_state.tab();
   char saved_entry[sizeof(g_entry)];
   memcpy(saved_entry, g_entry, sizeof(g_entry));
   Snapshot test{};
@@ -430,6 +711,7 @@ bool dashboard_self_check() {
   g_snapshot = test;
   g_active = true;
   g_state.close_modal();
+  g_state.select_tab(Tab::live);
   const bool ok = handle_touch(60, 150).kind == ActionKind::step_down &&
                    handle_touch(760, 150).kind == ActionKind::step_up &&
                    handle_touch(900, 200).kind == ActionKind::gain_auto &&
@@ -461,6 +743,7 @@ bool dashboard_self_check() {
   g_snapshot = saved;
   g_active = was_active;
   g_state.open(saved_modal);
+  g_state.select_tab(saved_tab);
   memcpy(g_entry, saved_entry, sizeof(g_entry));
   return ok && direct_q_ok && spectrum_layout_ok && peak_pool_ok &&
          touch_tune_bounds_ok &&

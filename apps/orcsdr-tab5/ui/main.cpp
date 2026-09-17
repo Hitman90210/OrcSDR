@@ -1160,8 +1160,25 @@ static std::atomic<bool> rtl_fm_gain_auto_selecting{false};
 static std::atomic<bool> rtl_fm_gain_auto_restart{true};
 static uint32_t rtl_shortwave_step_hz = 1000;
 static std::atomic<bool> rtl_shortwave_audio_boost{false};
+EXT_RAM_BSS_ATTR static orcsdr::shortwave::LibraryState shortwave_library_state{};
+static bool shortwave_library_loaded = false;
+static orcsdr::shortwave::Hunt shortwave_hunt;
+static portMUX_TYPE shortwave_hunt_mux = portMUX_INITIALIZER_UNLOCKED;
+static std::atomic<bool> shortwave_hunt_requested{false};
+static std::atomic<bool> shortwave_hunt_cancel_requested{false};
+static std::atomic<bool> shortwave_hunt_active{false};
+static std::atomic<uint8_t> shortwave_hunt_band_index{0};
+static std::atomic<uint16_t> shortwave_hunt_step{0};
+static std::atomic<uint16_t> shortwave_hunt_total{0};
 
-enum class ActiveScan : uint8_t { none, fm_presets, am_presets, p25_survey, pocsag_discovery };
+enum class ActiveScan : uint8_t {
+  none,
+  fm_presets,
+  am_presets,
+  shortwave_hunt,
+  p25_survey,
+  pocsag_discovery,
+};
 orcsdr::radio::Session radio_session;
 orcsdr::scan::Engine scan_engine;
 ActiveScan active_scan = ActiveScan::none;  // Streaming task only.
@@ -9632,7 +9649,26 @@ void handle_am_dashboard_action(const orcsdr::am::Action& action) {
   refresh_active_screen();
 }
 
+void ensure_shortwave_library_loaded() {
+  if (shortwave_library_loaded) return;
+  if (!ensure_tab5_sd() || g_sd_fs == nullptr) {
+    shortwave_library_state.status = orcsdr::shortwave::StorageStatus::unavailable;
+    return;
+  }
+  char error[96]{};
+  shortwave_library_loaded = true;
+  if (!orcsdr::shortwave::load_library(*g_sd_fs, &shortwave_library_state,
+                                       error, sizeof(error)))
+    Serial.printf("RTL_SHORTWAVE_LIBRARY load_failed error=%s\n", error);
+  else
+    Serial.printf("RTL_SHORTWAVE_LIBRARY ready memories=%u logs=%u invalid=%u\n",
+                  static_cast<unsigned>(shortwave_library_state.memories.size()),
+                  static_cast<unsigned>(shortwave_library_state.logs.size()),
+                  static_cast<unsigned>(shortwave_library_state.invalid_rows));
+}
+
 orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot() {
+  ensure_shortwave_library_loaded();
   orcsdr::shortwave::Snapshot snapshot{};
   snapshot.frequency_hz = rtl_ui_frequency_hz;
   snapshot.step_hz = rtl_shortwave_step_hz;
@@ -9648,6 +9684,20 @@ orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot() {
   snapshot.controls.audio_boost =
       rtl_shortwave_audio_boost.load(std::memory_order_relaxed);
   snapshot.controls.volume = rtl_ui_volume;
+  snapshot.memories = &shortwave_library_state.memories;
+  snapshot.logs = &shortwave_library_state.logs;
+  snapshot.memory_count = static_cast<uint16_t>(shortwave_library_state.memories.size());
+  snapshot.log_count = static_cast<uint16_t>(shortwave_library_state.logs.size());
+  snapshot.storage_status = shortwave_library_state.status;
+  snapshot.hunt_active = shortwave_hunt_active.load(std::memory_order_acquire);
+  snapshot.hunt_step = shortwave_hunt_step.load(std::memory_order_relaxed);
+  snapshot.hunt_total = shortwave_hunt_total.load(std::memory_order_relaxed);
+  portENTER_CRITICAL(&shortwave_hunt_mux);
+  snapshot.hunt_candidate_count = static_cast<uint8_t>(
+      std::min(shortwave_hunt.candidate_count(), std::size(snapshot.hunt_candidates)));
+  for (size_t i = 0; i < snapshot.hunt_candidate_count; ++i)
+    snapshot.hunt_candidates[i] = *shortwave_hunt.candidate(i);
+  portEXIT_CRITICAL(&shortwave_hunt_mux);
   const uint32_t caps = rtl_device_capabilities();
   snapshot.controls.route =
       (caps & ESP_RTL_SDR_CAP_DIRECT_SAMPLING) && snapshot.frequency_hz < 24000000u
@@ -9765,10 +9815,106 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       Serial.printf("RTL_SHORTWAVE_AUDIO_BOOST enabled=%ld gain_db=12\n",
                     static_cast<long>(action.value));
       break;
+    case ActionKind::hunt_start:
+      if (action.value >= 0 && static_cast<size_t>(action.value) <
+                                   orcsdr::shortwave::band_count()) {
+        shortwave_hunt_band_index.store(static_cast<uint8_t>(action.value),
+                                        std::memory_order_release);
+        shortwave_hunt_requested.store(true, std::memory_order_release);
+      }
+      break;
+    case ActionKind::hunt_cancel:
+      shortwave_hunt_cancel_requested.store(true, std::memory_order_release);
+      break;
+    case ActionKind::save_memory: {
+      ensure_shortwave_library_loaded();
+      orcsdr::shortwave::Memory memory{};
+      memory.frequency_hz = rtl_ui_frequency_hz;
+      memory.bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
+      memory.saved_utc = orcsdr::time_service::now().utc;
+      strlcpy(memory.mode, "AM", sizeof(memory.mode));
+      strlcpy(memory.station, orcsdr::shortwave::pending_memory_label(),
+              sizeof(memory.station));
+      const auto result = shortwave_library_state.memories.upsert(memory);
+      char error[96]{};
+      if (result == orcsdr::shortwave::RecordResult::ok && g_sd_fs != nullptr &&
+          orcsdr::shortwave::save_memories(*g_sd_fs,
+                                            shortwave_library_state.memories,
+                                            error, sizeof(error))) {
+        shortwave_library_state.status = orcsdr::shortwave::StorageStatus::ready;
+        Serial.printf("RTL_SHORTWAVE_MEMORY saved frequency_hz=%lu label=%s\n",
+                      static_cast<unsigned long>(memory.frequency_hz), memory.station);
+      } else if (result != orcsdr::shortwave::RecordResult::duplicate) {
+        if (result == orcsdr::shortwave::RecordResult::ok)
+          shortwave_library_state.memories.discard_last();
+        shortwave_library_state.status = orcsdr::shortwave::StorageStatus::write_failed;
+        Serial.printf("RTL_SHORTWAVE_MEMORY save_failed result=%u error=%s\n",
+                      static_cast<unsigned>(result), error);
+      }
+      break;
+    }
+    case ActionKind::save_log: {
+      ensure_shortwave_library_loaded();
+      const auto clock = orcsdr::time_service::now();
+      if (!clock.wallclock_valid) {
+        Serial.println("RTL_SHORTWAVE_LOG save_failed error=utc_clock_not_set");
+        break;
+      }
+      orcsdr::shortwave::LogEntry entry{};
+      entry.timestamp_utc = clock.utc;
+      entry.frequency_hz = rtl_ui_frequency_hz;
+      entry.bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
+      entry.signal_dbfs = rtl_signal_dbfs_smooth;
+      strlcpy(entry.mode, "AM", sizeof(entry.mode));
+      const auto snapshot = shortwave_dashboard_snapshot();
+      strlcpy(entry.device, snapshot.device, sizeof(entry.device));
+      strlcpy(entry.antenna,
+              orcsdr::shortwave::pending_log_antenna()[0]
+                  ? orcsdr::shortwave::pending_log_antenna()
+                  : "Not recorded",
+              sizeof(entry.antenna));
+      strlcpy(entry.notes, orcsdr::shortwave::pending_log_notes(), sizeof(entry.notes));
+      for (size_t i = 0; i < shortwave_library_state.memories.size(); ++i) {
+        const auto* memory = shortwave_library_state.memories.at(i);
+        if (memory && memory->frequency_hz == entry.frequency_hz) {
+          strlcpy(entry.station, memory->station, sizeof(entry.station));
+          break;
+        }
+      }
+      const auto result = shortwave_library_state.logs.append(entry);
+      char error[96]{};
+      if (result == orcsdr::shortwave::RecordResult::ok && g_sd_fs != nullptr &&
+          orcsdr::shortwave::save_logs(*g_sd_fs, shortwave_library_state.logs,
+                                      error, sizeof(error))) {
+        shortwave_library_state.status = orcsdr::shortwave::StorageStatus::ready;
+        Serial.printf("RTL_SHORTWAVE_LOG saved frequency_hz=%lu antenna=%s\n",
+                      static_cast<unsigned long>(entry.frequency_hz), entry.antenna);
+      } else {
+        if (result == orcsdr::shortwave::RecordResult::ok)
+          shortwave_library_state.logs.discard_last();
+        shortwave_library_state.status = orcsdr::shortwave::StorageStatus::write_failed;
+        Serial.printf("RTL_SHORTWAVE_LOG save_failed result=%u error=%s\n",
+                      static_cast<unsigned>(result), error);
+      }
+      break;
+    }
+    case ActionKind::export_log: {
+      char error[96]{};
+      if (g_sd_fs != nullptr && orcsdr::shortwave::export_logs(
+                                    *g_sd_fs, shortwave_library_state.logs,
+                                    error, sizeof(error)))
+        Serial.printf("RTL_SHORTWAVE_EXPORT ok logs=%u formats=csv,adif\n",
+                      static_cast<unsigned>(shortwave_library_state.logs.size()));
+      else
+        Serial.printf("RTL_SHORTWAVE_EXPORT failed error=%s\n", error);
+      break;
+    }
     case ActionKind::open_settings:
       open_global_settings(orcsdr::settings::Section::radio_defaults);
       return;
     case ActionKind::exit_home:
+      if (shortwave_hunt_active.load(std::memory_order_acquire))
+        shortwave_hunt_cancel_requested.store(true, std::memory_order_release);
       orcsdr::shortwave::leave();
       show_home();
       return;
@@ -10318,7 +10464,8 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
 }
 
 bool scan_retune(uint32_t frequency_hz, void*) {
-  if (active_scan == ActiveScan::fm_presets || active_scan == ActiveScan::am_presets)
+  if (active_scan == ActiveScan::fm_presets || active_scan == ActiveScan::am_presets ||
+      active_scan == ActiveScan::shortwave_hunt)
     reset_spectrum_renderer();
   if (active_scan == ActiveScan::am_presets) rtl_audio_reset_demod_filters();
   // Each discovery candidate must start with a clean decoder: without this,
@@ -10330,6 +10477,16 @@ bool scan_retune(uint32_t frequency_hz, void*) {
 }
 
 void scan_measure(size_t index, uint32_t frequency_hz, void*) {
+  if (active_scan == ActiveScan::shortwave_hunt) {
+    const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
+    portENTER_CRITICAL(&shortwave_hunt_mux);
+    shortwave_hunt.observe(frequency_hz, level);
+    portEXIT_CRITICAL(&shortwave_hunt_mux);
+    shortwave_hunt_step.store(static_cast<uint16_t>(index + 1),
+                              std::memory_order_relaxed);
+    rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+    return;
+  }
   if (active_scan == ActiveScan::am_presets) {
     if (index < kAmScanMaxChannels)
       am_scan_levels[index] = rtl_signal_dbfs.load(std::memory_order_relaxed);
@@ -10414,6 +10571,19 @@ void scan_finished(orcsdr::scan::Finish reason, void*) {
                               : reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed";
     Serial.printf("RTL_AM_SCAN %s added=%u baseline_dbfs=%.1f\n", outcome,
                   static_cast<unsigned>(added), static_cast<double>(baseline));
+    return;
+  }
+  if (finished == ActiveScan::shortwave_hunt) {
+    shortwave_hunt_active.store(false, std::memory_order_release);
+    rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+    const char* outcome = reason == orcsdr::scan::Finish::completed
+                              ? "done"
+                              : reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed";
+    portENTER_CRITICAL(&shortwave_hunt_mux);
+    const size_t found = shortwave_hunt.candidate_count();
+    portEXIT_CRITICAL(&shortwave_hunt_mux);
+    Serial.printf("RTL_SHORTWAVE_HUNT %s found=%u\n", outcome,
+                  static_cast<unsigned>(found));
     return;
   }
   if (finished == ActiveScan::pocsag_discovery) {
@@ -10588,6 +10758,35 @@ void service_shared_scan(uint32_t now) {
       active_scan == ActiveScan::pocsag_discovery) {
     scan_engine.cancel(true, callbacks);
   }
+  if (shortwave_hunt_cancel_requested.exchange(false, std::memory_order_acq_rel) &&
+      active_scan == ActiveScan::shortwave_hunt) {
+    scan_engine.cancel(true, callbacks);
+  }
+
+  if (!scan_engine.active() && g_stream_band == RtlBand::shortwave &&
+      shortwave_hunt_requested.exchange(false, std::memory_order_acq_rel)) {
+    const uint8_t band_index = shortwave_hunt_band_index.load(std::memory_order_acquire);
+    const auto* selected = orcsdr::shortwave::band(band_index);
+    const auto session = radio_session.snapshot();
+    scan_radio_token = {session.owner, session.generation};
+    bool started = false;
+    if (selected) {
+      portENTER_CRITICAL(&shortwave_hunt_mux);
+      started = shortwave_hunt.start(scan_engine, *selected, rtl_ui_frequency_hz, now);
+      portEXIT_CRITICAL(&shortwave_hunt_mux);
+    }
+    if (started) {
+      active_scan = ActiveScan::shortwave_hunt;
+      const auto progress = scan_engine.progress();
+      shortwave_hunt_active.store(true, std::memory_order_release);
+      shortwave_hunt_step.store(0, std::memory_order_relaxed);
+      shortwave_hunt_total.store(static_cast<uint16_t>(progress.count),
+                                 std::memory_order_relaxed);
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_SHORTWAVE_HUNT start band=%s channels=%u\n",
+                    selected->label, static_cast<unsigned>(progress.count));
+    }
+  }
 
   if (!scan_engine.active() && g_stream_band == RtlBand::fm &&
       !rtl_auto_fm_active.load(std::memory_order_acquire) &&
@@ -10684,6 +10883,9 @@ void service_shared_scan(uint32_t now) {
     rtl_fm_preset_scan_freq_hz.store(progress.frequency_hz, std::memory_order_relaxed);
   if (active_scan == ActiveScan::am_presets && progress.active)
     rtl_am_scan_freq_hz.store(progress.frequency_hz, std::memory_order_relaxed);
+  if (active_scan == ActiveScan::shortwave_hunt && progress.active)
+    shortwave_hunt_step.store(static_cast<uint16_t>(progress.index),
+                              std::memory_order_relaxed);
   scan_engine.service(now, callbacks);
 }
 
@@ -16072,6 +16274,16 @@ void setup() {
     return;
   }
   Serial.println("RTL_SHORTWAVE_MODEL_SELF_CHECK_OK");
+  if (!orcsdr::shortwave::library_self_check()) {
+    Serial.println("RTL_SHORTWAVE_LIBRARY_SELF_CHECK_FAIL");
+    return;
+  }
+  Serial.println("RTL_SHORTWAVE_LIBRARY_SELF_CHECK_OK");
+  if (!orcsdr::shortwave::hunt_self_check()) {
+    Serial.println("RTL_SHORTWAVE_HUNT_SELF_CHECK_FAIL");
+    return;
+  }
+  Serial.println("RTL_SHORTWAVE_HUNT_SELF_CHECK_OK");
   if (!orcsdr::shortwave::dashboard_self_check()) {
     Serial.println("RTL_SHORTWAVE_DASHBOARD_SELF_CHECK_FAIL");
     return;

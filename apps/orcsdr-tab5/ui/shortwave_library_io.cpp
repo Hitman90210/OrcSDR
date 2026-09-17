@@ -106,7 +106,12 @@ bool write_table(storage::FileSystem& fs, const char* path, const char* header,
     set_error(error, error_capacity, "cannot create Shortwave library");
     return false;
   }
-  file.print(header);
+  if (!file.print(header)) {
+    file.close();
+    fs.remove(temporary);
+    set_error(error, error_capacity, "cannot write Shortwave library header");
+    return false;
+  }
   char record[2048];
   for (size_t i = 0; i < table.size(); ++i) {
     const Record* value = table.at(i);

@@ -122,6 +122,9 @@ const char* region_label(SpectrumRegion region) {
 }
 
 ModeGuide mode_guide_for(uint32_t frequency_hz) {
+  if ((frequency_hz >= 3900000 && frequency_hz <= 4000000) ||
+      (frequency_hz >= 7200000 && frequency_hz <= 7300000))
+    return {"CHECK", "Broadcast and amateur allocations overlap here. Check the signal and local band plan.", false};
   if (band_for(frequency_hz) ||
       (frequency_hz >= 520000 && frequency_hz <= 1710000))
     return {"AM", "Broadcast band: start with AM and a 6-10 kHz filter.", true};
