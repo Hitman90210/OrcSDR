@@ -15,6 +15,10 @@
 - Work only in `F:\Ai\OrcSDR\.codex-worktrees\shortwave-dashboard-completion` on `codex/shortwave-dashboard-completion`.
 - Do not add dashboard drawing, SD parsing, export formatting, or scan ranking to `main.cpp`.
 - Do not add a receiver, DSP, audio, database, networking, or third-party dependency.
+- Direct entry covers 24 kHz through 30 MHz exactly and must reject, not clamp,
+  out-of-range input.
+- AM is the only actionable Shortwave demodulator in Phase 2. Mode guidance may
+  name likely SSB/CW/NFM/DRM usage but cannot expose controls that do not work.
 - SD is the authoritative persistence layer for Shortwave memories and logs; NVS contains no sole copy of either.
 - Failed SD operations must preserve the last valid on-card file and surface an explicit unavailable/write-failed state.
 - Do not infer or claim station identity from signal energy or frequency alone.
@@ -26,42 +30,49 @@
 ### Task 1: Make Direct Tune a real modal and lock its regression down
 
 **Files:**
+- Create: `apps/orcsdr-tab5/ui/shortwave_dashboard_state.hpp`
+- Create: `apps/orcsdr-tab5/ui/shortwave_dashboard_state.cpp`
 - Modify: `apps/orcsdr-tab5/ui/shortwave_dashboard.cpp:35-465`
 - Modify: `apps/orcsdr-tab5/ui/shortwave_dashboard.hpp:15-48`
-- Test: `apps/orcsdr-tab5/ui/shortwave_dashboard.cpp:dashboard_self_check()`
+- Modify: `apps/orcsdr-tab5/main/CMakeLists.txt`
+- Create: `tests/shortwave_dashboard_state_tests.cpp`
 
 **Interfaces:**
 - Consumes: existing `Snapshot`, `Action`, `ActionKind::tune_hz`, and `g_keypad` state.
 - Produces: a keypad that owns the visible content region until `Cancel` or valid `Tune` returns an action.
 
-- [ ] **Step 1: Add a failing self-check for the reported overwrite path**
+- [ ] **Step 1: Add a failing host test for modal ownership**
 
-  Add the check after the existing spectrum touch assertions. It must open the keypad, call `update()` with a changed `Snapshot`, then verify its Tune hit still produces the expected action:
+  The production change this catches is a periodic snapshot update being
+  allowed to redraw Live while a modal owns the content area:
 
   ```cpp
-  handle_touch(402, 159);                 // opens modal
-  Snapshot updated = g_snapshot;
-  updated.relative_dbfs = -55.0f;
-  update(updated);                        // must not redraw Live over keypad
-  // Enter 7.100 through the keypad hit regions, then:
-  CHECK(handle_touch(775, 552).kind == ActionKind::tune_hz);
+  DashboardState state;
+  state.open(Modal::frequency);
+  CHECK(!state.background_redraw_allowed());
+  CHECK(!state.spectrum_allowed());
+  state.close_modal();
+  CHECK(state.background_redraw_allowed());
   ```
 
   Also verify Cancel returns to Live and `spectrum_active()` stays false while the keypad is visible.
 
-- [ ] **Step 2: Run the current Shortwave self-check and observe the failure**
+- [ ] **Step 2: Compile the host test and observe the missing API failure**
 
   Run:
 
   ```powershell
-  & .\apps\orcsdr-tab5\tools\run-tab5-ui-regression.ps1 -SelfCheck
+  wsl.exe bash -lc "cd /mnt/f/Ai/OrcSDR/.codex-worktrees/shortwave-dashboard-completion && c++ -std=c++17 -Iapps/orcsdr-tab5/ui tests/shortwave_dashboard_state_tests.cpp apps/orcsdr-tab5/ui/shortwave_dashboard_state.cpp -o /tmp/shortwave_dashboard_state_tests && /tmp/shortwave_dashboard_state_tests"
   ```
 
-  Expected before implementation: the new modal-after-update assertion fails.
+  Expected before implementation: compile failure because `DashboardState` and
+  `Modal` do not exist.
 
 - [ ] **Step 3: Implement the smallest ownership guard**
 
-  Keep `g_snapshot = snapshot` at the start of `update()`, then return before
+  Add the minimal pure state object, use it as the dashboard's single modal
+  authority, keep `g_snapshot = snapshot` at the start of `update()`, then
+  return before
   `draw_frequency`, `draw_status`, `draw_quick_controls`, or `draw_controls`
   when `g_keypad` is true:
 
@@ -71,7 +82,7 @@
     const bool controls_changed = /* existing comparison */;
     g_snapshot = snapshot;
     g_saved_frequency = snapshot.frequency_hz;
-    if (g_keypad) return;
+    if (!g_state.background_redraw_allowed()) return;
     draw_frequency();
     draw_status();
     draw_quick_controls();
@@ -81,20 +92,21 @@
 
   Keep keypad redraw exclusively in `draw_keypad()` after a keypad touch.
 
-- [ ] **Step 4: Re-run the focused self-check**
+- [ ] **Step 4: Re-run the host test and native compile**
 
   Run:
 
   ```powershell
-  & .\apps\orcsdr-tab5\tools\run-tab5-ui-regression.ps1 -SelfCheck
+  wsl.exe bash -lc "cd /mnt/f/Ai/OrcSDR/.codex-worktrees/shortwave-dashboard-completion && c++ -std=c++17 -Iapps/orcsdr-tab5/ui tests/shortwave_dashboard_state_tests.cpp apps/orcsdr-tab5/ui/shortwave_dashboard_state.cpp -o /tmp/shortwave_dashboard_state_tests && /tmp/shortwave_dashboard_state_tests"
+  cmd /c "call C:\Espressif\frameworks\esp-idf-v5.5.4\export.bat >nul && idf.py -B build-native-shortwave build"
   ```
 
-  Expected: `RTL_SHORTWAVE_DASHBOARD_SELF_CHECK_OK` and no changed check fails.
+  Expected: `shortwave_dashboard_state_tests: PASS` and the native build passes.
 
 - [ ] **Step 5: Commit the modal repair**
 
   ```powershell
-  git add apps/orcsdr-tab5/ui/shortwave_dashboard.cpp apps/orcsdr-tab5/ui/shortwave_dashboard.hpp
+  git add apps/orcsdr-tab5/ui/shortwave_dashboard_state.* apps/orcsdr-tab5/ui/shortwave_dashboard.* apps/orcsdr-tab5/main/CMakeLists.txt tests/shortwave_dashboard_state_tests.cpp
   git commit -m "fix(shortwave): keep direct tune modal visible"
   ```
 
@@ -108,6 +120,9 @@
 **Interfaces:**
 - Consumes: existing `BroadcastBand`, `StationCard`, `Memory`, and `LogEntry` contracts.
 - Produces: `Tab`, `ScheduleMatch`, `schedule_matches`, `MemoryTable`, and `LogTable` fixed-capacity pure APIs used by the dashboard and library layers.
+- Also produces: `SpectrumRegion`, `ModeHint`, `spectrum_region`, and
+  `mode_hint_for` so the UI teaches band/mode context without inventing a
+  decoded identity.
 
 - [ ] **Step 1: Write failing host tests for the public pure API**
 
@@ -119,6 +134,11 @@
   CHECK(memories.upsert(memory));
   CHECK(!memories.upsert(memory));
   CHECK(logs.append(entry));
+  CHECK(spectrum_region(24000) == SpectrumRegion::vlf_edge);
+  CHECK(spectrum_region(3000000) == SpectrumRegion::hf);
+  CHECK(mode_hint_for(9550000, Service::broadcast).mode == ModeHint::am);
+  CHECK(mode_hint_for(7100000, Service::amateur_voice).mode == ModeHint::lsb);
+  CHECK(mode_hint_for(14200000, Service::amateur_voice).mode == ModeHint::usb);
   ```
 
 - [ ] **Step 2: Compile and run the new host test before implementation**
@@ -138,22 +158,29 @@
   ```cpp
   enum class Tab : uint8_t { live, on_air, hunt, memory, logbook };
   enum class RecordResult : uint8_t { ok, full, duplicate, invalid, missing };
+  enum class SpectrumRegion : uint8_t { vlf_edge, lf, mf, hf };
+  enum class ModeHint : uint8_t { unknown, am, lsb, usb, cw, nfm, drm };
   bool schedule_matches(const StationCard&, uint32_t frequency_hz,
                         uint16_t utc_minute, uint8_t utc_weekday);
   ```
 
   Keep `StationCard` only a local catalog record; callers display an honest
   schedule label rather than a decoded identity assertion.
+  Change `Memory`/`LogEntry` validation to accept exact frequencies from
+  24,000 through 30,000,000 Hz. Keep ITU broadcast-band lookup separate so an
+  LF/MF/HF region label never masquerades as a broadcast allocation.
 
-- [ ] **Step 4: Run the model test and existing model self-check**
+- [ ] **Step 4: Run the model test and native Shortwave self-check build**
 
   Run the host command from Step 2 and:
 
   ```powershell
-  & .\apps\orcsdr-tab5\tools\run-tab5-ui-regression.ps1 -SelfCheck
+  cmd /c "call C:\Espressif\frameworks\esp-idf-v5.5.4\export.bat >nul && idf.py -B build-native-shortwave build"
   ```
 
-  Expected: `shortwave_model_tests: PASS` and `RTL_SHORTWAVE_MODEL_SELF_CHECK_OK`.
+  Expected: `shortwave_model_tests: PASS` and the firmware containing
+  `RTL_SHORTWAVE_MODEL_SELF_CHECK_OK` builds successfully. The marker is runtime
+  evidence only after the later flash/serial task.
 
 - [ ] **Step 5: Commit the pure model slice**
 

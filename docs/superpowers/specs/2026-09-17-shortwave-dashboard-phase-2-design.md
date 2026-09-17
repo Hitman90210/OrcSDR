@@ -14,6 +14,9 @@ This design extends, but does not rewrite, the accepted Phase 1 record in
 
 - Repair the Live direct-frequency keypad so it is a modal surface: periodic
   dashboard updates cannot overpaint its field, keys, Cancel, or Tune buttons.
+- Accept exact direct entry from 24 kHz through 30 MHz, matching the integrated
+  driver's arithmetic range, and label the tuned region as VLF edge, LF, MF,
+  or HF instead of calling every frequency a shortwave broadcast band.
 - Replace the visible `LATER` placeholders with functional On Air, Hunt,
   Memory, and Logbook tabs.
 - Store Shortwave memories and reception logs on the Tab5 SD card. SD is the
@@ -31,6 +34,9 @@ This design extends, but does not rewrite, the accepted Phase 1 record in
   identity claim based only on signal strength.
 - No change to the RTL-SDR driver, tuner routing, demodulator, audio path,
   or existing AM/FM dashboard behavior.
+- No new SSB, CW, NFM, WFM, or DRM demodulator in this dashboard phase. The UI
+  may recommend an unsupported mode, but it must not draw an actionable mode
+  button until the receiver can actually demodulate it.
 - No guarantee of reception without an antenna suitable for the selected band.
 - No NVS migration or promise that arbitrary old NVS log data can be restored.
 
@@ -43,6 +49,28 @@ owned modal keypad. While the keypad is open, `update()` records the latest
 snapshot but returns before drawing any underlying Live widgets. Key presses
 redraw only the keypad. Cancel restores Live without tuning; a valid Tune
 closes the keypad and emits exactly one `tune_hz` action.
+
+The keypad accepts `0.024000` through `30.000000` MHz and rejects values
+outside that range with an inline error; it never silently clamps a user's
+entry. The frequency card distinguishes:
+
+- `24-30 kHz`: VLF edge (driver coverage; reception remains unverified).
+- `30-300 kHz`: LF.
+- `300 kHz-3 MHz`: MF, including longwave/medium-wave broadcasting where
+  regionally applicable.
+- `3-30 MHz`: HF, conventionally called shortwave.
+
+The card also provides a contextual `MODE GUIDE`, not an automatic identity
+claim. Locally known broadcast allocations recommend AM. Amateur voice
+segments may recommend LSB below 10 MHz and USB above 10 MHz, with the 60 m USB
+exception; aeronautical and maritime HF voice may recommend USB. CW, DRM,
+digital, and the limited 10 m FM usage are identified only when local band-plan
+metadata supports the hint. WFM is never recommended below 30 MHz. Unknown
+space says `MODE UNKNOWN - START WITH AM`.
+
+For Phase 2, AM remains the only actionable Shortwave mode. Unsupported mode
+hints explain that receiving them requires a later demodulator rather than
+offering a control that cannot work.
 
 The existing receiver capability controls remain capability-aware. A V3c in
 direct-Q mode does not advertise unavailable tuner gain; a V4 HF-upconverter
@@ -150,6 +178,11 @@ return.
 
 - Direct-frequency modal survives a periodic `update()` and still recognizes
   Cancel, digit, and Tune touch regions.
+- Direct entry accepts the exact 24 kHz and 30 MHz endpoints, rejects values
+  outside them without tuning, and reports the correct VLF/LF/MF/HF region.
+- Mode guidance tests cover broadcast AM, customary amateur LSB/USB including
+  the 60 m exception, utility USB, limited 10 m NFM, unknown space, and the
+  absence of any WFM recommendation below 30 MHz.
 - Band selection, frequency ranges, schedule-time matching, scan-candidate
   ranking, memory/log validation, CSV escaping, and ADIF field formatting have
   focused deterministic checks.
