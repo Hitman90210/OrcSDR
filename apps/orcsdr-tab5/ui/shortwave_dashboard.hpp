@@ -43,9 +43,13 @@ enum class ActionKind : uint8_t {
   step_down,
   step_up,
   step_cycle,
+  filter_down,
+  filter_up,
   filter_cycle,
+  filter_bandwidth_hz,
   span_down,
   span_up,
+  span_hz,
   sound_toggle,
   volume_down,
   volume_up,
@@ -75,6 +79,8 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
                    float floor);
 Action handle_touch(int32_t x, int32_t y);
 Action handle_gain_drag(int32_t x, int32_t y);
+Action handle_filter_drag(int32_t x, int32_t y, bool pressed);
+bool spectrum_contains(int32_t x, int32_t y);
 bool active();
 bool spectrum_active();
 uint32_t saved_frequency();

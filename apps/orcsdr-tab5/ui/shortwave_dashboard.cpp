@@ -44,6 +44,7 @@ char g_entry[12]{};
 char g_pending_memory_label[64]{};
 char g_pending_log_antenna[64]{};
 char g_pending_log_notes[240]{};
+bool g_filter_dragging = false;
 EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kSpectrumW]{};
 
 int spectrum_x_for_bin(size_t bin, size_t visible_bins) {
@@ -53,6 +54,13 @@ int spectrum_x_for_bin(size_t bin, size_t visible_bins) {
 
 bool hit(int32_t x, int32_t y, int bx, int by, int bw, int bh) {
   return x >= bx && x < bx + bw && y >= by && y < by + bh;
+}
+
+int filter_half_width() {
+  return std::clamp(static_cast<int>(
+      static_cast<uint64_t>(g_snapshot.filter_bandwidth_hz) * kSpectrumW /
+      (2u * (g_snapshot.span_hz ? g_snapshot.span_hz : 1u))), 3,
+      kSpectrumW / 2 - 2);
 }
 
 void text(const char* value, int x, int y, uint16_t color = TFT_WHITE,
@@ -124,11 +132,13 @@ void draw_quick_controls() {
   char value[40];
   snprintf(value, sizeof(value), "STEP %lu Hz",
            static_cast<unsigned long>(g_snapshot.step_hz));
-  button(24, 246, 236, 56, value);
-  snprintf(value, sizeof(value), "AM FILTER %.1f kHz",
+  button(24, 246, 190, 56, value);
+  button(226, 246, 64, 56, "<");
+  snprintf(value, sizeof(value), "FILTER %.1f kHz",
            static_cast<double>(g_snapshot.filter_bandwidth_hz) / 1000.0);
-  button(278, 246, 236, 56, value);
-  button(532, 246, 284, 56,
+  button(298, 246, 200, 56, value);
+  button(506, 246, 64, 56, ">");
+  button(582, 246, 234, 56,
          g_snapshot.sound_enabled ? "SOUND ON" : "SOUND OFF",
          g_snapshot.sound_enabled);
 }
@@ -389,6 +399,7 @@ uint16_t waterfall_color(float level) {
 void enter(const Snapshot& snapshot) {
   g_snapshot = snapshot;
   g_saved_frequency = snapshot.frequency_hz;
+  g_filter_dragging = false;
   g_active = true;
   g_state.close_modal();
   g_state.select_tab(Tab::live);
@@ -402,6 +413,7 @@ void enter(const Snapshot& snapshot) {
 
 void leave() {
   M5.Display.clearScrollRect();
+  g_filter_dragging = false;
   g_active = false;
 }
 
@@ -497,10 +509,7 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
     g_waterfall_row[i] = waterfall_color(normalized);
   }
   const int center = kSpectrumX + kSpectrumW / 2;
-  const int half_filter = std::clamp(static_cast<int>(
-      static_cast<uint64_t>(g_snapshot.filter_bandwidth_hz) * kSpectrumW /
-      (2u * (g_snapshot.span_hz ? g_snapshot.span_hz : 1u))), 3,
-      kSpectrumW / 2 - 2);
+  const int half_filter = filter_half_width();
   M5.Display.drawFastVLine(center, kSpectrumY, kSpectrumH, kCyan);
   M5.Display.drawFastVLine(center - half_filter, kSpectrumY, kSpectrumH, kYellow);
   M5.Display.drawFastVLine(center + half_filter, kSpectrumY, kSpectrumH, kYellow);
@@ -656,9 +665,11 @@ Action handle_touch(int32_t x, int32_t y) {
     draw();
     return {};
   }
-  if (hit(x, y, 24, 246, 236, 56)) return {ActionKind::step_cycle};
-  if (hit(x, y, 278, 246, 236, 56)) return {ActionKind::filter_cycle};
-  if (hit(x, y, 532, 246, 284, 56)) return {ActionKind::sound_toggle};
+  if (hit(x, y, 24, 246, 190, 56)) return {ActionKind::step_cycle};
+  if (hit(x, y, 226, 246, 64, 56)) return {ActionKind::filter_down};
+  if (hit(x, y, 298, 246, 200, 56)) return {ActionKind::filter_cycle};
+  if (hit(x, y, 506, 246, 64, 56)) return {ActionKind::filter_up};
+  if (hit(x, y, 582, 246, 234, 56)) return {ActionKind::sound_toggle};
   if (hit(x, y, 24, kZoomY, 160, 37)) return {ActionKind::span_down};
   if (hit(x, y, 656, kZoomY, 160, 37)) return {ActionKind::span_up};
   if (hit(x, y, 858, 176, 184, 68) &&
@@ -701,6 +712,34 @@ Action handle_gain_drag(int32_t x, int32_t y) {
   return {ActionKind::gain_tenth_db, g_snapshot.gain_steps_tenth_db[index]};
 }
 
+Action handle_filter_drag(int32_t x, int32_t y, bool pressed) {
+  if (!pressed) {
+    g_filter_dragging = false;
+    return {};
+  }
+  if (!g_active || g_state.tab() != Tab::live) return {};
+  const int center = kSpectrumX + kSpectrumW / 2;
+  if (!g_filter_dragging) {
+    if (!hit(x, y, kSpectrumX, kSpectrumY, kSpectrumW, kSpectrumH)) return {};
+    const int half_filter = filter_half_width();
+    if (std::min(std::abs(x - (center - half_filter)),
+                 std::abs(x - (center + half_filter))) > 18)
+      return {};
+    g_filter_dragging = true;
+  }
+  uint32_t bandwidth = static_cast<uint32_t>(
+      2ull * static_cast<uint64_t>(std::abs(x - center)) *
+      (g_snapshot.span_hz ? g_snapshot.span_hz : 1u) / kSpectrumW);
+  bandwidth = std::clamp<uint32_t>((bandwidth / 1000u) * 1000u, 3000u, 30000u);
+  return {ActionKind::filter_bandwidth_hz, static_cast<int32_t>(bandwidth)};
+}
+
+bool spectrum_contains(int32_t x, int32_t y) {
+  return g_active && g_state.tab() == Tab::live &&
+         hit(x, y, kSpectrumX, kSpectrumY, kSpectrumW,
+             kWaterfallY + kWaterfallH - kSpectrumY);
+}
+
 bool active() { return g_active; }
 bool spectrum_active() { return g_active && g_state.spectrum_allowed(); }
 uint32_t saved_frequency() { return g_saved_frequency; }
@@ -712,6 +751,7 @@ const char* pending_log_notes() { return g_pending_log_notes; }
 bool dashboard_self_check() {
   const Snapshot saved = g_snapshot;
   const bool was_active = g_active;
+  const bool was_filter_dragging = g_filter_dragging;
   const Modal saved_modal = g_state.modal();
   const Tab saved_tab = g_state.tab();
   char saved_entry[sizeof(g_entry)];
@@ -723,6 +763,8 @@ bool dashboard_self_check() {
   test.gain_steps_tenth_db[1] = 297;
   test.gain_steps_tenth_db[2] = 496;
   test.gain_step_count = 3;
+  test.span_hz = 480000;
+  test.filter_bandwidth_hz = 9000;
   g_snapshot = test;
   g_active = true;
   g_state.close_modal();
@@ -731,8 +773,16 @@ bool dashboard_self_check() {
                    handle_touch(760, 150).kind == ActionKind::step_up &&
                    handle_touch(60, kZoomY + 10).kind == ActionKind::span_down &&
                    handle_touch(700, kZoomY + 10).kind == ActionKind::span_up &&
+                   handle_touch(250, 270).kind == ActionKind::filter_down &&
+                   handle_touch(540, 270).kind == ActionKind::filter_up &&
                    handle_touch(900, 200).kind == ActionKind::gain_auto &&
                    handle_gain_drag(kGainX + kGainW, kGainY).value == 496;
+  const int filter_edge = kSpectrumX + kSpectrumW / 2 + filter_half_width();
+  const bool filter_drag_ok = spectrum_contains(kSpectrumX, kWaterfallY) &&
+      handle_filter_drag(filter_edge, kSpectrumY + 20, true).kind ==
+          ActionKind::filter_bandwidth_hz &&
+      handle_filter_drag(filter_edge + 12, kSpectrumY + 20, true).value > 9000;
+  (void)handle_filter_drag(0, 0, false);
   g_snapshot.controls.route = ReceiverRoute::direct_q;
   const bool direct_q_ok = handle_touch(900, 200).kind == ActionKind::none &&
                            handle_gain_drag(kGainX, kGainY).kind == ActionKind::none &&
@@ -759,10 +809,11 @@ bool dashboard_self_check() {
       handle_touch(830, 400).kind == ActionKind::none;
   g_snapshot = saved;
   g_active = was_active;
+  g_filter_dragging = was_filter_dragging;
   g_state.open(saved_modal);
   g_state.select_tab(saved_tab);
   memcpy(g_entry, saved_entry, sizeof(g_entry));
-  return ok && direct_q_ok && spectrum_layout_ok && peak_pool_ok &&
+  return ok && filter_drag_ok && direct_q_ok && spectrum_layout_ok && peak_pool_ok &&
          touch_tune_bounds_ok &&
          kTabsY + 90 <= 720 && model_self_check() && receiver_controls::self_check();
 }

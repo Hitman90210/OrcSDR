@@ -9770,6 +9770,25 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       reset_spectrum_renderer();
       break;
     }
+    case ActionKind::filter_down:
+    case ActionKind::filter_up: {
+      const uint32_t current = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
+      const uint32_t next = action.kind == ActionKind::filter_down
+                                ? (current <= 6000u ? 4000u : 6000u)
+                                : (current < 6000u ? 6000u : 9000u);
+      rtl_filter_bandwidth_hz.store(next, std::memory_order_relaxed);
+      rtl_audio_reset_demod_filters();
+      reset_spectrum_renderer();
+      break;
+    }
+    case ActionKind::filter_bandwidth_hz:
+      rtl_filter_bandwidth_hz.store(
+          rtl_clamp_filter_hz(RtlBand::shortwave,
+                              static_cast<uint32_t>(action.value)),
+          std::memory_order_relaxed);
+      rtl_audio_reset_demod_filters();
+      reset_spectrum_renderer();
+      break;
     case ActionKind::span_down:
     case ActionKind::span_up: {
       const uint32_t current = rtl_scope_span_hz.load(std::memory_order_relaxed);
@@ -9780,6 +9799,13 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       reset_spectrum_renderer();
       break;
     }
+    case ActionKind::span_hz:
+      rtl_scope_span_hz.store(
+          std::clamp(static_cast<uint32_t>(action.value), kRtlScopeSpanMinHz,
+                     kRtlScopeSpanMaxHz),
+          std::memory_order_relaxed);
+      reset_spectrum_renderer();
+      break;
     case ActionKind::sound_toggle:
       set_rtl_audio_user_enabled(!rtl_audio_user_enabled.load(std::memory_order_acquire));
       break;
@@ -12668,6 +12694,59 @@ void poll_sdr_touch(bool from_stream) {
     return;
   }
 
+  if (rtl_ui_band == RtlBand::shortwave && orcsdr::shortwave::active()) {
+    if (touch_count >= 2) {
+      const auto second = M5.Touch.getDetail(1);
+      if (orcsdr::shortwave::spectrum_contains(touch.x, touch.y) &&
+          orcsdr::shortwave::spectrum_contains(second.x, second.y)) {
+        const float dx = static_cast<float>(touch.x - second.x);
+        const float dy = static_cast<float>(touch.y - second.y);
+        const float distance = sqrtf(dx * dx + dy * dy);
+        if (!pinch_active) {
+          pinch_active = true;
+          pinch_anchor_distance = std::max(distance, 16.0f);
+          pinch_anchor_value = rtl_scope_span_hz.load(std::memory_order_relaxed);
+        } else if (distance >= 16.0f) {
+          uint32_t next = static_cast<uint32_t>(
+              static_cast<uint64_t>(pinch_anchor_value) * pinch_anchor_distance /
+              distance);
+          next = std::clamp((next / 5000u) * 5000u, kRtlScopeSpanMinHz,
+                            kRtlScopeSpanMaxHz);
+          if (next != rtl_scope_span_hz.load(std::memory_order_relaxed))
+            handle_shortwave_dashboard_action(
+                {orcsdr::shortwave::ActionKind::span_hz,
+                 static_cast<int32_t>(next)});
+        }
+        (void)orcsdr::shortwave::handle_filter_drag(0, 0, false);
+        scope_dragging = false;
+        was_pressed = true;
+        return;
+      }
+    }
+    if (pinch_active) {
+      pinch_active = false;
+      scope_dragging = false;
+      was_pressed = pressed;
+      return;
+    }
+    const auto filter_action =
+        orcsdr::shortwave::handle_filter_drag(touch.x, touch.y, pressed);
+    if (filter_action.kind != orcsdr::shortwave::ActionKind::none) {
+      handle_shortwave_dashboard_action(filter_action);
+      was_pressed = true;
+      return;
+    }
+    if (pressed) {
+      const auto gain_action =
+          orcsdr::shortwave::handle_gain_drag(touch.x, touch.y);
+      if (gain_action.kind != orcsdr::shortwave::ActionKind::none) {
+        handle_shortwave_dashboard_action(gain_action);
+        was_pressed = true;
+        return;
+      }
+    }
+  }
+
   if (pressed && rtl_ui_band == RtlBand::am && orcsdr::am::active()) {
     const auto preset_touch = orcsdr::am::handle_preset_touch(touch.x, touch.y, true, now);
     if (preset_touch.consumed) {
@@ -12693,14 +12772,6 @@ void poll_sdr_touch(bool from_stream) {
     const auto action = orcsdr::fm::handle_gain_drag(touch.x, touch.y);
     if (action.kind != orcsdr::fm::ActionKind::none) {
       handle_fm_dashboard_action(action);
-      was_pressed = true;
-      return;
-    }
-  }
-  if (pressed && rtl_ui_band == RtlBand::shortwave && orcsdr::shortwave::active()) {
-    const auto action = orcsdr::shortwave::handle_gain_drag(touch.x, touch.y);
-    if (action.kind != orcsdr::shortwave::ActionKind::none) {
-      handle_shortwave_dashboard_action(action);
       was_pressed = true;
       return;
     }
