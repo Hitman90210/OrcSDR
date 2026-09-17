@@ -44,6 +44,8 @@ enum class ActionKind : uint8_t {
   step_up,
   step_cycle,
   filter_cycle,
+  span_down,
+  span_up,
   sound_toggle,
   volume_down,
   volume_up,

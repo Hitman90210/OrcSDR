@@ -9770,6 +9770,16 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       reset_spectrum_renderer();
       break;
     }
+    case ActionKind::span_down:
+    case ActionKind::span_up: {
+      const uint32_t current = rtl_scope_span_hz.load(std::memory_order_relaxed);
+      rtl_scope_span_hz.store(action.kind == ActionKind::span_down
+                                  ? std::max(kRtlScopeSpanMinHz, current / 2)
+                                  : std::min(kRtlScopeSpanMaxHz, current * 2),
+                              std::memory_order_relaxed);
+      reset_spectrum_renderer();
+      break;
+    }
     case ActionKind::sound_toggle:
       set_rtl_audio_user_enabled(!rtl_audio_user_enabled.load(std::memory_order_acquire));
       break;

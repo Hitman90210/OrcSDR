@@ -28,6 +28,7 @@ constexpr int kSpectrumW = 792;
 constexpr int kSpectrumH = 145;
 constexpr int kWaterfallY = 493;
 constexpr int kWaterfallH = 91;
+constexpr int kZoomY = 589;
 constexpr int kTabsY = 630;
 constexpr int kTabW = 256;
 constexpr int kGainX = 872;
@@ -132,6 +133,15 @@ void draw_quick_controls() {
          g_snapshot.sound_enabled);
 }
 
+void draw_zoom_controls() {
+  char span[32];
+  snprintf(span, sizeof(span), "SPAN %lu kHz",
+           static_cast<unsigned long>(g_snapshot.span_hz / 1000u));
+  button(24, kZoomY, 160, 37, "ZOOM IN");
+  text(span, 420, kZoomY + 19, kCyan, 2);
+  button(656, kZoomY, 160, 37, "ZOOM OUT");
+}
+
 void draw_controls() {
   const auto tuner = receiver_controls::item(receiver_controls::Control::tuner_agc,
                                               g_snapshot.controls);
@@ -209,6 +219,7 @@ void draw_static() {
   M5.Display.drawRect(kSpectrumX, kWaterfallY, kSpectrumW, kWaterfallH, kCyan);
   M5.Display.setScrollRect(kSpectrumX + 1, kWaterfallY + 1, kSpectrumW - 2,
                            kWaterfallH - 2, TFT_BLACK);
+  draw_zoom_controls();
 
   constexpr const char* tabs[] = {"LIVE", "ON AIR", "HUNT", "MEMORY", "LOGBOOK"};
   for (int i = 0; i < 5; ++i) {
@@ -421,6 +432,7 @@ void draw() {
 
 void update(const Snapshot& snapshot) {
   if (!g_active) return;
+  const bool span_changed = snapshot.span_hz != g_snapshot.span_hz;
   const bool page_changed =
       snapshot.storage_status != g_snapshot.storage_status ||
       snapshot.memories != g_snapshot.memories || snapshot.logs != g_snapshot.logs ||
@@ -459,6 +471,7 @@ void update(const Snapshot& snapshot) {
   draw_frequency();
   draw_status();
   draw_quick_controls();
+  if (span_changed) draw_zoom_controls();
   if (controls_changed) draw_controls();
 }
 
@@ -646,6 +659,8 @@ Action handle_touch(int32_t x, int32_t y) {
   if (hit(x, y, 24, 246, 236, 56)) return {ActionKind::step_cycle};
   if (hit(x, y, 278, 246, 236, 56)) return {ActionKind::filter_cycle};
   if (hit(x, y, 532, 246, 284, 56)) return {ActionKind::sound_toggle};
+  if (hit(x, y, 24, kZoomY, 160, 37)) return {ActionKind::span_down};
+  if (hit(x, y, 656, kZoomY, 160, 37)) return {ActionKind::span_up};
   if (hit(x, y, 858, 176, 184, 68) &&
       receiver_controls::action(receiver_controls::Control::tuner_agc,
                                 g_snapshot.controls).kind !=
@@ -714,6 +729,8 @@ bool dashboard_self_check() {
   g_state.select_tab(Tab::live);
   const bool ok = handle_touch(60, 150).kind == ActionKind::step_down &&
                    handle_touch(760, 150).kind == ActionKind::step_up &&
+                   handle_touch(60, kZoomY + 10).kind == ActionKind::span_down &&
+                   handle_touch(700, kZoomY + 10).kind == ActionKind::span_up &&
                    handle_touch(900, 200).kind == ActionKind::gain_auto &&
                    handle_gain_drag(kGainX + kGainW, kGainY).value == 496;
   g_snapshot.controls.route = ReceiverRoute::direct_q;
@@ -724,7 +741,7 @@ bool dashboard_self_check() {
       spectrum_x_for_bin(0, 4) == kSpectrumX &&
       spectrum_x_for_bin(3, 4) == kSpectrumX + kSpectrumW - 1 &&
       kWaterfallY > kSpectrumY + kSpectrumH &&
-      kWaterfallY + kWaterfallH <= kTabsY;
+      kWaterfallY + kWaterfallH <= kZoomY && kZoomY + 37 < kTabsY;
   const float resolution_test[] = {-80.0f, -20.0f, -75.0f, -40.0f};
   const bool peak_pool_ok =
       spectrum::peak_for_pixel(resolution_test, 0, 4, 0, 2) == -20.0f &&
