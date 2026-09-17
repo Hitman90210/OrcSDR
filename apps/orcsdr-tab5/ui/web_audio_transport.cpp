@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <esp_attr.h>
+#include <esp_timer.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -23,7 +24,9 @@ EXT_RAM_BSS_ATTR int16_t pcm[kAudioPacketFrames];
 EXT_RAM_BSS_ATTR uint8_t packet[kAudioPacketBytes];
 std::atomic_flag history_lock = ATOMIC_FLAG_INIT;
 std::atomic<bool> invalidate_pending{false}, stopping{true}, worker_alive{false}, queued{false};
-std::atomic<uint32_t> clients{0}, contention{0}, sent{0}, dropped{0}, errors{0};
+std::atomic<uint32_t> clients{0}, queue_failures{0}, errors{0};
+std::atomic<uint64_t> producer{0}, ring_written{0}, ring_read{0};
+std::atomic<uint64_t> sent{0}, sent_frames{0}, contention{0}, dropped{0};
 httpd_handle_t server = nullptr;
 struct Client { int fd = -1; bool closing = false; AudioBuffer::Cursor cursor{}; };
 Client listeners[2]; // Only the HTTP task accesses these sessions and staging buffers.
@@ -37,36 +40,48 @@ void release_client(void* context) {
   }
 }
 
-int nonblocking_send(httpd_handle_t, int fd, const char* data, size_t length, int flags) {
-  const int result = send(fd, data, length, flags | MSG_DONTWAIT);
-  // IDF's WS sender treats short positive writes as success. Never permit a
-  // truncated frame to be followed by another frame on the same connection.
-  return result == static_cast<int>(length) ? result : HTTPD_SOCK_ERR_FAIL;
+int complete_send(httpd_handle_t, int fd, const char* data, size_t length, int flags) {
+  size_t written = 0;
+  while (written < length) {
+    const int result = send(fd, data + written, length - written, flags);
+    if (result <= 0) return HTTPD_SOCK_ERR_FAIL;
+    written += static_cast<size_t>(result);
+  }
+  return static_cast<int>(written);
 }
 
 void send_pending(void*) {
   if (!stopping.load(std::memory_order_acquire)) {
     for (auto& client : listeners) {
       if (client.fd < 0 || client.closing) continue;
-      if (history_lock.test_and_set(std::memory_order_acquire)) continue;
-      if (invalidate_pending.exchange(false, std::memory_order_acq_rel)) history.reset();
-      const auto result = history.read(client.cursor, pcm, kAudioPacketFrames);
-      history_lock.clear(std::memory_order_release);
-      if (!result.count) continue;
-      dropped.fetch_add(static_cast<uint32_t>(result.dropped), std::memory_order_relaxed);
-      const size_t size = encode_audio_packet(packet, sizeof(packet), result.generation,
-          result.position, result.discontinuity, pcm, result.count);
-      httpd_ws_frame_t frame{};
-      frame.type = HTTPD_WS_TYPE_BINARY;
-      frame.payload = packet;
-      frame.len = size;
-      if (httpd_ws_send_frame_async(server, client.fd, &frame) == ESP_OK) {
-        sent.fetch_add(result.count, std::memory_order_relaxed);
-      } else {
-        errors.fetch_add(1, std::memory_order_relaxed);
-        client.closing = true;
-        // Shutdown wakes httpd's session processing; its free_ctx owns cleanup.
-        shutdown(client.fd, SHUT_RDWR);
+      // A second packet lets one delayed HTTP cycle catch up instead of
+      // permanently lowering the delivered sample rate.
+      for (unsigned burst = 0; burst < 2; ++burst) {
+        if (history_lock.test_and_set(std::memory_order_acquire)) break;
+        if (invalidate_pending.exchange(false, std::memory_order_acq_rel)) history.reset();
+        const auto result = history.read(client.cursor, pcm, kAudioPacketFrames);
+        history_lock.clear(std::memory_order_release);
+        if (!result.count) break;
+        ring_read.fetch_add(result.count, std::memory_order_relaxed);
+        dropped.fetch_add(result.dropped, std::memory_order_relaxed);
+        const size_t size = encode_audio_packet(packet, sizeof(packet), result.generation,
+            result.position, result.discontinuity, pcm, result.count);
+        httpd_ws_frame_t frame{};
+        frame.type = HTTPD_WS_TYPE_BINARY;
+        frame.payload = packet;
+        frame.len = size;
+        const esp_err_t send_result = httpd_ws_send_frame_async(server, client.fd, &frame);
+        if (send_result == ESP_OK) {
+          sent.fetch_add(result.count, std::memory_order_relaxed);
+          sent_frames.fetch_add(1, std::memory_order_relaxed);
+          if (!result.remaining) break;
+        } else {
+          errors.fetch_add(1, std::memory_order_relaxed);
+          client.closing = true;
+          // Shutdown wakes httpd's session processing; its free_ctx owns cleanup.
+          shutdown(client.fd, SHUT_RDWR);
+          break;
+        }
       }
     }
   }
@@ -76,9 +91,11 @@ void send_pending(void*) {
 void worker(void*) {
   TickType_t wake = xTaskGetTickCount();
   while (!stopping.load(std::memory_order_acquire)) {
-    if (clients.load(std::memory_order_acquire) && !queued.exchange(true)) {
-      if (httpd_queue_work(server, send_pending, nullptr) != ESP_OK)
+    if (clients.load(std::memory_order_acquire)) {
+      if (!queued.exchange(true) && httpd_queue_work(server, send_pending, nullptr) != ESP_OK) {
+        queue_failures.fetch_add(1, std::memory_order_relaxed);
         queued.store(false, std::memory_order_release);
+      }
     }
     xTaskDelayUntil(&wake, pdMS_TO_TICKS(20));
   }
@@ -103,7 +120,7 @@ esp_err_t handle_stream(httpd_req_t* req) {
   const int no_delay = 1;
   if (setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &no_delay, sizeof(no_delay)) != 0)
     return ESP_FAIL;
-  if (httpd_sess_set_send_override(req->handle, fd, nonblocking_send) != ESP_OK) return ESP_FAIL;
+  if (httpd_sess_set_send_override(req->handle, fd, complete_send) != ESP_OK) return ESP_FAIL;
   available->fd = fd;
   available->closing = false;
   req->sess_ctx = available;
@@ -142,15 +159,23 @@ void stop() {
 }
 bool demanded() { return !stopping.load(std::memory_order_relaxed) && clients.load(std::memory_order_acquire); }
 void invalidate() { invalidate_pending.store(true, std::memory_order_release); }
+void note_generated(size_t count) { producer.fetch_add(count, std::memory_order_relaxed); }
 void publish(const int16_t* samples, size_t count) {
-  if (!samples || !count || !demanded()) return;
+  if (!samples || !count) return;
+  if (!demanded()) return;
   if (history_lock.test_and_set(std::memory_order_acquire)) {
     contention.fetch_add(count, std::memory_order_relaxed);
     return;
   }
   if (invalidate_pending.exchange(false, std::memory_order_acq_rel)) history.reset();
   history.append(samples, count);
+  ring_written.fetch_add(count, std::memory_order_relaxed);
   history_lock.clear(std::memory_order_release);
 }
-Counters counters() { return {clients.load(), contention.load(), sent.load(), dropped.load(), errors.load()}; }
+Counters counters() {
+  return {
+      static_cast<uint64_t>(esp_timer_get_time()), producer.load(), ring_written.load(),
+      ring_read.load(), sent.load(), sent_frames.load(), contention.load(), dropped.load(),
+      clients.load(), queue_failures.load(), errors.load()};
+}
 } // namespace orcsdr::web_audio

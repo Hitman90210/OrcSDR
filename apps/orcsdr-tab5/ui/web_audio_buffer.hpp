@@ -21,6 +21,7 @@ class AudioBuffer {
     size_t count = 0;
     uint64_t position = 0;
     uint64_t dropped = 0;
+    size_t remaining = 0;
     uint32_t generation = 0;
     bool discontinuity = false;
   };
@@ -66,6 +67,7 @@ class AudioBuffer {
     std::memcpy(output, samples_ + offset, first * sizeof(int16_t));
     std::memcpy(output + first, samples_, (result.count - first) * sizeof(int16_t));
     cursor.position += result.count;
+    result.remaining = static_cast<size_t>(written_ - cursor.position);
     return result;
   }
 

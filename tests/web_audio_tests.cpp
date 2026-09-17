@@ -18,7 +18,8 @@ int main() {
   const int16_t next[] = {21, 22, 23, 24};
   history.append(next, 4);
   auto result = history.read(fast, output, 2);
-  assert(result.count == 2 && result.position == 4 && result.dropped == 0);
+  assert(result.count == 2 && result.position == 4 && result.dropped == 0 &&
+         result.remaining == 2);
   assert(output[0] == 21 && output[1] == 22);
   result = history.read(slow, output, 4);
   assert(result.count == 4 && output[0] == 21 && output[3] == 24);
