@@ -233,6 +233,10 @@ function Connect-Authenticated {
   Drain-SerialOutput
 }
 
+function Test-SdBenchmarkFailureLine([string]$Line) {
+  return $Line -match '^RTL_SD_BENCH_(?:ERROR|INVALID)\b'
+}
+
 function Invoke-SdBenchmark {
   $script:serial.WriteLine("RTL_SD_BENCH $SdBenchmarkMiB")
   $deadline = [DateTime]::UtcNow.AddMinutes(5)
@@ -242,6 +246,7 @@ function Invoke-SdBenchmark {
       if (!$line) { continue }
       Write-SoakLine $line
       if (Test-FatalLine $line) { throw "Device crash/reset detected: $line" }
+      if (Test-SdBenchmarkFailureLine $line) { throw "SD benchmark rejected: $line" }
       if ($line -match '^RTL_SD_BENCH_DONE pass=([01])$') {
         if ($Matches[1] -ne '1') { throw 'SD benchmark failed.' }
         return
@@ -916,6 +921,11 @@ function Invoke-SelfCheck {
   $c6 = 'RTL_WIFI_C6_STATUS host=3.0.6 coprocessor=2.12.6 transport=1 embedded=1 state=ready percent=0 stage=version match=0'
   if ($c6 -notmatch '^RTL_WIFI_C6_STATUS host=\S+ coprocessor=\S+ transport=1 embedded=1 state=ready percent=0 stage=\S+ match=0$') {
     throw 'C6 update parser failed.'
+  }
+  if (!(Test-SdBenchmarkFailureLine 'RTL_SD_BENCH_ERROR open_failed') -or
+      !(Test-SdBenchmarkFailureLine 'RTL_SD_BENCH_INVALID size') -or
+      (Test-SdBenchmarkFailureLine 'RTL_SD_BENCH_DONE pass=1')) {
+    throw 'SD benchmark failure parser failed.'
   }
   if (-not (Test-ExclusiveScreen ([pscustomobject]@{ Active = @(0,0,0,0,1,0,0) }) 'ADSB')) {
     throw 'Exclusive dashboard check rejected valid ADS-B state.'

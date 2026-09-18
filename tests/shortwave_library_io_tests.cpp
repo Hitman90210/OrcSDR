@@ -180,14 +180,36 @@ int main() {
   CHECK(fs.exists("/OrcSDR/exports/shortwave-logbook-1789440123.csv"));
   CHECK(fs.exists("/OrcSDR/exports/shortwave-logbook-1789440123.adi"));
 
-  File oversized = fs.open(kMemoriesPath, FILE_WRITE, true);
-  CHECK(oversized);
-  CHECK(oversized.print("# corrupt test\r\n\"") != 0);
+  MemoryTable corrupt_source;
+  CHECK(corrupt_source.upsert(memory(9385000, "Corrupt source")) == RecordResult::ok);
+  CHECK(save_memories(fs, corrupt_source, error, sizeof(error)));
+  std::ofstream oversized(host_path(kMemoriesPath), std::ios::app | std::ios::binary);
+  CHECK(oversized.good());
+  oversized << '"';
   const std::string payload(2200, 'x');
-  CHECK(oversized.print(payload.c_str()) == payload.size());
-  CHECK(oversized.close());
+  oversized << payload;
+  oversized.close();
   LibraryState rejected{};
+  CHECK(rejected.memories.upsert(memory(10000000, "Keep existing")) == RecordResult::ok);
   CHECK(!load_library(fs, &rejected, error, sizeof(error)));
+  CHECK(rejected.memories.size() == 1);
+  CHECK(rejected.memories.at(0)->frequency_hz == 10000000);
+
+  CHECK(save_memories(fs, memories, error, sizeof(error)));
+  std::filesystem::copy_file(host_path(kMemoriesPath),
+                             host_path("/OrcSDR/shortwave/memories.csv.bak"),
+                             std::filesystem::copy_options::overwrite_existing);
+  std::ofstream corrupt_primary(host_path(kMemoriesPath),
+                                std::ios::trunc | std::ios::binary);
+  CHECK(corrupt_primary.good());
+  corrupt_primary << '"' << payload;
+  corrupt_primary.close();
+  LibraryState recovered{};
+  CHECK(load_library(fs, &recovered, error, sizeof(error)));
+  CHECK(recovered.memories.size() == memories.size());
+  CHECK(recovered.memories.at(0)->frequency_hz == 5850000);
+  CHECK(fs.exists(kMemoriesPath));
+  CHECK(!fs.exists("/OrcSDR/shortwave/memories.csv.bak"));
 
   std::filesystem::remove_all(test_root);
   std::puts("shortwave_library_io_tests: PASS");

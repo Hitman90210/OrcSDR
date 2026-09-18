@@ -2,6 +2,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <new>
 
 namespace orcsdr::shortwave {
 namespace {
@@ -67,8 +69,16 @@ template <typename Table, typename Record>
 bool load_table(storage::FileSystem& fs, const char* path, Table* table,
                 bool (*decode)(const char*, Record*), size_t* invalid_rows,
                 char* error, size_t error_capacity) {
-  table->clear();
-  if (!fs.exists(path)) return true;
+  const std::unique_ptr<Table> loaded(new (std::nothrow) Table);
+  if (!loaded) {
+    set_error(error, error_capacity, "cannot allocate Shortwave library table");
+    return false;
+  }
+  size_t invalid = 0;
+  if (!fs.exists(path)) {
+    *table = *loaded;
+    return true;
+  }
   File file = fs.open(path, FILE_READ);
   if (!file) {
     set_error(error, error_capacity, "cannot open Shortwave library");
@@ -85,10 +95,12 @@ bool load_table(storage::FileSystem& fs, const char* path, Table* table,
     }
     if (record[0] == '#') continue;
     Record value{};
-    if (!decode(record, &value) || table->upsert(value) != RecordResult::ok)
-      ++*invalid_rows;
+    if (!decode(record, &value) || loaded->upsert(value) != RecordResult::ok)
+      ++invalid;
   }
   file.close();
+  *table = *loaded;
+  *invalid_rows += invalid;
   return true;
 }
 
@@ -98,8 +110,16 @@ bool load_table<LogTable, LogEntry>(storage::FileSystem& fs, const char* path,
                                     bool (*decode)(const char*, LogEntry*),
                                     size_t* invalid_rows, char* error,
                                     size_t error_capacity) {
-  table->clear();
-  if (!fs.exists(path)) return true;
+  const std::unique_ptr<LogTable> loaded(new (std::nothrow) LogTable);
+  if (!loaded) {
+    set_error(error, error_capacity, "cannot allocate Shortwave logbook table");
+    return false;
+  }
+  size_t invalid = 0;
+  if (!fs.exists(path)) {
+    *table = *loaded;
+    return true;
+  }
   File file = fs.open(path, FILE_READ);
   if (!file) {
     set_error(error, error_capacity, "cannot open Shortwave logbook");
@@ -116,10 +136,48 @@ bool load_table<LogTable, LogEntry>(storage::FileSystem& fs, const char* path,
     }
     if (record[0] == '#') continue;
     LogEntry value{};
-    if (!decode(record, &value) || table->append(value) != RecordResult::ok)
-      ++*invalid_rows;
+    if (!decode(record, &value) || loaded->append(value) != RecordResult::ok)
+      ++invalid;
   }
   file.close();
+  *table = *loaded;
+  *invalid_rows += invalid;
+  return true;
+}
+
+template <typename Table, typename Record>
+bool load_table_with_backup(storage::FileSystem& fs, const char* path,
+                            Table* table, bool (*decode)(const char*, Record*),
+                            size_t* invalid_rows, char* error,
+                            size_t error_capacity) {
+  if (!recover_backup(fs, path, error, error_capacity)) return false;
+  if (load_table(fs, path, table, decode, invalid_rows, error, error_capacity)) {
+    remove_backup(fs, path);
+    return true;
+  }
+
+  char backup[160];
+  std::snprintf(backup, sizeof(backup), "%s.bak", path);
+  if (!fs.exists(backup)) return false;
+  const std::unique_ptr<Table> recovered(new (std::nothrow) Table);
+  if (!recovered) {
+    set_error(error, error_capacity, "cannot allocate Shortwave backup table");
+    return false;
+  }
+  size_t recovered_invalid = 0;
+  if (!load_table(fs, backup, recovered.get(), decode, &recovered_invalid, error,
+                  error_capacity))
+    return false;
+  if (fs.exists(path) && !fs.remove(path)) {
+    set_error(error, error_capacity, "cannot replace invalid Shortwave library");
+    return false;
+  }
+  if (!fs.rename(backup, path)) {
+    set_error(error, error_capacity, "cannot restore Shortwave library backup");
+    return false;
+  }
+  *table = *recovered;
+  *invalid_rows += recovered_invalid;
   return true;
 }
 
@@ -261,18 +319,26 @@ bool write_exports(storage::FileSystem& fs, const LogTable& logs, char* error,
 bool load_library(storage::FileSystem& fs, LibraryState* state, char* error,
                   size_t error_capacity) {
   if (!state) return false;
-  state->invalid_rows = 0;
-  if (!recover_backup(fs, kMemoriesPath, error, error_capacity) ||
-      !recover_backup(fs, kLogbookPath, error, error_capacity) ||
-      !load_table(fs, kMemoriesPath, &state->memories, decode_memory_csv,
-                  &state->invalid_rows, error, error_capacity) ||
-      !load_table(fs, kLogbookPath, &state->logs, decode_log_csv,
-                  &state->invalid_rows, error, error_capacity)) {
+  const std::unique_ptr<MemoryTable> memories(new (std::nothrow) MemoryTable);
+  const std::unique_ptr<LogTable> logs(new (std::nothrow) LogTable);
+  if (!memories || !logs) {
+    set_error(error, error_capacity, "cannot allocate Shortwave library state");
     state->status = StorageStatus::read_failed;
     return false;
   }
-  remove_backup(fs, kMemoriesPath);
-  remove_backup(fs, kLogbookPath);
+  *memories = state->memories;
+  *logs = state->logs;
+  size_t invalid_rows = 0;
+  if (!load_table_with_backup(fs, kMemoriesPath, memories.get(), decode_memory_csv,
+                              &invalid_rows, error, error_capacity) ||
+      !load_table_with_backup(fs, kLogbookPath, logs.get(), decode_log_csv,
+                              &invalid_rows, error, error_capacity)) {
+    state->status = StorageStatus::read_failed;
+    return false;
+  }
+  state->memories = *memories;
+  state->logs = *logs;
+  state->invalid_rows = invalid_rows;
   state->status = StorageStatus::ready;
   return true;
 }

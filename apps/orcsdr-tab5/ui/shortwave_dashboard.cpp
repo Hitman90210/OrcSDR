@@ -390,7 +390,7 @@ void draw_on_air() {
   size_t row = 0;
   for (size_t i = 0; i < station_count() && row < 6; ++i) {
     const StationCard* station = station_at(i);
-    if (!station || !schedule_matches(*station, station->frequency_hz,
+    if (!station || !schedule_matches(*station, g_snapshot.frequency_hz,
                                       g_snapshot.utc_minute,
                                       g_snapshot.utc_weekday))
       continue;
@@ -616,6 +616,9 @@ void update(const Snapshot& snapshot) {
   const bool frequency_changed = snapshot.frequency_hz != g_snapshot.frequency_hz;
   const bool span_changed = snapshot.span_hz != g_snapshot.span_hz;
   const bool page_changed =
+      frequency_changed || snapshot.utc_valid != g_snapshot.utc_valid ||
+      snapshot.utc_minute != g_snapshot.utc_minute ||
+      snapshot.utc_weekday != g_snapshot.utc_weekday ||
       snapshot.storage_status != g_snapshot.storage_status ||
       snapshot.memories != g_snapshot.memories || snapshot.logs != g_snapshot.logs ||
       snapshot.memory_count != g_snapshot.memory_count ||
@@ -802,7 +805,7 @@ Action handle_touch(int32_t x, int32_t y) {
     size_t row = 0;
     for (size_t i = 0; i < station_count() && row < 6; ++i) {
       const StationCard* station = station_at(i);
-      if (!station || !schedule_matches(*station, station->frequency_hz,
+      if (!station || !schedule_matches(*station, g_snapshot.frequency_hz,
                                         g_snapshot.utc_minute,
                                         g_snapshot.utc_weekday))
         continue;
@@ -1213,6 +1216,8 @@ bool dashboard_self_check() {
       handle_touch(kTabW + kTabW / 2, kTabsY + 20).kind == ActionKind::none &&
       handle_touch(640, 245).kind == ActionKind::tune_hz &&
       handle_touch(640, 245).value == 5000000;
+  g_snapshot.frequency_hz = 5200000;
+  const bool on_air_filter_ok = handle_touch(640, 245).kind == ActionKind::none;
   const bool hunt_cancel_ok =
       handle_touch(2 * kTabW + kTabW / 2, kTabsY + 20).kind == ActionKind::none &&
       handle_touch(3 * kTabW + kTabW / 2, kTabsY + 20).kind ==
@@ -1228,7 +1233,7 @@ bool dashboard_self_check() {
   return controls_ok && hidden_drawer_ok && filter_drag_ok && tuner_opens &&
           drawer_ok && modal_gestures_ok && direct_q_ok && tuner_closes && geometry_ok &&
           spectrum_layout_ok && peak_pool_ok && touch_tune_bounds_ok &&
-          on_air_ok && hunt_cancel_ok &&
+          on_air_ok && on_air_filter_ok && hunt_cancel_ok &&
           kTabsY + 90 <= 720 && model_self_check() && receiver_controls::self_check();
 }
 
