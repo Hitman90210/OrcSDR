@@ -1000,7 +1000,7 @@ if (($InstallLaneMap -or $InstallFaaAircraft) -and !$DataOnly) {
   throw '-InstallLaneMap and -InstallFaaAircraft require -DataOnly.'
 }
 if ($IqHotTune -and !$IqDiagnostic) { throw '-IqHotTune requires -IqDiagnostic.' }
-if (@($Run, $Soak, $Driver080Rc2, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast, $GainSweep, $IqDiagnostic, $SdSelfCheck, $SdBenchmark).Where({ $_ }).Count -gt 1) {
+if (@($Run, $Soak, $Driver080Rc3, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast, $GainSweep, $IqDiagnostic, $SdSelfCheck, $SdBenchmark).Where({ $_ }).Count -gt 1) {
   throw 'Choose only one primary test mode.'
 }
 
