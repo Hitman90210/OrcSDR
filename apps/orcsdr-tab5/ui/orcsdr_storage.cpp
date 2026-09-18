@@ -234,16 +234,30 @@ bool run_file_semantics_check() {
 }
 
 bool run_write_benchmark(uint32_t file_mib) {
-  if (file_mib < 4 || file_mib > 64 || !mount_tab5_sd()) return false;
+  if (file_mib < 4 || file_mib > 64) {
+    printf("RTL_SD_BENCH_ERROR reason=file_size\n");
+    fflush(stdout);
+    return false;
+  }
+  if (!mount_tab5_sd()) {
+    printf("RTL_SD_BENCH_ERROR reason=sd_mount\n");
+    fflush(stdout);
+    return false;
+  }
   constexpr const char* kDirectory = "/orcsdr";
   constexpr const char* kPath = "/orcsdr/sdbench.bin";
   constexpr size_t kMaxChunk = 128 * 1024;
   const uint64_t total_bytes = static_cast<uint64_t>(file_mib) * 1024u * 1024u;
-  if (!g_filesystem.mkdir(kDirectory)) return false;
+  if (!g_filesystem.mkdir(kDirectory)) {
+    printf("RTL_SD_BENCH_ERROR reason=mkdir\n");
+    fflush(stdout);
+    return false;
+  }
   size_t cache_alignment = 0;
   if (esp_cache_get_alignment(MALLOC_CAP_SPIRAM, &cache_alignment) != ESP_OK ||
       cache_alignment == 0) {
     printf("RTL_SD_BENCH_ERROR reason=cache_alignment\n");
+    fflush(stdout);
     return false;
   }
   uint8_t* buffer = static_cast<uint8_t*>(heap_caps_malloc(
@@ -251,6 +265,7 @@ bool run_write_benchmark(uint32_t file_mib) {
   if (!buffer) {
     printf("RTL_SD_BENCH_ERROR reason=psram_buffer bytes=%u\n",
            static_cast<unsigned>(kMaxChunk));
+    fflush(stdout);
     return false;
   }
   for (size_t i = 0; i < kMaxChunk; ++i)

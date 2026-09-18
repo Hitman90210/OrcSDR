@@ -1005,14 +1005,14 @@ function Invoke-SelfCheck {
   Write-SoakLine 'RTL_UI_SOAK_SELF_CHECK pass=1'
 }
 
-if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
 if (($InstallLaneMap -or $InstallFaaAircraft) -and !$DataOnly) {
   throw '-InstallLaneMap and -InstallFaaAircraft require -DataOnly.'
 }
 if ($IqHotTune -and !$IqDiagnostic) { throw '-IqHotTune requires -IqDiagnostic.' }
-if (@($Run, $Soak, $Driver080Rc3, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast, $GainSweep, $IqDiagnostic, $SdSelfCheck, $SdBenchmark).Where({ $_ }).Count -gt 1) {
+if (@($SelfCheck, $Run, $Soak, $Driver080Rc3, $WifiOnly, $WifiCoexistence, $WifiCoexistenceDiagnostic, $DataOnly, $C6Update, $RadioScan, $AmBroadcast, $GainSweep, $IqDiagnostic, $SdSelfCheck, $SdBenchmark).Where({ $_ }).Count -gt 1) {
   throw 'Choose only one primary test mode.'
 }
+if ($SelfCheck) { Invoke-SelfCheck; exit 0 }
 
 function Get-C6UpdateStatus {
   $line = Send-And-Wait 'RTL_WIFI_C6_STATUS' '^RTL_WIFI_C6_STATUS '
