@@ -70,8 +70,15 @@ uint32_t g_saved_frequency = 7100000;
 size_t g_hunt_band = 0;
 char g_entry[12]{};
 char g_pending_memory_label[64]{};
+char g_pending_memory_notes[160]{};
 char g_pending_log_antenna[64]{};
 char g_pending_log_notes[240]{};
+size_t g_edit_memory = SIZE_MAX;
+size_t g_edit_log = SIZE_MAX;
+size_t g_memory_page = 0;
+size_t g_log_page = 0;
+size_t g_delete_memory = SIZE_MAX;
+size_t g_delete_log = SIZE_MAX;
 bool g_filter_dragging = false;
 bool g_tuner_drawer_open = false;
 EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kSpectrumClosedW]{};
@@ -370,30 +377,36 @@ void draw_storage_status() {
        ready ? kGreen : TFT_ORANGE, 2, middle_right);
 }
 
-void draw_guide_card(int y) {
-  const ModeGuide guide = mode_guide_for(g_snapshot.frequency_hz);
-  card(36, y, 1208, 122);
-  char heading[72];
-  snprintf(heading, sizeof(heading), "%s  |  TRY %s",
-           region_label(region_for(g_snapshot.frequency_hz)), guide.likely_mode);
-  text(heading, 62, y + 30, guide.supported_now ? kGreen : kYellow, 3,
-       middle_left);
-  text(guide.reason, 62, y + 78, TFT_WHITE, 2, middle_left);
-  if (!guide.supported_now)
-    text("This mode is guidance only until its demodulator is implemented.",
-         62, y + 103, kMuted, 1, middle_left);
-}
-
 void draw_on_air() {
   draw_page_title("ON AIR", "Local schedules are suggestions, never decoded identity");
   draw_storage_status();
-  draw_guide_card(194);
-  card(36, 340, 1208, 210);
-  text("NO LOCAL SCHEDULE CATALOG LOADED", 640, 404, TFT_ORANGE, 3);
-  text("Use LIVE to explore, or HUNT to scan an international broadcast band.",
-       640, 452, TFT_WHITE, 2);
-  text("A future catalog update can populate this page without changing the receiver.",
-       640, 494, kMuted, 2);
+  if (!g_snapshot.utc_valid) {
+    card(36, 230, 1208, 250);
+    text("SET UTC TO USE ON AIR", 640, 315, TFT_ORANGE, 3);
+    text("Schedules stay hidden until the device clock is valid.", 640, 370,
+         TFT_WHITE, 2);
+    return;
+  }
+  size_t row = 0;
+  for (size_t i = 0; i < station_count() && row < 6; ++i) {
+    const StationCard* station = station_at(i);
+    if (!station || !schedule_matches(*station, station->frequency_hz,
+                                      g_snapshot.utc_minute,
+                                      g_snapshot.utc_weekday))
+      continue;
+    char label[160];
+    snprintf(label, sizeof(label), "%.3f MHz  %s  |  %s",
+             static_cast<double>(station->frequency_hz) / 1000000.0,
+             station->station, station->program);
+    button(36, 220 + static_cast<int>(row) * 58, 1208, 50, label, row == 0);
+    ++row;
+  }
+  if (!row) {
+    card(36, 230, 1208, 250);
+    text("NO MATCHING LOCAL SCHEDULE", 640, 315, TFT_ORANGE, 3);
+    text("Tune near a listed station frequency or use HUNT to explore.", 640, 370,
+         TFT_WHITE, 2);
+  }
 }
 
 void draw_hunt() {
@@ -439,6 +452,14 @@ void draw_memory() {
   button(980, 170, 264, 58, "SAVE CURRENT", true,
          g_snapshot.storage_status == StorageStatus::ready);
   const size_t count = g_snapshot.memories ? g_snapshot.memories->size() : 0;
+  const size_t pages = std::max<size_t>(1, (count + 6) / 7);
+  g_memory_page = std::min(g_memory_page, pages - 1);
+  button(36, 170, 70, 58, "<", false, g_memory_page > 0);
+  char page[48];
+  snprintf(page, sizeof(page), "PAGE %u / %u", static_cast<unsigned>(g_memory_page + 1),
+           static_cast<unsigned>(pages));
+  text(page, 190, 199, kMuted, 2);
+  button(300, 170, 70, 58, ">", false, g_memory_page + 1 < pages);
   if (!count) {
     card(36, 260, 1208, 270);
     text("NO SHORTWAVE MEMORIES", 640, 355, TFT_WHITE, 3);
@@ -446,15 +467,21 @@ void draw_memory() {
          640, 410, kMuted, 2);
     return;
   }
-  for (size_t i = 0; i < std::min<size_t>(count, 7); ++i) {
+  const size_t first = g_memory_page * 7;
+  for (size_t row = 0; row < std::min<size_t>(count - first, 7); ++row) {
+    const size_t i = first + row;
     const Memory* memory = g_snapshot.memories->at(i);
     if (!memory) continue;
-    char row[128];
-    snprintf(row, sizeof(row), "%u.  %.3f MHz  %-3s  %s",
+    char label[128];
+    snprintf(label, sizeof(label), "%u.  %.3f MHz  %-3s  %s",
              static_cast<unsigned>(i + 1),
              static_cast<double>(memory->frequency_hz) / 1000000.0,
              memory->mode, memory->station[0] ? memory->station : "Unlabeled signal");
-    button(36, 250 + static_cast<int>(i) * 50, 1208, 42, row);
+    const int y = 250 + static_cast<int>(row) * 50;
+    button(36, y, 780, 42, label);
+    button(826, y, 100, 42, memory->favorite ? "STAR" : "FAV", memory->favorite);
+    button(936, y, 130, 42, "EDIT");
+    button(1076, y, 168, 42, g_delete_memory == i ? "CONFIRM" : "DELETE");
   }
 }
 
@@ -466,6 +493,14 @@ void draw_logbook() {
   button(984, 170, 260, 58, "EXPORT CSV + ADIF", false,
          g_snapshot.storage_status == StorageStatus::ready);
   const size_t count = g_snapshot.logs ? g_snapshot.logs->size() : 0;
+  const size_t pages = std::max<size_t>(1, (count + 6) / 7);
+  g_log_page = std::min(g_log_page, pages - 1);
+  button(36, 170, 70, 58, "<", false, g_log_page > 0);
+  char page[48];
+  snprintf(page, sizeof(page), "PAGE %u / %u", static_cast<unsigned>(g_log_page + 1),
+           static_cast<unsigned>(pages));
+  text(page, 190, 199, kMuted, 2);
+  button(300, 170, 70, 58, ">", false, g_log_page + 1 < pages);
   if (!count) {
     card(36, 260, 1208, 270);
     text("NO RECEPTION LOGS", 640, 355, TFT_WHITE, 3);
@@ -473,8 +508,9 @@ void draw_logbook() {
          640, 410, kMuted, 2);
     return;
   }
-  const size_t first = count > 7 ? count - 7 : 0;
-  for (size_t row_index = 0; row_index < count - first; ++row_index) {
+  const size_t first = g_log_page * 7;
+  for (size_t row_index = 0; row_index < std::min<size_t>(count - first, 7);
+       ++row_index) {
     const LogEntry* entry = g_snapshot.logs->at(first + row_index);
     if (!entry) continue;
     char row[144];
@@ -482,7 +518,11 @@ void draw_logbook() {
              static_cast<double>(entry->frequency_hz) / 1000000.0,
              entry->mode, static_cast<double>(entry->signal_dbfs),
              entry->station[0] ? entry->station : "Unidentified reception");
-    button(36, 250 + static_cast<int>(row_index) * 50, 1208, 42, row);
+    const int y = 250 + static_cast<int>(row_index) * 50;
+    button(36, y, 880, 42, row);
+    button(926, y, 140, 42, "EDIT");
+    const size_t index = first + row_index;
+    button(1076, y, 168, 42, g_delete_log == index ? "CONFIRM" : "DELETE");
   }
 }
 
@@ -520,6 +560,12 @@ void enter(const Snapshot& snapshot) {
   g_saved_frequency = snapshot.frequency_hz;
   g_filter_dragging = false;
   g_tuner_drawer_open = false;
+  g_edit_memory = SIZE_MAX;
+  g_edit_log = SIZE_MAX;
+  g_memory_page = 0;
+  g_log_page = 0;
+  g_delete_memory = SIZE_MAX;
+  g_delete_log = SIZE_MAX;
   g_active = true;
   g_state.close_modal();
   g_state.select_tab(Tab::live);
@@ -535,6 +581,8 @@ void leave() {
   M5.Display.clearScrollRect();
   g_filter_dragging = false;
   g_tuner_drawer_open = false;
+  g_delete_memory = SIZE_MAX;
+  g_delete_log = SIZE_MAX;
   g_active = false;
 }
 
@@ -668,16 +716,29 @@ Action handle_touch(int32_t x, int32_t y) {
     if (modal == Modal::memory_label) {
       snprintf(g_pending_memory_label, sizeof(g_pending_memory_label), "%s",
                text_editor::value());
+      g_state.open(Modal::memory_notes);
+      text_editor::begin("MEMORY NOTES", g_pending_memory_notes,
+                         sizeof(g_pending_memory_notes) - 1, false,
+                         g_edit_memory == SIZE_MAX ? "SAVE" : "UPDATE");
+      text_editor::draw();
+      return {};
+    }
+    if (modal == Modal::memory_notes) {
+      snprintf(g_pending_memory_notes, sizeof(g_pending_memory_notes), "%s",
+               text_editor::value());
       g_state.close_modal();
       draw();
-      return {ActionKind::save_memory};
+      return {g_edit_memory == SIZE_MAX ? ActionKind::save_memory
+                                        : ActionKind::update_memory,
+              g_edit_memory == SIZE_MAX ? 0 : static_cast<int32_t>(g_edit_memory)};
     }
     if (modal == Modal::log_antenna) {
       snprintf(g_pending_log_antenna, sizeof(g_pending_log_antenna), "%s",
                text_editor::value());
       g_state.open(Modal::log_notes);
-      text_editor::begin("RECEPTION NOTES", "", sizeof(g_pending_log_notes) - 1,
-                         false, "LOG");
+      text_editor::begin("RECEPTION NOTES", g_pending_log_notes,
+                         sizeof(g_pending_log_notes) - 1, false,
+                         g_edit_log == SIZE_MAX ? "LOG" : "UPDATE");
       text_editor::draw();
       return {};
     }
@@ -686,7 +747,9 @@ Action handle_touch(int32_t x, int32_t y) {
                text_editor::value());
       g_state.close_modal();
       draw();
-      return {ActionKind::save_log};
+      return {g_edit_log == SIZE_MAX ? ActionKind::save_log
+                                     : ActionKind::update_log,
+              g_edit_log == SIZE_MAX ? 0 : static_cast<int32_t>(g_edit_log)};
     }
     return {};
   }
@@ -729,12 +792,26 @@ Action handle_touch(int32_t x, int32_t y) {
   if (audio_header::settings_hit(x, y)) return {ActionKind::open_settings};
   if (y >= kTabsY) {
     const int index = std::clamp<int32_t>(x / kTabW, 0, 4);
-    g_state.select_tab(static_cast<Tab>(index));
+    const bool cancel_hunt = g_state.select_tab(static_cast<Tab>(index));
     draw();
-    return {};
+    return cancel_hunt ? Action{ActionKind::hunt_cancel} : Action{};
   }
 
-  if (g_state.tab() == Tab::on_air) return {};
+  if (g_state.tab() == Tab::on_air) {
+    if (!g_snapshot.utc_valid) return {};
+    size_t row = 0;
+    for (size_t i = 0; i < station_count() && row < 6; ++i) {
+      const StationCard* station = station_at(i);
+      if (!station || !schedule_matches(*station, station->frequency_hz,
+                                        g_snapshot.utc_minute,
+                                        g_snapshot.utc_weekday))
+        continue;
+      if (hit(x, y, 36, 220 + static_cast<int>(row) * 58, 1208, 50))
+        return {ActionKind::tune_hz, static_cast<int32_t>(station->frequency_hz)};
+      ++row;
+    }
+    return {};
+  }
 
   if (g_state.tab() == Tab::hunt) {
     if (hit(x, y, 36, 190, 80, 58)) {
@@ -760,26 +837,77 @@ Action handle_touch(int32_t x, int32_t y) {
   }
 
   if (g_state.tab() == Tab::memory) {
+    const size_t count = g_snapshot.memories ? g_snapshot.memories->size() : 0;
+    const size_t pages = std::max<size_t>(1, (count + 6) / 7);
+    g_memory_page = std::min(g_memory_page, pages - 1);
+    if (hit(x, y, 36, 170, 70, 58) && g_memory_page > 0) {
+      --g_memory_page; g_delete_memory = SIZE_MAX; draw(); return {};
+    }
+    if (hit(x, y, 300, 170, 70, 58) && g_memory_page + 1 < pages) {
+      ++g_memory_page; g_delete_memory = SIZE_MAX; draw(); return {};
+    }
     if (g_snapshot.storage_status == StorageStatus::ready &&
         hit(x, y, 980, 170, 264, 58)) {
+      g_edit_memory = SIZE_MAX;
+      g_pending_memory_label[0] = '\0';
+      g_pending_memory_notes[0] = '\0';
       g_state.open(Modal::memory_label);
       text_editor::begin("MEMORY LABEL", "", sizeof(g_pending_memory_label) - 1,
                          false, "SAVE");
       text_editor::draw();
       return {};
     }
-    const size_t count = g_snapshot.memories ? g_snapshot.memories->size() : 0;
-    for (size_t i = 0; i < std::min<size_t>(count, 7); ++i) {
+    const size_t first = g_memory_page * 7;
+    for (size_t row = 0; row < std::min<size_t>(count - first, 7); ++row) {
+      const size_t i = first + row;
       const Memory* memory = g_snapshot.memories->at(i);
-      if (memory && hit(x, y, 36, 250 + static_cast<int>(i) * 50, 1208, 42))
+      const int row_y = 250 + static_cast<int>(row) * 50;
+      if (!memory) continue;
+      if (hit(x, y, 36, row_y, 780, 42))
         return {ActionKind::tune_hz, static_cast<int32_t>(memory->frequency_hz)};
+      if (hit(x, y, 826, row_y, 100, 42))
+        return {ActionKind::favorite_memory, static_cast<int32_t>(i)};
+      if (hit(x, y, 936, row_y, 130, 42)) {
+        g_edit_memory = i;
+        snprintf(g_pending_memory_label, sizeof(g_pending_memory_label), "%s",
+                 memory->station);
+        snprintf(g_pending_memory_notes, sizeof(g_pending_memory_notes), "%s",
+                 memory->notes);
+        g_state.open(Modal::memory_label);
+        text_editor::begin("MEMORY LABEL", g_pending_memory_label,
+                           sizeof(g_pending_memory_label) - 1, false, "NEXT");
+        text_editor::draw();
+        return {};
+      }
+      if (hit(x, y, 1076, row_y, 168, 42)) {
+        if (g_delete_memory == i) {
+          g_delete_memory = SIZE_MAX;
+          return {ActionKind::delete_memory, static_cast<int32_t>(i)};
+        }
+        g_delete_memory = i;
+        draw();
+        return {};
+      }
     }
+    g_delete_memory = SIZE_MAX;
     return {};
   }
 
   if (g_state.tab() == Tab::logbook) {
+    const size_t count = g_snapshot.logs ? g_snapshot.logs->size() : 0;
+    const size_t pages = std::max<size_t>(1, (count + 6) / 7);
+    g_log_page = std::min(g_log_page, pages - 1);
+    if (hit(x, y, 36, 170, 70, 58) && g_log_page > 0) {
+      --g_log_page; g_delete_log = SIZE_MAX; draw(); return {};
+    }
+    if (hit(x, y, 300, 170, 70, 58) && g_log_page + 1 < pages) {
+      ++g_log_page; g_delete_log = SIZE_MAX; draw(); return {};
+    }
     if (g_snapshot.storage_status == StorageStatus::ready &&
         hit(x, y, 720, 170, 250, 58)) {
+      g_edit_log = SIZE_MAX;
+      g_pending_log_antenna[0] = '\0';
+      g_pending_log_notes[0] = '\0';
       g_state.open(Modal::log_antenna);
       text_editor::begin("ANTENNA USED", "", sizeof(g_pending_log_antenna) - 1,
                          false, "NEXT");
@@ -789,6 +917,35 @@ Action handle_touch(int32_t x, int32_t y) {
     if (g_snapshot.storage_status == StorageStatus::ready &&
         hit(x, y, 984, 170, 260, 58))
       return {ActionKind::export_log};
+    const size_t first = g_log_page * 7;
+    for (size_t row = 0; row < std::min<size_t>(count - first, 7); ++row) {
+      const size_t i = first + row;
+      const LogEntry* entry = g_snapshot.logs->at(i);
+      const int row_y = 250 + static_cast<int>(row) * 50;
+      if (!entry) continue;
+      if (hit(x, y, 926, row_y, 140, 42)) {
+        g_edit_log = i;
+        snprintf(g_pending_log_antenna, sizeof(g_pending_log_antenna), "%s",
+                 entry->antenna);
+        snprintf(g_pending_log_notes, sizeof(g_pending_log_notes), "%s",
+                 entry->notes);
+        g_state.open(Modal::log_antenna);
+        text_editor::begin("ANTENNA USED", g_pending_log_antenna,
+                           sizeof(g_pending_log_antenna) - 1, false, "NEXT");
+        text_editor::draw();
+        return {};
+      }
+      if (hit(x, y, 1076, row_y, 168, 42)) {
+        if (g_delete_log == i) {
+          g_delete_log = SIZE_MAX;
+          return {ActionKind::delete_log, static_cast<int32_t>(i)};
+        }
+        g_delete_log = i;
+        draw();
+        return {};
+      }
+    }
+    g_delete_log = SIZE_MAX;
     return {};
   }
 
@@ -858,7 +1015,7 @@ Action handle_touch(int32_t x, int32_t y) {
 }
 
 Action handle_gain_drag(int32_t x, int32_t y) {
-  if (!g_active || !g_tuner_drawer_open || g_state.tab() != Tab::live ||
+  if (!g_active || !g_tuner_drawer_open || !g_state.spectrum_allowed() ||
       !hit(x, y, kGainX - 16, kGainY - 20, kGainW + 32, 62) ||
       g_snapshot.gain_step_count == 0 ||
       receiver_controls::item(receiver_controls::Control::rf_gain,
@@ -876,7 +1033,7 @@ Action handle_filter_drag(int32_t x, int32_t y, bool pressed) {
     g_filter_dragging = false;
     return {};
   }
-  if (!g_active || g_state.tab() != Tab::live) return {};
+  if (!g_active || !g_state.spectrum_allowed()) return {};
   const int width = spectrum_width();
   const int center = kSpectrumX + width / 2;
   if (!g_filter_dragging) {
@@ -896,7 +1053,7 @@ Action handle_filter_drag(int32_t x, int32_t y, bool pressed) {
 
 bool spectrum_contains(int32_t x, int32_t y) {
   const int width = spectrum_width();
-  return g_active && g_state.tab() == Tab::live &&
+  return g_active && g_state.spectrum_allowed() &&
          (hit(x, y, kSpectrumX, kSpectrumY, width, kSpectrumPlotH) ||
           hit(x, y, kSpectrumX, kWaterfallY, width, kWaterfallH));
 }
@@ -906,6 +1063,7 @@ bool spectrum_active() { return g_active && g_state.spectrum_allowed(); }
 uint32_t saved_frequency() { return g_saved_frequency; }
 void note_tuned(uint32_t frequency_hz) { g_saved_frequency = frequency_hz; }
 const char* pending_memory_label() { return g_pending_memory_label; }
+const char* pending_memory_notes() { return g_pending_memory_notes; }
 const char* pending_log_antenna() { return g_pending_log_antenna; }
 const char* pending_log_notes() { return g_pending_log_notes; }
 
@@ -916,6 +1074,7 @@ bool dashboard_self_check() {
   const bool was_drawer_open = g_tuner_drawer_open;
   const Modal saved_modal = g_state.modal();
   const Tab saved_tab = g_state.tab();
+  const size_t saved_memory_page = g_memory_page;
   char saved_entry[sizeof(g_entry)];
   memcpy(saved_entry, g_entry, sizeof(g_entry));
   Snapshot test{};
@@ -927,6 +1086,9 @@ bool dashboard_self_check() {
   test.gain_step_count = 3;
   test.span_hz = 480000;
   test.filter_bandwidth_hz = 9000;
+  test.utc_valid = true;
+  test.utc_minute = 600;
+  test.utc_weekday = 1;
   g_snapshot = test;
   g_active = true;
   g_tuner_drawer_open = false;
@@ -976,8 +1138,15 @@ bool dashboard_self_check() {
           ActionKind::gain_auto &&
       handle_gain_drag(kGainX + kGainW, kGainY).value == 496 &&
       handle_touch(kDrawer.x + 8, kSpectrumY + 20).kind == ActionKind::none &&
-      handle_touch(kSpectrumX + kSpectrumOpenW - 8, kSpectrumY + 20).kind ==
-          ActionKind::tune_hz;
+       handle_touch(kSpectrumX + kSpectrumOpenW - 8, kSpectrumY + 20).kind ==
+           ActionKind::tune_hz;
+  g_state.open(Modal::frequency);
+  const bool modal_gestures_ok =
+      !spectrum_contains(kSpectrumX + 20, kSpectrumY + 20) &&
+      handle_filter_drag(filter_edge, kSpectrumY + 20, true).kind ==
+          ActionKind::none &&
+      handle_gain_drag(kGainX, kGainY).kind == ActionKind::none;
+  g_state.close_modal();
   g_snapshot.controls.route = ReceiverRoute::direct_q;
   const bool direct_q_ok =
                            handle_touch(center_x(kTunerAgc), center_y(kTunerAgc)).kind ==
@@ -1037,19 +1206,30 @@ bool dashboard_self_check() {
       handle_touch(kSpectrumX, kSpectrumY - 1).kind == ActionKind::none &&
       handle_touch(kSpectrumX + kSpectrumClosedW, kWaterfallY).kind == ActionKind::none &&
       handle_touch(kSpectrumX, kWaterfallY + kWaterfallH).kind == ActionKind::none &&
-      handle_touch(kSpectrumX + 20, kSpectrumY + kSpectrumPlotH + 8).kind ==
-          ActionKind::none;
+       handle_touch(kSpectrumX + 20, kSpectrumY + kSpectrumPlotH + 8).kind ==
+           ActionKind::none;
+  g_snapshot.frequency_hz = 5000000;
+  const bool on_air_ok =
+      handle_touch(kTabW + kTabW / 2, kTabsY + 20).kind == ActionKind::none &&
+      handle_touch(640, 245).kind == ActionKind::tune_hz &&
+      handle_touch(640, 245).value == 5000000;
+  const bool hunt_cancel_ok =
+      handle_touch(2 * kTabW + kTabW / 2, kTabsY + 20).kind == ActionKind::none &&
+      handle_touch(3 * kTabW + kTabW / 2, kTabsY + 20).kind ==
+          ActionKind::hunt_cancel;
   g_snapshot = saved;
   g_active = was_active;
   g_filter_dragging = was_filter_dragging;
   g_tuner_drawer_open = was_drawer_open;
+  g_memory_page = saved_memory_page;
   g_state.open(saved_modal);
   g_state.select_tab(saved_tab);
   memcpy(g_entry, saved_entry, sizeof(g_entry));
   return controls_ok && hidden_drawer_ok && filter_drag_ok && tuner_opens &&
-         drawer_ok && direct_q_ok && tuner_closes && geometry_ok &&
-         spectrum_layout_ok && peak_pool_ok && touch_tune_bounds_ok &&
-         kTabsY + 90 <= 720 && model_self_check() && receiver_controls::self_check();
+          drawer_ok && modal_gestures_ok && direct_q_ok && tuner_closes && geometry_ok &&
+          spectrum_layout_ok && peak_pool_ok && touch_tune_bounds_ok &&
+          on_air_ok && hunt_cancel_ok &&
+          kTabsY + 90 <= 720 && model_self_check() && receiver_controls::self_check();
 }
 
 }  // namespace orcsdr::shortwave

@@ -79,6 +79,10 @@ class MemoryTable {
  public:
   static constexpr size_t kCapacity = 128;
   RecordResult upsert(const Memory& memory);
+  RecordResult insert(size_t index, const Memory& memory);
+  RecordResult replace(size_t index, const Memory& memory);
+  RecordResult toggle_favorite(size_t index);
+  RecordResult erase(size_t index);
   void clear() { size_ = 0; }
   void discard_last() { if (size_) --size_; }
   size_t size() const { return size_; }
@@ -93,6 +97,9 @@ class LogTable {
  public:
   static constexpr size_t kCapacity = 128;
   RecordResult append(const LogEntry& entry);
+  RecordResult insert(size_t index, const LogEntry& entry);
+  RecordResult replace(size_t index, const LogEntry& entry);
+  RecordResult erase(size_t index);
   void clear() { size_ = 0; }
   void discard_last() { if (size_) --size_; }
   size_t size() const { return size_; }
@@ -105,6 +112,8 @@ class LogTable {
 
 size_t band_count();
 const BroadcastBand* band(size_t index);
+size_t station_count();
+const StationCard* station_at(size_t index);
 const BroadcastBand* band_for(uint32_t frequency_hz);
 uint32_t adjacent_band_frequency(uint32_t frequency_hz, int direction);
 uint32_t next_tuning_step(uint32_t current_hz);

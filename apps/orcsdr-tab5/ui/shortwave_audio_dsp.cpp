@@ -20,6 +20,10 @@ std::atomic<bool> g_squelch_open{true};
 std::atomic<bool> g_notch_active{false};
 std::atomic<uint16_t> g_notch_hz{0};
 std::atomic<float> g_input_rms_dbfs{-120.0f};
+std::atomic<float> g_last_rf_dbfs{-90.0f};
+std::atomic<bool> g_reset_requested{true};
+std::atomic<bool> g_notch_reset_requested{false};
+std::atomic<bool> g_auto_floor_reset_requested{false};
 
 float g_low = 0.0f, g_voice = 0.0f;
 std::array<float, 3> g_env{1.0f, 1.0f, 1.0f};
@@ -34,7 +38,6 @@ float g_notch_x1 = 0.0f, g_notch_x2 = 0.0f, g_notch_y1 = 0.0f,
 float g_notch_cosine = 0.0f;
 float g_gate = 1.0f;
 float g_auto_floor = -90.0f;
-float g_last_rf_dbfs = -90.0f;
 uint32_t g_squelch_hang = 0;
 
 float tone_frequency(size_t bin) { return 250.0f + 125.0f * bin; }
@@ -59,6 +62,16 @@ void reset_notch_state() {
   g_notch_x1 = g_notch_x2 = g_notch_y1 = g_notch_y2 = 0.0f;
   g_notch_active.store(false, std::memory_order_relaxed);
   g_notch_hz.store(0, std::memory_order_relaxed);
+}
+
+void reset_processor_state() {
+  g_low = g_voice = 0.0f;
+  g_env = {1.0f, 1.0f, 1.0f};
+  g_noise = {250.0f, 250.0f, 250.0f};
+  g_gain = {1.0f, 1.0f, 1.0f};
+  g_gate = 1.0f;
+  g_squelch_hang = 0;
+  reset_notch_state();
 }
 
 void finish_tone_window() {
@@ -190,13 +203,7 @@ Metrics metrics() {
 }
 
 void reset() {
-  g_low = g_voice = 0.0f;
-  g_env = {1.0f, 1.0f, 1.0f};
-  g_noise = {250.0f, 250.0f, 250.0f};
-  g_gain = {1.0f, 1.0f, 1.0f};
-  g_gate = 1.0f;
-  g_squelch_hang = 0;
-  reset_notch_state();
+  g_reset_requested.store(true, std::memory_order_release);
 }
 
 void cycle_noise_reduction() {
@@ -210,7 +217,7 @@ void cycle_noise_reduction() {
 void toggle_auto_notch() {
   const bool enabled = !g_notch_enabled.load(std::memory_order_relaxed);
   g_notch_enabled.store(enabled, std::memory_order_relaxed);
-  if (!enabled) reset_notch_state();
+  if (!enabled) g_notch_reset_requested.store(true, std::memory_order_release);
 }
 
 void cycle_squelch() {
@@ -218,7 +225,8 @@ void cycle_squelch() {
   const auto next = current == SquelchMode::off ? SquelchMode::automatic
                     : current == SquelchMode::automatic ? SquelchMode::manual
                                                         : SquelchMode::off;
-  if (next == SquelchMode::automatic) g_auto_floor = g_last_rf_dbfs;
+  if (next == SquelchMode::automatic)
+    g_auto_floor_reset_requested.store(true, std::memory_order_release);
   g_squelch.store(next, std::memory_order_relaxed);
 }
 
@@ -238,7 +246,13 @@ void apply_clean_preset() {
 
 void process(int16_t* samples, size_t count, float rf_dbfs) {
   if (!samples || !count) return;
-  g_last_rf_dbfs = rf_dbfs;
+  if (g_reset_requested.exchange(false, std::memory_order_acq_rel))
+    reset_processor_state();
+  else if (g_notch_reset_requested.exchange(false, std::memory_order_acq_rel))
+    reset_notch_state();
+  g_last_rf_dbfs.store(rf_dbfs, std::memory_order_relaxed);
+  if (g_auto_floor_reset_requested.exchange(false, std::memory_order_acq_rel))
+    g_auto_floor = rf_dbfs;
   double squares = 0.0;
   for (size_t i = 0; i < count; ++i)
     squares += static_cast<double>(samples[i]) * samples[i];

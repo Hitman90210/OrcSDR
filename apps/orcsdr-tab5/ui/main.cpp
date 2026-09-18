@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cctype>
 #include <cstdarg>
+#include <ctime>
 #include <cstdlib>
 #include <cstring>
 #include <strings.h>
@@ -9700,6 +9701,19 @@ orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot() {
   snapshot.memory_count = static_cast<uint16_t>(shortwave_library_state.memories.size());
   snapshot.log_count = static_cast<uint16_t>(shortwave_library_state.logs.size());
   snapshot.storage_status = shortwave_library_state.status;
+  const auto clock = orcsdr::time_service::now();
+  snapshot.utc_valid = clock.wallclock_valid;
+  if (clock.wallclock_valid) {
+    const time_t utc = static_cast<time_t>(clock.utc);
+    struct tm broken_down{};
+    if (gmtime_r(&utc, &broken_down) != nullptr) {
+      snapshot.utc_minute = static_cast<uint16_t>(broken_down.tm_hour * 60 +
+                                                  broken_down.tm_min);
+      snapshot.utc_weekday = static_cast<uint8_t>(broken_down.tm_wday);
+    } else {
+      snapshot.utc_valid = false;
+    }
+  }
   snapshot.hunt_active = shortwave_hunt_active.load(std::memory_order_acquire);
   snapshot.hunt_step = shortwave_hunt_step.load(std::memory_order_relaxed);
   snapshot.hunt_total = shortwave_hunt_total.load(std::memory_order_relaxed);
@@ -9901,6 +9915,7 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       }
       break;
     case ActionKind::hunt_cancel:
+      shortwave_hunt_requested.store(false, std::memory_order_release);
       shortwave_hunt_cancel_requested.store(true, std::memory_order_release);
       break;
     case ActionKind::save_memory: {
@@ -9912,6 +9927,8 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       strlcpy(memory.mode, "AM", sizeof(memory.mode));
       strlcpy(memory.station, orcsdr::shortwave::pending_memory_label(),
               sizeof(memory.station));
+      strlcpy(memory.notes, orcsdr::shortwave::pending_memory_notes(),
+              sizeof(memory.notes));
       const auto result = shortwave_library_state.memories.upsert(memory);
       char error[96]{};
       if (result == orcsdr::shortwave::RecordResult::ok && g_sd_fs != nullptr &&
@@ -9927,6 +9944,53 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
         shortwave_library_state.status = orcsdr::shortwave::StorageStatus::write_failed;
         Serial.printf("RTL_SHORTWAVE_MEMORY save_failed result=%u error=%s\n",
                       static_cast<unsigned>(result), error);
+      }
+      break;
+    }
+    case ActionKind::update_memory:
+    case ActionKind::favorite_memory:
+    case ActionKind::delete_memory: {
+      ensure_shortwave_library_loaded();
+      const size_t index = action.value < 0 ? SIZE_MAX : static_cast<size_t>(action.value);
+      orcsdr::shortwave::Memory before{};
+      const auto* existing = shortwave_library_state.memories.at(index);
+      const bool had_record = existing != nullptr;
+      if (existing) before = *existing;
+      auto result = orcsdr::shortwave::RecordResult::missing;
+      if (action.kind == ActionKind::update_memory) {
+        if (existing) {
+          auto edited = *existing;
+          strlcpy(edited.station, orcsdr::shortwave::pending_memory_label(),
+                  sizeof(edited.station));
+          strlcpy(edited.notes, orcsdr::shortwave::pending_memory_notes(),
+                  sizeof(edited.notes));
+          result = shortwave_library_state.memories.replace(index, edited);
+        }
+      } else if (action.kind == ActionKind::favorite_memory) {
+        result = shortwave_library_state.memories.toggle_favorite(index);
+      } else {
+        result = shortwave_library_state.memories.erase(index);
+      }
+      char error[96]{};
+      if (result == orcsdr::shortwave::RecordResult::ok && g_sd_fs != nullptr &&
+          orcsdr::shortwave::save_memories(*g_sd_fs,
+                                            shortwave_library_state.memories,
+                                            error, sizeof(error))) {
+        shortwave_library_state.status = orcsdr::shortwave::StorageStatus::ready;
+        Serial.printf("RTL_SHORTWAVE_MEMORY changed action=%u index=%u\n",
+                      static_cast<unsigned>(action.kind),
+                      static_cast<unsigned>(index));
+      } else {
+        if (result == orcsdr::shortwave::RecordResult::ok && had_record) {
+          if (action.kind == ActionKind::delete_memory)
+            shortwave_library_state.memories.insert(index, before);
+          else
+            shortwave_library_state.memories.replace(index, before);
+        }
+        shortwave_library_state.status = orcsdr::shortwave::StorageStatus::write_failed;
+        Serial.printf("RTL_SHORTWAVE_MEMORY change_failed action=%u index=%u error=%s\n",
+                      static_cast<unsigned>(action.kind),
+                      static_cast<unsigned>(index), error);
       }
       break;
     }
@@ -9975,6 +10039,49 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       }
       break;
     }
+    case ActionKind::update_log:
+    case ActionKind::delete_log: {
+      ensure_shortwave_library_loaded();
+      const size_t index = action.value < 0 ? SIZE_MAX : static_cast<size_t>(action.value);
+      orcsdr::shortwave::LogEntry before{};
+      const auto* existing = shortwave_library_state.logs.at(index);
+      const bool had_record = existing != nullptr;
+      if (existing) before = *existing;
+      auto result = orcsdr::shortwave::RecordResult::missing;
+      if (action.kind == ActionKind::update_log) {
+        if (existing) {
+          auto edited = *existing;
+          strlcpy(edited.antenna, orcsdr::shortwave::pending_log_antenna(),
+                  sizeof(edited.antenna));
+          strlcpy(edited.notes, orcsdr::shortwave::pending_log_notes(),
+                  sizeof(edited.notes));
+          result = shortwave_library_state.logs.replace(index, edited);
+        }
+      } else {
+        result = shortwave_library_state.logs.erase(index);
+      }
+      char error[96]{};
+      if (result == orcsdr::shortwave::RecordResult::ok && g_sd_fs != nullptr &&
+          orcsdr::shortwave::save_logs(*g_sd_fs, shortwave_library_state.logs,
+                                      error, sizeof(error))) {
+        shortwave_library_state.status = orcsdr::shortwave::StorageStatus::ready;
+        Serial.printf("RTL_SHORTWAVE_LOG changed action=%u index=%u\n",
+                      static_cast<unsigned>(action.kind),
+                      static_cast<unsigned>(index));
+      } else {
+        if (result == orcsdr::shortwave::RecordResult::ok && had_record) {
+          if (action.kind == ActionKind::delete_log)
+            shortwave_library_state.logs.insert(index, before);
+          else
+            shortwave_library_state.logs.replace(index, before);
+        }
+        shortwave_library_state.status = orcsdr::shortwave::StorageStatus::write_failed;
+        Serial.printf("RTL_SHORTWAVE_LOG change_failed action=%u index=%u error=%s\n",
+                      static_cast<unsigned>(action.kind),
+                      static_cast<unsigned>(index), error);
+      }
+      break;
+    }
     case ActionKind::export_log: {
       char error[96]{};
       if (g_sd_fs != nullptr && orcsdr::shortwave::export_logs(
@@ -9990,8 +10097,8 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       open_global_settings(orcsdr::settings::Section::radio_defaults);
       return;
     case ActionKind::exit_home:
-      if (shortwave_hunt_active.load(std::memory_order_acquire))
-        shortwave_hunt_cancel_requested.store(true, std::memory_order_release);
+      shortwave_hunt_requested.store(false, std::memory_order_release);
+      shortwave_hunt_cancel_requested.store(true, std::memory_order_release);
       orcsdr::shortwave::leave();
       show_home();
       return;

@@ -64,6 +64,7 @@ bool parse_csv(const char* input, char fields[][256], size_t expected) {
     if (*cursor != '\"') return false;
     ++cursor;
     size_t used = 0;
+    bool closed = false;
     while (*cursor) {
       if (*cursor == '\"') {
         if (cursor[1] == '\"') {
@@ -73,11 +74,13 @@ bool parse_csv(const char* input, char fields[][256], size_t expected) {
           continue;
         }
         ++cursor;
+        closed = true;
         break;
       }
       if (used + 1 >= 256) return false;
       fields[field][used++] = *cursor++;
     }
+    if (!closed) return false;
     fields[field][used] = '\0';
     if (field + 1 < expected) {
       if (*cursor != ',') return false;

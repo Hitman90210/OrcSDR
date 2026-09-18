@@ -10,22 +10,42 @@ void set_error(char* error, size_t capacity, const char* message) {
   if (error && capacity) std::snprintf(error, capacity, "%s", message);
 }
 
-bool read_record(File& file, char* output, size_t capacity) {
-  if (!output || capacity < 2) return false;
+bool recover_backup(storage::FileSystem& fs, const char* path, char* error,
+                    size_t error_capacity) {
+  char backup[160];
+  std::snprintf(backup, sizeof(backup), "%s.bak", path);
+  if (fs.exists(path) || !fs.exists(backup)) return true;
+  if (fs.rename(backup, path)) return true;
+  set_error(error, error_capacity, "cannot restore Shortwave library backup");
+  return false;
+}
+
+void remove_backup(storage::FileSystem& fs, const char* path) {
+  char backup[160];
+  std::snprintf(backup, sizeof(backup), "%s.bak", path);
+  if (fs.exists(backup)) fs.remove(backup);
+}
+
+enum class ReadResult : uint8_t { record, eof, error };
+
+ReadResult read_record(File& file, char* output, size_t capacity) {
+  if (!output || capacity < 2) return ReadResult::error;
   size_t used = 0;
   bool quoted = false;
+  bool read_any = false;
   while (file.available()) {
     char value = '\0';
-    if (file.read(&value, 1) != 1) break;
-    if (used + 1 >= capacity) return false;
+    if (file.read(&value, 1) != 1) return ReadResult::error;
+    read_any = true;
+    if (used + 1 >= capacity) return ReadResult::error;
     output[used++] = value;
     if (value == '\"') {
       if (!quoted) {
         quoted = true;
       } else if (file.available()) {
         char next = '\0';
-        if (file.read(&next, 1) != 1) return false;
-        if (used + 1 >= capacity) return false;
+        if (file.read(&next, 1) != 1) return ReadResult::error;
+        if (used + 1 >= capacity) return ReadResult::error;
         output[used++] = next;
         if (next != '\"') {
           quoted = false;
@@ -40,7 +60,7 @@ bool read_record(File& file, char* output, size_t capacity) {
   }
   while (used && (output[used - 1] == '\r' || output[used - 1] == '\n')) --used;
   output[used] = '\0';
-  return used != 0;
+  return read_any ? ReadResult::record : ReadResult::eof;
 }
 
 template <typename Table, typename Record>
@@ -55,7 +75,14 @@ bool load_table(storage::FileSystem& fs, const char* path, Table* table,
     return false;
   }
   char record[2048];
-  while (read_record(file, record, sizeof(record))) {
+  for (;;) {
+    const ReadResult read = read_record(file, record, sizeof(record));
+    if (read == ReadResult::eof) break;
+    if (read == ReadResult::error) {
+      file.close();
+      set_error(error, error_capacity, "Shortwave library record is too large");
+      return false;
+    }
     if (record[0] == '#') continue;
     Record value{};
     if (!decode(record, &value) || table->upsert(value) != RecordResult::ok)
@@ -79,7 +106,14 @@ bool load_table<LogTable, LogEntry>(storage::FileSystem& fs, const char* path,
     return false;
   }
   char record[2048];
-  while (read_record(file, record, sizeof(record))) {
+  for (;;) {
+    const ReadResult read = read_record(file, record, sizeof(record));
+    if (read == ReadResult::eof) break;
+    if (read == ReadResult::error) {
+      file.close();
+      set_error(error, error_capacity, "Shortwave logbook record is too large");
+      return false;
+    }
     if (record[0] == '#') continue;
     LogEntry value{};
     if (!decode(record, &value) || table->append(value) != RecordResult::ok)
@@ -123,8 +157,13 @@ bool write_table(storage::FileSystem& fs, const char* path, const char* header,
       return false;
     }
   }
-  file.flush();
-  file.close();
+  const bool flushed = file.flush();
+  const bool closed = file.close();
+  if (!flushed || !closed) {
+    fs.remove(temporary);
+    set_error(error, error_capacity, "cannot flush Shortwave library");
+    return false;
+  }
 
   File verify = fs.open(temporary, FILE_READ);
   if (!verify) {
@@ -132,7 +171,16 @@ bool write_table(storage::FileSystem& fs, const char* path, const char* header,
     set_error(error, error_capacity, "cannot verify Shortwave library");
     return false;
   }
-  while (read_record(verify, record, sizeof(record))) {
+  size_t verified = 0;
+  for (;;) {
+    const ReadResult read = read_record(verify, record, sizeof(record));
+    if (read == ReadResult::eof) break;
+    if (read == ReadResult::error) {
+      verify.close();
+      fs.remove(temporary);
+      set_error(error, error_capacity, "Shortwave library verification read failed");
+      return false;
+    }
     if (record[0] == '#') continue;
     Record value{};
     if (!decode(record, &value)) {
@@ -141,8 +189,13 @@ bool write_table(storage::FileSystem& fs, const char* path, const char* header,
       set_error(error, error_capacity, "Shortwave library verification failed");
       return false;
     }
+    ++verified;
   }
-  verify.close();
+  if (!verify.close() || verified != table.size()) {
+    fs.remove(temporary);
+    set_error(error, error_capacity, "Shortwave library record count mismatch");
+    return false;
+  }
 
   fs.remove(backup);
   const bool had_target = fs.exists(path);
@@ -157,6 +210,7 @@ bool write_table(storage::FileSystem& fs, const char* path, const char* header,
     set_error(error, error_capacity, "cannot replace Shortwave library");
     return false;
   }
+  if (had_target) fs.remove(backup);
   return true;
 }
 
@@ -164,8 +218,16 @@ bool write_exports(storage::FileSystem& fs, const LogTable& logs, char* error,
                    size_t error_capacity) {
   fs.mkdir("/OrcSDR");
   fs.mkdir(kExportRoot);
-  File csv = fs.open("/OrcSDR/exports/shortwave-logbook.csv", FILE_WRITE, true);
-  File adi = fs.open("/OrcSDR/exports/shortwave-logbook.adi", FILE_WRITE, true);
+  const uint64_t stamp = logs.size() ? logs.at(logs.size() - 1)->timestamp_utc : 0;
+  char csv_path[160], adi_path[160];
+  std::snprintf(csv_path, sizeof(csv_path),
+                "/OrcSDR/exports/shortwave-logbook-%llu.csv",
+                static_cast<unsigned long long>(stamp));
+  std::snprintf(adi_path, sizeof(adi_path),
+                "/OrcSDR/exports/shortwave-logbook-%llu.adi",
+                static_cast<unsigned long long>(stamp));
+  File csv = fs.open(csv_path, FILE_WRITE, true);
+  File adi = fs.open(adi_path, FILE_WRITE, true);
   if (!csv || !adi) {
     csv.close(); adi.close();
     set_error(error, error_capacity, "cannot create Shortwave exports");
@@ -183,8 +245,15 @@ bool write_exports(storage::FileSystem& fs, const LogTable& logs, char* error,
       return false;
     }
   }
-  csv.flush(); adi.flush(); csv.close(); adi.close();
-  return true;
+  const bool csv_flushed = csv.flush();
+  const bool adi_flushed = adi.flush();
+  const bool csv_closed = csv.close();
+  const bool adi_closed = adi.close();
+  const bool flushed = csv_flushed && adi_flushed;
+  const bool closed = csv_closed && adi_closed;
+  if (flushed && closed) return true;
+  set_error(error, error_capacity, "cannot flush Shortwave exports");
+  return false;
 }
 
 }  // namespace
@@ -193,13 +262,17 @@ bool load_library(storage::FileSystem& fs, LibraryState* state, char* error,
                   size_t error_capacity) {
   if (!state) return false;
   state->invalid_rows = 0;
-  if (!load_table(fs, kMemoriesPath, &state->memories, decode_memory_csv,
+  if (!recover_backup(fs, kMemoriesPath, error, error_capacity) ||
+      !recover_backup(fs, kLogbookPath, error, error_capacity) ||
+      !load_table(fs, kMemoriesPath, &state->memories, decode_memory_csv,
                   &state->invalid_rows, error, error_capacity) ||
       !load_table(fs, kLogbookPath, &state->logs, decode_log_csv,
                   &state->invalid_rows, error, error_capacity)) {
     state->status = StorageStatus::read_failed;
     return false;
   }
+  remove_backup(fs, kMemoriesPath);
+  remove_backup(fs, kLogbookPath);
   state->status = StorageStatus::ready;
   return true;
 }

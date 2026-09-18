@@ -25,6 +25,21 @@ constexpr BroadcastBand kBands[] = {
 
 constexpr uint32_t kSteps[] = {100, 500, 1000, 5000};
 
+constexpr StationCard kStations[] = {
+    {"WWV", "US standard time and frequency", "WWV", "United States", "English",
+     "Fort Collins, Colorado", "Worldwide", "OrcSDR built-in", 5000000, 2500,
+     0, 24 * 60, 0x7f, 1, 0, 0, 10000},
+    {"WWV", "US standard time and frequency", "WWV", "United States", "English",
+     "Fort Collins, Colorado", "Worldwide", "OrcSDR built-in", 10000000, 2500,
+     0, 24 * 60, 0x7f, 1, 0, 0, 10000},
+    {"WWV", "US standard time and frequency", "WWV", "United States", "English",
+     "Fort Collins, Colorado", "Worldwide", "OrcSDR built-in", 15000000, 2500,
+     0, 24 * 60, 0x7f, 1, 0, 0, 10000},
+    {"CHU", "Canada time signal", "CHU", "Canada", "English/French",
+     "Ottawa, Ontario", "Worldwide", "OrcSDR built-in", 7850000, 2500,
+     0, 24 * 60, 0x7f, 1, 0, 0, 3000},
+};
+
 template <size_t Size>
 bool terminated(const char (&value)[Size]) {
   return std::memchr(value, '\0', Size) != nullptr;
@@ -100,6 +115,12 @@ uint32_t filter_bandwidth(FilterPreset preset) {
     case FilterPreset::wide: return 9000;
   }
   return 6000;
+}
+
+size_t station_count() { return sizeof(kStations) / sizeof(kStations[0]); }
+
+const StationCard* station_at(size_t index) {
+  return index < station_count() ? &kStations[index] : nullptr;
 }
 
 SpectrumRegion region_for(uint32_t frequency_hz) {
@@ -189,6 +210,36 @@ RecordResult MemoryTable::upsert(const Memory& memory) {
   return RecordResult::ok;
 }
 
+RecordResult MemoryTable::insert(size_t index, const Memory& memory) {
+  if (index > size_) return RecordResult::missing;
+  if (!valid(memory)) return RecordResult::invalid;
+  if (size_ == kCapacity) return RecordResult::full;
+  for (size_t i = size_; i > index; --i) records_[i] = records_[i - 1];
+  records_[index] = memory;
+  ++size_;
+  return RecordResult::ok;
+}
+
+RecordResult MemoryTable::replace(size_t index, const Memory& memory) {
+  if (index >= size_) return RecordResult::missing;
+  if (!valid(memory)) return RecordResult::invalid;
+  records_[index] = memory;
+  return RecordResult::ok;
+}
+
+RecordResult MemoryTable::toggle_favorite(size_t index) {
+  if (index >= size_) return RecordResult::missing;
+  records_[index].favorite = !records_[index].favorite;
+  return RecordResult::ok;
+}
+
+RecordResult MemoryTable::erase(size_t index) {
+  if (index >= size_) return RecordResult::missing;
+  for (size_t i = index + 1; i < size_; ++i) records_[i - 1] = records_[i];
+  --size_;
+  return RecordResult::ok;
+}
+
 const Memory* MemoryTable::at(size_t index) const {
   return index < size_ ? &records_[index] : nullptr;
 }
@@ -197,6 +248,30 @@ RecordResult LogTable::append(const LogEntry& entry) {
   if (!valid(entry)) return RecordResult::invalid;
   if (size_ == kCapacity) return RecordResult::full;
   records_[size_++] = entry;
+  return RecordResult::ok;
+}
+
+RecordResult LogTable::insert(size_t index, const LogEntry& entry) {
+  if (index > size_) return RecordResult::missing;
+  if (!valid(entry)) return RecordResult::invalid;
+  if (size_ == kCapacity) return RecordResult::full;
+  for (size_t i = size_; i > index; --i) records_[i] = records_[i - 1];
+  records_[index] = entry;
+  ++size_;
+  return RecordResult::ok;
+}
+
+RecordResult LogTable::replace(size_t index, const LogEntry& entry) {
+  if (index >= size_) return RecordResult::missing;
+  if (!valid(entry)) return RecordResult::invalid;
+  records_[index] = entry;
+  return RecordResult::ok;
+}
+
+RecordResult LogTable::erase(size_t index) {
+  if (index >= size_) return RecordResult::missing;
+  for (size_t i = index + 1; i < size_; ++i) records_[i - 1] = records_[i];
+  --size_;
   return RecordResult::ok;
 }
 

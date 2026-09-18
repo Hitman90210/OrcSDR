@@ -60,6 +60,39 @@ int main() {
   CHECK(decoded_memory.favorite);
   CHECK(std::strcmp(decoded_memory.station, memory.station) == 0);
 
+  MemoryTable memories;
+  CHECK(memories.upsert(memory) == RecordResult::ok);
+  memory.favorite = false;
+  std::strcpy(memory.station, "Edited station");
+  CHECK(memories.replace(0, memory) == RecordResult::ok);
+  CHECK(std::strcmp(memories.at(0)->station, "Edited station") == 0);
+  CHECK(memories.toggle_favorite(0) == RecordResult::ok);
+  CHECK(memories.at(0)->favorite);
+  CHECK(memories.erase(0) == RecordResult::ok);
+  CHECK(memories.size() == 0);
+  CHECK(memories.insert(0, memory) == RecordResult::ok);
+  CHECK(!memories.at(0)->favorite);
+
+  LogTable logs;
+  CHECK(logs.append(entry) == RecordResult::ok);
+  std::strcpy(entry.notes, "Edited reception");
+  CHECK(logs.replace(0, entry) == RecordResult::ok);
+  CHECK(std::strcmp(logs.at(0)->notes, "Edited reception") == 0);
+  CHECK(logs.erase(0) == RecordResult::ok);
+  CHECK(logs.size() == 0);
+  CHECK(logs.insert(0, entry) == RecordResult::ok);
+  CHECK(std::strcmp(logs.at(0)->notes, "Edited reception") == 0);
+
+  Memory malformed{};
+  CHECK(!decode_memory_csv(
+      "\"9800000\",\"6000\",\"0\",\"1\",\"AM\",\"\",\"\",\"\",\"\",\"unterminated",
+      &malformed));
+
+  CHECK(station_count() >= 1);
+  const StationCard* station = station_at(0);
+  CHECK(station != nullptr);
+  CHECK(schedule_matches(*station, station->frequency_hz, 12 * 60, 3));
+
   std::puts("shortwave_library_tests: PASS");
   return 0;
 }

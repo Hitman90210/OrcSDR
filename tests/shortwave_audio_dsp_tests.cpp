@@ -1,10 +1,12 @@
 #include "shortwave_audio_dsp.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -90,6 +92,18 @@ int main(int argc, char** argv) {
   CHECK(rms(quiet.data() + 2400, 2400) < 50.0);
   process(quiet.data(), 480, -30.0f);
   CHECK(metrics().squelch_open);
+
+  std::vector<int16_t> concurrent(480, 1000);
+  std::thread controls([] {
+    for (int i = 0; i < 2000; ++i) {
+      reset();
+      toggle_auto_notch();
+      cycle_squelch();
+    }
+  });
+  for (int i = 0; i < 2000; ++i)
+    process(concurrent.data(), concurrent.size(), -45.0f);
+  controls.join();
 
   if (argc == 2) {
     std::vector<int16_t> capture = read_pcm16_wav(argv[1]);

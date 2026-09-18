@@ -44,13 +44,13 @@ void test_all_tabs_are_selectable() {
   using namespace orcsdr::shortwave;
   DashboardState state;
   CHECK(state.tab() == Tab::live);
-  state.select_tab(Tab::on_air);
+  CHECK(!state.select_tab(Tab::on_air));
   CHECK(state.tab() == Tab::on_air);
-  state.select_tab(Tab::hunt);
+  CHECK(!state.select_tab(Tab::hunt));
   CHECK(state.tab() == Tab::hunt);
-  state.select_tab(Tab::memory);
+  CHECK(state.select_tab(Tab::memory));
   CHECK(state.tab() == Tab::memory);
-  state.select_tab(Tab::logbook);
+  CHECK(!state.select_tab(Tab::logbook));
   CHECK(state.tab() == Tab::logbook);
 }
 

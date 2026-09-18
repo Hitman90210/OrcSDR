@@ -29,6 +29,7 @@ $required = @(
   (Join-Path $repo 'apps\orcsdr-tab5\tests\shortwave_model_host_test.cpp'),
   (Join-Path $repo 'tests\shortwave_dashboard_state_tests.cpp'),
   (Join-Path $repo 'tests\shortwave_library_tests.cpp'),
+  (Join-Path $repo 'tests\shortwave_library_io_tests.cpp'),
   (Join-Path $repo 'tests\shortwave_hunt_tests.cpp'),
   (Join-Path $repo 'tests\shortwave_audio_dsp_tests.cpp')
 )
@@ -71,11 +72,13 @@ Invoke-WslCheck 'dashboard_state' ($prefix +
   "apps/orcsdr-tab5/ui/shortwave_dashboard_state.cpp tests/shortwave_dashboard_state_tests.cpp -o $testDir/state && $testDir/state")
 Invoke-WslCheck 'library' ($prefix +
   "apps/orcsdr-tab5/ui/shortwave_model.cpp apps/orcsdr-tab5/ui/shortwave_library.cpp tests/shortwave_library_tests.cpp -o $testDir/library && $testDir/library")
+Invoke-WslCheck 'library_io' ($prefix +
+  "apps/orcsdr-tab5/ui/shortwave_model.cpp apps/orcsdr-tab5/ui/shortwave_library.cpp apps/orcsdr-tab5/ui/shortwave_library_io.cpp tests/shortwave_library_io_tests.cpp -o $testDir/library_io && $testDir/library_io")
 Invoke-WslCheck 'hunt' ($prefix +
   "apps/orcsdr-tab5/ui/shortwave_model.cpp apps/orcsdr-tab5/ui/scan_engine.cpp apps/orcsdr-tab5/ui/shortwave_hunt.cpp tests/shortwave_hunt_tests.cpp -o $testDir/hunt && $testDir/hunt")
 
 $dspCommand = $prefix +
-  "apps/orcsdr-tab5/ui/shortwave_audio_dsp.cpp tests/shortwave_audio_dsp_tests.cpp -o $testDir/dsp && $testDir/dsp"
+  "-pthread -fsanitize=thread -no-pie apps/orcsdr-tab5/ui/shortwave_audio_dsp.cpp tests/shortwave_audio_dsp_tests.cpp -o $testDir/dsp && setarch `$(uname -m) -R $testDir/dsp"
 if ($CapturePath) {
   if (-not (Test-Path -LiteralPath $CapturePath -PathType Leaf)) {
     throw "Shortwave capture does not exist: $CapturePath"

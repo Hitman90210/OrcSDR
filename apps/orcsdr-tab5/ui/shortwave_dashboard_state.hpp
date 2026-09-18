@@ -19,7 +19,11 @@ class DashboardState {
  public:
   void open(Modal modal);
   void close_modal();
-  void select_tab(Tab tab) { tab_ = tab; }
+  bool select_tab(Tab tab) {
+    const bool leaving_hunt = tab_ == Tab::hunt && tab != Tab::hunt;
+    tab_ = tab;
+    return leaving_hunt;
+  }
   Modal modal() const { return modal_; }
   Tab tab() const { return tab_; }
   bool background_redraw_allowed() const { return modal_ == Modal::none; }

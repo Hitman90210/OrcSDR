@@ -32,6 +32,9 @@ struct Snapshot {
   uint16_t memory_count = 0;
   uint16_t log_count = 0;
   StorageStatus storage_status = StorageStatus::unavailable;
+  bool utc_valid = false;
+  uint16_t utc_minute = 0;
+  uint8_t utc_weekday = 0;
   Candidate hunt_candidates[Hunt::kCapacity]{};
   uint8_t hunt_candidate_count = 0;
   bool hunt_active = false;
@@ -69,7 +72,12 @@ enum class ActionKind : uint8_t {
   hunt_start,
   hunt_cancel,
   save_memory,
+  update_memory,
+  favorite_memory,
+  delete_memory,
   save_log,
+  update_log,
+  delete_log,
   export_log,
   open_settings,
   exit_home,
@@ -95,6 +103,7 @@ bool spectrum_active();
 uint32_t saved_frequency();
 void note_tuned(uint32_t frequency_hz);
 const char* pending_memory_label();
+const char* pending_memory_notes();
 const char* pending_log_antenna();
 const char* pending_log_notes();
 bool dashboard_self_check();
