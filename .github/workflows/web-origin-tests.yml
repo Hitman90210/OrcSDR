@@ -1,0 +1,30 @@
+name: Web console origin guard
+
+on:
+  pull_request:
+    paths:
+      - apps/orcsdr-tab5/ui/web_origin.hpp
+      - apps/orcsdr-tab5/ui/web_console.cpp
+      - tests/web_console_origin_tests.cpp
+      - tools/test-web-origin.sh
+      - .github/workflows/web-origin-tests.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/orcsdr-tab5/ui/web_origin.hpp
+      - apps/orcsdr-tab5/ui/web_console.cpp
+      - tests/web_console_origin_tests.cpp
+      - tools/test-web-origin.sh
+      - .github/workflows/web-origin-tests.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Optimized and sanitizer tests
+        run: bash tools/test-web-origin.sh

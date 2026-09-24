@@ -1,5 +1,7 @@
 #include "web_console.hpp"
 
+#include "web_origin.hpp"
+
 #include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_http_server.h>
@@ -277,7 +279,30 @@ esp_err_t handle_spectrum(httpd_req_t* req) {
   return httpd_resp_send(req, reinterpret_cast<const char*>(bins), static_cast<ssize_t>(n));
 }
 
+// Reads the two headers the policy needs and applies origin_allowed(). A header
+// too long for its buffer is refused rather than truncated, since a truncated
+// origin could otherwise be made to match our host.
+bool request_origin_allowed(httpd_req_t* req) {
+  const size_t origin_len = httpd_req_get_hdr_value_len(req, "Origin");
+  if (origin_len == 0) return true;
+  char origin[96]{};
+  if (origin_len >= sizeof(origin)) return false;
+  if (httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK) return false;
+  char host[64]{};
+  const size_t host_len = httpd_req_get_hdr_value_len(req, "Host");
+  if (host_len == 0 || host_len >= sizeof(host)) return false;
+  if (httpd_req_get_hdr_value_str(req, "Host", host, sizeof(host)) != ESP_OK) return false;
+  return origin_allowed(origin, host);
+}
+
 esp_err_t handle_action(httpd_req_t* req) {
+  // A cross-site POST never has to read the reply to have already retuned the
+  // receiver, so it is refused before the control switch is even consulted.
+  if (!request_origin_allowed(req)) {
+    httpd_resp_set_status(req, "403 Forbidden");
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_send(req, "cross-site request rejected", HTTPD_RESP_USE_STRLEN);
+  }
   // Refused at the door, not hidden in the page. A browser that never loaded
   // our HTML can still POST here, so an absent button is not a permission.
   if (!g_control.load(std::memory_order_relaxed)) {

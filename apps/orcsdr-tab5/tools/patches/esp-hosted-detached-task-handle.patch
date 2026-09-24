@@ -1,0 +1,18 @@
+diff --git a/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c b/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
+--- a/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
++++ b/managed_components/espressif__esp_hosted/port/os/idf/src/eh_host_port_task.c
+@@ -107,7 +107,12 @@ eh_host_port_err_t eh_host_port_task_create(const eh_host_port_task_create_cfg_t
+         free(t);
+         return EH_HOST_PORT_ERR_NOMEM;
+     }
+-    /* Detached task owns `t` on success; it may already be freed. */
+-    if (out) *out = t;
++    /* Detached task owns `t` on success and its trampoline may already have
++     * freed it, so never hand that pointer back. Upstream hit this as a
++     * use-after-free (their issue #103) because xTaskCreateWithCaps stores the
++     * handle after the task is running; this fork's detached path uses
++     * xTaskCreate, which stores it first, so only the returned pointer is a
++     * hazard here. Both detached callers pass NULL today. */
++    if (out) *out = detached ? NULL : t;
+     return EH_HOST_PORT_OK;
+ }

@@ -753,6 +753,8 @@ Use `-WifiEvery 1` for a focused Wi-Fi cycle on every pass.
 |---|---|---|
 | `RTL_SERIAL VERBOSITY` | `RTL_SERIAL_VERBOSITY mode=...` | Query without authentication. |
 | `RTL_SERIAL VERBOSITY QUIET\|NORMAL\|DEBUG\|TRACE` | `RTL_SERIAL_VERBOSITY_OK mode=...` | Authenticated, persistent setting. `NORMAL` is the default. |
+| `RTL_USB_RECOVERY` | `RTL_USB_RECOVERY enabled=<0\|1> attempts=<n>` | Query without authentication. `attempts` counts rail power-cycles since boot. |
+| `RTL_USB_RECOVERY ON\|OFF` | `RTL_USB_RECOVERY_OK enabled=<0\|1>` | Authenticated, persistent. **Off by default.** When on, a boot that reaches `BOOT_RTL_TIMEOUT no_device` power-cycles the USB-A rail once (`BOOT_RTL_RECOVERY power_cycle attempt=1`), waits 1 s, and restarts the 8 s detection window, for a dongle that missed its first enumeration after a PC-driven reset. Pulsing that rail with a powered dongle attached has reset the P4 on this bench, so enable it only while watching the device. |
 | `RTL_HEALTH` | `RTL_HEALTH_STATUS ...` | Heap, internal DMA, task count, uptime, and boot reset reason. |
 
 `QUIET` retains errors, command replies, panic text, and reset evidence.

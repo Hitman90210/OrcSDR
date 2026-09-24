@@ -1739,12 +1739,23 @@ enum class BootInitStage : uint8_t {
   idle,
   usb_power_settle,
   rtl_enumerating,
+  usb_recovery_wait,
   speaker_settle,
   ready,
 };
 BootInitStage boot_init_stage = BootInitStage::idle;
 uint32_t boot_init_stage_started_ms = 0;
 bool boot_auto_start_allowed = false;
+// A P4 reset leaves the USB-A rail powered, so a dongle still running from the
+// previous session can miss its first enumeration and stay missing until it is
+// unplugged by hand. Cycling the rail makes it enumerate again.
+//
+// Off by default, and deliberately so: begin_boot_device_staging() reasserts
+// this rail without pulsing it because an off/on pulse with a powered dongle
+// attached has reset the P4 on this bench. Enable it with RTL_USB_RECOVERY ON
+// only while watching the device, and see FORK_HANDOFF §8.
+bool settings_usb_recovery_enabled = false;
+uint8_t boot_rtl_recovery_attempts = 0;
 uint32_t power_monitor_until_ms = 0;
 uint32_t power_monitor_next_ms = 0;
 char power_monitor_tag[24]{};
@@ -11404,6 +11415,7 @@ void load_state() {
   settings_web_console_enabled = preferences.getBool("set_web_console", false);
   orcsdr::web_console::set_enabled(settings_web_console_enabled);
   settings_web_control_enabled = preferences.getBool("set_web_ctrl", false);
+  settings_usb_recovery_enabled = preferences.getBool("usb_recovery", false);
   orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
   const std::string location_label = preferences.isKey("loc_label")
                                          ? preferences.getString("loc_label", "") : std::string();
@@ -13472,6 +13484,24 @@ void process_command(char* command) {
     Serial.printf("RTL_SERIAL_VERBOSITY_OK mode=%s\n", serial_verbosity_name(level));
     return;
   }
+  if (strcmp(command, "RTL_USB_RECOVERY") == 0) {
+    Serial.printf("RTL_USB_RECOVERY enabled=%d attempts=%u\n",
+                  settings_usb_recovery_enabled ? 1 : 0,
+                  static_cast<unsigned>(boot_rtl_recovery_attempts));
+    return;
+  }
+  if (strcmp(command, "RTL_USB_RECOVERY ON") == 0 ||
+      strcmp(command, "RTL_USB_RECOVERY OFF") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_USB_RECOVERY_ERROR auth_required");
+      return;
+    }
+    settings_usb_recovery_enabled = command[17] == 'O' && command[18] == 'N';
+    preferences.putBool("usb_recovery", settings_usb_recovery_enabled);
+    Serial.printf("RTL_USB_RECOVERY_OK enabled=%d\n",
+                  settings_usb_recovery_enabled ? 1 : 0);
+    return;
+  }
   if (strcmp(command, "RTL_HEALTH") == 0) {
     const uint32_t dma_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
     Serial.printf("RTL_HEALTH_STATUS uptime_ms=%u free_heap=%u min_free_heap=%u "
@@ -14470,6 +14500,7 @@ void process_command(char* command) {
     Serial.println("RTL_HEALTH                    - heap, task and reset diagnostics");
     Serial.println("RTL_RESET                     - authenticated software reset");
     Serial.println("RTL_SERIAL VERBOSITY [QUIET|NORMAL|DEBUG|TRACE] - query/set persistent logging (set auth)");
+    Serial.println("RTL_USB_RECOVERY [ON|OFF]     - opt-in USB-A rail power-cycle retry at boot (set auth)");
     Serial.println("RTL_SCREEN_STATUS             - active screen ownership diagnostics");
     Serial.println("RTL_UI_REGRESSION CHECK|RUN   - passive checks or Home->screen restore test");
     Serial.println("RTL_UI STATUS                  - current screen/dashboard state");
@@ -15711,6 +15742,7 @@ const char* boot_init_stage_name(BootInitStage stage) {
   switch (stage) {
     case BootInitStage::usb_power_settle: return "usb_power_settle";
     case BootInitStage::rtl_enumerating: return "rtl_enumerating";
+    case BootInitStage::usb_recovery_wait: return "usb_recovery_wait";
     case BootInitStage::speaker_settle: return "speaker_settle";
     case BootInitStage::ready: return "ready";
     default: return "idle";
@@ -15751,6 +15783,20 @@ void service_boot_device_staging() {
       if (!rtl_device_ready()) {
         if (elapsed_ms >= 8000) {
           Serial.println("BOOT_RTL_TIMEOUT no_device");
+          // One rail power-cycle, when the operator has asked for it. The
+          // driver is event-driven, so a dongle that enumerates later arrives
+          // as ESP_RTL_SDR_EVT_ENUMERATED; nothing is re-installed here.
+          // initialize_rtl_sdr_host() allocates queues and spawns tasks, so it
+          // must never run a second time.
+          if (settings_usb_recovery_enabled && boot_rtl_recovery_attempts == 0) {
+            ++boot_rtl_recovery_attempts;
+            Serial.printf("BOOT_RTL_RECOVERY power_cycle attempt=%u\n",
+                          static_cast<unsigned>(boot_rtl_recovery_attempts));
+            M5.Power.setExtOutput(false, m5::ext_USB);
+            set_rtl_sdr_status("Boot: power-cycling USB-A rail");
+            set_boot_init_stage(BootInitStage::usb_recovery_wait);
+            return;
+          }
           boot_auto_start_allowed = true;
           log_dram_budget("usb_timeout");
           set_boot_init_stage(BootInitStage::ready);
@@ -15760,6 +15806,15 @@ void service_boot_device_staging() {
       resume_rtl_speaker();
       log_dram_budget("after_speaker");
       set_boot_init_stage(BootInitStage::speaker_settle);
+      return;
+    case BootInitStage::usb_recovery_wait:
+      // Long enough for the dongle to see the rail drop. Restoring it restarts
+      // the 8 s enumeration window, and boot_rtl_recovery_attempts stops this
+      // from becoming a loop.
+      if (elapsed_ms < 1000) return;
+      M5.Power.setExtOutput(true, m5::ext_USB);
+      set_rtl_sdr_status("Boot: retrying RTL-SDR detection");
+      set_boot_init_stage(BootInitStage::rtl_enumerating);
       return;
     case BootInitStage::speaker_settle:
       if (elapsed_ms < 300) return;

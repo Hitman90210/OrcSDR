@@ -1049,6 +1049,60 @@ device dropping commands. The verbosity command is `RTL_SERIAL VERBOSITY`, with 
 space; the underscore spelling is not a command. (Both silences are gone now: see
 item 16 below and `docs/API_SERIAL_CLI.md`. Older builds still behave this way.)
 
+### 5.7g Reviewing upstream's 151 commits (2026-09-24)
+
+Upstream `main` moved from `a1c9084` (our merge base) to `4c91e68`: 151 commits
+we do not have, against 123 of ours they do not. Most of it is features built on
+the 0.8.0 driver line this fork does not carry — the Shortwave dashboard, WebUI
+audio streaming, multi-dongle, V3c gain controls, the splash rework — so the
+review was for *fixes that describe a bug we also have*.
+
+Taken, and why:
+
+- **The Companion had no cross-site protection at all.** `/api/action` accepted
+  any POST. A page open on any machine on the network could retune the receiver,
+  and a cross-site POST never needs to read the reply to have already worked.
+  Upstream validates `Origin` against `Host`; our build checked neither. The
+  policy now lives in `ui/web_origin.hpp`, free of ESP-IDF headers so
+  `tests/web_console_origin_tests.cpp` can exercise it on the host.
+- **A dongle that misses its first enumeration stayed missing.** A P4 reset does
+  not reset the USB-A rail, so a still-powered dongle can fail to enumerate; we
+  printed `BOOT_RTL_TIMEOUT no_device` and gave up until it was unplugged by
+  hand. There is now one opt-in rail power-cycle retry (`RTL_USB_RECOVERY`),
+  **off by default** because pulsing that rail with a powered dongle attached has
+  reset the P4 here — which is why `begin_boot_device_staging()` reasserts the
+  rail without cycling it. It re-uses the driver's own
+  `ESP_RTL_SDR_EVT_ENUMERATED` event; `initialize_rtl_sdr_host()` allocates
+  queues and spawns tasks and must never run twice.
+- **The detached-task wrapper is no longer handed back** to callers, matching
+  upstream's hardening.
+
+**This fork was never exposed to upstream's heap corruption (their #103), and
+§3b's masked corruption is still unexplained.** Worth recording the reasoning,
+because the code *looks* identical to theirs. Their `eh_host_port_task_create()`
+passes `&t->handle` to `xTaskCreateWithCaps`, which creates the task and only
+then stores the handle (`idf_additions.c`) — so a detached one-shot task can run,
+free its wrapper in the trampoline, and have the handle written into freed
+memory. Our task-lifecycle patch had already moved detached tasks onto plain
+`xTaskCreate`, and on this configuration (`CONFIG_FREERTOS_SMP` unset) that is an
+inline wrapper around `xTaskCreatePinnedToCore`, which calls
+`prvInitialiseNewTask` — the function that writes `*pxCreatedTask` — *before*
+`prvAddNewTaskToReadyList`. The task cannot run until the handle is stored. Our
+WithCaps path is only used by joinable tasks, whose trampoline never frees the
+wrapper. So the leak fix closed that window as a side effect.
+
+Checked and not needed: per-band frequency restore (their #104 — we already
+restore AM and FM separately), tuning FM at the displayed frequency (solved here
+by `rtl_fm_sanitize_display_hz`), and the SD write-alignment work, which belongs
+to their shortwave recording path.
+
+Left alone deliberately: their Wi-Fi connect retry and backoff (#100) rewrites
+connect-path timing, and a fix cannot be told from a regression without the
+hardware; and the LoRa decoder fixes, which cannot be cherry-picked — that file
+has diverged by +418/-52 here against +518/-61 there from the common base. Their
+`tools/lora_lab/` replay suite is the part worth mining when LoRa resumes, since
+it tests a decoder against recorded IQ without transmitting.
+
 ## 5.8 Dead code and build
 
 - 705 lines of `RTL_USE_LEGACY_USB` blocks removed. The resulting binary was
@@ -1440,6 +1494,20 @@ accumulate, no early exit), and no secrets on the serial console.
     setup. Upstream's `build-tab5-idf.ps1` hardcodes
     `C:\Espressif\frameworks\esp-idf-v5.5.4` and a `python_env` path, and
     neither exists here.
+
+18. **The 2026-09-24 upstream-review fixes still need a bench (§5.7g).** Both
+    were written while the operator was away, so both are build-verified only.
+    - **Cross-site guard.** Never exercised against a real browser. Worth
+      confirming the Companion page still works normally, and that a POST to
+      `/api/action` carrying a foreign `Origin` gets `403`. The host tests cover
+      the policy; what is unproven is the header plumbing on the device.
+    - **`RTL_USB_RECOVERY`.** Off by default and never run on hardware. The
+      whole point of the flag is that a rail power-cycle with a powered dongle
+      attached has reset the P4 here before. Enable it with the device in view,
+      reset from the PC with the dongle attached, and watch for
+      `BOOT_RTL_RECOVERY power_cycle attempt=1` followed by enumeration — and
+      for whether the P4 survives the pulse. If it does not, the feature stays
+      off and the finding goes here.
 
 ## 9. Map of the interesting files
 
