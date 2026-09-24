@@ -1483,15 +1483,23 @@ accumulate, no early exit), and no secrets on the serial console.
     - Not changed: `RTL_P25_SCAN` with a session prints no reply of its own; its
       survey start line is the only sign it ran.
 
-17. **Fixes offered to upstream (2026-09-12).** There are two branches on this
-    fork. Each is based on upstream `main` at `c5b3423`, carries exactly one
-    fix, and was built with upstream's own build steps (0 errors, no new
-    warnings). Neither has been flashed.
-    - `fix/72-airband-am` (`d4f73c4`): BROWSE demodulates AM from 108 to
+17. **Fixes offered to upstream (refreshed 2026-09-24).** There are two branches
+    on this fork. Each is based on upstream `main` at `4c91e68`, carries exactly
+    one fix, and was built with upstream's own build steps (0 errors, no new
+    warnings). Neither has been flashed, and no pull request is open yet.
+    - `fix/72-airband-am` (`9e9f1e7`): BROWSE demodulates AM from 108 to
       137 MHz (issue #72). It covers #72 only; this fork's WX, marine and
       amateur label changes and its GMRS handling are not included.
-    - `fix/rf-analysis-raw-capture-fft` (`ba4bde8`): the FFT is windowed from
+    - `fix/rf-analysis-raw-capture-fft` (`f06b187`): the FFT is windowed from
       the raw capture, which removes upstream's 1024-point cap.
+
+    Both were re-cut from `c5b3423` onto `4c91e68` when upstream moved 151
+    commits ahead. `rf_analysis.cpp` was untouched in between, so that port was
+    unchanged; the airband port needed two anchors widened for the new
+    `shortwave` band, which now sits beside `am` both in
+    `rtl_filter_default_hz()` and in the speaker dispatch. Regenerating them is
+    scripted rather than rebased, so a future move of upstream costs another
+    anchor pass, not a conflict resolution.
 
     Opening the pull requests is the owner's decision. The compare pages are at
     `https://github.com/hardcoreerik/OrcSDR/compare/main...Hitman90210:OrcSDR:<branch>`.
