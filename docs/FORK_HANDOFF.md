@@ -1096,12 +1096,21 @@ restore AM and FM separately), tuning FM at the displayed frequency (solved here
 by `rtl_fm_sanitize_display_hz`), and the SD write-alignment work, which belongs
 to their shortwave recording path.
 
-Left alone deliberately: their Wi-Fi connect retry and backoff (#100) rewrites
-connect-path timing, and a fix cannot be told from a regression without the
-hardware; and the LoRa decoder fixes, which cannot be cherry-picked — that file
-has diverged by +418/-52 here against +518/-61 there from the common base. Their
-`tools/lora_lab/` replay suite is the part worth mining when LoRa resumes, since
-it tests a decoder against recorded IQ without transmitting.
+Left alone deliberately, each because the verdict needs the bench:
+
+- **Wi-Fi connect retry and backoff (#100).** Rewrites connect-path timing, where
+  a fix cannot be told from a regression without the hardware.
+- **Hot-replug resume (their `46b748a`).** Unplugging the dongle mid-listen and
+  plugging it back in does not resume reception here. They latch a resume when
+  the capture state was `queued` or `running` and act on it at the next
+  enumerate. Worth taking, but proving it means physically unplugging a dongle.
+- **The LoRa decoder fixes.** Not cherry-pickable: that file has diverged by
+  +418/-52 here against +518/-61 there from the common base. Their
+  `tools/lora_lab/` replay suite is the part worth mining when LoRa resumes,
+  since it tests a decoder against recorded IQ without transmitting.
+
+Checked against our source and *not* applicable: their `95df41a` status-overwrite
+fix guards a "below 24 MHz unavailable" message this fork does not have.
 
 ## 5.8 Dead code and build
 
