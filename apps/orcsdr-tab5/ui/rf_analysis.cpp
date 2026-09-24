@@ -51,10 +51,6 @@ int fit_fft_size(int requested, size_t available) {
   return requested >= 256 ? requested : 0;
 }
 
-int fit_iq_fft_size(int requested, size_t bytes) {
-  return fit_fft_size(requested, std::min(bytes / 2, kMaxIqPoints));
-}
-
 size_t append_audio_window(int16_t* destination, size_t capacity, size_t used,
                            const int16_t* source, size_t count) {
   if (!destination || !capacity || !source || !count) return used;
@@ -193,7 +189,7 @@ void analyze_audio(Snapshot* next, float* work, int16_t* local_audio,
 bool analyze_iq(const uint8_t* iq, size_t bytes, Snapshot* next, float* work,
                 float* scratch, const Config& config) {
   if (!iq || !next || !work || !scratch || bytes < 512) return false;
-  const int n = fit_iq_fft_size(config.fft_size, bytes);
+  const int n = fit_fft_size(config.fft_size, bytes / 2);
   if (!n) return false;
   const size_t iq_points = std::min<size_t>(kMaxIqPoints, bytes / 2);
   float sum_i = 0, sum_q = 0, sum_i2 = 0, sum_q2 = 0;
@@ -223,11 +219,17 @@ bool analyze_iq(const uint8_t* iq, size_t bytes, Snapshot* next, float* work,
   }
 
   float coherent_sum = 0;
+  // Windowed from the raw capture, not iq_i/iq_q: those hold only the first
+  // kMaxIqPoints for the constellation display, so any FFT above 1024 used to
+  // read past them into iq_q and then audio. kIqBytes holds 8192 complex
+  // samples for exactly this. The DC estimate is the one measured above.
   for (int i = 0; i < n; ++i) {
     const float window = 0.5f - 0.5f * cosf(2.0f * kPi * i / (n - 1));
     coherent_sum += window;
-    work[i * 2] = next->iq_i[i] * window;
-    work[i * 2 + 1] = next->iq_q[i] * window;
+    const float re = (static_cast<int>(iq[i * 2]) - 127.5f) / 127.5f - next->dc_i;
+    const float im = (static_cast<int>(iq[i * 2 + 1]) - 127.5f) / 127.5f - next->dc_q;
+    work[i * 2] = re * window;
+    work[i * 2 + 1] = im * window;
   }
   if (dsps_fft2r_fc32_ansi(work, n) != ESP_OK ||
       dsps_bit_rev_fc32_ansi(work, n) != ESP_OK)
@@ -480,9 +482,57 @@ void clear_average() {
   }
 }
 
+// One synthesised tone at an eighth of the sample rate, analysed end to end.
+// `samples` is also the transform size, so running this above kMaxIqPoints is
+// what proves the FFT reads the raw capture rather than the display copy.
+static bool tone_case(size_t samples) {
+  auto* iq = static_cast<uint8_t*>(heap_caps_malloc(samples * 2, MALLOC_CAP_8BIT));
+  auto* work = static_cast<float*>(
+      heap_caps_aligned_alloc(16, samples * 2 * sizeof(float), MALLOC_CAP_8BIT));
+  auto* scratch = static_cast<float*>(
+      heap_caps_malloc(kMaxBins * sizeof(float), MALLOC_CAP_8BIT));
+  auto* snapshot = static_cast<Snapshot*>(
+      heap_caps_calloc(1, sizeof(Snapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  bool valid = false;
+  if (iq && work && scratch && snapshot) {
+    for (size_t i = 0; i < samples; ++i) {
+      const float phase = 2.0f * kPi * (samples / 8u) * i / samples;
+      iq[i * 2] = static_cast<uint8_t>(lroundf(227.5f + 20.0f * cosf(phase)));
+      iq[i * 2 + 1] = static_cast<uint8_t>(lroundf(227.5f + 20.0f * sinf(phase)));
+    }
+    // average/peak are kMaxBins long whatever the transform size is; the old
+    // fixture wrote them up to `samples`, which would itself overrun at 2048.
+    for (size_t i = 0; i < kMaxBins; ++i) {
+      snapshot->average[i] = -160;
+      snapshot->peak[i] = -160;
+    }
+    Config config{};
+    config.center_hz = 100000000;
+    config.span_hz = 960000;
+    config.sample_rate_sps = 960000;
+    config.measurement_bandwidth_hz = 480000;
+    config.fft_size = static_cast<uint16_t>(samples);
+    const bool analyzed = analyze_iq(iq, samples * 2, snapshot, work, scratch, config);
+    valid = analyzed &&
+            snapshot->bins == std::min<size_t>(kMaxBins, samples) &&
+            snapshot->fft_size == samples &&
+            fabsf(snapshot->strongest_offset_hz - 120000.0f) < 8000.0f &&
+            snapshot->strongest > -20.0f && snapshot->strongest < -12.0f &&
+            snapshot->clipping_percent == 0.0f &&
+            fabsf(snapshot->iq_imbalance_db) < 0.5f &&
+            snapshot->occupied_bandwidth_hz > 0 &&
+            snapshot->occupied_bandwidth_hz < 100000;
+  }
+  heap_caps_free(iq);
+  heap_caps_free(work);
+  heap_caps_free(scratch);
+  heap_caps_free(snapshot);
+  return valid;
+}
+
 bool self_check() {
   if (fit_fft_size(1024, 372) != 256 || fit_fft_size(2048, 1024) != 1024 ||
-      fit_fft_size(256, 128) != 0 || fit_iq_fft_size(8192, kIqBytes) != 1024)
+      fit_fft_size(256, 128) != 0 || fit_fft_size(8192, kIqBytes / 2) != 8192)
     return false;
   int16_t audio_window[4] = {1, 2, 3, 4};
   const int16_t audio_tail[3] = {5, 6, 7};
@@ -491,47 +541,10 @@ bool self_check() {
     return false;
   if (sizeof(Snapshot) >= 32 * 1024 || !g_task) return false;
 
-  constexpr size_t samples = 256;
-  auto* iq = static_cast<uint8_t*>(heap_caps_malloc(samples * 2, MALLOC_CAP_8BIT));
-  auto* work = static_cast<float*>(
-      heap_caps_aligned_alloc(16, samples * 2 * sizeof(float), MALLOC_CAP_8BIT));
-  auto* scratch = static_cast<float*>(
-      heap_caps_malloc(kMaxBins * sizeof(float), MALLOC_CAP_8BIT));
-  auto* snapshot = static_cast<Snapshot*>(
-      heap_caps_calloc(1, sizeof(Snapshot), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!iq || !work || !scratch || !snapshot) {
-    heap_caps_free(iq);
-    heap_caps_free(work);
-    heap_caps_free(scratch);
-    heap_caps_free(snapshot);
-    return false;
-  }
-  for (size_t i = 0; i < samples; ++i) {
-    const float phase = 2.0f * kPi * 32.0f * i / samples;
-    iq[i * 2] = static_cast<uint8_t>(lroundf(227.5f + 20.0f * cosf(phase)));
-    iq[i * 2 + 1] = static_cast<uint8_t>(lroundf(227.5f + 20.0f * sinf(phase)));
-    snapshot->average[i] = -160;
-    snapshot->peak[i] = -160;
-  }
-  Config config{};
-  config.center_hz = 100000000;
-  config.span_hz = 960000;
-  config.sample_rate_sps = 960000;
-  config.measurement_bandwidth_hz = 480000;
-  config.fft_size = samples;
-  const bool analyzed = analyze_iq(iq, samples * 2, snapshot, work, scratch, config);
-  const bool valid = analyzed && snapshot->bins == samples &&
-                     fabsf(snapshot->strongest_offset_hz - 120000.0f) < 8000.0f &&
-                     snapshot->strongest > -20.0f && snapshot->strongest < -12.0f &&
-                     snapshot->clipping_percent == 0.0f &&
-                     fabsf(snapshot->iq_imbalance_db) < 0.5f &&
-                     snapshot->occupied_bandwidth_hz > 0 &&
-                     snapshot->occupied_bandwidth_hz < 100000;
-  heap_caps_free(iq);
-  heap_caps_free(work);
-  heap_caps_free(scratch);
-  heap_caps_free(snapshot);
-  return valid;
+  // 256 is the cheap case. 2048 is the one that matters: it is what RF Lab
+  // requests on every retune, it is twice kMaxIqPoints, and the clamped
+  // transform could not satisfy fft_size == 2048.
+  return tone_case(256) && tone_case(2048);
 }
 
 }  // namespace orcsdr::rf_analysis
