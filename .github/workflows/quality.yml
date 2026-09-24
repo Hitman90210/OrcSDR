@@ -47,8 +47,11 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.11'
-      - run: pip install 'cryptography>=45,<47'
+      - run: pip install 'cryptography>=45,<47' 'numpy>=1.23,<2'
       - run: python tools/test_lora_serial_transfer.py
+      # Needs numpy only, not the full LoRa decoder stack. numpy<2 does not
+      # import on 3.13+, which is why this job pins 3.11.
+      - run: python tools/lora_snr_matrix.py --self-check
       - run: python tools/test_release_metadata.py
       - run: python tools/test_source_hygiene.py
       - run: python tools/test_ui_layout.py

@@ -1104,10 +1104,38 @@ Left alone deliberately, each because the verdict needs the bench:
   plugging it back in does not resume reception here. They latch a resume when
   the capture state was `queued` or `running` and act on it at the next
   enumerate. Worth taking, but proving it means physically unplugging a dongle.
-- **The LoRa decoder fixes.** Not cherry-pickable: that file has diverged by
-  +418/-52 here against +518/-61 there from the common base. Their
-  `tools/lora_lab/` replay suite is the part worth mining when LoRa resumes,
-  since it tests a decoder against recorded IQ without transmitting.
+- **The LoRa decoder fixes.** Not cherry-pickable, and this was measured rather
+  than assumed: a dry-run cherry-pick of all five (`cd8745d`, `95979fa`,
+  `fa63981`, `8a3dfac`, `ef69539`) conflicts, the larger three across the
+  decoder, its header and `main.cpp` at once. `lora_native_decoder.cpp` was 988
+  lines at the common base and is 1354 here against 1445 there, and both sides
+  rewrote the same core: `dechirp_peak`, `decode_mesh`, `phy_crc_matches`,
+  `decode_capture_pass`, `self_check`. What transfers is each finding — empty
+  candidate scan, truncated candidate, stack margin, weak adjacent symbols —
+  re-derived against our decoder, not the patches.
+
+Their `tools/lora_lab/` is three different things, and only one of them is
+cheap, so the earlier one-line note here was misleading:
+
+- `candidate_detector.py` and `corpus_manifest.py` are pure host Python over
+  ORCIQ files and import `decode_orciq`, which this fork already has.
+  `impair_awgn()` is the interesting part: it grades one clean capture into a
+  weak-signal ladder. `tools/lora_snr_matrix.py` here does that job.
+- `replay_lora_orciq.py` uploads a capture into Tab5 PSRAM and runs the
+  **native** decoder, so it drives real firmware rather than modelling it — but
+  it speaks `RTL_LORA_REPLAY_BEGIN/CHUNK/DATA/ACK/QUEUED/READY`, and this fork
+  has none of those (16 occurrences upstream, 0 here). Adopting it means
+  building that chunked upload-into-PSRAM path first, which the existing SD and
+  `RTL_IQ_GET_*` transfers are the pattern for.
+- `run_suite.py` is a live-air bench: Meshtastic TX to a reference RX to
+  OrcSDR, three serial ports, and it transmits.
+
+Their recorded IQ is **not** available to borrow: the manifest says the corpus
+is a "local ignored workspace artifact; not stored in Git", so only metadata and
+their results ship. Our own captures in `.local/lora-captures/` are the corpus
+to use, and that directory is gitignored for the same reason. Worth knowing when
+reading their numbers: their manifest marks the `native` result `unknown` on its
+own controlled vector, sourced from an "engineering notebook".
 
 Checked against our source and *not* applicable: their `95df41a` status-overwrite
 fix guards a "below 24 MHz unavailable" message this fork does not have.
@@ -1326,6 +1354,31 @@ accumulate, no early exit), and no secrets on the serial console.
    → web dashboard), `filipsPL/meshmqttmonitor` (MQTT → terminal),
    `smittix/intercept` (aggregates rtl_433/dump1090/etc.; its Meshtastic
    integration is not demodulation).
+
+   **Confirmed on our own recordings, off air and with no device in the loop
+   (2026-09-24).** `tools/lora_snr_matrix.py --baseline-only` put the nine
+   captures in `.local/lora-captures/` through the host reference decoder
+   (`lora_phy` 0.2, the same path `tools/decode_orciq.py` uses). **None
+   decoded.** Five were rejected with *"LoRa long interleaver CR 4/5 detected;
+   payload decoding is not supported by lora-phy 0.2"*, and that includes both
+   strong captures: 24.4 dB with 43% of windows active, and 22.2 dB with 7.7%.
+   The remaining four found no preamble at all — one is an empty channel
+   (-8.7 dB), and three are the `_conj`, `_swap` and `_swap_invert` orientation
+   experiments on a capture whose `_invert` variant still reaches the
+   long-interleaver rejection.
+
+   Two things follow, and both sharpen this item rather than restate it. First,
+   the preamble, sync, CFO and **header** path works on real traffic at 22-24 dB
+   — the header is what reports CR 4/5 — so what fails is payload
+   de-interleaving alone, and it is not a sensitivity problem. Second, the
+   neighbours here really are transmitting long-interleaved 2.8 frames, so "we
+   cannot decode the neighbours" is now measured on a second, independent
+   decoder rather than inferred from our own.
+
+   It also blocks the sensitivity ladder that tool was built for: grading a
+   capture that never decodes measures nothing. That work needs a capture that
+   decodes end to end first — a node on older firmware, or a coding rate without
+   the long interleaver.
 
 10. **Measured: what the 4 dB LoRa trigger margin costs. It stays at 4 dB.**
     `748dc1f` lowered `kLoraTriggerMarginDb` from 9 dB to 4 dB without measuring
