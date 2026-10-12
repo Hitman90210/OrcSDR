@@ -26,6 +26,8 @@ jobs:
       # byte inside a char literal in main.cpp, and cp1252 bytes in a doc.
       - run: python tools/test_source_hygiene.py
       - run: python tools/test_ui_layout.py
+      # Finds 20 offenders on a000b27 as shipped, so it guards a real repair.
+      - run: python tools/test_serial_auth_replies.py
       - run: python tools/validate-help-docs.py
       # numpy only, not the full LoRa decoder stack.
       - run: python tools/lora_snr_matrix.py --self-check
