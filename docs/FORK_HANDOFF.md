@@ -1272,11 +1272,40 @@ four test scripts, `lora_snr_matrix.py`, `build_orcmap.py`, and a `quality.yml`
 adapted to what passes there (upstream has no `quality.yml`; `test_ui_layout`
 and `test_release_metadata` pass against their tree unmodified).
 
-**Stage B, the firmware ports, in the order they should be attempted:** serial
-hardening first (self-contained, host-testable), then the Companion ADS-B radar,
-then GMRS/marine/lockout — which should be rebuilt on their `band_profile`
+**Stage B, the firmware ports.** Order: serial hardening, the Companion ADS-B
+radar, GMRS/marine/lockout — which should be rebuilt on their `band_profile`
 rather than transplanted — then the LoRa decoder work and the POCSAG deltas.
 Each needs its own build, and the GMRS and LoRa ones need the radio.
+
+**Serial hardening: done** (2026-10-12), `134d948` and `07ebb5d`, both built
+with 0 errors.
+
+- Twenty handlers were written as `if (<match> && authenticated)`, so a lapsed
+  session made them skip the command in silence. Each now matches first and
+  answers `<FAMILY>_ERROR auth_required`, joining the 48 that already did. The
+  conversion was scripted with two fatal checks — one anchor match each, and no
+  command claimed by a second handler. That second check first flagged
+  `RTL_VOLUME`, `RTL_FREQ` and `RTL_POCSAG_SCAN`, which turned out to be an
+  over-broad prefix match *in the check*: `"RTL_VOLUME"` the query and
+  `"RTL_VOLUME "` the setter are different commands, as are `RTL_POCSAG_SCAN`
+  and `RTL_POCSAG_SCAN_STOP`.
+- An unrecognised line now answers `CMD_ERROR unknown_command verb=<VERB>`,
+  verb only because arguments carry key and password hex, and `{` frames are
+  left alone. A trailing reply is only safe while every branch returns, so that
+  was audited: of **166 top-level blocks**, only three did not end in a return
+  — the two `RTL_RESET` paths, which restart rather than return, and `ACK`.
+  `PING` and `ACK` now claim their command and return silently.
+- `tools/test_serial_auth_replies.py` guards both halves and is load-bearing:
+  against `a000b27` as shipped it reports all twenty offenders.
+
+**Not ported, deliberately:** our `RTL_USB_RECOVERY` switch (their rail
+power-cycle is unconditional and field-tested, so the flag has no purpose
+there) and `RTL_SERIAL VERBOSITY`, which they already have.
+
+**Also fixed on the branch:** their `install-orcsdr.ps1` called `Use-Idf`
+unconditionally, so `test-installer-dry-run.ps1` — a dry run that flashes
+nothing — demanded ESP-IDF at a hardcoded path and failed on a CI runner. That
+was the one red job after Stage A; the branch is green now.
 
 ## 5.8 Dead code and build
 
