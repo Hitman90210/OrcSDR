@@ -28,6 +28,8 @@ jobs:
       - run: python tools/test_ui_layout.py
       # Finds 20 offenders on a000b27 as shipped, so it guards a real repair.
       - run: python tools/test_serial_auth_replies.py
+      # Zero is a legal altitude, speed, heading and vertical rate.
+      - run: python tools/test_web_console_contract.py
       - run: python tools/validate-help-docs.py
       # numpy only, not the full LoRa decoder stack.
       - run: python tools/lora_snr_matrix.py --self-check

@@ -46,6 +46,19 @@ font-size:1.25vh;color:#6d8494;letter-spacing:.08em;pointer-events:none}
 .reticle{position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(107,255,0,.55);pointer-events:none}
 .reticle b{position:absolute;left:50%;top:.4vh;transform:translateX(-50%);font-size:1.2vh;color:#6bff00;letter-spacing:.16em}
 #foot{height:8.2vh;display:grid;grid-template-columns:1.2fr .7fr .7fr .8fr .9fr auto;gap:.8vw;align-items:stretch}
+/* ---- ADS-B radar: shown only while ADS-B is the band, or while targets are
+   still being tracked. Range and bearing come from the device; this page never
+   receives coordinates. ---------------------------------------------------- */
+#radarp{flex:1.1;min-height:0;display:flex;gap:.8vw}
+#radarwrap{flex:1.1}
+#radarlist{flex:1;min-height:0;padding:.8vh 1vw;overflow:hidden;display:flex;flex-direction:column}
+#radartable{width:100%;border-collapse:collapse;font-size:1.35vh;font-variant-numeric:tabular-nums}
+#radartable td{padding:.25vh .4vw;color:#cfe0ec;white-space:nowrap}
+#radartable td.id{color:#6bff00;font-weight:600}
+#radartable td.dim{color:#7d8c98}
+#radarnote{margin-top:auto;color:#ff9a2e}
+/* This page has no generic .hide rule: #stale.hide only sets opacity. */
+#radarp.hide{display:none}
 .cell{padding:.8vh 1vw;min-width:0}
 .cell .v{font-size:2.1vh;margin-top:.35vh;color:#e8eef4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #tvsound{border:1px solid #00bcff;background:#041018;color:#7ad7ff;font-size:1.7vh;letter-spacing:.16em;min-width:12vw}
@@ -100,6 +113,16 @@ background:rgba(4,7,12,.88);z-index:5;transition:opacity .4s}
       <canvas id="fall"></canvas>
     </div>
   </div>
+  <div id="radarp" class="hide">
+    <div class="panel scope" id="radarwrap">
+      <canvas id="radar"></canvas>
+    </div>
+    <div class="panel" id="radarlist">
+      <div class="k">AIRCRAFT · <span id="radarcount">0</span> TRACKED · <span id="radarrange">25</span> NM</div>
+      <table id="radartable"><tbody></tbody></table>
+      <div class="k" id="radarnote"></div>
+    </div>
+  </div>
   <div id="foot">
     <div class="panel cell"><div class="k">NOW RECEIVING</div><div class="v" id="now">—</div></div>
     <div class="panel cell"><div class="k">AUDIO</div><div class="v" id="aud">—</div></div>
@@ -112,7 +135,8 @@ background:rgba(4,7,12,.88);z-index:5;transition:opacity .4s}
 <script src="/web_audio.js"></script>
 <script>
 var S={freq:0,sig:-90,left:-90,right:-90,span:960000,mode:'',recv:false,rtl:false,usb:false,wifi:false,
-sound:true,stereo:false,rdsC:false,rdsL:false,rec:false,vol:0,bw:0,sps:0,batt:-1,ip:'',clk:'',fresh:0,rtt:0};
+sound:true,stereo:false,rdsC:false,rdsL:false,rec:false,vol:0,bw:0,sps:0,batt:-1,ip:'',clk:'',fresh:0,rtt:0,
+air:{active:false,messages:0,rate:0,range:25,tracked:0,located:false,targets:[]}};
 var D={freq:0,sig:-90,left:-90,right:-90}, bins=new Float32Array(64), peak=new Float32Array(64);
 var hist=[], lastArrow=0,lastAct=0,lastSound=0,audioOn=false,linked=false,fallBuf=null,specBusy=false;
 var audioContext=null,audioConnection=null,audioAttempt=0;
@@ -258,6 +282,12 @@ function tick(){
           S.stereo=!!j.stereo; S.rdsC=!!j.rds_carrier; S.rdsL=!!j.rds_locked; S.rec=!!j.recording;
           S.vol=j.volume||0; S.bw=j.filter_bandwidth_hz||0; S.sps=j.effective_sps||0;
           S.batt=j.battery_percent; S.ip=j.wifi_ip||''; S.clk=j.clock||''; S.fresh=Date.now();
+          if(j.adsb){
+            S.air.active=!!j.adsb.active; S.air.messages=j.adsb.messages||0;
+            S.air.rate=j.adsb.rate||0; S.air.range=j.adsb.range_nm||25;
+            S.air.tracked=j.adsb.tracked||0; S.air.located=!!j.adsb.located;
+            S.air.targets=j.adsb.targets||[];
+          }
           hist.push(S.sig); if(hist.length>120) hist.shift();
           if(j.spectrum && j.spectrum.length){
             for(var i=0;i<64;i++){
@@ -291,6 +321,80 @@ function pollSpectrum(){
   };
   x.open('GET','/api/spectrum',true); x.send();
 }
+/* ---- ADS-B radar ----------------------------------------------------------
+   The device sends range and bearing, never coordinates, so plotting a target
+   costs one sine and one cosine. A target with pos:false has no usable
+   position -- either it has not sent one yet, or the receiver has no location
+   configured -- so it is listed but not plotted, rather than drawn at the
+   centre, which is what a missing position used to look like. */
+function paintRadar(){
+  var show=S.air.active||S.air.targets.length>0;
+  var panel=$('radarp');
+  if(!panel) return;
+  panel.className=show?'':'hide';
+  if(!show) return;
+  var c=$('radar'), g=c.getContext('2d');
+  var d=window.devicePixelRatio||1, r=c.getBoundingClientRect();
+  if(c.width!==Math.round(r.width*d)||c.height!==Math.round(r.height*d)){
+    c.width=Math.round(r.width*d); c.height=Math.round(r.height*d);
+  }
+  var w=c.width, h=c.height, cx=w/2, cy=h/2, rad=Math.min(w,h)*0.46;
+  var range=S.air.range||25;
+  g.clearRect(0,0,w,h);
+  g.strokeStyle='rgba(0,188,255,.22)'; g.lineWidth=1;
+  for(var i=1;i<=4;i++){ g.beginPath(); g.arc(cx,cy,rad*i/4,0,Math.PI*2); g.stroke(); }
+  g.beginPath(); g.moveTo(cx,cy-rad); g.lineTo(cx,cy+rad);
+  g.moveTo(cx-rad,cy); g.lineTo(cx+rad,cy); g.stroke();
+  g.font=(11*d)+'px Roboto,Arial'; g.fillStyle='#7ad7ff';
+  g.fillText('N',cx+3*d,cy-rad+11*d);
+  var list=S.air.targets, plotted=0;
+  for(var k=0;k<list.length;k++){
+    var t=list[k];
+    if(!t.pos) continue;
+    var rr=Math.min((t.rng||0)/range,1)*rad, a=((t.brg||0)-90)*Math.PI/180;
+    var x=cx+Math.cos(a)*rr, y=cy+Math.sin(a)*rr;
+    g.fillStyle=(t.age>30)?'#8a96a0':'#6bff00';
+    g.beginPath(); g.arc(x,y,3*d,0,Math.PI*2); g.fill();
+    if(t.hdg_ok){
+      var ha=((t.hdg||0)-90)*Math.PI/180;
+      g.strokeStyle=g.fillStyle; g.beginPath(); g.moveTo(x,y);
+      g.lineTo(x+Math.cos(ha)*10*d,y+Math.sin(ha)*10*d); g.stroke();
+    }
+    g.fillStyle='#cfe0ec';
+    g.fillText(String(t.id||''),x+6*d,y-5*d);
+    plotted++;
+  }
+  $('radarcount').textContent=S.air.tracked||list.length;
+  $('radarrange').textContent=Math.round(range);
+  $('radarnote').textContent=!S.air.located
+    ? 'NO RECEIVER LOCATION · TARGETS LISTED, NOT PLOTTED'
+    : (plotted===0&&list.length ? 'NO POSITION FIX YET' : '');
+  /* Built as text nodes: a label arrives from the air and is never markup. */
+  var body=$('radartable').getElementsByTagName('tbody')[0];
+  while(body.firstChild) body.removeChild(body.firstChild);
+  for(var m=0;m<list.length&&m<10;m++){
+    var a2=list[m];
+    /* Zero is legal for every one of these -- level flight, a stopped
+       aircraft, due north, sea level -- so the *_ok flag decides, not the
+       value's truthiness. */
+    var cells=[
+      [String(a2.id||''),'id'],
+      [a2.pos?(a2.rng||0).toFixed(1)+' NM':'—',''],
+      [a2.alt_ok?(Math.round(a2.alt/100)*100).toLocaleString()+' ft':'—',''],
+      [a2.spd_ok?a2.spd+' kt':'—',''],
+      [a2.hdg_ok?a2.hdg+'°':'—',''],
+      [a2.vr_ok?(a2.vr>64?'↑':(a2.vr<-64?'↓':'→')):'—','dim']
+    ];
+    var tr=document.createElement('tr');
+    for(var n=0;n<cells.length;n++){
+      var td=document.createElement('td');
+      if(cells[n][1]) td.className=cells[n][1];
+      td.appendChild(document.createTextNode(cells[n][0]));
+      tr.appendChild(td);
+    }
+    body.appendChild(tr);
+  }
+}
 var lastFall=0,lastUi=0;
 function frame(){
   D.freq=D.freq?lerp(D.freq,S.freq,.18):S.freq;
@@ -298,6 +402,7 @@ function frame(){
   D.left=lerp(D.left,S.left,.16);
   D.right=lerp(D.right,S.right,.16);
   paintSpec();
+  paintRadar();
   var now=Date.now();
   if(now-lastFall>90){ lastFall=now; paintFall(); }
   if(now-lastUi>100){ lastUi=now; applyUi(); paintHist(); }

@@ -37,9 +37,16 @@ constexpr uint32_t kAudioRate = 16000;
 EXT_RAM_BSS_ATTR int16_t g_audio_ring[kAudioRing]{};
 EXT_RAM_BSS_ATTR int16_t g_audio_clip[kAudioClip]{};
 EXT_RAM_BSS_ATTR uint8_t g_wav_out[44 + kAudioClip * sizeof(int16_t)]{};
-EXT_RAM_BSS_ATTR char g_status_json[2048]{};
+// One worst-case aircraft record is 201 bytes: a 19-character escaped label and
+// every numeric field at the longest its type can print. 224 leaves headroom,
+// and the array is sized from the slot count rather than guessed, so a full
+// radar cannot overflow it.
+constexpr size_t kAircraftJsonItemCapacity = 224;
+constexpr size_t kAircraftJsonCapacity = 3 + kAircraftSlots * kAircraftJsonItemCapacity;
+EXT_RAM_BSS_ATTR char g_status_json[6144]{};
 EXT_RAM_BSS_ATTR char g_status_recent[320]{};
 EXT_RAM_BSS_ATTR char g_status_spec[259]{};
+EXT_RAM_BSS_ATTR char g_status_aircraft[kAircraftJsonCapacity]{};
 uint32_t g_wifi_up_ms = 0;
 std::atomic<uint32_t> g_audio_w{0};
 std::atomic<uint32_t> g_audio_r{0};
@@ -131,6 +138,39 @@ esp_err_t handle_status(httpd_req_t* req) {
   }
   memcpy(spec + used, "]", 2);
 
+  // Aircraft, nearest first (main.cpp sorts them), each with its own validity
+  // flags. pos says whether range and bearing mean anything: without it a
+  // target has nowhere to go on a relative radar and the page lists it instead.
+  char* air = g_status_aircraft;
+  air[0] = '[';
+  air[1] = '\0';
+  used = 1;
+  for (uint8_t i = 0; i < snap.aircraft_count && i < kAircraftSlots; ++i) {
+    const Aircraft& target = snap.aircraft[i];
+    char label[20];
+    json_escape(label, sizeof(label), target.label);
+    char item[kAircraftJsonItemCapacity];
+    const int n = snprintf(
+        item, sizeof(item),
+        "%s{\"id\":\"%s\",\"rng\":%.1f,\"brg\":%u,\"alt\":%ld,\"spd\":%d,\"hdg\":%d,"
+        "\"vr\":%d,\"sig\":%d,\"age\":%u,\"pos\":%s,\"alt_ok\":%s,\"spd_ok\":%s,"
+        "\"hdg_ok\":%s,\"vr_ok\":%s}",
+        i ? "," : "", label, static_cast<double>(target.range_tenths_nm) / 10.0,
+        target.bearing_deg, static_cast<long>(target.altitude_ft),
+        static_cast<int>(target.speed_kts), static_cast<int>(target.heading_deg),
+        static_cast<int>(target.vertical_rate_fpm),
+        static_cast<int>(target.signal_dbfs), target.age_seconds,
+        target.has_position ? "true" : "false",
+        target.has_altitude ? "true" : "false",
+        target.has_speed ? "true" : "false",
+        target.has_heading ? "true" : "false",
+        target.has_vertical_rate ? "true" : "false");
+    if (n < 0 || used + static_cast<size_t>(n) + 2 >= sizeof(g_status_aircraft)) break;
+    memcpy(air + used, item, static_cast<size_t>(n));
+    used += static_cast<size_t>(n);
+  }
+  memcpy(air + used, "]", 2);
+
   snprintf(g_status_json, sizeof(g_status_json),
            "{\"wifi_ip\":\"%s\",\"wifi_connected\":%s,\"usb_connected\":%s,"
            "\"rtl_ready\":%s,\"receiving\":%s,\"sound_enabled\":%s,\"stereo\":%s,"
@@ -140,7 +180,10 @@ esp_err_t handle_status(httpd_req_t* req) {
            "\"step_hz\":%lu,\"filter_bandwidth_hz\":%lu,\"effective_sps\":%lu,"
            "\"battery_percent\":%ld,\"signal_dbfs\":%.1f,\"left_dbfs\":%.1f,"
            "\"right_dbfs\":%.1f,\"volume\":%u,\"clock\":\"%s\",\"date\":\"%s\","
-           "\"recent\":%s,\"spectrum\":%s,\"web\":{\"enabled\":%s}}",
+           "\"recent\":%s,\"spectrum\":%s,"
+           "\"adsb\":{\"active\":%s,\"messages\":%lu,\"rate\":%.1f,\"range_nm\":%u,"
+           "\"tracked\":%u,\"located\":%s,\"targets\":%s},"
+           "\"web\":{\"enabled\":%s}}",
            ip, snap.wifi_connected ? "true" : "false",
            snap.usb_connected ? "true" : "false", snap.rtl_ready ? "true" : "false",
            snap.receiving ? "true" : "false", snap.sound_enabled ? "true" : "false",
@@ -157,7 +200,11 @@ esp_err_t handle_status(httpd_req_t* req) {
            static_cast<double>(snap.signal_dbfs),
            static_cast<double>(snap.left_dbfs),
            static_cast<double>(snap.right_dbfs), snap.volume, clock, date, recent,
-           spec, snap.enabled ? "true" : "false");
+           spec, snap.adsb_active ? "true" : "false",
+           static_cast<unsigned long>(snap.adsb_messages),
+           static_cast<double>(snap.adsb_message_rate), snap.radar_range_nm,
+           snap.aircraft_tracked, snap.location_configured ? "true" : "false", air,
+           snap.enabled ? "true" : "false");
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");

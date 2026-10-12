@@ -1967,6 +1967,148 @@ void expire_adsb_tracks(uint32_t now) {
   if (changed) adsb_track_revision.fetch_add(1, std::memory_order_release);
 }
 
+// The rate publish_adsb_snapshot() last computed, so the Companion radar can
+// report the same number instead of keeping its own delta.
+std::atomic<float> adsb_published_rate{0.0f};
+
+// Great-circle range and bearing from the receiver to an aircraft. The
+// Companion is given these rather than coordinates: a relative radar needs
+// nothing else, and absolute positions plus a centred display would disclose
+// the receiver's own location, which the console promises not to publish.
+void adsb_relative_position(int32_t receiver_latitude_e7, int32_t receiver_longitude_e7,
+                            double latitude, double longitude, float* range_nm,
+                            int* bearing_deg) {
+  if (range_nm == nullptr || bearing_deg == nullptr) return;
+  constexpr double kEarthNm = 3440.065;
+  constexpr double kDegToRad = 0.017453292519943295;
+  const double lat1 = receiver_latitude_e7 / 10000000.0 * kDegToRad;
+  const double lon1 = receiver_longitude_e7 / 10000000.0 * kDegToRad;
+  const double lat2 = latitude * kDegToRad;
+  const double lon2 = longitude * kDegToRad;
+  const double dlat = lat2 - lat1, dlon = lon2 - lon1;
+  const double a = sin(dlat / 2) * sin(dlat / 2) +
+                   cos(lat1) * cos(lat2) * sin(dlon / 2) * sin(dlon / 2);
+  const double bounded_a = std::clamp(a, 0.0, 1.0);
+  *range_nm =
+      static_cast<float>(kEarthNm * 2 * atan2(sqrt(bounded_a), sqrt(1 - bounded_a)));
+  *bearing_deg = static_cast<int>(
+      lround(fmod(atan2(sin(dlon) * cos(lat2),
+                        cos(lat1) * sin(lat2) - sin(lat1) * cos(lat2) * cos(dlon)) /
+                          kDegToRad +
+                      360.0,
+                  360.0)));
+}
+
+// Copied out of the track table so the critical section stays short: no trig,
+// no sorting and no string formatting while the decoder is locked out.
+struct WebRadarStage {
+  char callsign[9]{};
+  uint32_t icao = 0;
+  double latitude = 0;
+  double longitude = 0;
+  int32_t altitude_ft = 0;
+  int16_t speed_kts = 0;
+  int16_t heading_deg = 0;
+  int16_t vertical_rate_fpm = 0;
+  uint16_t signal = 0;
+  uint32_t last_seen_ms = 0;
+  bool has_position = false;
+  bool has_altitude = false;
+  bool has_speed = false;
+  bool has_heading = false;
+  bool has_vertical_rate = false;
+};
+EXT_RAM_BSS_ATTR WebRadarStage web_radar_stage[kAdsbTrackCount]{};
+
+// Fills the Companion's ADS-B view: nearest first, and anything without a fix
+// after everything with one, because a target with no range has nowhere to go
+// on a radar and the page lists it instead of plotting it.
+void fill_web_radar(orcsdr::web_console::Snapshot& snap, uint32_t now_ms) {
+  const auto& settings = orcsdr::adsb::settings();
+  snap.adsb_active = rtl_ui_band == RtlBand::adsb;
+  snap.adsb_messages = adsb_total_messages.load(std::memory_order_relaxed);
+  snap.adsb_message_rate = adsb_published_rate.load(std::memory_order_relaxed);
+  snap.radar_range_nm = settings.radar_range_nm;
+  snap.aircraft_tracked = adsb_aircraft_count.load(std::memory_order_relaxed);
+  snap.location_configured = settings.location_configured;
+  snap.aircraft_count = 0;
+
+  size_t staged = 0;
+  portENTER_CRITICAL(&adsb_tracks_mux);
+  for (const auto& track : adsb_tracks) {
+    if (!track.used || staged == kAdsbTrackCount) continue;
+    auto& out = web_radar_stage[staged++];
+    strlcpy(out.callsign, track.has_callsign ? track.callsign : "", sizeof(out.callsign));
+    out.icao = track.icao;
+    out.latitude = track.latitude;
+    out.longitude = track.longitude;
+    out.altitude_ft = track.altitude_ft;
+    out.speed_kts = static_cast<int16_t>(track.speed_kts);
+    out.heading_deg = static_cast<int16_t>(track.heading_deg);
+    out.vertical_rate_fpm =
+        static_cast<int16_t>(std::clamp(track.vertical_rate_fpm, -32768, 32767));
+    out.signal = track.signal;
+    out.last_seen_ms = track.last_seen_ms;
+    out.has_position = track.has_position;
+    out.has_altitude = track.has_altitude;
+    out.has_speed = track.has_speed;
+    out.has_heading = track.has_heading;
+    out.has_vertical_rate = track.has_vertical_rate;
+  }
+  portEXIT_CRITICAL(&adsb_tracks_mux);
+
+  struct Scored {
+    float range_nm;
+    int bearing_deg;
+    size_t index;
+    bool positioned;
+  };
+  static Scored scored[kAdsbTrackCount];
+  size_t scored_count = 0;
+  for (size_t i = 0; i < staged; ++i) {
+    float range_nm = 0.0f;
+    int bearing_deg = 0;
+    const bool positioned = orcsdr::web_console::relative_position_available(
+        web_radar_stage[i].has_position, settings.location_configured);
+    if (positioned)
+      adsb_relative_position(settings.latitude_e7, settings.longitude_e7,
+                             web_radar_stage[i].latitude, web_radar_stage[i].longitude,
+                             &range_nm, &bearing_deg);
+    scored[scored_count++] = {range_nm, bearing_deg, i, positioned};
+  }
+  std::sort(scored, scored + scored_count, [](const Scored& a, const Scored& b) {
+    if (a.positioned != b.positioned) return a.positioned;
+    return a.range_nm < b.range_nm;
+  });
+
+  for (size_t i = 0; i < scored_count &&
+                     snap.aircraft_count < orcsdr::web_console::kAircraftSlots;
+       ++i) {
+    const WebRadarStage& src = web_radar_stage[scored[i].index];
+    auto& out = snap.aircraft[snap.aircraft_count++];
+    if (src.callsign[0] != '\0')
+      strlcpy(out.label, src.callsign, sizeof(out.label));
+    else
+      snprintf(out.label, sizeof(out.label), "%06lX", static_cast<unsigned long>(src.icao));
+    out.range_tenths_nm = static_cast<uint16_t>(
+        std::clamp(lroundf(scored[i].range_nm * 10.0f), 0l, 65535l));
+    out.bearing_deg = static_cast<uint16_t>(scored[i].bearing_deg);
+    out.altitude_ft = src.has_altitude ? src.altitude_ft : 0;
+    out.speed_kts = src.has_speed ? src.speed_kts : 0;
+    out.heading_deg = src.has_heading ? src.heading_deg : 0;
+    out.vertical_rate_fpm = src.vertical_rate_fpm;
+    out.signal_dbfs = static_cast<int8_t>(
+        std::clamp(static_cast<int>(src.signal) / 10 - 90, -128, 127));
+    out.age_seconds = static_cast<uint8_t>(
+        std::min<uint32_t>((now_ms - src.last_seen_ms) / 1000u, 255u));
+    out.has_position = scored[i].positioned;
+    out.has_altitude = src.has_altitude;
+    out.has_speed = src.has_speed;
+    out.has_heading = src.has_heading;
+    out.has_vertical_rate = src.has_vertical_rate;
+  }
+}
+
 void publish_adsb_snapshot(uint32_t now) {
   static uint32_t last_sample_ms = 0;
   static uint32_t last_sample_messages = 0;
@@ -2031,6 +2173,7 @@ void publish_adsb_snapshot(uint32_t now) {
   snapshot.revision = ++ui_revision;
   last_state_revision = state_revision;
   published_rate = message_rate;
+  adsb_published_rate.store(message_rate, std::memory_order_relaxed);
   last_faa_aircraft_installed = faa_aircraft_installed;
   last_faa_aviation_installed = faa_aviation_installed;
   orcsdr::adsb::set_live_snapshot(snapshot);
@@ -21597,6 +21740,7 @@ void loop() {
           const float norm = std::clamp((samples[i] - floor) / 24.0f, 0.0f, 1.0f);
           snap.spectrum[i] = static_cast<uint8_t>(norm * 255.0f);
         }
+        fill_web_radar(snap, millis());
         orcsdr::web_console::update(snap);
       }
     }

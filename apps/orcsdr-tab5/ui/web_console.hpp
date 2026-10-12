@@ -7,8 +7,45 @@ namespace orcsdr::web_console {
 
 constexpr size_t kSpectrumBins = 64;
 constexpr size_t kRecentSlots = 8;
+constexpr size_t kAircraftSlots = 16;
+
+// A decoded aircraft position is not enough to place a target on a relative
+// radar. Range and bearing also need the receiver's own configured location.
+constexpr bool relative_position_available(bool aircraft_has_position,
+                                           bool receiver_location_configured) {
+  return aircraft_has_position && receiver_location_configured;
+}
+static_assert(relative_position_available(true, true));
+static_assert(!relative_position_available(true, false));
+static_assert(!relative_position_available(false, true));
+static_assert(!relative_position_available(false, false));
+
+// Range and bearing rather than latitude and longitude, deliberately. It is
+// what a radar display needs, and it keeps the receiver's own position on the
+// device: absolute aircraft positions plus a centred display would give it
+// away, and this console promises to publish no coordinates.
+struct Aircraft {
+  char label[9]{};  // callsign when known, otherwise the ICAO address
+  uint16_t range_tenths_nm = 0;
+  uint16_t bearing_deg = 0;
+  int32_t altitude_ft = 0;
+  int16_t speed_kts = 0;
+  int16_t heading_deg = 0;
+  int16_t vertical_rate_fpm = 0;
+  int8_t signal_dbfs = 0;
+  uint8_t age_seconds = 0;
+  // Each measurement carries its own validity, because zero is a legal value
+  // for every one of them: level flight, a stopped aircraft, due north, and
+  // sea level all read 0 and must not be mistaken for "missing".
+  bool has_position = false;
+  bool has_altitude = false;
+  bool has_speed = false;
+  bool has_heading = false;
+  bool has_vertical_rate = false;
+};
 
 struct Snapshot {
+  Aircraft aircraft[kAircraftSlots]{};
   char wifi_ip[16]{};
   char mode[12]{};
   char clock[12]{};
@@ -24,6 +61,13 @@ struct Snapshot {
   uint32_t step_hz = 12500;
   uint32_t filter_bandwidth_hz = 0;
   uint32_t effective_sps = 0;
+  uint32_t adsb_messages = 0;
+  float adsb_message_rate = 0.0f;
+  uint16_t radar_range_nm = 25;
+  uint8_t aircraft_count = 0;    // entries filled in `aircraft`
+  uint8_t aircraft_tracked = 0;  // total the receiver is tracking
+  bool adsb_active = false;
+  bool location_configured = false;
   int32_t battery_percent = -1;
   float signal_dbfs = -90.0f;
   float left_dbfs = -90.0f;
