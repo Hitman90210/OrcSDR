@@ -30,6 +30,8 @@ jobs:
       - run: python tools/test_serial_auth_replies.py
       # Zero is a legal altitude, speed, heading and vertical rate.
       - run: python tools/test_web_console_contract.py
+      # Checks the 12.5 kHz raster claim by arithmetic, not by assertion.
+      - run: python tools/test_gmrs_marine_plan.py
       - run: python tools/validate-help-docs.py
       # numpy only, not the full LoRa decoder stack.
       - run: python tools/lora_snr_matrix.py --self-check

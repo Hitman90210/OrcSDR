@@ -3066,7 +3066,22 @@ uint32_t rtl_band_default_frequency(RtlBand band) {
   }
 }
 
-uint32_t rtl_filter_default_hz(RtlBand band) {
+// FRS/GMRS channels 8-14 are the 467 MHz interstitials, and 47 CFR 95.1773
+// limits them to 12.5 kHz while the rest of the plan runs at 20 kHz. The wide
+// default lets the neighbouring channel in, so the filter follows the channel.
+constexpr uint32_t kGmrsInterstitialLowHz = 467550000;
+constexpr uint32_t kGmrsInterstitialHighHz = 467737500;
+constexpr uint32_t kGmrsNarrowFilterHz = 12500;
+constexpr bool gmrs_channel_is_narrowband(uint32_t frequency_hz) {
+  return frequency_hz >= kGmrsInterstitialLowHz && frequency_hz <= kGmrsInterstitialHighHz;
+}
+static_assert(gmrs_channel_is_narrowband(467562500), "channel 8 is narrowband");
+static_assert(gmrs_channel_is_narrowband(467712500), "channel 14 is narrowband");
+static_assert(!gmrs_channel_is_narrowband(462562500), "channel 1 is not");
+static_assert(!gmrs_channel_is_narrowband(462725000), "channel 22 is not");
+
+uint32_t rtl_filter_default_hz(RtlBand band, uint32_t frequency_hz) {
+  if (gmrs_channel_is_narrowband(frequency_hz)) return kGmrsNarrowFilterHz;
   if (band == RtlBand::lora) return lora_bandwidth_hz.load(std::memory_order_relaxed);
   if (band == RtlBand::shortwave) return orcsdr::receiver_bands::kShortwave.default_bandwidth_hz;
   if (band == RtlBand::airband) return orcsdr::airband::filter_bandwidth_hz();
@@ -14569,7 +14584,7 @@ void load_state() {
       } else if (stored_band == RtlBand::am) {
         rtl_ui_frequency_hz = orcsdr::am::saved_frequency();
         rtl_requested_frequency_hz.store(rtl_ui_frequency_hz, std::memory_order_release);
-        rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(stored_band),
+        rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(stored_band, rtl_ui_frequency_hz),
                                       std::memory_order_relaxed);
       } else if (stored_band != RtlBand::fm) {
         // WX, CB, shortwave, browse and ADS-B would otherwise keep the FM
@@ -14577,7 +14592,7 @@ void load_state() {
         // 99.13 MHz before the dashboard corrected it.
         rtl_ui_frequency_hz = rtl_band_default_frequency(stored_band);
         rtl_requested_frequency_hz.store(rtl_ui_frequency_hz, std::memory_order_release);
-        rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(stored_band),
+        rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(stored_band, rtl_ui_frequency_hz),
                                       std::memory_order_relaxed);
       }
       Serial.printf("RTL_BAND_RESTORE band=%s frequency_hz=%u\n", rtl_band_name(stored_band),
@@ -14776,7 +14791,8 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     g_iq_rec_export_pending.store(true, std::memory_order_release);
   }
   if (band != rtl_ui_band) {
-    rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(band), std::memory_order_relaxed);
+    rtl_filter_bandwidth_hz.store(rtl_filter_default_hz(band, frequency_hz),
+                                  std::memory_order_relaxed);
   }
 #if !RTL_USE_LEGACY_USB
   if (rtl_ui_band == RtlBand::am && band != RtlBand::am)

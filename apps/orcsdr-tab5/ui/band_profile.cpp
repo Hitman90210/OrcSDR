@@ -42,8 +42,12 @@ constexpr Profile kUs[] = {
      Control::fixed, 0, 1, 0, {1000}, Kind::fixed, Owner::home},
     {Id::ham_70cm, "70 CM HAM", 420000000, 450000000, Mode::nfm, Confidence::low,
      Control::free_tune, 0, 3, 1, {5000, 12500, 25000}, Kind::nfm, Owner::home},
-    {Id::frs_gmrs, "FRS / GMRS", 462550000, 467726000, Mode::nfm, Confidence::high, Control::free_tune,
-     462550000, 2, 0, {12500, 25000}, Kind::nfm, Owner::home},
+    // Channelized: the FRS/GMRS plan is a fixed 12.5 kHz raster from 462.5500,
+    // which lands on 1-7 and 15-22 at 462 MHz and on the 8-14 interstitials at
+    // 467 MHz (467.5625 is 401 steps above the origin). Free tuning let a
+    // channel be missed by a few kHz, which on 12.5 kHz spacing is audible.
+    {Id::frs_gmrs, "FRS / GMRS", 462550000, 467726000, Mode::nfm, Confidence::high,
+     Control::channelized, 462550000, 2, 0, {12500, 25000}, Kind::nfm, Owner::home},
     {Id::pocsag, "PAGERS", 152000000, 152030000, Mode::none, Confidence::high, Control::fixed, 0,
      1, 0, {12500}, Kind::fixed, Owner::pocsag},
     {Id::uhf_general, "UHF", 300000000, 1000000000, Mode::nfm, Confidence::low, Control::free_tune, 0,
