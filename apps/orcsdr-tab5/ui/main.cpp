@@ -20561,8 +20561,11 @@ void process_command(char* command) {
     set_online();
     return;
   }
-  if (strcmp(command, "PING") == 0 && authenticated) {
-    last_ping_ms = millis();
+  // Hosts send PING on a timer while they wait for other replies, so it is
+  // never answered -- not even once the session has lapsed. It claims the
+  // command either way, so the unknown-command reply at the end cannot.
+  if (strcmp(command, "PING") == 0) {
+    if (authenticated) last_ping_ms = millis();
     return;
   }
   if (strncmp(command, "PREPARE_FLASH ", 14) == 0) {
@@ -20723,10 +20726,32 @@ void process_command(char* command) {
     emit_identity();
     return;
   }
-  if (strncmp(command, "ACK ", 4) == 0 && authenticated) {
+  // Journal ACKs are fire-and-forget like PING, and likewise never answered.
+  if (strncmp(command, "ACK ", 4) == 0) {
+    if (!authenticated) return;
     const uint32_t sequence = strtoul(command + 4, nullptr, 10);
     if (sequence <= journal.next_sequence) acknowledge_journal(sequence);
+    return;
   }
+  // Nothing above claimed this line. Say so rather than going silent: a
+  // dropped command and an unrecognised one look identical from the host, and
+  // that ambiguity has already cost one wrong diagnosis.
+  //
+  // Safe because every handling branch returns. Audited over all 166 top-level
+  // blocks in this function: only the two RTL_RESET paths did not, and they
+  // restart the device rather than return, plus ACK above, which now does.
+  //
+  // Only the verb is echoed, since arguments carry key, password and digest
+  // hex. JSON frames are left alone: they are not console commands.
+  if (command[0] == '{') return;
+  char verb[33]{};
+  for (size_t i = 0; i < sizeof(verb) - 1 && command[i] != '\0' && command[i] != ' '; ++i) {
+    const char c = command[i];
+    const bool plain = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                       (c >= '0' && c <= '9') || c == '_';
+    verb[i] = plain ? c : '?';
+  }
+  Serial.printf("CMD_ERROR unknown_command verb=%s\n", verb);
 }
 
 void poll_serial() {
