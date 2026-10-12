@@ -1298,6 +1298,24 @@ with 0 errors.
 - `tools/test_serial_auth_replies.py` guards both halves and is load-bearing:
   against `a000b27` as shipped it reports all twenty offenders.
 
+**Companion ADS-B radar: done** (2026-10-12), `9484d15`, built with 0 errors.
+Grafted rather than copied: their console was rewritten around audio streaming
+and one status poll, so transplanting our 40 KB multi-view page would have
+replaced a UI that works. `fill_web_radar()` turns their existing 64-entry
+track table into at most 16 targets, nearest first, computing range and bearing
+on the device so no coordinates are published. The track table is copied under
+its mutex and nothing else happens there — no trig, no sorting, no formatting —
+so the decoder is not held off while the page is built. Each measurement still
+travels with its own validity flag, and the page branches on the flag, never on
+the number.
+
+Verified in a browser against a mocked `/api/status`, which is the part worth
+keeping: a target with every value at zero and every flag true printed `0 ft`,
+`0 kt`, `0°` and a level arrow rather than dashes; a target with `pos:false` was
+listed but never plotted; one older than 30 s drew grey; and a label of `<b>X`
+rendered literally, because rows are built from text nodes. **Not yet seen with
+a real aircraft.**
+
 **Not ported, deliberately:** our `RTL_USB_RECOVERY` switch (their rail
 power-cycle is unconditional and field-tested, so the flag has no purpose
 there) and `RTL_SERIAL VERBOSITY`, which they already have.
