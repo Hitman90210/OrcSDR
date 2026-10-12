@@ -1750,11 +1750,15 @@ bool boot_auto_start_allowed = false;
 // previous session can miss its first enumeration and stay missing until it is
 // unplugged by hand. Cycling the rail makes it enumerate again.
 //
-// Off by default, and deliberately so: begin_boot_device_staging() reasserts
-// this rail without pulsing it because an off/on pulse with a powered dongle
-// attached has reset the P4 on this bench. Enable it with RTL_USB_RECOVERY ON
-// only while watching the device, and see FORK_HANDOFF §8.
-bool settings_usb_recovery_enabled = false;
+// On by default since 2026-10-12. It was opt-in while the risk was unmeasured
+// here: begin_boot_device_staging() reasserts this rail *without* pulsing it,
+// because a pulse at restart time with a powered dongle attached has reset the
+// P4 on this bench. Upstream then shipped the same recovery unconditionally
+// (their 7a8cfee: same stage, same 1 s off, one attempt) through v0.3.0 and
+// v0.4.0 with V4 and V4L hardware, which is the evidence this fork lacked --
+// and it pulses only on the enumeration-timeout path, not at restart. Turn it
+// off with RTL_USB_RECOVERY OFF if a board ever reboots on the pulse.
+bool settings_usb_recovery_enabled = true;
 uint8_t boot_rtl_recovery_attempts = 0;
 uint32_t power_monitor_until_ms = 0;
 uint32_t power_monitor_next_ms = 0;
@@ -2973,6 +2977,26 @@ SemaphoreHandle_t speaker_begin_mutex() {
   return mutex;
 }
 
+// Tear the speaker down under the same mutex that guards begin(). On an unplug
+// the main task idles the speaker while the DSP task is still draining audio
+// and restarting it, and an unguarded end() racing begin() deletes the same I2S
+// channel twice -- a "block already marked as free" heap assert. Upstream hit
+// this on a V4 unplug test and fixed it in c8b309f; this fork had the same two
+// unguarded sites.
+//
+// Returns false without touching the speaker when the lock cannot be taken, so
+// the caller retries on its next pass rather than tearing down unserialised.
+bool end_rtl_speaker() {
+  SemaphoreHandle_t mutex = speaker_begin_mutex();
+  if (mutex == nullptr || xSemaphoreTake(mutex, pdMS_TO_TICKS(500)) != pdTRUE) return false;
+  if (M5.Speaker.isRunning()) {
+    M5.Speaker.stop();
+    M5.Speaker.end();
+  }
+  xSemaphoreGive(mutex);
+  return true;
+}
+
 bool restart_rtl_speaker_i2s(uint8_t volume) {
   const uint32_t now = millis();
   if (speaker_backoff_active(now)) return false;
@@ -3026,7 +3050,7 @@ bool ensure_speaker_running(uint8_t volume) {
   if (!rtl_speaker_codec_primed.load(std::memory_order_acquire)) {
     if (!M5.Speaker.isRunning() && !restart_rtl_speaker_i2s(volume)) return false;
     delay(10);
-    M5.Speaker.end();
+    if (!end_rtl_speaker()) return false;
     delay(10);
     g_speaker_retry_ms = 0;
     if (!restart_rtl_speaker_i2s(volume)) return false;
@@ -8368,9 +8392,8 @@ bool pause_radio_for_io(bool& paused) {
     radio_io_resume_pending = true;
   }
   if (M5.Speaker.isRunning()) {
-    M5.Speaker.stop();
-    M5.Speaker.end();
-    radio_io_speaker_resume_pending = true;
+    // Only claim a resume is owed if the teardown actually happened.
+    if (end_rtl_speaker()) radio_io_speaker_resume_pending = true;
   }
   return true;
 }
@@ -11415,7 +11438,7 @@ void load_state() {
   settings_web_console_enabled = preferences.getBool("set_web_console", false);
   orcsdr::web_console::set_enabled(settings_web_console_enabled);
   settings_web_control_enabled = preferences.getBool("set_web_ctrl", false);
-  settings_usb_recovery_enabled = preferences.getBool("usb_recovery", false);
+  settings_usb_recovery_enabled = preferences.getBool("usb_recovery", true);
   orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
   const std::string location_label = preferences.isKey("loc_label")
                                          ? preferences.getString("loc_label", "") : std::string();

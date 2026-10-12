@@ -996,6 +996,11 @@ upstream's own main, not merely unmerged. Left behind, deliberately:
   dongle name). Needs `ESP_RTL_SDR_PROFILE_BLOG_V3`, `NOOELEC_SMART_V5` and
   `g_rtl_profile` — **zero occurrences of any of them in our tree**; they are
   0.8.0 concepts. Revisit when the driver lands on upstream/main.
+
+  **Superseded 2026-10-12 — see §5.7h.** It landed, and then some: upstream
+  `main` pins `esp_rtl_sdr` v0.9.3, ships it in v0.3.0 and v0.4.0, and the
+  author runs V4 and V4L on it routinely. The caution below was about an
+  unmerged experimental branch, not about the driver line as it stands now.
 - **Relaxing the AM scan regression assertion** from `Found -lt 1` (throw) to
   `Found -gt 6` (throw). It fixes real flakiness in a quiet RF environment,
   but a scan that finds nothing would then pass. `Step -eq Total` still guards
@@ -1139,6 +1144,81 @@ own controlled vector, sourced from an "engineering notebook".
 
 Checked against our source and *not* applicable: their `95df41a` status-overwrite
 fix guards a "below 24 MHz unavailable" message this fork does not have.
+
+### 5.7h Upstream has outgrown the fork — measured 2026-10-12
+
+Upstream `main` is `a000b27`, released as **v0.4.0-beta.1** on 2026-10-10 with
+native FT8, FT4 and experimental JS8 reception. Against our shared merge base
+`a1c9084` it is **500 commits / 641 files / +94,743 lines** ahead; this fork is
+**129 commits / 142 files / +13,032** ahead. That gap is no longer something
+selective porting closes.
+
+**Checking his work first, because adopting it is the question.** Upstream keeps
+17 open issues, only 2 labelled `bug`, with a `needs-hardware-validation` label
+in use; the nightly firmware build, documentation-truth and user-guide CI are
+green on head; releases ship evidence tables and name what was *not* tested. The
+two open items that touch this bench are `#122` (one V4 bandwidth write rejected
+at 1.8M, rolled back to 1.0M) and `#109` (hot-plugging a **V3** can knock out
+the C6 Wi-Fi link; V4 and V4L do not). Their v0.4.0 notes record valid FT8
+decodes on a Blog V4 after switching to manual gain. The driver is pinned to
+`esp_rtl_sdr` **v0.9.3** against this fork's `1cd19d13` (the 0.7.15 line), so
+§5.7e's "do not take the 0.8.0 line" is now stale: the author tests V4 and V4L
+on it routinely.
+
+**What a merge would cost, measured rather than guessed.** A trial merge of
+`upstream/main` into our `main` conflicts in **43 files with about 180 hunks**,
+**74 of them in `main.cpp`** alone. That file was 15,413 lines at the base; it
+is 16,638 here (+2,596/-1,371) and **21,765 there** (+7,666/-1,314). 63 files
+were changed by both sides; 79 only by us; and upstream carries **160 UI source
+files this fork does not have** — a whole airband subsystem, CB dashboard and
+scanner, band profiles, clock settings, the FT8 stack.
+
+**Ingested now, after checking each against our source:**
+
+- **Speaker teardown serialisation** (`c8b309f`). A real crash, and this fork
+  had the same two unguarded sites. See item 18.
+- **`RTL_USB_RECOVERY` on by default** (`7a8cfee`). Their field evidence
+  answered the question that kept ours opt-in. See item 18.
+
+**Checked and deliberately deferred**, each because the port is multi-site and
+the verdict needs hardware this session did not have:
+
+- **Hot-replug resume** (`59db169`), the item 14 gap. It needs
+  `rtl_hotplug_resume_pending`, `rtl_boot_complete`, `radio_io_paused()` and
+  `wifi_c6_probe_radio_paused`, none of which exist here (0 references each),
+  plus a change to how ADS-B navigation persists. Worth taking; its test is
+  unplugging a dongle.
+- **Wi-Fi start-at-boot and C6 link recovery** (`d2f4554`, `5ba1a40`,
+  `91e5c40`, `41e52e2`). Connect-path timing, where a fix and a regression are
+  indistinguishable without the radio.
+- **C6 version read at boot without Wi-Fi** (`dc9133e`, their #82).
+- **The driver bump to v0.9.3**, and all 160 new UI files.
+
+**The decision this forces.** Four paths, in rising order of cost:
+
+1. **Keep porting fixes selectively.** Cheapest per step, but upstream moved 500
+   commits in five weeks, so the gap and the per-port cost both grow. This is
+   the treadmill we are on.
+2. **Staged merge into the fork.** Reconcile ~180 hunks, three quarters of them
+   in `main.cpp`, then revalidate everything on hardware. Ends with both feature
+   sets in one tree.
+3. **Re-base the fork on upstream** — adopt `a000b27` as the new base and
+   re-apply this fork's unique work against their current architecture, where
+   `band_profile` would carry GMRS and marine far more cleanly than our
+   hand-rolled channel plan does. Comparable work to (2), cleaner result, and it
+   sets each feature up to be offered as a PR instead of living only here.
+4. **Run upstream's firmware and keep the fork for deltas only.** Lowest effort,
+   and it loses GMRS, marine, the Companion extras and the LoRa work unless
+   those are upstreamed first.
+
+(3) is the recommendation. What is uniquely ours and worth carrying forward is a
+short list — GMRS and marine channel plans with lockout and SAME decoding, the
+Companion's cross-site guard and ADS-B validity flags, the LoRa native decoder
+with `tools/lora_snr_matrix.py`, ORCMAP1 offline maps, `orc_console`, the C6
+bridge app, and the serial-CLI hardening — while everything else upstream now
+does as well or better. Either way it is a multi-session project with hardware
+validation at each step, and until it starts, this fork's firmware is what the
+Tab5 runs.
 
 ## 5.8 Dead code and build
 
@@ -1536,25 +1616,27 @@ accumulate, no early exit), and no secrets on the serial console.
     - Not changed: `RTL_P25_SCAN` with a session prints no reply of its own; its
       survey start line is the only sign it ran.
 
-17. **Fixes offered to upstream (refreshed 2026-09-24).** There are two branches
-    on this fork. Each is based on upstream `main` at `4c91e68`, carries exactly
-    one fix, and was built with upstream's own build steps (0 errors, no new
-    warnings). Neither has been flashed, and no pull request is open yet.
-    - `fix/72-airband-am` (`9e9f1e7`): BROWSE demodulates AM from 108 to
-      137 MHz (issue #72). It covers #72 only; this fork's WX, marine and
-      amateur label changes and its GMRS handling are not included.
+17. **Fixes offered to upstream — one left, one retired (2026-10-12).**
     - `fix/rf-analysis-raw-capture-fft` (`f06b187`): the FFT is windowed from
-      the raw capture, which removes upstream's 1024-point cap.
+      the raw capture, which removes upstream's 1024-point cap. **Still wanted**
+      — `fit_iq_fft_size` is still in upstream's `rf_analysis.cpp` — and newly
+      relevant while their PR #155 rebuilds the visualizer's rendering. It is
+      now **349 commits behind** upstream `main`, so it needs another anchor
+      pass before it is offered. No pull request is open.
+    - `fix/72-airband-am` — **retired and deleted** (local and origin) on
+      2026-10-12. Upstream closed issue #72 on 2026-10-03 and solved it their
+      own way: a dedicated `RtlBand::airband` with its own screen, mode `"AM"`,
+      filter width and default frequency, plus a whole airband subsystem
+      (`airband_dashboard`, `airband_scanner`, `airband_catalog`,
+      `airband_audio_filter`, `airband_runtime`). Our approach made BROWSE's
+      demodulator depend on its frequency, which theirs makes unnecessary. The
+      fork's own airband handling still works and stays until the merge
+      question in §5.7h is settled.
 
-    Both were re-cut from `c5b3423` onto `4c91e68` when upstream moved 151
-    commits ahead. `rf_analysis.cpp` was untouched in between, so that port was
-    unchanged; the airband port needed two anchors widened for the new
-    `shortwave` band, which now sits beside `am` both in
-    `rtl_filter_default_hz()` and in the speaker dispatch. Regenerating them is
-    scripted rather than rebased, so a future move of upstream costs another
-    anchor pass, not a conflict resolution.
+    Regenerating an offer is scripted rather than rebased, so a move of upstream
+    costs another anchor pass, not a conflict resolution.
 
-    Opening the pull requests is the owner's decision. The compare pages are at
+    Opening the pull request is the owner's decision. The compare page is at
     `https://github.com/hardcoreerik/OrcSDR/compare/main...Hitman90210:OrcSDR:<branch>`.
 
     The #87 catalog guard was **not** offered. Upstream's own PR #88 makes the
@@ -1571,13 +1653,23 @@ accumulate, no early exit), and no secrets on the serial console.
       confirming the Companion page still works normally, and that a POST to
       `/api/action` carrying a foreign `Origin` gets `403`. The host tests cover
       the policy; what is unproven is the header plumbing on the device.
-    - **`RTL_USB_RECOVERY`.** Off by default and never run on hardware. The
-      whole point of the flag is that a rail power-cycle with a powered dongle
-      attached has reset the P4 here before. Enable it with the device in view,
-      reset from the PC with the dongle attached, and watch for
-      `BOOT_RTL_RECOVERY power_cycle attempt=1` followed by enumeration — and
-      for whether the P4 survives the pulse. If it does not, the feature stays
-      off and the finding goes here.
+    - **`RTL_USB_RECOVERY`.** **Now on by default** (2026-10-12) and still not
+      run on hardware here. It was opt-in because a rail pulse at restart time
+      had reset the P4 on this bench; upstream's `7a8cfee` then shipped the same
+      recovery unconditionally — same stage, same 1 s off, one attempt — through
+      v0.3.0 and v0.4.0 on V4 and V4L, and only on the enumeration-timeout path.
+      Still worth watching once: reset from the PC with the dongle attached and
+      look for `BOOT_RTL_RECOVERY power_cycle attempt=1` followed by
+      enumeration, and that the P4 survives the pulse. `RTL_USB_RECOVERY OFF`
+      turns it off if not.
+    - **Speaker teardown serialisation** (2026-10-12, from upstream `c8b309f`).
+      `end_rtl_speaker()` now holds the same mutex as `begin()`. Two sites here
+      called `M5.Speaker.end()` unguarded — the codec-prime path in
+      `ensure_speaker_running()` and the exclusive-I/O pause path — which is how
+      upstream deleted the same I2S channel twice and hit a "block already
+      marked as free" assert on a V4 unplug. Build-verified only: the test is
+      unplugging the dongle while audio is playing, repeatedly, and seeing no
+      heap assert.
 
 ## 9. Map of the interesting files
 
