@@ -510,8 +510,8 @@ RTL_KEYBOARD ECHO <0|1>
 RTL_KEYBOARD KEY <UP|DOWN|LEFT|RIGHT|ENTER|ESC|TAB|SPACE|BACKSPACE|char>
 ```
 
-- `STATUS` (no authentication) prints `RTL_KEYBOARD_STATUS present=… firmware=… mode=… keys=… dropped=…
-  bus_errors=… attaches=…` and `RTL_KEYBOARD_FOCUS controls=<n> x= y= w= h= ring=<0|1>`, the control that
+- `STATUS` (no authentication) prints `RTL_KEYBOARD_STATUS present=â€¦ firmware=â€¦ mode=â€¦ keys=â€¦ dropped=â€¦
+  bus_errors=â€¦ attaches=â€¦` and `RTL_KEYBOARD_FOCUS controls=<n> x= y= w= h= ring=<0|1>`, the control that
   currently has the keyboard focus ring.
 - `ECHO 1` (authenticated) logs every decoded key event to serial, for debugging key decoding. `ECHO 0` turns it off.
 - `KEY` (authenticated) injects one key as if it were typed, through the same routing as the real keyboard: focus

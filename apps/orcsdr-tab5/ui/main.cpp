@@ -12772,7 +12772,7 @@ static void ft8_log_stage_rows(const orcsdr::ft8::Decode* decodes, const uint8_t
     const auto* preset = orcsdr::ft8::band(bands[i]);
     char message[64]{};
     size_t m = 0;
-    for (const char* p = decodes[i].message; *p != ' ' && m + 2 < sizeof(message); ++p) {
+    for (const char* p = decodes[i].message; *p != '\0' && m + 2 < sizeof(message); ++p) {
       if (*p == '"') message[m++] = '"';
       message[m++] = *p;
     }
