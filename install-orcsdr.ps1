@@ -2,7 +2,7 @@
 <# Installs final P4 without erasing NVS. -UpdateC6 is a recovery-only bridge route. #>
 param(
   [string]$Port,
-  [string]$IdfPath = 'C:\Espressif\frameworks\esp-idf-v5.5.4',
+  [string]$IdfPath = 'C:\Espressif\v5.5.4\esp-idf',
   [switch]$CheckHostedOnly,
   [switch]$UpdateC6,
   [switch]$DryRun,
@@ -40,7 +40,26 @@ function Test-HostedPair([string]$ComPort) {
 }
 function Use-Idf {
   if (-not (Test-Path (Join-Path $IdfPath 'export.ps1'))) { throw "ESP-IDF 5.5.4 is required at $IdfPath." }
-  $env:IDF_PYTHON_ENV_PATH = 'C:\Espressif\python_env\idf5.5_py3.14_env'; $env:PATH = "C:\Espressif\tools\ccache\4.12.1\ccache-4.12.1-windows-x86_64;$env:IDF_PYTHON_ENV_PATH\Scripts;$env:PATH"
+  # Resolve the venv and ccache rather than hardcoding one installation layout
+  # and one ccache version, which pinned this to a single machine.
+  $idfInstallRoot = Split-Path -Parent (Split-Path -Parent $IdfPath)
+  $env:IDF_TOOLS_PATH = Join-Path $idfInstallRoot 'tools'
+  $pythonEnvCandidates = @(
+    (Join-Path $idfInstallRoot 'tools\python\v5.5.4\venv'),
+    'C:\Espressif\python_env\idf5.5_py3.14_env'
+  )
+  $resolvedPythonEnv = $pythonEnvCandidates |
+    Where-Object { Test-Path -LiteralPath (Join-Path $_ 'Scripts\python.exe') -PathType Leaf } |
+    Select-Object -First 1
+  if (-not $resolvedPythonEnv) {
+    throw "No ESP-IDF 5.5.4 Python environment found. Checked: $($pythonEnvCandidates -join ', ')"
+  }
+  $env:IDF_PYTHON_ENV_PATH = $resolvedPythonEnv
+  $toolPaths = @($env:IDF_PYTHON_ENV_PATH + '\Scripts')
+  $ccache = Get-ChildItem -LiteralPath (Join-Path $env:IDF_TOOLS_PATH 'ccache') `
+    -Filter ccache.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($ccache) { $toolPaths = @($ccache.DirectoryName) + $toolPaths }
+  $env:PATH = ($toolPaths -join ';') + ";$env:PATH"
   . (Join-Path $IdfPath 'export.ps1')
 }
 function Flash-App([string]$App, [string]$Build, [string]$ComPort) {
@@ -66,7 +85,9 @@ Set-Location $Root
 $script:Port = if ($DryRun -and -not $Port) { 'COM17' } else { Resolve-Port $Port }
 Write-Host "OrcSDR installer (Hosted $RequiredHosted, C6 update=$([int][bool]$UpdateC6), dry_run=$([int][bool]$DryRun))"
 if ($CheckHostedOnly) { if (Test-HostedPair $script:Port) { exit 0 }; exit 2 }
-Use-Idf
+# A dry run only prints the plan, so it must not require a toolchain: this is
+# what lets tools/release/test-installer-dry-run.ps1 run on a CI runner.
+if (-not $DryRun) { Use-Idf }
 if ($UpdateC6) {
   $stage = Join-Path $env:TEMP 'OrcSDR-c6-update'
   if (-not $DryRun) {
