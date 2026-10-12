@@ -1,0 +1,49 @@
+name: Repository quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          # numpy<2, which lora_snr_matrix needs, does not import on 3.13+.
+          python-version: '3.11'
+      - run: pip install 'cryptography>=45,<47' 'numpy>=1.23,<2'
+      - run: python tools/test_lora_serial_transfer.py
+      - run: python tools/test_release_metadata.py
+      # Catches the two classes of defect this test found on a000b27: a raw NUL
+      # byte inside a char literal in main.cpp, and cp1252 bytes in a doc.
+      - run: python tools/test_source_hygiene.py
+      - run: python tools/test_ui_layout.py
+      - run: python tools/validate-help-docs.py
+      # numpy only, not the full LoRa decoder stack.
+      - run: python tools/lora_snr_matrix.py --self-check
+
+  powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $failures = @()
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $tokens = $null
+            $errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors)
+            if ($errors) { $failures += "$($_.FullName): $($errors.Message -join '; ')" }
+          }
+          if ($failures) { throw ($failures -join "`n") }
+      - name: Test guarded installer plans
+        shell: pwsh
+        run: ./tools/release/test-installer-dry-run.ps1
