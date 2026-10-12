@@ -3,7 +3,8 @@ name: Repository quality
 on:
   pull_request:
   push:
-    branches: [main]
+    # refresh/** so the re-base gets CI signal while it is in progress.
+    branches: [main, 'refresh/**']
   workflow_dispatch:
 
 permissions:
