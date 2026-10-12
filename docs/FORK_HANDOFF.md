@@ -1211,14 +1211,72 @@ the verdict needs hardware this session did not have:
    and it loses GMRS, marine, the Companion extras and the LoRa work unless
    those are upstreamed first.
 
-(3) is the recommendation. What is uniquely ours and worth carrying forward is a
-short list — GMRS and marine channel plans with lockout and SAME decoding, the
-Companion's cross-site guard and ADS-B validity flags, the LoRa native decoder
-with `tools/lora_snr_matrix.py`, ORCMAP1 offline maps, `orc_console`, the C6
-bridge app, and the serial-CLI hardening — while everything else upstream now
-does as well or better. Either way it is a multi-session project with hardware
-validation at each step, and until it starts, this fork's firmware is what the
+(3) is the recommendation. Either way it is a multi-session project with hardware
+validation at each step, and until it lands, this fork's firmware is what the
 Tab5 runs.
+
+### 5.7i The re-base, started 2026-10-12 (option 3)
+
+**Nothing on `main` moved.** It is tagged `pre-refresh-2026-10-12` (`46f3ac4`,
+pushed), and the work happens on branch **`refresh/upstream-a000b27`** in a
+separate worktree at `..\ORC SDR-refresh`, so the Tab5 keeps building from a
+known-good tree throughout.
+
+**The baseline builds.** Upstream's v0.4.0-beta.1 compiles on this machine in
+9.8 minutes, 0 errors, `orcsdr_tab5.bin` at `0x2dd200` (3.0 MB, against 2.4 MB
+here) — after two build fixes that this fork already knew about and upstream's
+script does not:
+
+- Their `build-tab5-idf.ps1` hardcodes `C:\Espressif\frameworks\esp-idf-v5.5.4`
+  and a `python_env` path. It now resolves the installer layout instead, with
+  the EIM profile preferred over `export.ps1`.
+- The legacy M5 `register_component()` macro breaks on a path containing a
+  space, which is fatal here because the repository lives in `ORC SDR`.
+  `Update-M5ComponentRegistration` is carried over, patching before configure
+  and again after, since the component manager re-resolves and restores it.
+
+**Two defects found in his work, by carrying our hygiene test over:**
+
+- `apps/orcsdr-tab5/ui/main.cpp:12775` held a **raw NUL byte inside a char
+  literal** (`*p != '<NUL>'` where `'\0'` was meant) — the same class of bug
+  their PR #148 fixed in `fm_dashboard.cpp`. Fixed on the branch.
+- `docs/API_SERIAL_CLI.md:513` carried **seven cp1252 `0x85` bytes** where
+  ellipses belong, so the file was not valid UTF-8. Repaired byte by byte.
+
+Both are worth offering upstream together with `tools/test_source_hygiene.py`,
+which is what caught them and which they do not have.
+
+**Re-triaged against upstream's current tree, correcting §5.7h's list.** Two
+things we were going to carry are already theirs, and better: the
+**cross-site guard** (`origin_allowed`/`same_origin`, covering the audio
+transport too) and the **`offline_map` loader**. What is genuinely ours:
+
+| Ours to port | Upstream | Here |
+| --- | --- | --- |
+| GMRS | 3 refs | 120 |
+| Marine VHF | 9 | 63 |
+| Channel lockout (`RTL_CHANNEL_LOCK`) | 0 | 17 |
+| Companion ADS-B radar and validity flags | **0** | radar in HTML, `alt_ok` etc. |
+| LoRa trigger/gap/SNR telemetry | 0 | 9 |
+| `CMD_ERROR`, `RTL_USB_RECOVERY` | 0 | 9 |
+| `build_orcmap.py` | 0 | present |
+| `test_source_hygiene`, `test_ui_layout`, `test_release_metadata`, `lora_snr_matrix` | absent | present |
+
+The Companion radar is the surprise: upstream's web console has **no ADS-B
+radar at all** (0 references in its C++), and theirs has been rewritten around
+audio streaming and `web_command.hpp`, so ours has to be grafted on rather than
+copied.
+
+**Stage A, done on the branch:** the two build fixes, the two hygiene fixes, the
+four test scripts, `lora_snr_matrix.py`, `build_orcmap.py`, and a `quality.yml`
+adapted to what passes there (upstream has no `quality.yml`; `test_ui_layout`
+and `test_release_metadata` pass against their tree unmodified).
+
+**Stage B, the firmware ports, in the order they should be attempted:** serial
+hardening first (self-contained, host-testable), then the Companion ADS-B radar,
+then GMRS/marine/lockout — which should be rebuilt on their `band_profile`
+rather than transplanted — then the LoRa decoder work and the POCSAG deltas.
+Each needs its own build, and the GMRS and LoRa ones need the radio.
 
 ## 5.8 Dead code and build
 
