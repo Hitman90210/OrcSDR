@@ -32,6 +32,9 @@ jobs:
       - run: python tools/test_web_console_contract.py
       # Checks the 12.5 kHz raster claim by arithmetic, not by assertion.
       - run: python tools/test_gmrs_marine_plan.py
+      # The band table's own host test. Nothing ran it before, so the channel
+      # plan was only ever checked by self_check() on a booted device.
+      - run: bash tools/test-band-profile.sh
       - run: python tools/validate-help-docs.py
       # numpy only, not the full LoRa decoder stack.
       - run: python tools/lora_snr_matrix.py --self-check
