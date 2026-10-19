@@ -1277,6 +1277,10 @@ radar, GMRS/marine/lockout — which should be rebuilt on their `band_profile`
 rather than transplanted — then the LoRa decoder work and the POCSAG deltas.
 Each needs its own build, and the GMRS and LoRa ones need the radio.
 
+**Where Stage B stands (2026-10-18):** serial hardening, the Companion radar,
+and GMRS/marine are done. Channel lockout, the LoRa decoder work and the
+POCSAG deltas are not. Nothing on the branch has been on hardware yet.
+
 **Serial hardening: done** (2026-10-12), `134d948` and `07ebb5d`, both built
 with 0 errors.
 
@@ -1324,6 +1328,92 @@ there) and `RTL_SERIAL VERBOSITY`, which they already have.
 unconditionally, so `test-installer-dry-run.ps1` — a dry run that flashes
 nothing — demanded ESP-IDF at a hardcoded path and failed on a CI runner. That
 was the one red job after Stage A; the branch is green now.
+
+**GMRS and marine: done** (2026-10-12), `2127c16`, built with 0 errors.
+
+Rebuilt on their `band_profile` table rather than transplanted. Marine was
+already right there — channelized on the 25 kHz raster — so only GMRS needed
+work, and it had two faults:
+
+- It was `Control::free_tune`, so the dial could stop a few kHz off a 12.5 kHz
+  channel and the audio would be audibly wrong. It is now
+  `Control::channelized` on a 12.5 kHz raster anchored at 462.5500 MHz, which
+  lands on all 22 channels including the 467 MHz interstitials.
+- The default filter did not follow the channel, so channels 8-14 — the 467 MHz
+  interstitials, held to 12.5 kHz by 47 CFR 95.1773 — were received through a
+  25 kHz filter and let the neighbouring channel in. `rtl_filter_default_hz()`
+  now takes the frequency and returns 12.5 kHz inside 467.5500-467.7375.
+
+`tools/test_gmrs_marine_plan.py` checks the raster claim **by arithmetic over
+all 22 channels**, not by trusting the comment, and checks that the narrowband
+window holds exactly channels 8 to 14.
+
+**Channel lockout is not ported.** Stage B's order read
+"GMRS/marine/lockout"; only the first two landed. `RTL_CHANNEL_LOCK` has 17
+references on `main` and none on the branch, so it is still outstanding along
+with the LoRa decoder work and the POCSAG deltas.
+
+No new `band_profile::Id` was added, because `frs_gmrs` already existed.
+**Correcting the reason given in that commit message:** it said a new Id could
+not be added here because the OrcDial name table it is static_asserted against
+lives in a separate repository. It does not — `orcdial/src/band_names.hpp` is
+vendored in *this* repository and was already at `a000b27`, so an Id and its
+name are a one-repo change. The decision was right; the reason was wrong.
+
+### 5.7j Upstream moved again: merged `fba861e` (2026-10-18)
+
+Six days after the re-base started, upstream is **15 commits further on**
+(`a000b27..fba861e`): 190 files, +23,732/-272. Most of it is new ground rather
+than changed ground — **SSTV** (native dashboard, auto VIS and sync, SD
+archive, a TUNE tab, read-only web export), **FT8** touch ownership and a
+memory story (`RTL_MEM`, a reclaim registry, a NOT ENOUGH MEMORY state),
+**ACARS** (live receiver, decoder bit-phase recovery, receive-only dashboard),
+the **OrcDial bridge started on demand** (about 26 KB of DMA RAM back on a unit
+with no Dial), and a run of LoRa fixes.
+
+**It merged with one conflict**, and the conflict was the cp1252 bytes: their
+ellipses against our repaired ones in `docs/API_SERIAL_CLI.md`. Taken ours.
+Their new documentation then arrived carrying **one fresh cp1252 byte** (`0x97`
+where an em dash belongs, in the new ACARS table), which `test_source_hygiene`
+caught. Repaired — one byte, and only that byte: a first pass that replaced
+every `0x97` in the file corrupted a legitimate UTF-8 continuation byte, so the
+repair now rewrites only the bytes on lines that do not decode.
+
+**What the overlap actually was:** `main.cpp` (+1149/-111), `web_console.cpp`
+(+37/-1), `build-tab5-idf.ps1` (+5/-2, a `-WifiRxDiag` switch), and that doc.
+Everything else they touched, we had not.
+
+**Vetted before taking it**, by running our tests against their tree at
+`fba861e`:
+
+- `test_ui_layout` and `test_release_metadata` pass against it unmodified.
+- The two defects we found at `a000b27` are **still there** — the raw NUL byte
+  in `main.cpp` (now line 13162) and the cp1252 bytes in the serial doc. They
+  still do not have `test_source_hygiene`, which is still worth offering.
+- **No silent-auth regression.** Their 1149 new lines of `main.cpp` added no
+  `if (<match> && authenticated)` handler; the new ACARS and UI handlers use
+  the match-then-reply shape, and a scan of every `.cpp` in `ui/` finds none.
+  Their new command families answer when the session has lapsed.
+- Nothing they changed touches the status JSON, so the radar's 6144-byte
+  PSRAM buffer and its 16 aircraft slots are unaffected. Their two new SSTV
+  routes take the web console to 11 registered handlers against a limit of 12.
+- Spot-read the four highest-risk commits. The LoRa CSV export now escapes
+  `= + - @` tab and CR in untrusted RF text, with a host test over each prefix.
+  The SD self-check stopped opening a file it already holds open for writing,
+  which FAT locking refuses. The SSTV archive attaches a cache-aligned 32 KiB
+  PSRAM stdio buffer and keeps it in a four-slot table so it outlives the
+  stream, with the failure path freeing it. All three are careful work.
+
+**One gap closed while merging.** `tests/band_profile_tests.cpp` existed but
+**nothing ever ran it** — no workflow, no script, no reference anywhere — so
+the channel plan's only check was `self_check()` on a booted device, and our
+GMRS edit landed with nothing but a grep-level test over it. `self_check()` is
+what enforces that a channelized profile sits on its raster and that no named
+band overlaps another, which is exactly the GMRS claim. `tools/test-band-profile.sh`
+now compiles and runs it on the host, with upstream's own flags from
+`test-tab5-cadence-history.sh` (`-Werror`, ASan and UBSan), and `quality.yml`
+runs it. It also exercises the `static_assert` that ties `orc::band_name_count`
+to `kProfileCount`, which is checkable here because `orcdial/src` is vendored.
 
 ## 5.8 Dead code and build
 
