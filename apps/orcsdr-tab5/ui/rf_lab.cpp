@@ -1,6 +1,7 @@
 #include "rf_lab.hpp"
 
 #include "rf_analysis.hpp"
+#include "plot_cadence.hpp"
 
 #include <M5Unified.h>
 #include <esp_app_desc.h>
@@ -52,6 +53,7 @@ uint32_t g_last_revision = 0;
 // once at boot, before enter() or an RTL_LAB command can read it.
 EXT_RAM_BSS_ATTR rf_analysis::Snapshot g_snapshot{};
 M5Canvas g_waterfall(&M5.Display);
+EXT_RAM_BSS_ATTR plot::WaterfallClock g_waterfall_clock;
 bool g_waterfall_ready = false;
 Action g_actions[kActionCapacity]{};
 size_t g_action_read = 0, g_action_write = 0;
@@ -761,13 +763,14 @@ void draw_live_dynamic() {
     if (x) M5.Display.drawLine(px, py, x0 + x, y, kCyan);
     px = x0 + x; py = y;
   }
-  if (g_waterfall_ready) {
+  const int rows = g_waterfall_clock.rows(millis(), 2);
+  if (g_waterfall_ready && rows) {
     g_waterfall.setScrollRect(0, 0, width, kWaterfallH - 2, kBg);
-    g_waterfall.scroll(0, -2);
+    g_waterfall.scroll(0, -rows);
     for (int x = 0; x < width; ++x) {
       const size_t bin = std::min<size_t>(g_snapshot.bins - 1,
                                           static_cast<size_t>(x) * g_snapshot.bins / width);
-      g_waterfall.drawFastVLine(x, kWaterfallH - 3, 2,
+      g_waterfall.drawFastVLine(x, kWaterfallH - 2 - rows, rows,
                                waterfall_color(g_snapshot.live[bin], floor));
     }
     g_waterfall.pushSprite(x0, kWaterfallY + 1);
@@ -988,6 +991,7 @@ bool enter(uint8_t origin_screen_value, uint8_t origin_tab_value) {
   g_bias_ack = false;
   g_page = Page::live;
   g_last_revision = 0;
+  g_waterfall_clock.reset(millis());
   g_source_state_known = false;
   g_loss_revision = 0;
   g_active.store(true, std::memory_order_release);
@@ -1065,7 +1069,7 @@ void service_ui(uint32_t now_ms) {
     if (g_page == Page::measurements) g_dirty = true;
   }
   if (g_dirty) draw_page();
-  if (now_ms - g_last_draw_ms >= 100 && rf_analysis::copy_snapshot(&g_snapshot) &&
+  if (now_ms - g_last_draw_ms >= plot::kSpectrumIntervalMs && rf_analysis::copy_snapshot(&g_snapshot) &&
       g_snapshot.revision != g_last_revision) {
     g_last_draw_ms = now_ms;
     g_last_revision = g_snapshot.revision;

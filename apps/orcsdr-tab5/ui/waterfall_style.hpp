@@ -28,6 +28,9 @@ const char* speed_name(uint8_t index);
 
 // Waterfall rows added per spectrum frame at the screen's current speed.
 int rows_per_frame(Screen screen);
+// Preserve the historical rows per baseline interval at any render cadence.
+void reset_clock(Screen screen, uint32_t now_ms);
+int rows_due(Screen screen, uint32_t now_ms, uint32_t baseline_ms = 50);
 
 // RGB565 for a 0..1 signal level in the screen's palette.
 uint16_t color565(Screen screen, float level);

@@ -2,6 +2,7 @@ set(ORCSDR_EMBED_FILES
     "orc_badge_104.png"
     "orc_badge_104.rgb565"
     "orcsdr_splash_1280x720.jpg"
+    "sstv_testpattern_320x240.rgb"
     "../ui/web_console.html"
     "../ui/web_audio.js")
 set(ORCSDR_LDFRAGMENTS)
@@ -63,8 +64,22 @@ idf_component_register(
         "../ui/ft8_audio_tap.cpp"
         "../ui/ft8_native_backend.cpp"
         "../ui/ft8_runtime.cpp"
+        "../ui/memory_reclaim.cpp"
         "../ui/ft8_hunter.cpp"
         "../ui/ft8_dashboard.cpp"
+        "../ui/sstv_receiver.cpp"
+        "../ui/sstv_modes.cpp"
+        "../ui/sstv_auto_detect.cpp"
+        "../ui/sstv_archive.cpp"
+        "../ui/sstv_status.cpp"
+        "../ui/sstv_tune.cpp"
+        "../ui/sstv_audio_scope.cpp"
+        "../ui/sstv_capture.cpp"
+        "../ui/sstv_export.cpp"
+        "../ui/sstv_settings.cpp"
+        "../ui/sstv_app.cpp"
+        "../ui/sstv_diag.cpp"
+        "../ui/sstv_dashboard.cpp"
         "../ui/ft8_tuning.cpp"
         "../ui/ft8_info_text.cpp"
         "../ui/ft8_heard_db.cpp"
@@ -98,7 +113,12 @@ idf_component_register(
         "../ui/home_dashboard.cpp"
         "../ui/lora_dashboard.cpp"
         "../ui/lora_packet_log.cpp"
+        "../ui/lora_history.cpp"
         "../ui/lora_native_decoder.cpp"
+        "../ui/lora_preamble_detector.cpp"
+        "../ui/lora_diag_commands.cpp"
+        "../ui/lora_gain_guard.cpp"
+        "../ui/realtime_log.cpp"
         "../ui/lora_channel_control.cpp"
         "../ui/location_estimate.cpp"
         "../ui/receiver_location.cpp"
@@ -110,6 +130,18 @@ idf_component_register(
         "../ui/p25_decoder.cpp"
         "../ui/p25_decoder_core.cpp"
         "../ui/p25_voice.cpp"
+        "../ui/acars_app.cpp"
+        "../ui/acars_archive.cpp"
+        "../ui/acars_archive_sd.cpp"
+        "../ui/acars_core.cpp"
+        "../ui/acars_dashboard.cpp"
+        "../ui/acars_dashboard_layout.cpp"
+        "../ui/acars_dirty_rects.cpp"
+        "../ui/acars_dashboard_model.cpp"
+        "../ui/acars_dashboard_ui.cpp"
+        "../ui/acars_receiver.cpp"
+        "../ui/acars_selftest.cpp"
+        "../ui/acars_demo_data.cpp"
         "../ui/pocsag_dashboard.cpp"
         "../ui/pocsag_decoder_core.cpp"
         "../ui/pocsag_store.cpp"
@@ -184,6 +216,12 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE ORCSDR_ORCDIAL=1)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE "ORCSDR_BUILD_ID=\"${ORCSDR_BUILD_ID}\"")
 
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
+option(ORCSDR_WIFI_RX_DIAG "Instrument Wi-Fi receive callbacks; test builds only" OFF)
+if(ORCSDR_WIFI_RX_DIAG)
+    target_sources(${COMPONENT_LIB} PRIVATE "../ui/wifi_rx_diagnostics.cpp")
+    target_link_libraries(${COMPONENT_LIB} INTERFACE
+        "-Wl,--wrap=esp_netif_receive" "-Wl,--undefined=__wrap_esp_netif_receive")
+endif()
 # DSP build switches (tools/build-tab5-idf.ps1 always passes all of them, so a value
 # cached by an earlier build can never leak into this one).
 set(ORCSDR_DSP_AB 0 CACHE STRING "1 = Stage-1 old-vs-new DSP A/B harness (test builds only)")

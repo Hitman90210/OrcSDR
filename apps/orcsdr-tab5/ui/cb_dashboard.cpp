@@ -922,7 +922,7 @@ void draw_spectrum(const float* bins, size_t bin_count, uint32_t sample_rate_sps
     canvas->pushSprite(kOriginX, kSpectrumY + 1);
   }
   scope::scroll_waterfall(kSpectrumX + 1, kWaterfallY + kWaterfallH - 2, kSpectrumW - 2, g_waterfall_row + 1,
-                          waterfall_style::rows_per_frame(waterfall_style::Screen::cb));
+                          waterfall_style::rows_due(waterfall_style::Screen::cb, millis()));
   g_scope_stats.frame_done(frame_started_ms);
 }
 

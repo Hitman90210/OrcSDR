@@ -649,7 +649,7 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
     canvas->pushSprite(kSpectrumX + 1, kSpectrumY + 1);
   }
   scope::scroll_waterfall(kSpectrumX, kWaterfallY + kWaterfallH - 2, kSpectrumW, g_waterfall_row,
-                          waterfall_style::rows_per_frame(waterfall_style::Screen::p25));
+                          waterfall_style::rows_due(waterfall_style::Screen::p25, millis()));
   M5.Display.drawFastVLine(center, kWaterfallY, kWaterfallH, kCyan);
   g_scope_stats.frame_done(frame_started_ms);
 }

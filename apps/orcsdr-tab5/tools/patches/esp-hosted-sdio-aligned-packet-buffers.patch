@@ -1,0 +1,11 @@
+--- a/managed_components/espressif__esp_hosted/host/mcu/eh_host_mcu_transport/src/eh_host_bus_sdio.c
++++ b/managed_components/espressif__esp_hosted/host/mcu/eh_host_mcu_transport/src/eh_host_bus_sdio.c
+@@ -335,7 +335,7 @@
+ #if EH_HOST_USE_MEMPOOL
+ 	MEMPOOL_ALLOC(buf_mp_g, MAX_SDIO_BUFFER_SIZE, need_memset);
+ #else
+-	void *p = eh_host_port_dma_alloc(MAX_SDIO_BUFFER_SIZE);
++	void *p = eh_host_port_dma_alloc_aligned(MAX_SDIO_BUFFER_SIZE, HOSTED_MEM_ALIGNMENT_64);
+ 	if (p && need_memset) memset(p, 0, MAX_SDIO_BUFFER_SIZE);
+ 	return p;
+ #endif

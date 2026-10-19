@@ -11,7 +11,7 @@
 //
 // Every scope used to erase its plot area on the display and redraw it each frame, which flickered and cost
 // time. The trace is now drawn into an off-screen sprite in PSRAM and pushed in one go, and the waterfall is
-// scrolled by hardware two rows at a time. The scopes refresh every 50 ms (see kRtlLoraSpectrumIntervalMs).
+// scrolled at its selected rows-per-second rate. Live plots target 33 ms; overload fallbacks remain.
 namespace orcsdr::scope {
 
 // An off-screen plot area. begin() hands back a cleared sprite of the requested size (nullptr if there is no
@@ -48,6 +48,7 @@ class Trace {
 // Scrolls the waterfall up by `rows` and writes the newest colour row into the freed lines. `last_row_y` is
 // the screen y of the bottom-most waterfall line the dashboard paints.
 inline void scroll_waterfall(int x, int last_row_y, int width, const uint16_t* colors, int rows = 2) {
+  if (rows <= 0) return;
   M5.Display.startWrite();
   M5.Display.scroll(0, -rows);
   for (int r = 0; r < rows; ++r)

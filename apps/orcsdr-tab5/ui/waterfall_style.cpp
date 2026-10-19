@@ -2,6 +2,11 @@
 
 #include <algorithm>
 #include <cstddef>
+#ifdef ESP_PLATFORM
+#include <esp_attr.h>
+#else
+#define EXT_RAM_BSS_ATTR
+#endif
 
 namespace orcsdr::waterfall_style {
 namespace {
@@ -19,6 +24,8 @@ struct State {
 State g_state[kScreens] = {{kClassic, 0}, {kTurbo, 0}, {kClassic, 0}, {kFm, 0},
                            {kClassic, 0}, {kClassic, 0}, {kClassic, 0}, {kFm, 0}};
 PersistHook g_hook = nullptr;
+struct Clock { uint32_t last_ms, remainder; };
+EXT_RAM_BSS_ATTR Clock g_clocks[kScreens]{};
 
 // Rows per frame at speed 0 (Normal): Home's frames come at 10/s, LoRa's at up to 20/s.
 // The scopes at the 50 ms refresh (Airband, FM, Shortwave, AM, CB, P25) add 2.
@@ -121,6 +128,22 @@ const char* speed_name(uint8_t index) { return kSpeedNames[index < kSpeedCount ?
 
 int rows_per_frame(Screen screen) {
   return valid(screen) ? kBaseRows[static_cast<size_t>(screen)] + speed(screen) : 1;
+}
+
+void reset_clock(Screen screen, uint32_t now_ms) {
+  if (valid(screen)) g_clocks[static_cast<size_t>(screen)] = {now_ms, 0};
+}
+
+int rows_due(Screen screen, uint32_t now_ms, uint32_t baseline_ms) {
+  if (!valid(screen) || !baseline_ms) return 0;
+  auto& clock = g_clocks[static_cast<size_t>(screen)];
+  const uint32_t elapsed = now_ms - clock.last_ms;
+  clock.last_ms = now_ms;
+  // Do not append history for time spent on another screen.
+  if (elapsed > 1000) { clock.remainder = 0; return 0; }
+  const uint32_t scaled = std::min<uint32_t>(elapsed, 200) * rows_per_frame(screen) + clock.remainder;
+  clock.remainder = scaled % baseline_ms;
+  return static_cast<int>(scaled / baseline_ms);
 }
 
 uint16_t color565(uint8_t palette_index, float level) {

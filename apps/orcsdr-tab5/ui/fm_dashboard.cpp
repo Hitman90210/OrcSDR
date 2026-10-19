@@ -800,6 +800,7 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
   }
   // The held peaks only fall while this view is drawing, so after time away they are stale: start over.
   const bool resumed = g_last_spectrum_frame_ms != 0 && frame_started_ms - g_last_spectrum_frame_ms > 1000u;
+  const float peak_fall = kPeakHoldFallDbPerFrame * (g_last_spectrum_frame_ms ? std::min<uint32_t>(frame_started_ms - g_last_spectrum_frame_ms, 200) : 50) / 50.0f;
   g_last_spectrum_frame_ms = frame_started_ms;
   if (resumed || g_peak_frequency_hz != g_snapshot.frequency_hz || g_peak_span_hz != g_snapshot.span_hz) {
     g_peak_frequency_hz = g_snapshot.frequency_hz;
@@ -814,7 +815,7 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
     const float normalized = std::clamp((level - floor) / 48.0f, 0.0f, 1.0f);
     const int x = static_cast<int>(i) - 1;
     const int y = h - 3 - static_cast<int>(normalized * (kSpectrumH - 4));
-    g_peak_hold_db[i] = std::max(level, g_peak_hold_db[i] - kPeakHoldFallDbPerFrame);
+    g_peak_hold_db[i] = std::max(level, g_peak_hold_db[i] - peak_fall);
     if (canvas != nullptr && x >= 0 && x < w) {
       // Peak hold first so the live trace draws over it, scaled with this frame's floor.
       const float held = std::clamp((g_peak_hold_db[i] - floor) / 48.0f, 0.0f, 1.0f);
@@ -839,7 +840,7 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
     canvas->pushSprite(trace_x0, kSpectrumY + 1);
   }
   scope::scroll_waterfall(kSpectrumX, kWaterfallY + kWaterfallH - 2, kSpectrumW, g_waterfall_row,
-                          waterfall_style::rows_per_frame(waterfall_style::Screen::fm));
+                          waterfall_style::rows_due(waterfall_style::Screen::fm, millis()));
   g_scope_stats.frame_done(frame_started_ms);
 }
 

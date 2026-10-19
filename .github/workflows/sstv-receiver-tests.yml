@@ -1,0 +1,65 @@
+name: SSTV Receiver Host Smoke
+on:
+  push:
+    branches:
+      - codex/sstv-native-dashboard
+      - "claude/sstv-**"
+    paths:
+      - "apps/orcsdr-tab5/ui/sstv_*"
+      - "apps/orcsdr-tab5/tests/sstv_*"
+      - "tools/sstv_host_tests.sh"
+      - "tools/sstv_validate_timings.py"
+      - "tools/sstv_rea_workbench.py"
+      - ".github/workflows/sstv-receiver-tests.yml"
+  pull_request:
+    paths:
+      - "apps/orcsdr-tab5/ui/sstv_*"
+      - "apps/orcsdr-tab5/tests/sstv_*"
+      - "tools/sstv_host_tests.sh"
+      - "tools/sstv_validate_timings.py"
+      - ".github/workflows/sstv-receiver-tests.yml"
+permissions:
+  contents: read
+
+jobs:
+  host-regression:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Audit 14 SSTV mode schedules against published wire timings
+        run: python3 tools/sstv_validate_timings.py
+      - name: Compile Python investigation harnesses
+        run: python3 -m py_compile tools/sstv_validate_timings.py tools/sstv_rea_workbench.py
+      - name: Build REA native inspection target (no REA provider required)
+        run: python3 tools/sstv_rea_workbench.py build --out "$RUNNER_TEMP/sstv-rea-evidence"
+      # Builds and runs every host suite with -Wall -Wextra (warnings are reported in the summary),
+      # writing a timestamped log per build/run plus a summary into the launch directory.
+      # The real-recording replay needs a lab WAV that is not in the repository, so it is skipped
+      # here and run by hand (see docs/sstv/README.md).
+      - name: Run SSTV host regression suites
+        run: |
+          mkdir -p "$RUNNER_TEMP/sstv-logs"
+          cd "$RUNNER_TEMP/sstv-logs"
+          bash "$GITHUB_WORKSPACE/tools/sstv_host_tests.sh"
+      - name: Upload host regression logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sstv-host-regression-logs
+          path: ${{ runner.temp }}/sstv-logs/
+          retention-days: 14
+      - name: Package decoder sources for offline analysis
+        if: always()
+        run: |
+          mkdir -p /tmp/sstv-analysis-source/ui /tmp/sstv-analysis-source/tests
+          cp apps/orcsdr-tab5/ui/sstv_* /tmp/sstv-analysis-source/ui/
+          cp apps/orcsdr-tab5/tests/sstv_* /tmp/sstv-analysis-source/tests/
+      - name: Publish decoder analysis bundle
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: sstv-decoder-analysis-bundle
+          path: /tmp/sstv-analysis-source/
+          retention-days: 7

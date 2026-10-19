@@ -22,6 +22,7 @@ class File {
   size_t position() const;
   bool seek(size_t position);
   bool flush();
+  bool sync();  // Flush stdio and commit filesystem data/metadata to the card.
   bool close();
   bool isDirectory() const;
   const char* name() const;

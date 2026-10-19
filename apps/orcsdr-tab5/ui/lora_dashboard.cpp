@@ -35,7 +35,7 @@ constexpr int kPlotH = 124;
 constexpr int kWaterfallY = 402;
 constexpr int kWaterfallH = 126;
 constexpr uint32_t kDynamicRefreshIntervalMs = 1000;
-constexpr uint32_t kSpectrumRefreshIntervalMs = 50;
+constexpr uint32_t kSpectrumRefreshIntervalMs = 33;
 constexpr float kSpectrumRangeDb = 42.0f;
 constexpr size_t kSpectrumTraceCapacity = 256;
 constexpr size_t kTrafficRows = 5;
@@ -53,6 +53,13 @@ int32_t g_map_center_lon_e7 = INT32_MAX;
 uint8_t g_node_filter = 0;
 uint8_t g_traffic_filter = 0;
 size_t g_traffic_offset = 0;
+// State the header showed when it was last painted. The header is part of the
+// static draw, so without this it kept "RX STOPPED" (the capture starts just
+// after the screen opens) until the screen was re-entered.
+bool g_header_running = false;
+bool g_header_wifi = false;
+bool g_header_decoder = false;
+bool g_header_key = false;
 uint32_t g_last_dynamic_ms = 0;
 uint32_t g_last_spectrum_ms = 0;
 EXT_RAM_BSS_ATTR uint16_t g_waterfall_row[kPlotW]{};  // PSRAM, as in the AM dashboard
@@ -195,6 +202,10 @@ void draw_star(int cx, int cy, uint16_t color) {
 }
 
 void draw_header() {
+  g_header_running = g_snapshot.running;
+  g_header_wifi = g_snapshot.wifi_connected;
+  g_header_decoder = g_snapshot.native_decoder_ready;
+  g_header_key = g_snapshot.key_loaded;
   M5.Display.fillRect(0, 0, 1280, kHeaderH, kBg);
   M5.Display.drawFastHLine(8, kHeaderH - 1, 1264, kCyan);
   audio_header::draw_brand("M5STACK TAB5");
@@ -568,6 +579,7 @@ void draw_nodes_dynamic() {
          middle_left);
     snprintf(value, sizeof(value), "%lus", static_cast<unsigned long>(
         node.id == 0 ? 0 : (millis() - node.seen_ms) / 1000u));
+    if (node.seen_ms == 0) strlcpy(value, "SAVED", sizeof(value));
     text(value, 568, y + 23, kMuted, 2, middle_left);
     if (node.signal_tenths == INT16_MAX) strlcpy(value, "—", sizeof(value));
     else if (node.snr_tenths == INT16_MAX)
@@ -595,6 +607,7 @@ void draw_nodes_dynamic() {
     if (g_node_details) {
       snprintf(value, sizeof(value), "LAST %lus", static_cast<unsigned long>(
           node->id == 0 ? 0 : (millis() - node->seen_ms) / 1000u));
+      if (node->seen_ms == 0) strlcpy(value, "SAVED", sizeof(value));
       text(value, 854, 302, kCyan, 2, middle_left);
       format_coord(value, sizeof(value), node->latitude_e7);
       text(value, 854, 334, TFT_WHITE, 2, middle_left);
@@ -822,6 +835,13 @@ void update(const Snapshot& snapshot) {
   if (!g_active) return;
   const bool content_changed = snapshot.revision != g_snapshot.revision;
   g_snapshot = snapshot;
+  if (g_header_running != g_snapshot.running || g_header_wifi != g_snapshot.wifi_connected ||
+      g_header_decoder != g_snapshot.native_decoder_ready ||
+      g_header_key != g_snapshot.key_loaded) {
+    M5.Display.startWrite();
+    draw_header();
+    M5.Display.endWrite();
+  }
   const uint32_t now = millis();
   const bool needs_age_refresh = g_view != View::traffic || g_traffic_details;
   if (!content_changed &&
@@ -898,8 +918,8 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins, f
       const float normalized = (levels[source] - display_floor) / kSpectrumRangeDb;
       g_waterfall_row[i] = waterfall_color(normalized);
     }
-    const int rows = waterfall_style::rows_per_frame(waterfall_style::Screen::lora);
-    M5.Display.scroll(0, -rows);
+    const int rows = waterfall_style::rows_due(waterfall_style::Screen::lora, now);
+    if (rows) M5.Display.scroll(0, -rows);
     for (int row = 0; row < rows; ++row)
       // Native RGB565 row: push it as rgb565_t (a uint16_t* image is read as big-endian and shows wrong hues).
       M5.Display.pushImage(kPlotX, kWaterfallY + kWaterfallH - 2 - rows + row, kPlotW, 1,
@@ -1051,7 +1071,7 @@ bool self_check() {
       !has_position(snapshot.nodes[0])) return false;
   const float scope_levels[] = {-50.0f, -49.0f, -48.0f, -10.0f};
   if (fabsf(estimate_noise_floor(scope_levels, 0, 4) + 52.0f) > 0.01f ||
-      kSpectrumRefreshIntervalMs != 50 ||
+      kSpectrumRefreshIntervalMs != 33 ||
       kSpectrumTraceCapacity != 256) return false;
   char value[16];
   format_id(value, sizeof(value), snapshot.nodes[0].id);

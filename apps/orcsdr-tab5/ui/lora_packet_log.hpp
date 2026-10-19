@@ -21,6 +21,8 @@ struct Record {
   uint16_t port = 0;
   uint32_t frequency_hz = 0;
   bool encrypted = false;
+  bool from_host = false;  // authenticated host injection, not RF identity evidence
+  bool history_observed = false;  // queue bookkeeping, never serialized
   char short_name[8]{};
   char long_name[32]{};
 };

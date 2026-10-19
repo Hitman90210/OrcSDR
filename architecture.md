@@ -34,7 +34,7 @@ Wi-Fi pause/resume orchestration; catalog operations; serial and authenticated
 device commands; SD/IQ/audio transfers; LAN console command dispatch;
 documentation capture; screen transitions; and top-level touch routing.
 
-main.cpp measurement (Git-normalized): 1,003,276 bytes (~979.8 KiB), 21,700 lines.
+main.cpp measurement (Git-normalized): 1,056,371 bytes (~1031.6 KiB), 22,589 lines.
 
 The measurement uses LF-normalized repository bytes so it is stable across
 Windows and Linux checkouts. The intended modular endpoint—roughly 500 lines of
@@ -48,9 +48,12 @@ screen permission to draw while radio/decoder work continues independently.
 `navigation_service` owns Home/Settings handoff mechanics; feature dashboards
 render snapshots rather than owning receiver state.
 
-ScreenController IDs: `none`, `home`, `fm`, `p25`, `adsb`, `lora`, `shortwave`, `radio`, `visualizer`, `rf_lab`, `wifi_analysis`, `pocsag`, `settings`, `am`, `documentation`, `cb`, `airband`, `ft8`.
+ScreenController IDs: `none`, `home`, `fm`, `p25`, `adsb`, `lora`, `shortwave`, `radio`, `visualizer`, `rf_lab`, `wifi_analysis`, `pocsag`, `settings`, `am`, `documentation`, `cb`, `airband`, `ft8`, `sstv`, `acars`.
 
-Dashboard IDs: `home`, `fm`, `p25`, `adsb`, `shortwave`, `weather`, `cb`, `lora`, `airband`, `marine`, `satellite`, `utilities`, `settings`, `rf_lab`, `wifi_analysis`, `pocsag`, `am`, `ft8`.
+Dashboard IDs: `home`, `fm`, `p25`, `adsb`, `shortwave`, `weather`, `cb`, `lora`, `airband`, `marine`, `satellite`, `utilities`, `settings`, `rf_lab`, `wifi_analysis`, `pocsag`, `am`, `ft8`, `sstv`, `acars`.
+
+The ACARS dashboard (`acars_*` modules, see `docs/acars/DASHBOARD_README.md`) is a presentation-only
+screen: `acars_app` owns its lifecycle, `acars_dashboard_model` holds the bounded snapshot, and `acars_receiver` feeds it from the RTL-SDR (single channel, 240 kS/s, receive only).
 
 The current screen modules include Home, FM, AM, P25, ADS-B, LoRa, POCSAG, RF
 Lab, RF Visualizer, Wi-Fi analysis, Settings, documentation capture, and the
@@ -67,6 +70,9 @@ complete demodulation modes.
 - `scan_engine` supplies bounded scan behavior shared by supported modes.
 - `fm_dashboard`, `am_dashboard`, `p25_dashboard`, `adsb_dashboard`,
   `lora_dashboard`, and `pocsag_dashboard` own presentation for their modes.
+- `sstv_app` owns the SSTV dashboard lifecycle, settings and hand-off to the background SD archive
+  (`sstv_archive`); `sstv_receiver` is the host-testable decoder. `main.cpp` supplies only tuning, SD,
+  clock and preference adapters (see `docs/sstv/README.md`).
 - Protocol/DSP cores hold host-testable decode logic where already separated.
 - `main.cpp` still adapts IQ callbacks, mode policy, audio, tune changes, and
   snapshots into those modules.

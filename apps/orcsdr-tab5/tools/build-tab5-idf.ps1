@@ -13,7 +13,9 @@ param(
   # Test build with the Stage-2 frontend benchmark lab (RTL_DSP LAB ...). Never ship.
   [switch]$DspLab,
   # Enables authenticated C6-only power fault injection. Never ship.
-  [switch]$C6FaultTest
+  [switch]$C6FaultTest,
+  # Logs receive-interface callbacks for the Settings Wi-Fi crash investigation.
+  [switch]$WifiRxDiag
 )
 
 $ErrorActionPreference = 'Stop'
@@ -78,7 +80,8 @@ $configureArgs = @('-B', $buildDir, '-D', "SDKCONFIG=$buildDir/sdkconfig",
                    '-D', "ORCSDR_DSP_AB=$(if ($DspAb) { 1 } else { 0 })",
                    '-D', "ORCSDR_DSP_STAGE_TIMING=$(if ($NoDspStageTiming) { 0 } else { 1 })",
                    '-D', "ORCSDR_DSP_LAB=$(if ($DspLab) { 1 } else { 0 })",
-                   '-D', "ORCSDR_C6_FAULT_TEST=$(if ($C6FaultTest) { 1 } else { 0 })")
+                   '-D', "ORCSDR_C6_FAULT_TEST=$(if ($C6FaultTest) { 1 } else { 0 })",
+                   '-D', "ORCSDR_WIFI_RX_DIAG=$(if ($WifiRxDiag) { 1 } else { 0 })")
 if ($resolvedC6Firmware) {
   $configureArgs += @('-D', "C6_FIRMWARE_BIN=$resolvedC6Firmware")
 }

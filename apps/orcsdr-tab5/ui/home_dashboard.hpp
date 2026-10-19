@@ -118,5 +118,7 @@ bool browser_active();
 // The direct-tuning numpad is showing (the shared keyboard handler routes keys to it).
 bool keypad_open();
 bool self_check();
+// Completed plot submissions, not panel scanout FPS. Read on the UI task.
+void plot_status(char* output, size_t size);
 
 }  // namespace orcsdr::home

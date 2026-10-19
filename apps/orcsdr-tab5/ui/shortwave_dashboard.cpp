@@ -699,7 +699,7 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
     canvas->pushSprite(kSpectrumX + 1, kSpectrumY + 1);
   }
   scope::scroll_waterfall(kSpectrumX, kWaterfallY + kWaterfallH - 2, width, g_waterfall_row,
-                          waterfall_style::rows_per_frame(waterfall_style::Screen::shortwave));
+                          waterfall_style::rows_due(waterfall_style::Screen::shortwave, millis()));
 }
 
 Action handle_touch(int32_t x, int32_t y) {

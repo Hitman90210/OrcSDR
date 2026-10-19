@@ -10,7 +10,7 @@ size_t format_csv(char* output, size_t output_size, const Record& record) {
   if (output == nullptr || output_size < 4) return 0;
   char destination[16];
   if (record.destination == UINT32_MAX)
-    strlcpy(destination, "broadcast", sizeof(destination));
+    snprintf(destination, sizeof(destination), "%s", "broadcast");
   else
     snprintf(destination, sizeof(destination), "!%08lx",
              static_cast<unsigned long>(record.destination));
@@ -27,13 +27,30 @@ size_t format_csv(char* output, size_t output_size, const Record& record) {
       static_cast<long>(record.latitude_e7), static_cast<long>(record.longitude_e7));
   if (used < 0 || static_cast<size_t>(used) + 3 > output_size) return 0;
   size_t position = static_cast<size_t>(used);
-  for (const char* text = record.text; *text && position + 4 < output_size; ++text) {
-    if (*text == '"') output[position++] = '"';
-    output[position++] = *text;
-  }
-  output[position++] = '"';
-  output[position++] = '\n';
-  output[position] = '\0';
+  auto append_text = [&](const char* value) {
+    // RF text is untrusted: quoted CSV cells can still execute formulas.
+    if (*value && strchr("=+-@\t\r", *value)) {
+      if (position + 1 >= output_size) return false;
+      output[position++] = '\'';
+    }
+    for (const char* p = value; *p; ++p) {
+      if (position + 4 >= output_size) return false;
+      if (*p == '"') output[position++] = '"';
+      output[position++] = *p;
+    }
+    output[position++] = '"'; return true;
+  };
+  if (!append_text(record.text)) return 0;
+  auto append = [&](const char* value) {
+    if (position + 3 >= output_size) return false;
+    output[position++] = ','; output[position++] = '"';
+    return append_text(value);
+  };
+  if (!append(record.short_name) || !append(record.long_name)) return 0;
+  const int tail = snprintf(output + position, output_size - position, ",%u,%u\n",
+                            unsigned(record.encrypted), unsigned(record.from_host));
+  if (tail < 0 || static_cast<size_t>(tail) >= output_size - position) return 0;
+  position += static_cast<size_t>(tail);
   return position;
 }
 
@@ -48,7 +65,7 @@ bool export_snapshot(storage::FileSystem& filesystem, const Record* records, siz
   storage::File file = filesystem.open(path, FILE_WRITE, true);
   if (!file) return false;
   file.print("uptime_ms,wallclock_valid,wallclock_source,received_utc,frequency_hz,from,to,packet_id,port,snr_tenths,"
-             "signal_tenths,latitude_e7,longitude_e7,text\n");
+             "signal_tenths,latitude_e7,longitude_e7,text,short_name,long_name,encrypted,from_host\n");
   char line[512];
   for (size_t i = count; i > 0; --i) {
     const size_t bytes = format_csv(line, sizeof(line), records[i - 1]);
@@ -70,7 +87,7 @@ bool self_check() {
   record.received_ms = 42;
   record.received_utc = 1789000000;
   record.frequency_hz = 906875000;
-  strlcpy(record.text, "test \"one\"", sizeof(record.text));
+  snprintf(record.text, sizeof(record.text), "%s", "test \"one\"");
   char line[256];
   const size_t bytes = format_csv(line, sizeof(line), record);
   const bool content_ok = bytes > 0 &&

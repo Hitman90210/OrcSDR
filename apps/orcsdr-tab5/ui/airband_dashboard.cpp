@@ -1031,9 +1031,9 @@ void dashboard_draw_spectrum(const float* levels, size_t first_bin, size_t visib
   }
 
   M5.Display.startWrite();
-  const int rows = waterfall_style::rows_per_frame(Screen::airband);
+  const int rows = waterfall_style::rows_due(Screen::airband, millis());
   M5.Display.setScrollRect(x0, kScopeWfY + 1, w, kScopeWfH - 2, TFT_BLACK);
-  M5.Display.scroll(0, -rows);
+  if (rows) M5.Display.scroll(0, -rows);
   for (int i = 0; i < w; ++i)
     g_scope_row[i] = waterfall_style::color565(
         Screen::airband,

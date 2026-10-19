@@ -1,0 +1,24 @@
+name: Tab5 cadence and LoRa history
+
+on:
+  pull_request:
+    paths:
+      - 'apps/orcsdr-tab5/ui/**'
+      - 'tests/home_cadence_tests.cpp'
+      - 'tests/waterfall_style_tests.cpp'
+      - 'tests/lora_history_tests.cpp'
+      - 'tools/test-tab5-cadence-history.sh'
+      - '.github/workflows/tab5-cadence-history-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: bash tools/test-tab5-cadence-history.sh

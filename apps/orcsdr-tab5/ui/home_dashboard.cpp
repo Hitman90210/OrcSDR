@@ -1,6 +1,7 @@
 #include "focus_nav.hpp"
 #include "waterfall_style.hpp"
 #include "home_dashboard.hpp"
+#include "plot_cadence.hpp"
 #include "freq_keypad.hpp"
 #include "scope_canvas.hpp"
 
@@ -10,6 +11,7 @@
 
 #include <M5Unified.h>
 #include <esp_attr.h>
+#include <esp_timer.h>
 
 #include <algorithm>
 #include <cmath>
@@ -83,6 +85,13 @@ bool filter_edges = false;   // draw the receive-filter edges on the spectrum
 size_t browser_page = 0;
 int32_t scroll_offset_px = 0;
 uint32_t last_spectrum_ms = 0;
+EXT_RAM_BSS_ATTR plot::WaterfallClock waterfall_clock;
+struct PlotStats {
+  uint32_t started_ms = 0, frames = 0, draw_us = 0, draw_max_us = 0;
+  uint32_t raster_us = 0, push_us = 0, waterfall_us = 0;
+};
+EXT_RAM_BSS_ATTR PlotStats plot_stats;
+EXT_RAM_BSS_ATTR plot::FrameIntervals frame_intervals;
 uint8_t waterfall_contrast = 5;
 // Spectrum ceiling (dB): jumps up to the strongest bin at once, falls back slowly, so a strong
 // station is never drawn flat against the top edge and the scale does not pump.
@@ -976,6 +985,9 @@ void enter(const Snapshot& snapshot) {
   keypad = false;
   gesture = {};
   last_spectrum_ms = 0;
+  frame_intervals = {};
+  waterfall_clock.reset(millis());
+  plot_stats = {millis(), 0, 0, 0};
   clamp_scroll();
   draw_all();
 }
@@ -1049,8 +1061,8 @@ scope::Trace g_trace;
 // Display-only smoothing and peak hold, one value per pixel. Nothing here touches the receive pipeline: the levels
 // come in untouched and are averaged for drawing, the way the FM, AM and other scopes show theirs. (Home used to
 // draw the raw levels, so the trace jumped about from frame to frame.)
-constexpr float kSmoothKeep = 0.6f;      // share of the previous value kept per frame (about 100 ms apart)
-constexpr float kPeakFallDb = 0.4f;      // the peak-hold dots fall this much per frame
+constexpr float kSmoothKeep = 0.6f;      // share of the previous value kept per 100 ms
+constexpr float kPeakFallDb = 0.4f;      // the peak-hold dots fall this much per 100 ms
 constexpr uint16_t kPeakColor = 0xFD20;  // orange, as on the FM scope
 EXT_RAM_BSS_ATTR float g_px_smooth[kPlotW]{};
 EXT_RAM_BSS_ATTR float g_px_peak[kPlotW]{};
@@ -1061,9 +1073,12 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
                    float floor, bool audio_stressed) {
   if (!shown || browser || keypad || levels == nullptr || visible_bins < 2) return;
   const uint32_t now = millis();
-  const uint32_t interval = audio_stressed ? 333 : 100;
+  const uint32_t interval = audio_stressed ? 333 : plot::kSpectrumIntervalMs;
   if (now - last_spectrum_ms < interval) return;
+  const uint32_t interval_ms = last_spectrum_ms ? now - last_spectrum_ms : 100;
+  const uint32_t elapsed_ms = std::min<uint32_t>(interval_ms, 333);
   last_spectrum_ms = now;
+  const int64_t draw_started_us = esp_timer_get_time();
   constexpr int w = kPlotW - 2;
   constexpr int h = kSpectrumH - 2;
   // One point per pixel. A new view (retune, zoom, different bin window) starts the smoothing over.
@@ -1075,10 +1090,11 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
   g_px_span_hz = current.span_hz;
   g_px_first_bin = first_bin;
   g_px_visible_bins = visible_bins;
+  const float smooth_keep = std::pow(kSmoothKeep, elapsed_ms / 100.0f);
   for (int x = 0; x < w; ++x) {
     const float level = spectrum::peak_for_pixel(levels, first_bin, visible_bins, static_cast<size_t>(x), w);
-    g_px_smooth[x] = same_view ? kSmoothKeep * g_px_smooth[x] + (1.0f - kSmoothKeep) * level : level;
-    g_px_peak[x] = same_view ? std::max(level, g_px_peak[x] - kPeakFallDb) : level;
+    g_px_smooth[x] = same_view ? smooth_keep * g_px_smooth[x] + (1.0f - smooth_keep) * level : level;
+    g_px_peak[x] = same_view ? std::max(level, g_px_peak[x] - kPeakFallDb * elapsed_ms / 100.0f) : level;
   }
   floor = home_spectrum_floor(g_px_smooth, w, floor);
   M5Canvas* canvas = g_trace.begin(w, h, TFT_BLACK);
@@ -1094,7 +1110,8 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
   for (int x = 0; x < w; ++x) strongest = std::max(strongest, g_px_smooth[x]);
   spectrum_ceiling = (!spectrum_ceiling_valid || strongest > spectrum_ceiling)
                          ? strongest
-                         : spectrum_ceiling + (strongest - spectrum_ceiling) * 0.04f;
+                         : spectrum_ceiling + (strongest - spectrum_ceiling) *
+                                                  (1.0f - std::pow(0.96f, elapsed_ms / 100.0f));
   spectrum_ceiling_valid = true;
   const float range_db =
       std::max(kSpectrumMinRangeDb, spectrum_ceiling + kSpectrumHeadroomDb - floor);
@@ -1120,27 +1137,50 @@ void draw_spectrum(const float* levels, size_t first_bin, size_t visible_bins,
     canvas->drawFastVLine(kPlotW / 2 + half - 1, 0, h, TFT_YELLOW);
   }
   draw_spectrum_axis(*canvas, w, h);
+  const int64_t push_started_us = esp_timer_get_time();
+  plot_stats.raster_us = static_cast<uint32_t>(push_started_us - draw_started_us);
   M5.Display.startWrite();
   canvas->pushSprite(origin_x, origin_y);
   M5.Display.endWrite();
+  const int64_t waterfall_started_us = esp_timer_get_time();
+  plot_stats.push_us = static_cast<uint32_t>(waterfall_started_us - push_started_us);
 
   // Waterfall: scrolled by hardware, then the new row is filled two pixels at a time from the smoothed levels.
   // With a popup docked at the bottom it scrolls only the part above it.
-  const int rows = waterfall_style::rows_per_frame(waterfall_style::Screen::home);
-  const bool popup_over = gain_popup || filter_popup || mode_popup;
-  const int waterfall_h = popup_over ? kPopY - 2 - (kWaterfallY + 1) : kWaterfallH - 2;
-  M5.Display.startWrite();
-  M5.Display.setScrollRect(kPlotX + 1, kWaterfallY + 1, kPlotW - 2, waterfall_h, TFT_BLACK);
-  M5.Display.scroll(0, -rows);
-  const float waterfall_range = waterfall_range_db(waterfall_contrast);
-  for (int x0 = 0; x0 < w; x0 += 2) {
-    const int width = std::min(2, w - x0);
-    const float level = width > 1 ? std::max(g_px_smooth[x0], g_px_smooth[x0 + 1]) : g_px_smooth[x0];
-    const float normalized = std::clamp((level - floor) / waterfall_range, 0.0f, 1.0f);
-    M5.Display.fillRect(kPlotX + 1 + x0, kWaterfallY + 1 + waterfall_h - rows, width, rows,
-                        waterfall_color(normalized));
+  const int rows = waterfall_clock.rows(now, waterfall_style::rows_per_frame(waterfall_style::Screen::home));
+  if (rows) {
+    const bool popup_over = gain_popup || filter_popup || mode_popup;
+    const int waterfall_h = popup_over ? kPopY - 2 - (kWaterfallY + 1) : kWaterfallH - 2;
+    M5.Display.startWrite();
+    M5.Display.setScrollRect(kPlotX + 1, kWaterfallY + 1, kPlotW - 2, waterfall_h, TFT_BLACK);
+    M5.Display.scroll(0, -rows);
+    const float waterfall_range = waterfall_range_db(waterfall_contrast);
+    for (int x0 = 0; x0 < w; x0 += 2) {
+      const int width = std::min(2, w - x0);
+      const float level = width > 1 ? std::max(g_px_smooth[x0], g_px_smooth[x0 + 1]) : g_px_smooth[x0];
+      const float normalized = std::clamp((level - floor) / waterfall_range, 0.0f, 1.0f);
+      M5.Display.fillRect(kPlotX + 1 + x0, kWaterfallY + 1 + waterfall_h - rows, width, rows,
+                          waterfall_color(normalized));
+    }
+    M5.Display.endWrite();
   }
-  M5.Display.endWrite();
+  plot_stats.waterfall_us = static_cast<uint32_t>(esp_timer_get_time() - waterfall_started_us);
+  plot_stats.draw_us = static_cast<uint32_t>(esp_timer_get_time() - draw_started_us);
+  plot_stats.draw_max_us = std::max(plot_stats.draw_max_us, plot_stats.draw_us);
+  ++plot_stats.frames;
+  if (plot_stats.frames > 1) frame_intervals.add(interval_ms);
+}
+
+void plot_status(char* output, size_t size) {
+  snprintf(output, size, "HOME_PLOT active=%d cadence_ms=%lu elapsed_ms=%lu frames=%lu draw_us=%lu draw_max_us=%lu raster_us=%lu push_us=%lu waterfall_us=%lu p50_ms=%lu p95_ms=%lu window=%u",
+           shown, static_cast<unsigned long>(plot::kSpectrumIntervalMs),
+           static_cast<unsigned long>(millis() - plot_stats.started_ms),
+           static_cast<unsigned long>(plot_stats.frames),
+           static_cast<unsigned long>(plot_stats.draw_us), static_cast<unsigned long>(plot_stats.draw_max_us),
+           static_cast<unsigned long>(plot_stats.raster_us), static_cast<unsigned long>(plot_stats.push_us),
+           static_cast<unsigned long>(plot_stats.waterfall_us),
+           static_cast<unsigned long>(frame_intervals.percentile(50)),
+           static_cast<unsigned long>(frame_intervals.percentile(95)), frame_intervals.count);
 }
 
 Action handle_touch(int32_t x, int32_t y, bool pressed) {
@@ -1309,7 +1349,7 @@ bool self_check() {
       tap_action(685, kBrowserNavY + 1).kind == ActionKind::browser_next;
   browser_page = 1;
   const bool second_page_ok =
-      tap_action(kBrowserCardX + 1, kBrowserCardY + 1).dashboard == dashboards::Id::satellite &&
+      tap_action(kBrowserCardX + 1, kBrowserCardY + 1).dashboard == dashboards::descriptor(kBrowserPageSize)->id &&
       tap_action(487, kBrowserNavY + 1).kind == ActionKind::browser_previous;
   browser = saved_browser;
   browser_page = saved_page;

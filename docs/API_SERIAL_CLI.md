@@ -209,6 +209,7 @@ tune, change volume, or return passwords or coordinates.
 |---|---|---|
 | `RTL_STATUS` | no | `RTL_SDR_STATUS connected=... vid=... pid=... speed=... serial="..."` — is the RTL-SDR dongle itself present/enumerated. |
 | `RTL_SIGNAL` | no | `RTL_SIGNAL_STATUS band=... frequency_hz=... signal_dbfs=... stereo_locked=0\|1 left_dbfs=... right_dbfs=... rds_carrier=0\|1 rds_signal=...` — one-shot snapshot of everything the dashboard's meters show. |
+| `RTL_ACARS STATUS` | no | `RTL_ACARS_UI open=... view=... demo=... receiver=... tune=... held=... total=...` then `RTL_ACARS_STATUS running=... channel_hz=... blocks=... gaps=... level=... crc_ok=...` — ACARS dashboard state, receiver counters and paint timings. Read-only. |
 | `RTL_UI STATUS` | no | `RTL_UI_STATUS ... home_font=0\|1 graphics=0\|1` — active dashboard ownership plus the current display font and live spectrum/waterfall state. |
 
 `signal_dbfs` is the RF-level meter (matches the SIG bar). `left_dbfs`/
@@ -404,6 +405,17 @@ RTL_CATALOG_INSTALL faa_aircraft
 
 ## Dashboard control
 
+### Memory
+
+Features that keep PSRAM after the user leaves them (the SSTV picture gallery and recording buffer) register with `memory_reclaim` so it can be handed back. The FT8 screen shows **NOT ENOUGH MEMORY** with a **FREE MEMORY** button when its decoder cannot start because an allocation failed; the same release is available over serial.
+
+| Command | Authentication | Result | Notes |
+|---|---|---|---|
+| `RTL_MEM STATUS` | no | `RTL_MEM psram_free=<n> psram_largest=<n> internal_free=<n> internal_largest=<n>`, one `RTL_MEM_HOLDER <name> bytes=<n>` per registered holder (largest first), and `RTL_MEM_FT8 active=<0\|1> last_failure=none\|memory\|backend needed=<bytes> failures=<n>` | Read-only. `needed` is the allocation that could not be satisfied. |
+| `RTL_MEM STATUS` (more lines) | no | `RTL_MEM_DMA dma_free=<n> dma_largest=<n>` (internal RAM that DMA can use: Wi-Fi/C6 link, USB host, SD card, I2S; the firmware warns below 20,480 in `RTL_DRAM_BUDGET`) and, in builds with the OrcDial bridge, `RTL_MEM_ORCDIAL bridge=<0\|1> secure_stack_free_min=<bytes>` (the smallest part of the `orcdial_secure` task's 12,288-byte stack that has been unused; 0 while the bridge is not running) | Read-only. |
+| `RTL_MEM RECLAIM` | yes | `ORC_MEMORY_RECLAIM total=<n>` and one line per holder that gave something back, then `RTL_MEM_OK psram_free=<n> psram_largest=<n>` | Releases every registered holder, then lets the FT8 screen retry at once. Nothing is released from a screen that is open (SSTV keeps its pictures while its screen is showing). |
+| `RTL_MEM HOG <KiB>` | yes | `RTL_MEM_OK held=<n> psram_free=<n> psram_largest=<n>` | Bench aid: allocates PSRAM in 256 KiB blocks until about that many KiB remain, registered as the holder `Test allocation`. `RTL_MEM RECLAIM` or the FREE MEMORY button gives it back. |
+
 ### OrcDial bridge
 
 | Command | Authentication | Result | Invalid state / handler |
@@ -417,6 +429,8 @@ RTL_CATALOG_INSTALL faa_aircraft
 | `RTL_ORCDIAL_DISCONNECT` | yes | Queues an authenticated disconnect | Preserves trust and suppresses automatic retries for this boot. |
 | `RTL_ORCDIAL_FORGET` | yes | Queues local trust deletion | Works without the peer. A storage error blocks control and must be retried; old trust can return after restart if deletion could not be committed. |
 | `RTL_ORCDIAL_C6_UPDATE CONFIRM` | yes | `RTL_ORCDIAL_C6_UPDATE_QUEUED` | Existing explicit C6 recovery/update operation; not part of version-4 pairing. |
+
+**Bridge start (on demand).** The OrcDial bridge costs about 17 to 19 KB of internal DMA RAM, so it starts only when a pairing is stored (`trust=1`) or a Pair, Connect or Forget-and-re-pair request is made. A unit with no pairing and no request logs `RTL_ORCDIAL_BRIDGE_NOT_STARTED reason=no_pairing_and_no_request dma_free=<n> dma_largest=<n>` once and `RTL_ORCDIAL_STATUS` shows `bridge=0`. If such a request arrives with less than 20,480 bytes of free DMA RAM it is dropped: `RTL_ORCDIAL_ERROR low_dma_memory free=<n> need=20480 restart_to_pair` is logged, `RTL_ORCDIAL_STATUS` shows `failure=low_memory` and Settings shows "Low memory: restart to pair" until a later request passes the DMA check. A Cancel received before the bridge exists removes any queued Pair or Forget-and-re-pair request, so a cancelled pairing does not start it. Cancel, Confirm, Disconnect, Forget and the boot toggle do not start the bridge.
 
 State-changing commands require the existing serial `PAIR`/`AUTH` session. Without it they report `RTL_ORCDIAL_ERROR auth_required`; the C6 update retains its existing command-specific error. Commands are asynchronous: inspect STATUS for completion, timeout, or storage failure. A full action queue reports `RTL_ORCDIAL_ERROR action_queue_full`.
 
@@ -449,7 +463,15 @@ The LoRa Traffic toolbar equivalents are `RTL_UI ACTION LORA DETAILS`,
 LoRa Overview uses the unsmoothed value for faster visual response.
 
 `RTL_UI OPEN` accepts `HOME`, `FM`, `AIRBAND`, `P25`, `ADSB`, `LORA`, `RF_LAB`,
-`WIFI_ANALYSIS`, or `SETTINGS`.
+`WIFI_ANALYSIS`, `SETTINGS`, or `ACARS` (the full list is printed by `RTL_UI_OPEN_INVALID`).
+`RTL_UI TAP <x> <y>` (authenticated) injects a touch at full-screen coordinates 0-1279 / 0-719
+through the same routing as a finger, header included; it replies `RTL_UI_TAP_OK`.
+`RTL_ACARS ARCHIVETEST` (authenticated) writes 12 records to a scratch folder on the SD card, reads them back through the
+archive loader, compares them, deletes the files and replies `RTL_ACARS_ARCHIVETEST sd=... written=... loaded=... result=PASS|FAIL`;
+the real log is not touched. `RTL_ACARS STATUS` also reports `log=`, `written=`, `pending=`, `dropped=`, `loaded=` and `archive=`.
+`RTL_ACARS SELFTEST` (authenticated) runs a known synthetic ACARS signal through a private
+decoder instance and replies `RTL_ACARS_SELFTEST cases=10 passed=... missed=... duplicates=... result=PASS|FAIL`;
+live reception is not touched. It takes a few seconds and proves nothing about real-signal sensitivity.
 `RTL_UI ACTION` accepts a domain and one of its visible touch actions:
 
 - `FM`: `TUNE`, `DOWN`, `UP`, `SEEK_DOWN`, `SEEK_UP`, `SAVE`, `STEP`,
@@ -658,6 +680,44 @@ general-purpose IQ dumping). There is no live serial override for spreading
 factor or bandwidth yet — those load once from `/orcsdr/lora.cfg` at boot;
 tracked as follow-up work alongside POCSAG's `SET_BAUD`/`SET_POLARITY`
 precedent.
+
+LoRa detector and decoder diagnostics (these make the receive path testable
+without touching the screen):
+
+| Command | Auth | Response | Notes |
+|---|---|---|---|
+| `RTL_LORA_DETECTOR STATUS` | no | `RTL_LORA_DETECTOR_STATUS enabled= armed= level_dbfs= noise_dbfs= trigger_dbfs= ... relearns= events= drops= capture_active= capture_ready= decode_busy= mode= pd_ready= pd_windows= pd_fires= pd_last_bin= pd_last_ratio= pd_run= pd_max_window_us=` | The learned noise floor, the energy trigger (floor plus margin, capped just below clipping), the active trigger mode, the preamble detector's counters, and whether a capture is held or the decoder is busy. |
+| `RTL_LORA_DETECTOR RELEARN` | yes | `RTL_LORA_DETECTOR_OK relearn=queued` | Forces a noise-floor re-learn (for example after moving an antenna or swapping a dongle). The detector also re-learns by itself when the level stays above the trigger for 4 s. |
+| `RTL_LORA_DETECTOR MODE <PREAMBLE\|ENERGY>` | yes | `RTL_LORA_DETECTOR_OK mode=` | `PREAMBLE` (default) starts a capture when the dechirped FFT peak sits on the same bin for six consecutive symbol windows, which is independent of gain, dongle and noise floor and ignores wideband interference. `ENERGY` is the legacy level trigger. |
+| `RTL_LORA_STATS [RESET]` | `RESET` only | `RTL_LORA_STATS events= crc_ok= encrypted= messages= failures= drops= relearns= last_decode_ms=` | Counters for a repeatable "send N packets, count how many decoded" test. |
+| `SSTV STATUS` | no | `SSTV_STATUS ...`, `SSTV_PERF ...`, `SSTV_MEM ...`, `SSTV_ARCHIVE ...`, up to three `SSTV_RESULT ...`, `SSTV_SELFTEST ...` | SSTV state, decoder cost (`service_us_*`, ring high-water, draw time), heap, and SD archive counters (`write_retries` is a card-health indicator). `SSTV_STATUS` also carries `tone_hz`, `audio_level_milli`, `audio_offered` and `samples`: `audio_offered=0` means the radio path is delivering no audio to the decoder. |
+| `SSTV OPEN` | yes | `SSTV_OK dashboard=` | Opens the SSTV dashboard (required before `SELFTEST`). |
+| `SSTV SELFTEST ROBOT36\|ROBOT36_NOVIS\|PD120 [SPEED 1..8]` | yes | `SSTV_OK selftest=`, then `SSTV_SELFTEST_DONE` | Plays a synthetic SSTV transmission generated inside the firmware through the real audio tap, decoder, display and SD archive, paced at real time (x`SPEED`). No RF is involved. `SSTV SELFTEST STOP` aborts it. |
+| `SSTV SAVE LIVE\|NEWEST` | yes | `SSTV_OK queued=` | Queues the image in progress, or the newest gallery image, for the background SD archive. |
+| `SSTV TUNE <hz>` | yes | `SSTV_OK tuned_hz=` | Tunes the open SSTV dashboard (same path as the TUNE tab and the OrcDial; retunes the dongle and picks the demodulator unless MODE is fixed). Refused when the dashboard is closed or the frequency is outside 100 kHz to 1.7 GHz. `SSTV_STATUS` also reports `sync_tone_hz` and `sync_tone_pulses` (measured 1200 Hz sync tone, 0 = none yet). |
+| _(HTTP, not serial)_ `GET /api/sstv`, `GET /api/sstv/preview` | no | JSON or BMP | Read-only web routes next to the serial SSTV commands: the details and a 64-pixel preview of the newest finished picture in the RAM gallery (the same one `SSTV LAST` reports). An empty gallery is `{"none":true}` and a `404` `none` preview. They never touch the receiver, the tuning or the SD card. See `docs/sstv/README.md`. |
+| `SSTV INDEX` | no | `SSTV_INDEX bytes=` and `SSTV_INDEX_ROW <csv>` | Last rows of `/sd/orcsdr/sstv/index.csv`. |
+| `RTL_LORA_GAIN STATUS` | no | `RTL_LORA_GAIN_STATUS guard= phase= override= gain_tenth_db= clipping_percent= engage_pct= release_pct= reductions= probes=` | The LoRa clipping guard. The tuner runs AUTO; only when clipping stays above the limit for 1.5 s does the guard step the dongle's own gain ladder down until it clears, hold, and probe one step up after 60 s clean. `gain_tenth_db=-1` means the tuner AGC is in charge. |
+| `RTL_LORA_GAIN GUARD ON\|OFF` | yes | `RTL_LORA_GAIN_OK guard=` | `OFF` releases the guard and restores the tuner AGC. Any manual `RTL_GAIN` command, leaving LoRa, or turning the guard off also releases it. |
+| `RTL_LORA_GAIN LIMIT <percent>` | yes | `RTL_LORA_GAIN_OK engage_pct= release_pct=` | Clipping percentage that engages the guard (default 1.0; it releases at one fifth of it). |
+| `RTL_LORA_RECENT` | no | `RTL_LORA_RECENT count=<n>` then one `RTL_LORA_PKT age_ms= sender= id= port= encrypted= snr_db= text="..."` line per stored packet | The most recently decoded packets (up to 8), newest first, so a test can tell its own packets from neighbours' without a terminal attached during the run. |
+| `RTL_LORA_PLAN SET <region code or index> [slot]` | yes | `RTL_LORA_PLAN_OK region= slot= frequency_hz=` | Selects and persists the Meshtastic region and slot, for example `RTL_LORA_PLAN SET EU_868`. |
+| `RTL_LORA_DECODER STATUS` | no | `RTL_LORA_DECODER_STATUS search_padding=` | `1` is the default fast preamble search; `4` is the legacy 4x-padded search. |
+| `RTL_LORA_DECODER SEARCH_PAD <1\|4>` | yes | `RTL_LORA_DECODER_OK search_padding=` | Switches the preamble search width at run time so sensitivity can be compared on identical input. |
+| `RTL_LORA_DECODER TIMING_BIAS <-4..4>` | yes | `RTL_LORA_DECODER_OK timing_bias=` | Diagnostic only: shifts the header timing search by whole samples. Leave at `0`. |
+
+`RTL_IQ_RETRIEVE_END` releases a retained manual capture. Until it is sent
+(or a new manual capture starts), live automatic LoRa detection stays blocked,
+so host tools that retrieve a capture must send it.
+
+`RTL_LORA_NATIVE_DONE` ends with `align_shift=<n>`: `0` normally, or the
+sample shift (+-1, +-2) of the alignment that passed the payload CRC when the
+header's first alignment did not.
+
+Host-side sensitivity tools: `tools/lora_lab/capture_packet.py` records one
+real packet, `tools/lora_lab/crop_orciq.py` crops it, and
+`tools/lora_lab/sensitivity_sweep.py` replays it with added noise at a series
+of SNRs under each search mode and prints success per level.
 
 ## P25 validation and replay
 

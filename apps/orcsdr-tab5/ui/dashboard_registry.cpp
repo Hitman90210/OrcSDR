@@ -17,9 +17,11 @@ constexpr Descriptor kEntries[] = {
     {Id::lora, "LORA / MESH", "LoRa and Meshtastic receive tools", Category::digital, true},
     {Id::pocsag, "POCSAG", "Pager receive, CAPCODE IDs, and message archive", Category::digital, true},
     {Id::ft8, "FT8 RX", "Receive-only FT8 band hunter and decode history", Category::digital, true},
+    {Id::acars, "ACARS", "VHF aircraft datalink messages and message history", Category::aviation, true},
     {Id::airband, "AIRBAND", "AM aviation scanner and airport channels", Category::aviation, true},
     {Id::marine, "MARINE", "VHF marine receiver", Category::audio, true},
     {Id::satellite, "SATELLITE", "Satellite receive workspace", Category::digital, true},
+    {Id::sstv, "SSTV", "Live slow-scan image receiver and picture gallery", Category::digital, true},
     {Id::rf_lab, "RF LAB", "Live measurements and driver tests", Category::utility, true},
     {Id::wifi_analysis, "2.4 GHz WIFI", "Real Wi-Fi access-point survey", Category::utility, true},
     {Id::settings, "SETTINGS", "Global device settings", Category::system, true},
@@ -103,9 +105,9 @@ bool self_check() {
                      g_recent[1] == Id::fm && !record_open(Id::p25);
   g_recent = saved;
   g_recent_count = saved_count;
-  return loaded && moved && std::size(kEntries) == 16 && find(Id::ft8) != nullptr && find(Id::rf_lab) != nullptr &&
+  return loaded && moved && std::size(kEntries) == 18 && find(Id::ft8) != nullptr && find(Id::rf_lab) != nullptr &&
          find(Id::am) != nullptr &&
-         find(Id::wifi_analysis) != nullptr && find(Id::pocsag) != nullptr;
+         find(Id::wifi_analysis) != nullptr && find(Id::pocsag) != nullptr && find(Id::sstv) != nullptr && find(Id::acars) != nullptr;
 }
 
 }  // namespace orcsdr::dashboards

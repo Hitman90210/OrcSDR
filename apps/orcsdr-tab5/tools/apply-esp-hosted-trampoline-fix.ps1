@@ -9,7 +9,8 @@ $patches = @(
   @{ File = 'esp-hosted-trampoline-null-delete.patch'; Name = 'trampoline null-delete' },
   @{ File = 'esp-hosted-detached-task-handle.patch'; Name = 'detached task handle (#103)' },
   @{ File = 'esp-hosted-sdio-unresponsive-failure.patch'; Name = 'SDIO unresponsive failure event (#106)' },
-  @{ File = 'esp-hosted-sdio-credit-deadline.patch'; Name = 'SDIO credit elapsed-time deadline' }
+  @{ File = 'esp-hosted-sdio-credit-deadline.patch'; Name = 'SDIO credit elapsed-time deadline' },
+  @{ File = 'esp-hosted-sdio-aligned-packet-buffers.patch'; Name = 'SDIO aligned packet buffers' }
 )
 
 foreach ($entry in $patches) {

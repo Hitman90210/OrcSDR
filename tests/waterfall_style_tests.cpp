@@ -108,6 +108,23 @@ void test_colors() {
 }  // namespace
 
 int main() {
+  for (unsigned baseline : {50u, 100u}) {
+    for (auto screen : {Screen::fm, Screen::lora, Screen::airband}) {
+      for (uint8_t speed_index = 0; speed_index < kSpeedCount; ++speed_index) {
+        set_speed(screen, speed_index);
+        reset_clock(screen, 0);
+        int rows = 0;
+        for (uint32_t now = 33; now <= 3300; now += 33)
+          rows += rows_due(screen, now, baseline);
+        CHECK(rows == static_cast<int>(3300 / baseline) * rows_per_frame(screen));
+      }
+      set_speed(screen, 0);
+    }
+  }
+  reset_clock(Screen::fm, UINT32_MAX - 20);
+  CHECK(rows_due(Screen::fm, 29) == rows_per_frame(Screen::fm));
+  CHECK(rows_due(Screen::fm, 2000) == 0);  // time away does not append stale rows
+  CHECK(rows_due(Screen::fm, 2050) == rows_per_frame(Screen::fm));
   test_defaults_keep_each_screens_look();
   test_speed_adds_rows();
   test_cycling_wraps();
