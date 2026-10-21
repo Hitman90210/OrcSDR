@@ -3,15 +3,21 @@ name: Host tests
 # Eleven test scripts in this tree were run by no workflow at all. Their own
 # suites either trigger only on pull_request (and this fork pushes branches
 # without one) or were never wired up: test-pocsag-core, test-pocsag-store,
-# test-web-audio, test-hosted-sdio-dma, test_sdio_credit_deadline,
-# test_wifi_reconnect_policy, the three LoRa oracles and the two node tests.
-# Running them found that test_wifi_reconnect_policy no longer compiled on any
-# current runner.
+# test-web-audio, test_wifi_reconnect_policy, the three LoRa oracles and the
+# two node tests. Running them found that test_wifi_reconnect_policy no longer
+# compiled on any current runner.
 #
-# Not included: test_tab5_plot_soak.py and test_wifi_accessory_startup.py take
-# a capture or log as a required argument, so they are analysis tools rather
-# than self-contained tests, and tools/test-ft8.sh, which is long and has its
-# own workflow.
+# Not included, each for a reason:
+#   test-hosted-sdio-dma.py and test_sdio_credit_deadline.py read
+#     managed_components/espressif__esp_hosted, which the component manager
+#     fetches and git does not track, so they need an IDF configure first and
+#     cannot run on a bare checkout. They pass locally after a build.
+#   test_tab5_plot_soak.py and test_wifi_accessory_startup.py take a capture or
+#     log as a required argument: analysis tools, not self-contained tests.
+#   tools/test-ft8.sh takes four minutes and has its own workflow.
+#
+# Every step here was verified against a clean worktree with no
+# managed_components and no build tree, which is what the runner sees.
 on:
   pull_request:
   push:
@@ -35,9 +41,7 @@ jobs:
       - run: bash tools/test-pocsag-core.sh
       - run: bash tools/test-pocsag-store.sh
       - run: bash tools/test-web-audio.sh
-      - run: python tools/test-hosted-sdio-dma.py
-      # These configure their own CMake build trees under apps/orcsdr-tab5.
-      - run: python tools/test_sdio_credit_deadline.py
+      # Configures its own CMake build tree under apps/orcsdr-tab5.
       - run: python tools/test_wifi_reconnect_policy.py
       # numpy; decoder oracles over recorded captures.
       - run: python tools/test_analyze_lora_recovery_oracle.py
