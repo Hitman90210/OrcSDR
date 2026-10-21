@@ -44,6 +44,13 @@ FRS_GMRS_CHANNELS_HZ = {
 }
 NARROWBAND_CHANNELS = range(8, 15)
 
+# The eight 467 MHz main channels: the repeater inputs for channels 15-22. They
+# interleave with the interstitials 12.5 kHz apart (467.5500 wide, 467.5625
+# narrow, 467.5750 wide) and 47 CFR 95.1773 keeps them at 20 kHz. Leaving them
+# out of this file is what let a plain low/high narrowband window pass review
+# while it narrowed seven of them.
+GMRS_REPEATER_INPUTS_HZ = {15 + i: 467_550_000 + i * 25_000 for i in range(8)}
+
 # A sample of the US VHF marine plan, which is a 25 kHz raster from 156.000.
 MARINE_CHANNELS_HZ = {
     6: 156_300_000, 13: 156_650_000, 16: 156_800_000, 22: 157_100_000,
@@ -126,20 +133,57 @@ class GmrsMarinePlan(unittest.TestCase):
         self.assertIn(25_000, marine["steps_hz"])
         self.assert_channels_on_raster(marine, MARINE_CHANNELS_HZ, "marine")
 
-    def test_the_narrowband_window_holds_exactly_channels_8_to_14(self) -> None:
-        low = int(re.search(r"kGmrsInterstitialLowHz = (\d+)", self.main).group(1))
-        high = int(re.search(r"kGmrsInterstitialHighHz = (\d+)", self.main).group(1))
-        for channel, hz in FRS_GMRS_CHANNELS_HZ.items():
-            inside = low <= hz <= high
-            self.assertEqual(inside, channel in NARROWBAND_CHANNELS,
-                             "channel %d at %d Hz is on the wrong side of the "
-                             "narrowband window" % (channel, hz))
+    def test_every_channel_has_a_compiled_assertion_about_its_width(self) -> None:
+        """Coverage, not arithmetic: the arithmetic is gmrs_channels_tests.cpp.
+
+        An earlier version of this test read the constants out of the source and
+        re-applied the modulus in Python, so it was checking its own arithmetic
+        rather than the predicate's. Dropping the modulus from the C++ left it
+        passing while seven repeater inputs were narrowed. The compiler is what
+        actually proves the predicate, through the static_asserts in the header,
+        so what is worth testing here is that those assertions exist for every
+        channel rather than a convenient subset.
+        """
+        header = (UI / "gmrs_channels.hpp").read_text(encoding="utf-8")
+        for channel in NARROWBAND_CHANNELS:
+            hz = FRS_GMRS_CHANNELS_HZ[channel]
+            self.assertIn("static_assert(channel_is_narrowband(%d)" % hz, header,
+                          "channel %d has no compiled assertion that it is "
+                          "12.5 kHz" % channel)
+        for channel, hz in GMRS_REPEATER_INPUTS_HZ.items():
+            self.assertIn("static_assert(!channel_is_narrowband(%d)" % hz, header,
+                          "RPT%d has no compiled assertion that it stays "
+                          "20 kHz" % channel)
+        # The 467 sets are required exhaustively above, because they interleave
+        # and a wrong predicate passes whichever subset falls outside it. The
+        # 462 segment is uniform, so its ends pin it; every one of its channels
+        # is still checked at runtime by gmrs_channels_tests.cpp.
+        for channel in (1, 7, 15, 22):
+            hz = FRS_GMRS_CHANNELS_HZ[channel]
+            self.assertIn("static_assert(!channel_is_narrowband(%d)" % hz, header,
+                          "462 MHz channel %d has no compiled assertion" % channel)
+
+    def test_the_interstitials_sit_between_the_repeater_inputs(self) -> None:
+        """The arithmetic the modulus depends on, checked rather than assumed."""
+        for channel in NARROWBAND_CHANNELS:
+            hz = FRS_GMRS_CHANNELS_HZ[channel]
+            self.assertIn(hz - 12_500, GMRS_REPEATER_INPUTS_HZ.values(),
+                          "channel %d should be 12.5 kHz above a 467 main "
+                          "channel" % channel)
+
+    def test_the_host_test_is_wired_up(self) -> None:
+        """The compiled check is worth nothing if nothing runs it."""
+        runner = (ROOT / "tools" / "test-band-profile.sh").read_text(encoding="utf-8")
+        self.assertIn("tests/gmrs_channels_tests.cpp", runner)
+        quality = (ROOT / ".github" / "workflows" / "quality.yml").read_text(encoding="utf-8")
+        self.assertIn("tools/test-band-profile.sh", quality)
 
     def test_the_narrowband_window_stays_inside_the_gmrs_band(self) -> None:
         """rtl_filter_default_hz checks the frequency before it checks the band."""
         gmrs = self.profile("frs_gmrs")
-        low = int(re.search(r"kGmrsInterstitialLowHz = (\d+)", self.main).group(1))
-        high = int(re.search(r"kGmrsInterstitialHighHz = (\d+)", self.main).group(1))
+        header = (UI / "gmrs_channels.hpp").read_text(encoding="utf-8")
+        low = int(re.search(r"kInterstitialFirstHz = (\d+)", header).group(1))
+        high = int(re.search(r"kInterstitialLastHz = (\d+)", header).group(1))
         self.assertGreaterEqual(low, gmrs["low_hz"])
         self.assertLess(high, gmrs["high_hz"],
                         "the window reaches past the top of the band, so "
@@ -148,7 +192,8 @@ class GmrsMarinePlan(unittest.TestCase):
                          "the window should end at channel 14, not beyond it")
 
     def test_the_narrow_filter_is_12_5_khz(self) -> None:
-        width = int(re.search(r"kGmrsNarrowFilterHz = (\d+)", self.main).group(1))
+        header = (UI / "gmrs_channels.hpp").read_text(encoding="utf-8")
+        width = int(re.search(r"kNarrowFilterHz = (\d+)", header).group(1))
         self.assertEqual(width, 12_500, "47 CFR 95.1773 sets 12.5 kHz for 8-14")
         self.assertIn("if (gmrs_channel_is_narrowband(frequency_hz)) return kGmrsNarrowFilterHz;",
                       self.main, "the default filter does not follow the channel")
