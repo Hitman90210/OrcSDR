@@ -50,3 +50,13 @@ artifacts/pocsag-validation/
 artifacts/lora_validation/
 artifacts/release-readiness/
 docs/user-guide/assets/screenshots/raw/
+
+# Host test run artefacts. tools/sstv_host_tests.sh writes its build and run
+# logs, its summary and its decoded PPM frames into the repository root, and
+# the SDIO/Wi-Fi host tests configure their own build trees there. Running a
+# test should not leave 50 files for the next `git add -A` to pick up.
+/sstv-*.log
+/sstv-*.ppm
+/sstv-*.pgm
+/apps/orcsdr-tab5/build-sdio-credit-host/
+/apps/orcsdr-tab5/build-wifi-reconnect-host/

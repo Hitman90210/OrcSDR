@@ -40,9 +40,15 @@ static void recover_wifi_link() {
   ++recovery_calls; ++wifi_link_recoveries;
   orcsdr::wifi::failed = false; wifi_station_ready = true;
 }
-static size_t strlcpy(char* out, const char* text, size_t size) {
+// glibc 2.38 declares strlcpy in <string.h>, so a `static` shim of the same
+// name is an error there (-fpermissive downgrades it, this build does not use
+// it) and the test could not compile on any current runner. Naming the shim
+// and redirecting with a macro after the system headers are in works on every
+// libc, with or without its own strlcpy.
+static size_t orc_host_strlcpy(char* out, const char* text, size_t size) {
   std::snprintf(out, size, "%s", text); return std::strlen(text);
 }
+#define strlcpy orc_host_strlcpy
 static struct { void printf(const char*, ...) {} void println(const char*) {} } Serial;
 /* SCHEDULE */
 /* POLL PREFIX */

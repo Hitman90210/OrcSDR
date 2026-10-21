@@ -1,0 +1,57 @@
+name: Host tests
+
+# Eleven test scripts in this tree were run by no workflow at all. Their own
+# suites either trigger only on pull_request (and this fork pushes branches
+# without one) or were never wired up: test-pocsag-core, test-pocsag-store,
+# test-web-audio, test-hosted-sdio-dma, test_sdio_credit_deadline,
+# test_wifi_reconnect_policy, the three LoRa oracles and the two node tests.
+# Running them found that test_wifi_reconnect_policy no longer compiled on any
+# current runner.
+#
+# Not included: test_tab5_plot_soak.py and test_wifi_accessory_startup.py take
+# a capture or log as a required argument, so they are analysis tools rather
+# than self-contained tests, and tools/test-ft8.sh, which is long and has its
+# own workflow.
+on:
+  pull_request:
+  push:
+    branches: [main, 'refresh/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compiled:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.11'
+      - run: pip install 'numpy>=1.23,<2'
+      - run: g++ --version && cmake --version
+      # g++ only.
+      - run: bash tools/test-pocsag-core.sh
+      - run: bash tools/test-pocsag-store.sh
+      - run: bash tools/test-web-audio.sh
+      - run: python tools/test-hosted-sdio-dma.py
+      # These configure their own CMake build trees under apps/orcsdr-tab5.
+      - run: python tools/test_sdio_credit_deadline.py
+      - run: python tools/test_wifi_reconnect_policy.py
+      # numpy; decoder oracles over recorded captures.
+      - run: python tools/test_analyze_lora_recovery_oracle.py
+      - run: python tools/test_replay_lora_orciq.py
+      - run: python tools/test_run_lora_native_matrix.py
+      # The Companion page's own JavaScript, including the radar.
+      - run: node --test tests/web_audio_player.test.cjs tests/web_console_page.test.cjs
+      # Writes its logs and decoded frames into the repository root, which
+      # .gitignore now covers.
+      - run: bash tools/sstv_host_tests.sh
+      - name: Fail if a test left the tree dirty
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "A test modified tracked files or left unignored artefacts:"
+            git status --porcelain
+            exit 1
+          fi
