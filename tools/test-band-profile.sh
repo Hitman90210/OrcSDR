@@ -22,3 +22,4 @@ run() {
   echo "$name PASS"
 }
 run band_profile tests/band_profile_tests.cpp "$ui/band_profile.cpp"
+run gmrs_channels tests/gmrs_channels_tests.cpp

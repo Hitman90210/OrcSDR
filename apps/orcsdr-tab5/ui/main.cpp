@@ -101,6 +101,7 @@
 #include "focus_ring.hpp"
 #include "fm_config.hpp"
 #include "band_profile.hpp"
+#include "gmrs_channels.hpp"
 #include "home_vfo.hpp"
 #include "home_dashboard.hpp"
 #include "plot_cadence.hpp"
@@ -3143,27 +3144,12 @@ uint32_t rtl_band_default_frequency(RtlBand band) {
   }
 }
 
-// FRS/GMRS channels 8-14 are the 467 MHz interstitials, and 47 CFR 95.1773
-// limits them to 12.5 kHz while the rest of the plan runs at 20 kHz. The wide
-// default lets the neighbouring channel in, so the filter follows the channel.
-//
-// The window ends at channel 14 rather than a step beyond it. This check runs
-// before the band is looked at, so a window that overhung the top of the band
-// (which ends at 467.726 MHz) would hand a 12.5 kHz filter to frequencies that
-// are not GMRS at all.
-constexpr uint32_t kGmrsInterstitialLowHz = 467550000;   // channel 8
-constexpr uint32_t kGmrsInterstitialHighHz = 467712500;  // channel 14
-constexpr uint32_t kGmrsNarrowFilterHz = 12500;
+// The FRS/GMRS channel plan lives in gmrs_channels.hpp so a host test can
+// check it in seconds; see tests/gmrs_channels_tests.cpp.
+constexpr uint32_t kGmrsNarrowFilterHz = orcsdr::gmrs::kNarrowFilterHz;
 constexpr bool gmrs_channel_is_narrowband(uint32_t frequency_hz) {
-  return frequency_hz >= kGmrsInterstitialLowHz && frequency_hz <= kGmrsInterstitialHighHz;
+  return orcsdr::gmrs::channel_is_narrowband(frequency_hz);
 }
-static_assert(gmrs_channel_is_narrowband(467562500), "channel 8 is narrowband");
-static_assert(gmrs_channel_is_narrowband(467712500), "channel 14 is narrowband");
-static_assert(!gmrs_channel_is_narrowband(462562500), "channel 1 is not");
-static_assert(!gmrs_channel_is_narrowband(462725000), "channel 22 is not");
-// Above the GMRS band is not GMRS, whatever band the dial is on.
-static_assert(!gmrs_channel_is_narrowband(467726000), "the band ends here");
-static_assert(!gmrs_channel_is_narrowband(467737500), "and this is past it");
 
 uint32_t rtl_filter_default_hz(RtlBand band, uint32_t frequency_hz) {
   if (gmrs_channel_is_narrowband(frequency_hz)) return kGmrsNarrowFilterHz;
