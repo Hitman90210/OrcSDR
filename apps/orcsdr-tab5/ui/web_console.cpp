@@ -120,7 +120,11 @@ esp_err_t handle_status(httpd_req_t* req) {
     char item[56];
     const int n = snprintf(item, sizeof(item), "%s{\"id\":\"%s\",\"title\":\"%s\"}",
                            i ? "," : "", id, title);
-    if (n < 0 || used + static_cast<size_t>(n) + 2 >= sizeof(g_status_recent)) break;
+    // n is what snprintf WOULD have written: if the item truncated, the memcpy
+    // below would read past `item`. A dashboard id of 15 escaped characters and
+    // a title of 23 reach 59 bytes, over this buffer's 56.
+    if (n < 0 || n >= static_cast<int>(sizeof(item)) ||
+        used + static_cast<size_t>(n) + 2 >= sizeof(g_status_recent)) break;
     memcpy(recent + used, item, static_cast<size_t>(n));
     used += static_cast<size_t>(n);
   }
@@ -133,7 +137,8 @@ esp_err_t handle_status(httpd_req_t* req) {
   for (uint8_t i = 0; i < snap.spectrum_count && i < kSpectrumBins; ++i) {
     char item[8];
     const int n = snprintf(item, sizeof(item), "%s%u", i ? "," : "", snap.spectrum[i]);
-    if (n < 0 || used + static_cast<size_t>(n) + 2 >= sizeof(g_status_spec)) break;
+    if (n < 0 || n >= static_cast<int>(sizeof(item)) ||
+        used + static_cast<size_t>(n) + 2 >= sizeof(g_status_spec)) break;
     memcpy(spec + used, item, static_cast<size_t>(n));
     used += static_cast<size_t>(n);
   }
@@ -166,7 +171,8 @@ esp_err_t handle_status(httpd_req_t* req) {
         target.has_speed ? "true" : "false",
         target.has_heading ? "true" : "false",
         target.has_vertical_rate ? "true" : "false");
-    if (n < 0 || used + static_cast<size_t>(n) + 2 >= sizeof(g_status_aircraft)) break;
+    if (n < 0 || n >= static_cast<int>(sizeof(item)) ||
+        used + static_cast<size_t>(n) + 2 >= sizeof(g_status_aircraft)) break;
     memcpy(air + used, item, static_cast<size_t>(n));
     used += static_cast<size_t>(n);
   }
