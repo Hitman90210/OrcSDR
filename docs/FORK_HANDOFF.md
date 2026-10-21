@@ -1415,6 +1415,126 @@ now compiles and runs it on the host, with upstream's own flags from
 runs it. It also exercises the `static_assert` that ties `orc::band_name_count`
 to `kProfileCount`, which is checkable here because `orcdial/src` is vendored.
 
+### 5.7k An audit of our own work (2026-10-21)
+
+A sweep for errors and waste across both trees. Everything mechanical passes
+on both: all ten python and PowerShell checks, and **all eleven host test
+suites**, which can now be run here (see "A local host toolchain" below).
+What the sweep found was in our own ports, not upstream's code.
+
+**The GMRS filter narrowed seven channels it should not have.** The port in
+`2127c16` asked only whether a frequency was inside 467.5500-467.7125 MHz.
+That span is not uniform: the 467 MHz segment interleaves the **interstitials**
+(channels 8-14, 12.5 kHz, 47 CFR 95.1773) with the eight **467 MHz main
+channels**, the repeater inputs for channels 15-22, which stay at 20 kHz. They
+alternate 12.5 kHz apart -- 467.5500 wide, 467.5625 narrow, 467.5750 wide -- so
+a plain low/high window narrows every repeater input inside it: RPT15 through
+RPT21, seven channels, each receiving a 20 kHz signal through a 12.5 kHz
+filter.
+
+The fork's own `main` had this right all along, and said so in a comment: 20 kHz
+on the 462 mains, the 462 interstitials *and* the 467 mains, 12.5 kHz only on
+the 467 interstitials, "so 23 of our 30 GMRS channels are wideband and 7 are
+not, and calling the whole band NFM was wrong for most of it". The port lost
+that distinction. The predicate now matches main's: first, last, and a 25 kHz
+modulus that picks out the frequencies sitting 12.5 kHz above each 467 main
+channel.
+
+**The same window also overhung the top of the band.** It ran to 467.7375 MHz,
+a step past channel 14, while the band ends at 467.726. `rtl_filter_default_hz()`
+tests the frequency *before* it looks at the band -- this tree has no
+`RtlBand::gmrs` to gate on, where main does -- so the overhang handed a 12.5 kHz
+filter to frequencies that are not GMRS at all.
+
+**The test that should have caught it failed twice, in two different ways.**
+Worth recording, because both are easy to repeat:
+
+1. It asserted `assertIn("462550000", entry)` to check the raster origin. The
+   profile's `low_hz` is also 462550000, so the assertion was satisfied by the
+   wrong field: moving `raster_origin_hz` off the channel grid left the test
+   green. Found by mutation testing. It now parses the `Profile` fields
+   positionally and does the arithmetic against the origin and step read out of
+   the source.
+2. After that was fixed it still missed the repeater-input bug, for a deeper
+   reason: it read the predicate's *constants* out of the C++ and re-applied
+   the modulus in Python. That tests the Python, not the predicate. Removing
+   the modulus from the C++ left the Python test passing, because the Python
+   still had one.
+
+**So the plan moved somewhere a compiler can see it.** `gmrs_channels.hpp` now
+holds the constants, the predicate and an exhaustive set of `static_assert`s --
+all seven interstitials, all eight repeater inputs, the ends of the 462 segment
+and both sides of the band edge. `tests/gmrs_channels_tests.cpp` walks every
+12.5 kHz point across the 467 segment and checks the alternation. Both
+mutations now fail in about a second, where before they would only have failed
+a 25-minute firmware build (and the static_asserts did catch them there: that
+was verified by extracting the predicate and compiling it both ways). The
+python test's job is now coverage -- that an assertion exists for every
+channel, and that something actually runs the host test -- not arithmetic.
+
+**Three JSON append loops could read past their item buffer.**
+`web_console.cpp` builds the recent, spectrum and aircraft arrays with
+`snprintf` into a small `item` buffer and then `memcpy`s `n` bytes. `n` is what
+`snprintf` *would* have written, so a truncated item makes the copy read past
+the buffer and splice adjacent stack bytes into the JSON. The aircraft path
+cannot truncate -- 202 bytes worst case against 224, and the comment's 201 is
+right -- but the recent path can: a dashboard id of 15 escaped characters and a
+title of 23 reach 59 against `item[56]`. Latent, because ids and titles are
+internal constants that never need escaping. All three now check the item
+buffer as well as the destination. The spectrum loop cannot overflow either way
+(a `uint8_t` is at most `,255`), and it is guarded for uniformity.
+
+**Eleven test scripts were run by nothing.** No workflow referenced them, or
+their workflow triggers only on `pull_request` and this fork pushes branches
+without one. Running them found one real failure: `test_wifi_reconnect_policy`
+could not compile on any current runner, because glibc 2.38 declares `strlcpy`
+in `<string.h>` and the harness defines a `static` shim of the same name, which
+is an error rather than a shadow. Nine of the eleven are now in
+`.github/workflows/host-tests.yml` -- ours, not upstream's, so it costs nothing
+at the next merge -- with a closing step that fails the job if a test left the
+tree dirty. The first run of that workflow failed and was right to:
+`test-hosted-sdio-dma.py` and `test_sdio_credit_deadline.py` read
+`managed_components/espressif__esp_hosted`, which the component manager fetches
+and git does not track, so they passed here only because this tree had been
+built. Every remaining step was then re-verified against a clean worktree with
+no `managed_components` and no build tree.
+
+`tools/sstv_host_tests.sh` writes about 50 logs and decoded frames into the
+repository root; `.gitignore` now covers them.
+
+**A local host toolchain.** `g++` and `cmake` are installed in WSL
+(Ubuntu-24.04), so every host suite runs here over `/mnt/c` rather than only on
+a runner: band-profile 1s, gmrs-channels 1s, radio-scan 25s, p25-core 20s,
+pocsag-core 5s, pocsag-store 1s, web-audio 2s, cadence-history 4s, acars-smoke
+1s, acars-ui 56s, sstv 53s, ft8 244s. About seven minutes for the lot. Two
+gotchas: WSL has no `node` (the two `.test.cjs` suites run under Windows node),
+and Git Bash eats `$variables` in a `wsl -- bash -lc '...'` argument, so
+anything with a loop belongs in a script file passed by path.
+
+**ccache.** Measured rather than assumed, with the same file compiled from two
+tree paths: the default config gave one miss and one preprocessed hit, while
+`base_dir=C:\Users\Tinker\Documents\ChatGPT` with `hash_dir=false` made both
+*direct* hits. Set accordingly; it converts preprocessed hits into direct ones
+across the two worktrees rather than creating hits that were not there (the
+cache was already at 54% with 77% of hits in preprocessed mode). Undo with
+`ccache --set-config base_dir= --set-config hash_dir=true`.
+
+**Disk.** 3.3 GB across the two trees: `ORC SDR` 2.5 GB (`apps` 1.3 GB
+including a 601 MB build tree, `artifacts` 558 MB of bench captures and
+screenshots, `.local` 569 MB for the Python 3.11 LoRa venv, `.git` 36 MB) and
+`ORC SDR-refresh` 825 MB (610 MB build tree, 185 MB components). All of it
+either ignored or reproducible; `artifacts/` is bench evidence, so it is the
+operator's call.
+
+**`fix/rf-analysis-raw-capture-fft`, reconsidered.** 364 commits behind, one
+commit of its own, and **upstream's current code is not buggy**: its
+`fit_iq_fft_size()` clamps the transform to `kMaxIqPoints` (1024), so nothing
+reads past `iq_i`/`iq_q`. Our commit removes that clamp and reads from the raw
+capture instead, which makes transforms up to 8192 points possible with DC
+removed per sample. That is an enhancement, not the over-read fix the commit
+message implies, and it is one self-contained file. Keep it as a port
+candidate, not as a pending bug fix.
+
 ## 5.8 Dead code and build
 
 - 705 lines of `RTL_USE_LEGACY_USB` blocks removed. The resulting binary was
