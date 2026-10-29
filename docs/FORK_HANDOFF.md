@@ -1535,6 +1535,91 @@ removed per sample. That is an enhancement, not the over-read fix the commit
 message implies, and it is one self-contained file. Keep it as a port
 candidate, not as a pending bug fix.
 
+### 5.7l Upstream shipped v0.5.0-beta.1: merged `b714a127` (2026-10-29)
+
+Eight days after `fba861e`, upstream is **314 commits** further on and has
+tagged **v0.5.0-beta.1** (27 Oct): 554 files, +43,368/-857, split almost evenly
+between code (21.9k lines) and release-evidence documentation (22.3k).
+**OrcMaps** (signed catalog, download, placement, map screen), a **Dead Air**
+dashboard, bounded framebuffer cache flushes, transactional LoRa logging, FT8
+clock work, and an SD storage host suite.
+
+**It merged with no conflicts at all**, because the overlap stayed narrow
+despite the scale: `main.cpp` (+1142/-169), `build-tab5-idf.ps1` (+14/-2) and
+`docs/API_SERIAL_CLI.md` (+4). The radar, `band_profile.cpp`,
+`gmrs_channels.hpp` and `web_console.*` they did not touch at all.
+
+A clean merge is exactly where a silent one-sided resolution hides, so our work
+was checked by marker afterwards rather than assumed: **0** silently-gated
+handlers, **78** `auth_required` replies (up from 75 — their three new
+handlers), the `CMD_ERROR` fallback, the GMRS header and its delegation,
+`fill_web_radar`, and both build-script fixes. Upstream's own `main.cpp` has a
+single GMRS reference (a band-guide row), so there is no second filter path to
+reconcile.
+
+**What vetting their tree found:**
+
+- **They have removed the raw NUL byte** from `main.cpp` — the one our hygiene
+  test found at `a000b27`, still present at `fba861e`. Worth knowing because it
+  is also why `grep` treated the old file as binary, which cost one wrong
+  handler count before it was spotted.
+- **No new silently-gated handlers.** The set of 22 `&& authenticated` matches
+  is *identical* to `fba861e`: 314 commits added none and fixed none. Our
+  port's repair carries forward untouched.
+- **Their three new serial commands are gated correctly.** `RTL_DEAD_AIR FLOOD`
+  matches first and answers `auth_required`; `RTL_DEAD_AIR STATUS` and
+  `RTL_MAP_STATUS` are read-only.
+- **The map download path is sound, and inert as shipped.** The catalog is
+  ECDSA/SHA-256 signed; the verifying key is a **compile-time constant** that
+  can never arrive from the download; both algorithm and curve are pinned
+  (`MBEDTLS_PK_ECDSA` and `SECP256R1`) against key-type confusion; sizes are
+  bounded throughout and JSON nesting is depth-scanned before cJSON sees it.
+  `map_catalog_source.hpp` leaves `base_url` and `public_key` empty unless an
+  optional `map_catalog_configuration.hpp` is supplied, which the repository
+  does not carry — so a stock build answers "Downloads not configured" and
+  installs nothing.
+- Spot-read two of the release fixes. The framebuffer writeback hook chunks
+  `esp_cache_msync` to 4 KiB so IDF's cache mutex is not held for a whole
+  image, with counters and a host test behind stubs. The LoRa log recovery is
+  checkpointed with begin/end bounds on both journal and CSV, rolls back only
+  this writer's uncommitted suffix, and checks its size arithmetic for
+  overflow. Careful work in both.
+
+**Two repairs taken on the merge:**
+
+- `docs/evidence/maps/2026-10-17-placement-acceptance.md` carried a cp1252
+  `0x97` where an em dash belongs, so the tree was not valid UTF-8. **That is
+  one fresh instance per merge now** — three merges, three bytes — which is the
+  argument for offering `test_source_hygiene.py` upstream rather than carrying
+  it alone.
+- `tools/test-sd-storage.sh`, new upstream, writes 11 logs into the repository
+  root exactly as the SSTV suite does. `.gitignore` now covers them. This is
+  what the dirty-tree step added to `host-tests.yml` last week exists to catch,
+  and it would have.
+
+**`test-sd-storage.sh` is now in our workflow.** Its own one fires on pushes to
+`main` and on `pull_request`, so it is dark for this branch, and its path
+filter includes `main.cpp`, which this branch changes. It reads nothing from
+`managed_components`, so unlike the two dropped in `5bdf806` it runs on a bare
+checkout. The only scripts left in no workflow are
+`tools/benchmark-ft8-ldpc.sh` and `tools/diagnose-ft8-wav.sh`, a benchmark and
+a diagnostic rather than pass/fail tests.
+
+**All green.** Eleven python checks, and twelve host suites: band-profile 3s,
+radio-scan 66s, p25-core 49s, pocsag-core 15s, pocsag-store 5s, web-audio 8s,
+sd-storage 42s, cadence-history 41s, acars-smoke 4s, acars-ui 149s, sstv 111s,
+ft8 547s — slower than last week because the firmware build was running
+alongside. Firmware builds with 0 errors: `0x3fe000` (4.2 MB against 3.5 MB
+before the merge), **33% of the app partition free, down from 44%**. Worth
+watching: upstream's own release notes record 5,303,024 bytes with 988,432
+bytes of headroom for a full build, and ours is smaller only because it is
+built `-WithoutC6`. The warning count goes 78 to 225, but 202 are ESP-IDF's own
+`periph_ctrl.h` and `gpio_ll.h` pulled into more translation units; the
+project's own warnings are the same handful of unused symbols, none in files we
+wrote.
+
+Still not on hardware.
+
 ## 5.8 Dead code and build
 
 - 705 lines of `RTL_USE_LEGACY_USB` blocks removed. The resulting binary was
