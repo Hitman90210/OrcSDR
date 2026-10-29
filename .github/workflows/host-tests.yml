@@ -14,7 +14,9 @@ name: Host tests
 #     cannot run on a bare checkout. They pass locally after a build.
 #   test_tab5_plot_soak.py and test_wifi_accessory_startup.py take a capture or
 #     log as a required argument: analysis tools, not self-contained tests.
-#   tools/test-ft8.sh takes four minutes and has its own workflow.
+#   tools/test-ft8.sh takes nine minutes here and has its own workflow.
+#   tools/benchmark-ft8-ldpc.sh and tools/diagnose-ft8-wav.sh are a benchmark
+#     and a diagnostic, not pass/fail tests.
 #
 # Every step here was verified against a clean worktree with no
 # managed_components and no build tree, which is what the runner sees.
@@ -41,6 +43,10 @@ jobs:
       - run: bash tools/test-pocsag-core.sh
       - run: bash tools/test-pocsag-store.sh
       - run: bash tools/test-web-audio.sh
+      # Added upstream in v0.5.0-beta.1. Its own workflow fires on pushes to
+      # main and on pull_request, so it is dark for this branch, and its paths
+      # include main.cpp, which this branch changes.
+      - run: bash tools/test-sd-storage.sh
       # Configures its own CMake build tree under apps/orcsdr-tab5.
       - run: python tools/test_wifi_reconnect_policy.py
       # numpy; decoder oracles over recorded captures.
