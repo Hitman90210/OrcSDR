@@ -1,0 +1,6 @@
+Extract from maps-com39-diag-boot-20261017.log; first startup failure only.
+2026-10-17 18:26:06 I (1443) app_init: ELF file SHA256:  78559db9b...
+2026-10-17 18:26:06 ORC_MAP_STARTUP phase=before reserve_bytes=40960 dma_free=95508 dma_largest=40960 internal_free=135056 psram_free=28028348
+2026-10-17 18:26:06 ORC_MAP_STARTUP phase=after result=257 dma_free=95508 dma_largest=40960
+2026-10-17 18:26:06 E (1478) main_task: Could not reserve internal/DMA pool (error 0x101)
+2026-10-17 18:26:06 abort() was called at PC 0x482291cd on core 0

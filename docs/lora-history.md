@@ -1,5 +1,8 @@
 # LoRa packet and device history
 
+Shared SD buffering, append/durability requirements and regression commands are
+tracked in [SD card reliability](SD_CARD_RELIABILITY.md).
+
 The node observation model follows Meshtastic's documented distinction between
 received packets and a changing node database:
 [Meshtastic Python API](https://python.meshtastic.org/). The archive and cache are
@@ -7,8 +10,10 @@ independently implemented here; no upstream implementation or new dependency is
 included.
 
 With an SD card mounted at boot, LoRa logging starts automatically. `LORA_SD_LOG
-OFF` stops logging for the current boot; `LORA_SD_LOG ON` restarts it or retries
-after an SD error. Status and dropped records are reported by `LORA_SD_LOG STATUS`.
+OFF` stops logging for the current boot; `LORA_SD_LOG ON` starts it or requests
+an immediate retry. The worker also retries SD errors automatically every two
+seconds while logging is enabled. `LORA_SD_LOG STATUS` reports ready/error,
+queued and pending records, retry attempts, last error stage/errno and drops.
 
 Two files serve different purposes:
 
@@ -51,9 +56,19 @@ files. `LORA_HISTORY FILES` lists archive paths; `SD_LIST` lists the CSV. Existi
 `SD_GET_*` transfers can retrieve these files with hash verification. Archive files
 must be retained to reconstruct the device list. No automatic deletion is performed.
 
-Writes run on the logging worker, with a five-second stdio/filesystem sync interval. Sudden power
-loss can lose pending writes. Replay rejects malformed or incomplete final lines
-and continues with subsequent files. A short write or flush failure sets the SD
-error flag; `written` counts completed writes, not a guarantee against power loss.
-Queue overflow increments the dropped counter without blocking decoding. SD-full,
-physical card removal, and power-cut durability need separate hardware validation.
+Writes run on the logging worker. It keeps one pending record until both its
+journal and CSV writes have synced, then takes the next queued record. After a
+failure it closes the failed streams, waits two seconds and retries while keeping
+the pending record and queue intact. Partial writes are rewound only within that
+record's saved append boundaries before retry, preserving older rows and avoiding
+duplicate records. Unexpected file sizes block recovery instead of truncating
+unowned data. Error stages and errno are printed as `LORA_SD_LOG_ERROR`;
+`LORA_SD_LOG_RETRY` and `LORA_SD_LOG_RECOVERED` expose automatic recovery.
+
+The queue holds 32 records in addition to the pending record. Queue overflow is
+counted as dropped without blocking decoding; a transient write failure itself
+is retried rather than counted as a lost record. Disabling logging pauses error
+retries until it is enabled again. `written` counts records synced to both files.
+The per-record sync cost must be checked under reception. Pending RAM data is not
+power-loss storage, and physical card failure can still prevent saving. Replay
+rejects malformed or incomplete final lines and continues with subsequent files.

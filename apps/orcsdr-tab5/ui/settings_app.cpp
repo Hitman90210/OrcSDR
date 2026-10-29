@@ -1,5 +1,6 @@
 #include "focus_nav.hpp"
 #include "settings_app.hpp"
+#include "map_catalog_paging.hpp"
 
 #include "clock_settings.hpp"
 #include "dashboard_audio_control.hpp"
@@ -27,14 +28,12 @@ constexpr int kRailW = 286;
 constexpr int kRailY = 106;
 constexpr int kRailRowH = 64;
 constexpr uint8_t kSettingsMinTextSize = 2;
-constexpr uint16_t kRanges[] = {10, 25, 50, 100};
 constexpr uint16_t kTimeouts[] = {0, 30, 60, 120, 300};
 constexpr const char* kLabels[] = {
     "CONNECTIVITY", "FIRMWARE & UPDATES", "RECEIVER LOCATION", "DATA & MAPS", "DISPLAY & AUDIO",
     "RADIO DEFAULTS", "STORAGE", "ACCESSORIES & COMPANION", "SYSTEM"};
 
 static_assert(static_cast<uint8_t>(Section::count) == std::size(kLabels));
-static_assert(std::size(kRanges) == 4 && kRanges[0] == 10 && kRanges[3] == 100);
 
 enum class EditField : uint8_t { none, latitude, longitude };
 enum class WifiEdit : uint8_t { none, ssid, password };
@@ -64,7 +63,7 @@ int32_t g_clock_offset = 0;
 bool g_ntp_tapped = false;                  // SYNC NTP was tapped and the new state has not arrived yet
 bool g_location_request_pending = false;
 char g_location_query[64]{};
-int8_t g_catalog_remove_armed = -1;
+map_catalog_paging::Cursor g_catalog_cursor;
 
 bool hit(int x, int y, int bx, int by, int bw, int bh) {
   return x >= bx && x < bx + bw && y >= by && y < by + bh;
@@ -249,7 +248,10 @@ void draw_firmware_updates() {
 void draw_location() {
   text("RECEIVER LOCATION", 330, 115, kBlue, 3);
   char value[48];
-  value_row("PROFILE LABEL", g_state.location_label[0] ? g_state.location_label : "NOT SET",
+  // A name is optional. An unnamed saved coordinate is still a configured
+  // location; never substitute the independently selected map-pack identity.
+  value_row("LOCATION", !g_state.location_configured ? "NOT SET" :
+            g_state.location_label[0] ? g_state.location_label : "SAVED LOCATION",
             165);
   snprintf(value, sizeof(value), g_state.location_configured ? "%.7f" : "NOT SET",
            g_state.latitude_e7 / 10000000.0);
@@ -259,10 +261,18 @@ void draw_location() {
            g_state.longitude_e7 / 10000000.0);
   text("RECEIVER LONGITUDE", 330, 300, kMuted, 2);
   button(value, 820, 274, 398, 54, TFT_NAVY);
-  snprintf(value, sizeof(value), "%u NM", g_state.radar_range_nm);
-  text("ADS-B RADAR RANGE", 330, 370, kMuted, 2);
-  button(value, 820, 344, 398, 54, TFT_DARKCYAN);
-  value_row("MAP PACK", g_state.map_pack[0] ? g_state.map_pack : "NOT INSTALLED", 445);
+  button("CHOOSE LOCATION ON MAP",330,350,888,68,TFT_DARKGREEN);
+  // Stored identities can be full manifest paths. Keep the 24 px display value
+  // inside the content column without altering the selected pack identity.
+  char pack_summary[43];
+  const char* pack=g_state.map_pack[0] ? g_state.map_pack : "NOT INSTALLED";
+  if(std::strlen(pack)>42) {
+    size_t prefix=39;
+    while(prefix && (static_cast<unsigned char>(pack[prefix])&0xc0)==0x80)--prefix;
+    std::memcpy(pack_summary,pack,prefix);
+    std::memcpy(pack_summary+prefix,"...",4);
+  } else std::snprintf(pack_summary,sizeof(pack_summary),"%s",pack);
+  value_row("MAP PACK", pack_summary, 445);
   value_row("RF GAIN", "AUTO (READ ONLY)", 495, kMuted);
   text("INTERNET LOCATION LOOKUP", 330, 550, kBlue, 2);
   button(g_state.ip_location_busy ? "LOOKING UP..." : "ZIP / ADDRESS", 330, 575, 250, 46,
@@ -285,9 +295,28 @@ void draw_data_maps() {
   button(catalog_action, 940, 126, 278, 48,
          g_state.catalog_busy ? TFT_DARKGREY : TFT_DARKCYAN);
   if (g_state.catalog_message[0]) text(g_state.catalog_message, 330, 180, kMuted, 2);
-  for (uint8_t i = 0; i < 5; ++i) {
-    const auto& pack = g_state.catalog_packs[i];
-    const int y = 185 + i * 96;
+
+  // The signed catalog may contain more than the five historical built-ins.
+  // Page by nonempty pack IDs; touch actions retain the catalog's original
+  // slot index (including gaps), never a page-relative row index.
+  const size_t pages = orcsdr::map_catalog_paging::page_count(g_state.catalog_packs);
+  if (g_catalog_cursor.page >= pages) g_catalog_cursor.page = static_cast<uint8_t>(pages - 1);
+  char page_title[32];
+  snprintf(page_title, sizeof(page_title), "PAGE %u / %u",
+           static_cast<unsigned>(g_catalog_cursor.page + 1), static_cast<unsigned>(pages));
+  text(page_title, 650, 115, kMuted, 2);
+  button("PREV", 650, 137, 120, 42, g_catalog_cursor.page > 0 ? TFT_NAVY : TFT_DARKGREY);
+  button("NEXT", 787, 137, 120, 42,
+         g_catalog_cursor.page + 1 < pages ? TFT_NAVY : TFT_DARKGREY);
+
+  const size_t pack_count = orcsdr::map_catalog_paging::entry_count(g_state.catalog_packs);
+  if (pack_count == 0) text("NO PACK ENTRIES. CHECK CATALOG.", 350, 290, kMuted, 2);
+  for (size_t row = 0; row < orcsdr::map_catalog_paging::kRowsPerPage; ++row) {
+    const int pack_index = orcsdr::map_catalog_paging::index_for_row(
+        g_state.catalog_packs, g_catalog_cursor.page, row);
+    if (pack_index < 0) continue;
+    const auto& pack = g_state.catalog_packs[pack_index];
+    const int y = 185 + static_cast<int>(row) * 96;
     M5.Display.fillRoundRect(330, y, 888, 88, 8, kPanel);
     M5.Display.drawRoundRect(330, y, 888, 88, 8, kBlue);
     text(pack.title[0] ? pack.title : "DATA PACK", 350, y + 24, kBlue, 3);
@@ -301,10 +330,11 @@ void draw_data_maps() {
     const char* install = pack.installed ? (pack.update_available ? "UPDATE" : "REINSTALL") : "INSTALL";
     button(install, 930, y + 14, 132, 42,
            g_state.catalog_busy || !g_state.catalog_ready ? TFT_DARKGREY : TFT_DARKCYAN);
-    button(g_catalog_remove_armed == i ? "CONFIRM" : "REMOVE", 1072, y + 14, 126, 42,
+    button(g_catalog_cursor.armed == pack_index ? "CONFIRM" : "REMOVE", 1072, y + 14, 126, 42,
            pack.installed && !g_state.catalog_busy ? TFT_MAROON : TFT_DARKGREY);
   }
   text("Manual only. Reception pauses and resumes after downloads.", 330, 688, TFT_LIGHTGREY, 1);
+  button("LOCAL MAPS",1000,665,218,36,TFT_NAVY);
 }
 
 void draw_display_audio() {
@@ -445,6 +475,7 @@ void draw_system_power() {
 void draw_system() {
   text("SYSTEM", 330, 115, kBlue, 3);
   button("SET CLOCK", 1000, 100, 218, 46, TFT_DARKCYAN);
+  button("RUN SETUP",720,100,240,46,TFT_NAVY);
   char value[48];
   draw_system_power();
   const bool local_known = g_state.rtc_valid && g_state.rtc_local[0];
@@ -790,7 +821,8 @@ void enter(const State& state_value, Section section) {
   g_wifi_edit = WifiEdit::none;
   g_location_edit = false;
   g_clock_edit = false;
-  g_catalog_remove_armed = -1;
+  g_catalog_cursor.armed = -1;
+  g_catalog_cursor.page = 0;
   g_active = true;
   g_latitude_set = state_value.location_configured;
   g_longitude_set = state_value.location_configured;
@@ -866,14 +898,20 @@ void update(const State& state_value) {
   const bool ntp_changed = g_state.ntp_state != state_value.ntp_state;
   if (ntp_changed) g_ntp_tapped = false;
   const bool rtc_flipped = g_state.rtc_valid != state_value.rtc_valid;
-  const bool catalog_changed = g_section == Section::data_maps &&
+  const bool catalog_inventory_changed =
       (g_state.catalog_ready != state_value.catalog_ready || g_state.catalog_busy != state_value.catalog_busy ||
        g_state.catalog_progress_percent != state_value.catalog_progress_percent ||
        strcmp(g_state.catalog_message, state_value.catalog_message) != 0 ||
        strcmp(g_state.catalog_date, state_value.catalog_date) != 0 ||
        memcmp(g_state.catalog_packs, state_value.catalog_packs, sizeof(g_state.catalog_packs)) != 0);
+  const bool catalog_changed = g_section == Section::data_maps && catalog_inventory_changed;
   const bool location_changed = g_section == Section::location_adsb &&
-      (g_state.ip_location_busy != state_value.ip_location_busy ||
+      (g_state.location_configured != state_value.location_configured ||
+       g_state.latitude_e7 != state_value.latitude_e7 ||
+       g_state.longitude_e7 != state_value.longitude_e7 ||
+       strcmp(g_state.location_label,state_value.location_label) != 0 ||
+       strcmp(g_state.map_pack,state_value.map_pack) != 0 ||
+       g_state.ip_location_busy != state_value.ip_location_busy ||
        g_state.ip_location_ready != state_value.ip_location_ready ||
        g_state.ip_latitude_e7 != state_value.ip_latitude_e7 ||
        g_state.ip_longitude_e7 != state_value.ip_longitude_e7 ||
@@ -893,7 +931,9 @@ void update(const State& state_value) {
        strcmp(g_state.orcdial_failure,state_value.orcdial_failure) ||
        g_state.orcdial_paired != state_value.orcdial_paired ||
        g_state.orcdial_bridge_ready != state_value.orcdial_bridge_ready);
+  if (catalog_inventory_changed) g_catalog_cursor.catalog_changed(state_value.catalog_packs);
   g_state = state_value;
+  if(g_edit==EditField::none&&g_state.location_configured)g_latitude_set=g_longitude_set=true;
   if (g_clock_edit) {
     // Keep the editor live: a finished NTP sync or a newly valid RTC refreshes untouched fields.
     if (!g_clock_dirty && ((ntp_changed && g_state.ntp_state == 2) || rtc_flipped)) clock_load_fields();
@@ -916,6 +956,20 @@ void update(const State& state_value) {
     draw_content();
   if (companion_changed && g_edit == EditField::none && g_wifi_edit == WifiEdit::none)
     draw_content();
+}
+
+bool begin_clock_edit() {
+  if(!g_active||g_section!=Section::system)return false;
+  start_clock_edit();return true;
+}
+Action begin_location_method(int method) {
+  if(method==0)return {ActionKind::location_ip_lookup,0};
+  if(method==1) {
+    g_location_edit=true;
+    text_editor::begin("ZIP CODE OR ADDRESS",g_location_query,sizeof(g_location_query)-1,false,"LOOK UP");
+    text_editor::draw();
+  } else if(method==2) {start_edit(EditField::latitude);draw_keypad();}
+  return {};
 }
 
 Action handle_touch(int32_t x, int32_t y) {
@@ -958,6 +1012,7 @@ Action handle_touch(int32_t x, int32_t y) {
     start_clock_edit();
     return {};
   }
+  if(g_section==Section::system&&hit(x,y,720,100,240,46))return {ActionKind::run_setup,0};
 #if ORCSDR_ORCDIAL
   if(g_section==Section::companion) {
     if(hit(x,y,330,540,280,48)) {
@@ -1018,13 +1073,9 @@ Action handle_touch(int32_t x, int32_t y) {
       return {};
     }
   } else if (g_section == Section::location_adsb) {
+    if(hit(x,y,330,350,888,68))return {ActionKind::open_location_picker,0};
     if (hit(x, y, 820, 204, 398, 54)) { start_edit(EditField::latitude); draw_keypad(); }
     else if (hit(x, y, 820, 274, 398, 54)) { start_edit(EditField::longitude); draw_keypad(); }
-    else if (hit(x, y, 820, 344, 398, 54)) {
-      g_state.radar_range_nm = next_value(g_state.radar_range_nm, kRanges);
-      draw_content();
-      return {ActionKind::range_changed, g_state.radar_range_nm};
-    }
     if (hit(x, y, 330, 575, 250, 46) && !g_state.ip_location_busy) {
       g_location_edit = true;
       text_editor::begin("ZIP CODE OR ADDRESS", g_location_query,
@@ -1042,18 +1093,34 @@ Action handle_touch(int32_t x, int32_t y) {
       return {ActionKind::location_ip_confirm, 0};
     }
   } else if (g_section == Section::data_maps) {
+    if(hit(x,y,1000,665,218,36))return {ActionKind::open_local_maps,0};
     if (hit(x, y, 940, 126, 278, 48) && !g_state.catalog_busy)
       return {ActionKind::catalog_check, 0};
-    for (uint8_t i = 0; i < 5; ++i) {
-      const int row_y = 185 + i * 96;
-      if (hit(x, y, 930, row_y + 14, 132, 42) && g_state.catalog_ready && !g_state.catalog_busy)
-        return {ActionKind::catalog_install, i};
-      if (hit(x, y, 1072, row_y + 14, 126, 42) && g_state.catalog_packs[i].installed && !g_state.catalog_busy) {
-        if (g_catalog_remove_armed == i) {
-          g_catalog_remove_armed = -1;
-          return {ActionKind::catalog_remove, i};
-        }
-        g_catalog_remove_armed = i;
+    const size_t pages = orcsdr::map_catalog_paging::page_count(g_state.catalog_packs);
+    if (hit(x, y, 650, 137, 120, 42) && g_catalog_cursor.page > 0) {
+      (void)g_catalog_cursor.turn(g_state.catalog_packs, -1);
+      draw_content();
+      return {};
+    }
+    if (hit(x, y, 787, 137, 120, 42) && g_catalog_cursor.page + 1 < pages) {
+      (void)g_catalog_cursor.turn(g_state.catalog_packs, 1);
+      draw_content();
+      return {};
+    }
+    for (size_t row = 0; row < orcsdr::map_catalog_paging::kRowsPerPage; ++row) {
+      const int pack_index = orcsdr::map_catalog_paging::index_for_row(
+          g_state.catalog_packs, g_catalog_cursor.page, row);
+      if (pack_index < 0) continue;
+      const int row_y = 185 + static_cast<int>(row) * 96;
+      if (hit(x, y, 930, row_y + 14, 132, 42)) {
+        const int selected = g_catalog_cursor.install(g_state.catalog_packs, row,
+                                                     g_state.catalog_ready, g_state.catalog_busy);
+        if (selected >= 0) return {ActionKind::catalog_install, selected};
+      }
+      if (hit(x, y, 1072, row_y + 14, 126, 42) &&
+          g_state.catalog_packs[pack_index].installed && !g_state.catalog_busy) {
+        const int selected = g_catalog_cursor.remove(g_state.catalog_packs, row, g_state.catalog_busy);
+        if (selected >= 0) return {ActionKind::catalog_remove, selected};
         draw_content();
         return {};
       }
@@ -1164,8 +1231,7 @@ bool self_check() {
       valid_coordinate(EditField::latitude, 90.00001) ||
       !valid_coordinate(EditField::longitude, -180.0) ||
       valid_coordinate(EditField::longitude, -180.00001)) return false;
-  if (next_value<uint16_t>(100, kRanges) != 10 ||
-      next_value<uint16_t>(0, kTimeouts) != 30) return false;
+  if (next_value<uint16_t>(0, kTimeouts) != 30) return false;
   if (strlen(wifi_key_row(0)) != 10 || strlen(wifi_key_row(2)) != 9) return false;
   const bool saved_symbols = g_wifi_symbols;
   g_wifi_symbols = true;
@@ -1200,7 +1266,10 @@ bool self_check() {
   g_location_edit = saved_location_edit;
   g_location_request_pending = saved_location_pending;
   strlcpy(g_location_query, saved_location_query, sizeof(g_location_query));
-  const State saved_state = g_state;
+  // Catalog now exposes all 16 slots. Keep the self-check's full-state
+  // backup in PSRAM, not on the main task's constrained stack.
+  static EXT_RAM_BSS_ATTR State saved_state;
+  saved_state = g_state;
   const Section saved_section = g_section;
   const bool saved_active = g_active;
   g_active = true;

@@ -3,6 +3,8 @@
 
 #include "ft8_audio_tap.hpp"
 #include "ft8_native_backend.hpp"
+#include "ft8_clock_estimator.hpp"
+#include "wwv_tick.hpp"
 #include "ft8_spectral_fft.hpp"
 
 #include <algorithm>
@@ -13,6 +15,7 @@
 #include <new>
 #include <sys/time.h>
 
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -27,6 +30,11 @@ namespace tap_ns = orcsdr::ftx::audio_tap;
 constexpr size_t kRingSamples = 12000u * 32u;    // 32 s of 12 kS/s audio, PSRAM
 constexpr size_t kDecodeCapacity = 24;
 constexpr uint32_t kStartDelayMs = 400;          // ring must hold the last samples of a slot before it is cut
+// Wide search (FT8 only): the slot is cut with this much audio before and after it, so stations still decode when the clock is seconds
+// off (a clock error e puts a station e seconds into the slot; the lead covers a slow clock, the trail a fast one). The decode waits for
+// the trail, so it costs this long on top of the decode time; the 15 s slot has room for both.
+constexpr uint32_t kWideExtraMs = 3000;
+constexpr uint64_t kWwvStreamPeriod = 12000;     // samples in one second of the audio stream
 
 struct Runtime {
   std::atomic<bool> active{false};
@@ -48,6 +56,32 @@ struct Runtime {
   std::atomic<int64_t> last_touch_us{0};
   std::atomic<bool> headless{false};
   std::atomic<bool> config_dirty{false};
+  std::atomic<bool> wide_search{false};
+  std::atomic<int32_t> pending_step_ms{0};       // clock correction the decoded stations ask for (0 = none)
+  std::atomic<bool> clock_stepped{false};        // the wall clock was just stepped: the slot schedule and the evidence restart
+  std::atomic<int32_t> dt_error_ms{0};           // latest estimate of our clock error from decoded DTs
+  std::atomic<uint16_t> dt_stations{0};
+  std::atomic<bool> dt_valid{false};
+  std::atomic<bool> last_slot_wide{false};
+  orcsdr::ft8::clock_dt::Estimator dt_estimator;
+  // WWV tick measurement: the decoder task pumps the audio ring through the detector while phase is 1.
+  std::atomic<uint8_t> wwv_phase{0};
+  std::atomic<bool> wwv_stop_req{false};
+  uint32_t wwv_seconds = 0;
+  orcsdr::wwv::Detector* wwv = nullptr;       // PSRAM, allocated on first use
+  bool wwv_running = false;                   // decoder task only
+  std::atomic<uint32_t> wwv_progress_s{0};    // whole seconds folded so far, published for wwv_report() on other tasks
+  std::atomic<uint32_t> wwv_step_count{0};    // wall-clock steps seen (clock_stepped), so a run that spans one can be abandoned
+  uint32_t wwv_step_at_start = 0;
+  uint64_t wwv_pos = 0;
+  uint64_t wwv_cont_total = 0;
+  uint64_t wwv_cont_at_request = 0;           // the discontinuity count when the measurement was requested (the retune is still to come)
+  int64_t wwv_requested_us = 0;
+  int64_t wwv_started_us = 0;
+  double wwv_tau_ref_ms = 0.0;
+  double wwv_tau_sum_ms = 0.0;
+  uint32_t wwv_tau_n = 0;
+  WwvReport wwv_result;
   uint16_t cfg_k = 64;
   uint16_t cfg_gate = 32;
   uint8_t cfg_fine_rows = 4;
@@ -88,7 +122,8 @@ struct Runtime {
   Status status{};
 };
 
-Runtime g;
+// Zero-initialised, not real-time and not DMA: kept in PSRAM so internal RAM stays free for the boot-time DMA pool.
+EXT_RAM_BSS_ATTR Runtime g;
 
 uint64_t wall_ms() {
   timeval tv{};
@@ -162,7 +197,129 @@ void mark_discontinuity() {
   g.continuity_sequence.fetch_add(1, std::memory_order_release);
 }
 
-void decode_slot(uint64_t slot_start_ms, uint32_t slot_ms, uint64_t now_ms, uint64_t total_now) {
+double wall_ms_precise() {
+  timeval tv{};
+  gettimeofday(&tv, nullptr);
+  return static_cast<double>(tv.tv_sec) * 1000.0 + static_cast<double>(tv.tv_usec) / 1000.0;
+}
+
+void wwv_finish(uint8_t note) {
+  WwvReport r;
+  r.note = note;
+  if (g.wwv != nullptr && g.wwv_running) {
+    const auto d = g.wwv->result();
+    r.seconds = d.seconds;
+    r.carrier_found = d.carrier_found;
+    r.carrier_hz = d.carrier_hz;
+    r.carrier_snr_db = d.carrier_snr_db;
+    r.ticks = d.ticks;
+    r.tick_stream_ms = d.tick_ms;
+    r.peak_z = d.peak_z;
+    r.halves_agree = d.halves_agree;
+    r.even_ms = d.even_ms;
+    r.odd_ms = d.odd_ms;
+    // Where the stream's seconds fall in wall time: sample index s was produced at tau + s / 12 ms, so a stream second boundary (s a
+    // multiple of 12000) sits at tau modulo 1000. The tick follows its stream boundary by tick_stream_ms.
+    if (g.wwv_tau_n > 0) {
+      const double tau = g.wwv_tau_ref_ms + g.wwv_tau_sum_ms / static_cast<double>(g.wwv_tau_n);
+      double frac = std::fmod(tau + static_cast<double>(d.tick_ms), 1000.0);
+      if (frac < 0.0) frac += 1000.0;
+      r.tick_wall_ms = static_cast<float>(frac);
+    }
+  }
+  r.phase = 2;
+  g.wwv_result = r;
+  g.wwv_running = false;
+  g.wwv_progress_s.store(0, std::memory_order_release);
+  g.wwv_phase.store(2, std::memory_order_release);
+  std::printf("ORC_FT8_WWV_DONE note=%u seconds=%u carrier=%d hz=%.2f snr_db=%.1f ticks=%d tick_wall_ms=%.2f z=%.1f agree=%d\n", static_cast<unsigned>(note),
+              static_cast<unsigned>(r.seconds), r.carrier_found ? 1 : 0, static_cast<double>(r.carrier_hz), static_cast<double>(r.carrier_snr_db),
+              r.ticks ? 1 : 0, static_cast<double>(r.tick_wall_ms), static_cast<double>(r.peak_z), r.halves_agree ? 1 : 0);
+}
+
+// Called every loop while phase is 1: feeds the audio that arrived since the last call to the detector, tracks the stream-to-wall-clock
+// offset, and finishes when enough seconds are folded.
+void wwv_pump() {
+  if (g.wwv == nullptr) {
+    g.wwv_phase.store(0, std::memory_order_release);
+    return;
+  }
+  if (g.wwv_stop_req.exchange(false, std::memory_order_acq_rel)) {
+    wwv_finish(1);
+    return;
+  }
+  const uint64_t total_now = g.total.load(std::memory_order_acquire);
+  const uint64_t cont_total = g.cont_total.load(std::memory_order_acquire);
+  if (!g.wwv_running) {
+    if (g.wwv_step_count.load(std::memory_order_acquire) != g.wwv_step_at_start) {   // the clock was stepped since the request
+      wwv_finish(3);
+      return;
+    }
+    // The caller retunes just before asking: wait for that retune to show up as a discontinuity (or 8 s), then for 3 s of settled audio.
+    if (cont_total == g.wwv_cont_at_request && esp_timer_get_time() - g.wwv_requested_us < 8000000) return;
+    if (esp_timer_get_time() - g.wwv_requested_us > 60000000) {   // no settled audio within 60 s: stop waiting
+      wwv_finish(4);
+      return;
+    }
+    if (total_now < cont_total + 36000u) return;
+    g.wwv_pos = total_now;
+    g.wwv_cont_total = cont_total;
+    g.wwv_started_us = esp_timer_get_time();
+    g.wwv_tau_n = 0;
+    g.wwv_tau_sum_ms = 0.0;
+    g.wwv_progress_s.store(0, std::memory_order_release);
+    g.wwv->reset(static_cast<uint32_t>(g.wwv_pos % kWwvStreamPeriod));
+    g.wwv_running = true;
+    return;
+  }
+  if (cont_total != g.wwv_cont_total || total_now - g.wwv_pos > kRingSamples - 12000u ||
+      g.wwv_step_count.load(std::memory_order_acquire) != g.wwv_step_at_start) {
+    wwv_finish(3);   // the audio was interrupted (a retune, a lost block): a tick fold across a gap means nothing
+    return;
+  }
+  EXT_RAM_BSS_ATTR static int16_t block[1024];
+  const uint64_t pos_before = g.wwv_pos;
+  while (g.wwv_pos < total_now) {
+    const size_t n = static_cast<size_t>(std::min<uint64_t>(sizeof(block) / sizeof(block[0]), total_now - g.wwv_pos));
+    for (size_t i = 0; i < n; ++i) block[i] = g.ring[(g.wwv_pos + i) % kRingSamples];
+    g.wwv->process(block, n);
+    g.wwv_pos += n;
+  }
+  g.wwv_progress_s.store(g.wwv->seconds(), std::memory_order_release);
+  if (g.wwv_pos > pos_before) {   // only a poll that consumed audio says anything about the stream-to-wall offset
+    const double tau = wall_ms_precise() - static_cast<double>(total_now) / 12.0;
+    if (g.wwv_tau_n == 0) g.wwv_tau_ref_ms = tau;
+    g.wwv_tau_sum_ms += tau - g.wwv_tau_ref_ms;
+    ++g.wwv_tau_n;
+  }
+  const int64_t elapsed_s = (esp_timer_get_time() - g.wwv_started_us) / 1000000;
+  if (g.wwv->failed()) wwv_finish(2);
+  else if (g.wwv->seconds() >= g.wwv_seconds) wwv_finish(0);
+  else if (elapsed_s > static_cast<int64_t>(g.wwv_seconds) + 30) wwv_finish(4);
+}
+
+// While the clock or the audio tap is not usable wwv_pump() does not run; a pending STOP (or the settle timeout) must still end the measurement.
+// Uses nothing that depends on the wall clock.
+void wwv_guard_check() {
+  if (g.wwv_phase.load(std::memory_order_acquire) != 1) return;
+  if (g.wwv_stop_req.exchange(false, std::memory_order_acq_rel)) wwv_finish(1);
+  else if (g.wwv_step_count.load(std::memory_order_acquire) != g.wwv_step_at_start) wwv_finish(3);
+  else if (!g.wwv_running && esp_timer_get_time() - g.wwv_requested_us > 60000000) wwv_finish(4);
+  else if (g.wwv_running && (esp_timer_get_time() - g.wwv_started_us) / 1000000 > static_cast<int64_t>(g.wwv_seconds) + 30) wwv_finish(4);
+}
+
+// The published clock-error estimate (FT8 CLOCK) must go with the evidence it came from.
+void reset_dt_report() {
+  g.dt_valid.store(false, std::memory_order_release);
+  g.dt_error_ms.store(0, std::memory_order_release);
+  g.dt_stations.store(0, std::memory_order_release);
+  g.last_slot_wide.store(false, std::memory_order_release);
+}
+
+void decode_slot(uint64_t slot_start_ms, uint32_t slot_ms, uint64_t now_ms, uint64_t total_now, bool wide) {
+  const uint32_t lead_ms = wide ? kWideExtraMs : 0u;           // FT8 only; the caller never sets it for JS8
+  const uint64_t lead_samples = static_cast<uint64_t>(lead_ms) * 12u;
+  const uint64_t window_samples = static_cast<uint64_t>(slot_ms + 2u * lead_ms) * 12u;
   const uint32_t continuity = g.continuity_sequence.load(std::memory_order_acquire);
   const uint64_t radio = g.captured_radio_context.load(std::memory_order_acquire);
   const uint64_t ms_since_start = now_ms - slot_start_ms;
@@ -173,7 +330,8 @@ void decode_slot(uint64_t slot_start_ms, uint32_t slot_ms, uint64_t now_ms, uint
   const uint64_t cont_ms = g.cont_ms.load(std::memory_order_acquire);
   const uint64_t cont_total = g.cont_total.load(std::memory_order_acquire);
   bool incomplete = (continuity & 1u) != 0 || g.continuity_sequence.load(std::memory_order_acquire) != continuity;
-  if (start_total < 0 || slot_start_ms < cont_ms + 100u || total_now - static_cast<uint64_t>(start_total) > kRingSamples - 12000u) {
+  if (start_total < static_cast<int64_t>(lead_samples) || slot_start_ms < cont_ms + 100u + lead_ms ||
+      total_now - static_cast<uint64_t>(start_total) + lead_samples > kRingSamples - 12000u) {
     incomplete = true;
   } else if (now_ms - cont_ms > 5000u) {
     // The tap must have delivered samples at the real 12 kS/s since the last discontinuity, or a block was lost.
@@ -186,7 +344,8 @@ void decode_slot(uint64_t slot_start_ms, uint32_t slot_ms, uint64_t now_ms, uint
     return;
   }
 
-  static int16_t chunk[4096];   // shared by the FT8/FT4 and JS8 paths: internal RAM is tight, so no second buffer
+  // Decoder-task scratch, never a DMA/ISR buffer; do not reserve 8 KiB of internal RAM at boot.
+  static EXT_RAM_BSS_ATTR int16_t chunk[4096];
   if (is_js8(g.mode)) {
     // JS8 (receive only): the backend returns a Decode only for a frame whose parity and CRC-12 both hold and that renders as a verified message.
     if (!js8_supported(g.mode) || g.js8 == nullptr) return;
@@ -197,7 +356,7 @@ void decode_slot(uint64_t slot_start_ms, uint32_t slot_ms, uint64_t now_ms, uint
     uint64_t jsumsq = 0;
     uint32_t jpeak = 0, jclipped = 0;
     while (jremaining > 0) {
-      const size_t take = jremaining > 4096 ? 4096 : static_cast<size_t>(jremaining);
+      const size_t take = jremaining > sizeof(chunk) / sizeof(chunk[0]) ? sizeof(chunk) / sizeof(chunk[0]) : static_cast<size_t>(jremaining);
       for (size_t i = 0; i < take; ++i) {
         const int16_t v = g.ring[(jpos + i) % kRingSamples];
         chunk[i] = v;
@@ -272,11 +431,11 @@ void decode_slot(uint64_t slot_start_ms, uint32_t slot_ms, uint64_t now_ms, uint
   }
 
   set_state(State::decoding);
-  g.backend->begin_slot(slot_start_ms);
+  g.backend->begin_slot(slot_start_ms, static_cast<size_t>(lead_samples));
   uint64_t sumsq = 0;
   uint32_t peak = 0, clipped = 0;
-  uint64_t pos = static_cast<uint64_t>(start_total);
-  uint64_t remaining = slot_samples;
+  uint64_t pos = static_cast<uint64_t>(start_total) - lead_samples;
+  uint64_t remaining = window_samples;
   while (remaining > 0) {
     const size_t take = remaining > sizeof(chunk) / sizeof(chunk[0]) ? sizeof(chunk) / sizeof(chunk[0]) : static_cast<size_t>(remaining);
     for (size_t i = 0; i < take; ++i) chunk[i] = g.ring[(pos + i) % kRingSamples];
@@ -298,13 +457,15 @@ void decode_slot(uint64_t slot_start_ms, uint32_t slot_ms, uint64_t now_ms, uint
   }
   const size_t n = g.backend->finish_slot(out, kDecodeCapacity);
   const auto& st = g.backend->stats();
-  s.slot_rms = static_cast<uint32_t>(std::sqrt(static_cast<double>(sumsq) / static_cast<double>(slot_samples)));
+  s.slot_rms = static_cast<uint32_t>(std::sqrt(static_cast<double>(sumsq) / static_cast<double>(window_samples)));
   s.slot_peak = peak;
   s.slot_clipped = clipped;
   ++s.slots_decoded;
   if (!g.snapshot_hold.load(std::memory_order_acquire) && g.snapshot != nullptr) {
-    std::memcpy(g.snapshot, g.backend->slot_audio(), g.backend->buffered() * sizeof(int16_t));
-    g.snapshot_count = g.backend->buffered();
+    // The saved slot is the nominal 15 s (without the wide-search lead and trail), so DUMP and SAVE keep their format.
+    const size_t kept = std::min<size_t>(g.backend->buffered() - static_cast<size_t>(lead_samples), static_cast<size_t>(slot_samples));
+    std::memcpy(g.snapshot, g.backend->slot_audio() + lead_samples, kept * sizeof(int16_t));
+    g.snapshot_count = kept;
     g.snapshot_slot_ms = slot_start_ms;
     g.have_slot = true;
   }
@@ -316,6 +477,25 @@ void decode_slot(uint64_t slot_start_ms, uint32_t slot_ms, uint64_t now_ms, uint
   s.last_deadline_hit = st.deadline_hit;
   s.last_coarse = st.coarse_candidates;
   s.last_strong = st.strong_candidates;
+  {   // Our clock error as the decoded stations see it (median DT): evidence for a correction, and a cross-check on a network sync.
+    orcsdr::ft8::clock_dt::Sample samples[kDecodeCapacity];
+    size_t sample_count = 0;
+    for (size_t i = 0; i < n && sample_count < kDecodeCapacity; ++i)
+      samples[sample_count++] = orcsdr::ft8::clock_dt::Sample{out[i].dt_ms, orcsdr::ft8::clock_dt::station_id(out[i].callsign)};
+    g.dt_estimator.add_slot(samples, sample_count);
+    const auto estimate = g.dt_estimator.estimate();
+    g.dt_valid.store(estimate.valid, std::memory_order_release);
+    g.dt_error_ms.store(estimate.error_ms, std::memory_order_release);
+    g.dt_stations.store(estimate.stations, std::memory_order_release);
+    g.last_slot_wide.store(wide, std::memory_order_release);
+    const int32_t step = g.dt_estimator.step_ms();
+    if (step != 0) {
+      g.pending_step_ms.store(step, std::memory_order_release);
+      g.dt_estimator.clear();   // one request per body of evidence; the next estimate starts fresh
+      reset_dt_report();
+      std::printf("ORC_FT8_CLOCK_DT correction_requested step_ms=%d stations=%u\n", static_cast<int>(step), static_cast<unsigned>(estimate.stations));
+    }
+  }
   std::printf("ORC_FT8_RT slot=%llu decodes=%u total_ms=%u spectral=%u search=%u refine=%u gates=%u coarse=%u attempted=%u deadline=%d\n",
               static_cast<unsigned long long>(slot_start_ms / 1000u), static_cast<unsigned>(n), static_cast<unsigned>(st.total_ms),
               static_cast<unsigned>(st.spectral_ms), static_cast<unsigned>(st.search_ms), static_cast<unsigned>(st.refine_ms),
@@ -410,6 +590,7 @@ void decoder_task(void*) {
     if (g.dial_offset_fn != nullptr) g.dial_offset_hz.store(g.dial_offset_fn(), std::memory_order_release);
     if (!g.headless.load(std::memory_order_acquire) &&
         esp_timer_get_time() - g.last_touch_us.load(std::memory_order_acquire) > 8000000) {
+      if (g.wwv_phase.load(std::memory_order_acquire) == 1) wwv_finish(1);   // the band must come back: ft8_wwv_service restores it at phase 2
       g.active.store(false, std::memory_order_release);
       g.tap_ready = false;
       set_state(State::stopped);
@@ -423,7 +604,14 @@ void decoder_task(void*) {
       c.gate = g.cfg_gate;
       c.fine_rows = g.cfg_fine_rows;
       c.deadline_ms = g.cfg_deadline_ms;
+      c.window_extra_ms = kWideExtraMs;
       g.backend->set_config(c);
+    }
+    if (g.clock_stepped.exchange(false, std::memory_order_acq_rel)) {
+      g.dt_estimator.clear();   // the old DTs were measured against the old clock
+      g.pending_step_ms.store(0, std::memory_order_release);   // a correction queued from those DTs is stale too
+      reset_dt_report();
+      last_slot = UINT64_MAX;   // the slot index jumped with the clock: restart the schedule
     }
     if (g.mode_changed.exchange(false, std::memory_order_acq_rel)) {
       if (is_js8(g.mode)) {
@@ -437,16 +625,23 @@ void decoder_task(void*) {
     }
     if (g.clock_valid != nullptr && !g.clock_valid()) {
       set_state(State::waiting_clock);
+      wwv_guard_check();
       continue;
     }
     if (!g.tap_ready) {
       set_state(State::waiting_signal);
+      wwv_guard_check();
       continue;
     }
     if (static_cast<State>(g.state.load(std::memory_order_acquire)) == State::waiting_clock ||
         static_cast<State>(g.state.load(std::memory_order_acquire)) == State::waiting_signal)
       set_state(State::listening);
 
+    if (g.wwv_phase.load(std::memory_order_acquire) == 1) {   // measuring WWV: the audio goes to the tick detector, no slot is decoded
+      wwv_pump();
+      last_slot = UINT64_MAX;
+      continue;
+    }
     const uint32_t slot_ms = slot_ms_for(g.mode);
     const uint64_t t_before = g.total.load(std::memory_order_acquire);
     const uint64_t now_ms = wall_ms();
@@ -457,12 +652,14 @@ void decoder_task(void*) {
       last_slot = current;
       continue;
     }
-    if (current > last_slot && (now_ms % slot_ms) >= kStartDelayMs) {
+    const bool wide = g.wide_search.load(std::memory_order_acquire) && g.mode == orcsdr::ft8::DigitalMode::ft8;
+    if (current > last_slot && (now_ms % slot_ms) >= kStartDelayMs + (wide ? kWideExtraMs : 0u)) {
       const uint64_t finished = current - 1;
       last_slot = current;
-      decode_slot(finished * slot_ms, slot_ms, now_ms, total_now);
+      decode_slot(finished * slot_ms, slot_ms, now_ms, total_now, wide);
     }
   }
+  if (g.wwv_phase.load(std::memory_order_acquire) == 1) wwv_finish(1);   // stop() ended the loop mid-measurement: report it so the band is restored and the next start is accepted
   g.task_alive.store(false, std::memory_order_release);
   vTaskDelete(nullptr);
 }
@@ -570,6 +767,7 @@ bool start(orcsdr::ft8::DigitalMode mode, DecodeCallback on_decode, void* contex
   config.gate = g.cfg_gate;
   config.fine_rows = g.cfg_fine_rows;
   config.deadline_ms = g.cfg_deadline_ms;       // finish inside the slot that follows
+  config.window_extra_ms = kWideExtraMs;        // buffers sized for the wide search; a normal slot does not use the extra
   config.now_us = now_us_fn;
   orcsdr::ftx::native::Memory memory;
   memory.alloc = psram_alloc;
@@ -603,6 +801,13 @@ bool start(orcsdr::ft8::DigitalMode mode, DecodeCallback on_decode, void* contex
   g.blocks_us_sum.store(0);
   g.blocks_us_n.store(0);
   g.tap_blocks.store(0);
+  g.dt_estimator.clear();   // evidence, a queued correction and the estimate from an earlier session must not carry over: the clock or band may have changed
+  g.pending_step_ms.store(0, std::memory_order_release);
+  g.clock_stepped.store(false, std::memory_order_release);
+  g.dt_valid.store(false, std::memory_order_release);
+  g.dt_error_ms.store(0, std::memory_order_release);
+  g.dt_stations.store(0, std::memory_order_release);
+  g.last_slot_wide.store(false, std::memory_order_release);
   g.reset_pending.store(true, std::memory_order_release);
   g.last_touch_us.store(esp_timer_get_time(), std::memory_order_release);
   set_state(State::waiting_signal);
@@ -655,6 +860,69 @@ bool set_mode(orcsdr::ft8::DigitalMode mode) {
 void touch() { g.last_touch_us.store(esp_timer_get_time(), std::memory_order_release); }
 
 void note_discontinuity() { g.reset_pending.store(true, std::memory_order_release); }
+
+bool wwv_start(uint32_t seconds) {
+  if (!g.active.load(std::memory_order_acquire) || !g.tap_ready || seconds < 20 || seconds > 240) return false;
+  if (g.wwv_phase.load(std::memory_order_acquire) == 1) return false;
+  if (g.wwv == nullptr) {
+    void* memory = psram_alloc(sizeof(orcsdr::wwv::Detector));
+    if (memory == nullptr) return false;
+    g.wwv = new (memory) orcsdr::wwv::Detector();
+  }
+  g.wwv_seconds = seconds;
+  g.wwv_running = false;
+  g.wwv_cont_at_request = g.cont_total.load(std::memory_order_acquire);
+  g.wwv_requested_us = esp_timer_get_time();
+  g.wwv_step_at_start = g.wwv_step_count.load(std::memory_order_acquire);   // a clock step between now and the end of the run voids it
+  g.wwv_stop_req.store(false, std::memory_order_release);
+  g.wwv_result = WwvReport{};
+  g.wwv_phase.store(1, std::memory_order_release);
+  return true;
+}
+
+void wwv_stop() { g.wwv_stop_req.store(true, std::memory_order_release); }
+
+WwvReport wwv_report() {
+  WwvReport r;
+  const uint8_t phase = g.wwv_phase.load(std::memory_order_acquire);
+  if (phase == 2) return g.wwv_result;
+  r.phase = phase;
+  if (phase == 1) r.seconds = g.wwv_progress_s.load(std::memory_order_acquire);
+  return r;
+}
+
+void set_wide_search(bool wide) { g.wide_search.store(wide, std::memory_order_release); }
+
+bool take_clock_step(int32_t* delta_ms) {
+  const int32_t step = g.pending_step_ms.exchange(0, std::memory_order_acq_rel);
+  if (step == 0) return false;
+  if (delta_ms != nullptr) *delta_ms = step;
+  return true;
+}
+
+void clock_changed() {
+  // The clock was set or disturbed by hand: corrections decoded against the old clock are void, and so is a WWV run spanning the change.
+  g.pending_step_ms.store(0, std::memory_order_release);
+  g.wwv_step_count.fetch_add(1, std::memory_order_acq_rel);
+  g.clock_stepped.store(true, std::memory_order_release);
+}
+
+void clock_stepped(int32_t delta_ms) {
+  // The ring is indexed by sample count and the discontinuity stamp by wall time: move the stamp with the clock so the "samples since the
+  // last discontinuity" rate check stays valid, and have the decoder task restart its slot schedule and evidence.
+  g.cont_ms.fetch_add(static_cast<uint64_t>(static_cast<int64_t>(delta_ms)), std::memory_order_acq_rel);
+  g.wwv_step_count.fetch_add(1, std::memory_order_acq_rel);
+  g.clock_stepped.store(true, std::memory_order_release);
+}
+
+DtReport dt_report() {
+  DtReport r;
+  r.valid = g.dt_valid.load(std::memory_order_acquire);
+  r.error_ms = g.dt_error_ms.load(std::memory_order_acquire);
+  r.stations = g.dt_stations.load(std::memory_order_acquire);
+  r.wide = g.last_slot_wide.load(std::memory_order_acquire);
+  return r;
+}
 void set_radio_context(uint8_t band_index, uint32_t dial_hz) {
   g.radio_context.store((uint64_t{band_index} << 32) | dial_hz, std::memory_order_release);
   note_discontinuity();

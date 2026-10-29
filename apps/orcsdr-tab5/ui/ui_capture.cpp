@@ -1,5 +1,6 @@
 #include "ui_capture.hpp"
 
+#include <mbedtls/base64.h>
 #include <mbedtls/sha256.h>
 
 #include <cstdlib>
@@ -135,6 +136,58 @@ Result save_bmp(M5GFX& display, orcsdr::storage::FileSystem& filesystem, const c
     result.error = ok ? "size_mismatch" : "write_failed";
   }
   return result;
+}
+
+namespace {
+bool sink_text(SnapSink sink, void* context, const char* text) { return sink(text, strlen(text), context); }
+}  // namespace
+
+bool stream_png(M5GFX& display, SnapSink sink, void* context) {
+  size_t png_bytes = 0;
+  // The size must be explicit: createPng's default width and height of 0 mean an empty rectangle and it returns null.
+  void* png = display.createPng(&png_bytes, 0, 0, display.width(), display.height());
+  if (png == nullptr || png_bytes == 0) {
+    free(png);
+    sink_text(sink, context, "ORC_SNAP_ERROR encode_failed\n");
+    return false;
+  }
+  uint8_t digest[32];
+  mbedtls_sha256(static_cast<const uint8_t*>(png), png_bytes, digest, 0);
+  char hex[65];
+  for (size_t i = 0; i < 32; ++i) snprintf(hex + i * 2, 3, "%02x", digest[i]);
+  char begin[160];
+  const int begin_length = snprintf(begin, sizeof(begin), "ORC_SNAP_BEGIN width=%d height=%d bytes=%u sha256=%s\n",
+                                    static_cast<int>(display.width()), static_cast<int>(display.height()), static_cast<unsigned>(png_bytes), hex);
+  if (!sink(begin, static_cast<size_t>(begin_length), context)) {   // the host is not reading: give up before encoding anything more
+    free(png);
+    return false;
+  }
+  // "ORC_SNAP_DATA <offset> " + base64 of one chunk + newline
+  char* line = static_cast<char*>(malloc(48 + ((kSnapChunkBytes + 2) / 3) * 4));
+  if (line == nullptr) {
+    free(png);
+    sink_text(sink, context, "ORC_SNAP_ERROR allocation_failed\n");
+    return false;
+  }
+  bool ok = true;
+  for (size_t offset = 0; ok && offset < png_bytes; offset += kSnapChunkBytes) {
+    const size_t count = png_bytes - offset < kSnapChunkBytes ? png_bytes - offset : kSnapChunkBytes;
+    const int prefix = snprintf(line, 48, "ORC_SNAP_DATA %u ", static_cast<unsigned>(offset));
+    size_t encoded = 0;
+    ok = mbedtls_base64_encode(reinterpret_cast<unsigned char*>(line + prefix), ((kSnapChunkBytes + 2) / 3) * 4 + 1, &encoded,
+                               static_cast<const uint8_t*>(png) + offset, count) == 0;
+    if (!ok) break;
+    line[prefix + encoded] = '\n';
+    if (!sink(line, static_cast<size_t>(prefix) + encoded + 1, context)) {   // stalled: stop, do not wait out the remaining chunks
+      free(line);
+      free(png);
+      return false;
+    }
+  }
+  free(line);
+  free(png);
+  sink_text(sink, context, ok ? "ORC_SNAP_END\n" : "ORC_SNAP_ERROR base64_failed\n");
+  return ok;
 }
 
 }  // namespace orcsdr::ui_capture

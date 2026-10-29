@@ -1,0 +1,45 @@
+name: SD storage regressions
+
+on:
+  push:
+    branches: [main]
+    paths: &sd_paths
+      - "apps/orcsdr-tab5/ui/orcsdr_storage.*"
+      - "apps/orcsdr-tab5/ui/sdmmc_dma_buffer.hpp"
+      - "apps/orcsdr-tab5/ui/sd_benchmark_plan.hpp"
+      - "apps/orcsdr-tab5/ui/main.cpp"
+      - "apps/orcsdr-tab5/ui/lora_history.*"
+      - "apps/orcsdr-tab5/ui/lora_packet_log.*"
+      - "apps/orcsdr-tab5/ui/ft8_*"
+      - "apps/orcsdr-tab5/ui/sstv_*"
+      - "apps/orcsdr-tab5/tests/sdmmc_dma_buffer_tests.cpp"
+      - "apps/orcsdr-tab5/tests/sstv_*"
+      - "apps/orcsdr-tab5/tests/maps/ui_stubs/**"
+      - "apps/orcsdr-tab5/tests/maps/CMakeLists.txt"
+      - "apps/orcsdr-tab5/sdkconfig.defaults"
+      - "apps/orcsdr-tab5/dependencies.lock"
+      - "tests/lora_history_tests.cpp"
+      - "tests/sd_benchmark_plan_tests.cpp"
+      - "tools/test-sd-storage.sh"
+      - ".github/workflows/sd-storage-tests.yml"
+  pull_request:
+    paths: *sd_paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-storage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run focused storage tests with sanitizers
+        run: bash tools/test-sd-storage.sh
+      - name: Save storage test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sd-storage-logs
+          path: sd-storage-*.log

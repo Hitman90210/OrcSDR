@@ -1,0 +1,33 @@
+{
+  "retained_read_1": {
+    "bytes": 2764854,
+    "sha256": "eba5c3b7496c76604bcf0db0fafb633e9c1dbd6d68090fc483120ebd89616b12",
+    "matches_original": true
+  },
+  "retained_read_2": {
+    "bytes": 2764854,
+    "sha256": "1a84d0f508a63b9052330008eae8c7be7ee307c6d0cdefab243749105a2f3e35",
+    "matches_original": true
+  },
+  "retained_read_3": {
+    "bytes": 2764854,
+    "sha256": "eba5c3b7496c76604bcf0db0fafb633e9c1dbd6d68090fc483120ebd89616b12",
+    "matches_original": true
+  },
+  "scratch": {
+    "bytes": 131109,
+    "sha256": "f1003b5b74a9466806c754554ba073677812fb387de4e10c4c0661f357c5ff22",
+    "readback_equal": true,
+    "target": "/orcsdr/sdguard_5c6f2853_c92abf1f98e841ca85d1479c706e7e12.bin"
+  },
+  "lora": {
+    "before_bytes": 54790,
+    "after_bytes": 54790,
+    "old_prefix_preserved": true,
+    "before_rows": 409,
+    "before_rf_senders": 56
+  },
+  "map_frame_bytes": 1417728,
+  "expected_absent_path_errors": 3,
+  "unexpected_transfer_errors": 0
+}

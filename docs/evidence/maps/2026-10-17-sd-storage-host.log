@@ -1,0 +1,6 @@
+Host-only SD regression; UTC=20261018T063334Z; binaries=/tmp/orcsdr-sd-storage.eofc5c
+dma_buffer PASS; build=/mnt/f/AI/OrcSDR-TEMP/maps-integration-completion/sd-storage-dma_buffer-build-20261018T063334Z.log; run=/mnt/f/AI/OrcSDR-TEMP/maps-integration-completion/sd-storage-dma_buffer-run-20261018T063334Z.log
+write_plan PASS; build=/mnt/f/AI/OrcSDR-TEMP/maps-integration-completion/sd-storage-write_plan-build-20261018T063334Z.log; run=/mnt/f/AI/OrcSDR-TEMP/maps-integration-completion/sd-storage-write_plan-run-20261018T063334Z.log
+lora_history PASS; build=/mnt/f/AI/OrcSDR-TEMP/maps-integration-completion/sd-storage-lora_history-build-20261018T063334Z.log; run=/mnt/f/AI/OrcSDR-TEMP/maps-integration-completion/sd-storage-lora_history-run-20261018T063334Z.log
+sstv_archive PASS; build=/mnt/f/AI/OrcSDR-TEMP/maps-integration-completion/sd-storage-sstv_archive-build-20261018T063334Z.log; run=/mnt/f/AI/OrcSDR-TEMP/maps-integration-completion/sd-storage-sstv_archive-run-20261018T063334Z.log
+SD_STORAGE_HOST_PASS (no device, DMA hardware or power-cut qualification)

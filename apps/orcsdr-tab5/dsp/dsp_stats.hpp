@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-// Low-overhead DSP task instrumentation (per-stage time, load, queue depth).
+// Low-overhead DSP task instrumentation (per-stage average/peak time, load, queue depth).
 // Stages are timed with two micros() reads each; counters are atomics read and
 // reset by the RTL_DSP STATS serial command, so nothing prints unless asked.
 namespace orcsdr::dsp::stats {

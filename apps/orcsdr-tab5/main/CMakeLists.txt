@@ -1,3 +1,4 @@
+include("${CMAKE_CURRENT_LIST_DIR}/map_catalog_config.cmake")
 set(ORCSDR_EMBED_FILES
     "orc_badge_104.png"
     "orc_badge_104.rgb565"
@@ -36,7 +37,6 @@ idf_component_register(
         "../ui/am_dashboard.cpp"
         "../ui/ft8_model.cpp"
         "../ui/ft8_conditions.cpp"
-        "../ui/ft8_world_data.cpp"
         "../ui/ft8_adif.cpp"
         "../ui/ft8_mode.cpp"
         "../ui/ft8_sync.cpp"
@@ -64,9 +64,12 @@ idf_component_register(
         "../ui/ft8_audio_tap.cpp"
         "../ui/ft8_native_backend.cpp"
         "../ui/ft8_runtime.cpp"
+        "../ui/ft8_clock_estimator.cpp"
+        "../ui/wwv_tick.cpp"
         "../ui/memory_reclaim.cpp"
         "../ui/ft8_hunter.cpp"
         "../ui/ft8_dashboard.cpp"
+        "../ui/ft8_map_source.cpp"
         "../ui/sstv_receiver.cpp"
         "../ui/sstv_modes.cpp"
         "../ui/sstv_auto_detect.cpp"
@@ -91,6 +94,7 @@ idf_component_register(
         "../ui/shortwave_hunt.cpp"
         "../ui/shortwave_dashboard.cpp"
         "../ui/shortwave_dashboard_state.cpp"
+        "../ui/shortwave_ssb.cpp"
         "../ui/receiver_tuning_controls.cpp"
         "../ui/adsb_dashboard.cpp"
         "../ui/adsb_decoder.cpp"
@@ -101,6 +105,16 @@ idf_component_register(
         "../ui/airband_dashboard.cpp"
         "../ui/airband_runtime.cpp"
         "../ui/catalog_sync.cpp"
+        "../ui/map_catalog.cpp"
+        "../ui/map_transfer.cpp"
+        "../ui/map_activation.cpp"
+        "../ui/map_delivery_state.cpp"
+        "../ui/map_delivery_nvs.cpp"
+        "../ui/map_catalog_session.cpp"
+        "../ui/map_install.cpp"
+        "../ui/map_downloads.cpp"
+        "../ui/map_catalog_fetch.cpp"
+        "../ui/map_http_stream.cpp"
         "../ui/cb_dashboard.cpp"
         "../ui/cb_scanner.cpp"
         "../ui/dashboard_audio_control.cpp"
@@ -122,7 +136,15 @@ idf_component_register(
         "../ui/lora_channel_control.cpp"
         "../ui/location_estimate.cpp"
         "../ui/receiver_location.cpp"
-        "../ui/offline_map.cpp"
+        "../ui/map_pipeline.cpp"
+        "../ui/map_inventory.cpp"
+        "../ui/map_service.cpp"
+        "../ui/map_view.cpp"
+        "../ui/map_preferences.cpp"
+        "../ui/map_screen.cpp"
+        "../ui/map_download_notice.cpp"
+        "../ui/map_serial.cpp"
+        "../ui/setup_ui.cpp"
         "../ui/navigation_service.cpp"
         "../ui/nvs_store.cpp"
         "../ui/p25_dashboard.cpp"
@@ -167,12 +189,25 @@ idf_component_register(
         "../ui/time_service.cpp"
         "../ui/clock_settings.cpp"
         "../ui/ntp_sync.cpp"
+        "../ui/clock_sync_status.cpp"
         "../ui/ui_capture.cpp"
         "../ui/web_console.cpp"
         "../ui/web_audio_transport.cpp"
+        "../ui/dead_air_model.cpp"
+        "../ui/dead_air_journal.cpp"
+        "../ui/dead_air_sd_journal.cpp"
+        "../ui/dead_air_dashboard.cpp"
+        "../ui/dead_air_app.cpp"
+        "../ui/dead_air_sweep.cpp"
+        "../ui/dead_air_palette.cpp"
+        "../ui/dead_air_audio.cpp"
+        "../ui/dead_air_clip.cpp"
+        "../ui/dead_air_format.cpp"
+        "../ui/dead_air_info.cpp"
+        "../ui/dead_air_mic.cpp"
         "../ui/rf24_dashboard.cpp"
         "../ui/wifi_service.cpp"
-    INCLUDE_DIRS "." "../ui" "../dsp"
+    INCLUDE_DIRS "." "../ui" "../dsp" "${CMAKE_CURRENT_BINARY_DIR}"
     REQUIRES
         bootloader_support
         mbedtls
@@ -181,6 +216,7 @@ idf_component_register(
         mbelib
         nvs_flash
         esp_rtl_sdr
+        orcmaps
         esp_driver_usb_serial_jtag
         esp_driver_i2c
         esp_driver_gpio
@@ -216,6 +252,13 @@ target_compile_definitions(${COMPONENT_LIB} PRIVATE ORCSDR_ORCDIAL=1)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE "ORCSDR_BUILD_ID=\"${ORCSDR_BUILD_ID}\"")
 
 target_compile_features(${COMPONENT_LIB} PRIVATE cxx_std_17)
+option(ORCSDR_MAP_STARTUP_DIAG "Measure pre-app DMA reservation; test builds only" OFF)
+if(ORCSDR_MAP_STARTUP_DIAG)
+    target_sources(${COMPONENT_LIB} PRIVATE "../ui/map_startup_diagnostics.cpp")
+    target_link_libraries(${COMPONENT_LIB} INTERFACE
+        "-Wl,--wrap=esp_psram_extram_reserve_dma_pool"
+        "-Wl,--undefined=__wrap_esp_psram_extram_reserve_dma_pool")
+endif()
 option(ORCSDR_WIFI_RX_DIAG "Instrument Wi-Fi receive callbacks; test builds only" OFF)
 if(ORCSDR_WIFI_RX_DIAG)
     target_sources(${COMPONENT_LIB} PRIVATE "../ui/wifi_rx_diagnostics.cpp")

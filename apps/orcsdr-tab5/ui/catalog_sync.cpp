@@ -66,7 +66,7 @@ uint8_t g_requested_pack = 0;
 constexpr const char* kIds[kBuiltInPackCount] = {
     "faa_aircraft", "aviation", "noaa_weather", "fcc_broadcast", "lane_county_map"};
 constexpr const char* kTitles[kBuiltInPackCount] = {
-    "FAA AIRCRAFT", "AVIATION / ATC", "NOAA WEATHER", "FCC FM / AM", "LANE COUNTY MAP"};
+    "FAA AIRCRAFT", "AVIATION / ATC", "NOAA WEATHER", "FCC FM / AM", "REGIONAL MAP (LEGACY)"};
 
 int pack_index(const char* id) {
   if (id == nullptr) return -1;
@@ -701,6 +701,10 @@ void worker(void*) {
 }
 
 bool request(Operation operation, uint8_t pack_index) {
+  if(operation!=Operation::check && (pack_index>=kPackCount || pack_index==kRetiredLegacyMapIndex)) {
+    set_message("Unsupported data pack; files preserved");
+    return false;
+  }
   if (g_fs == nullptr) {
     set_message("SD storage unavailable");
     return false;
@@ -747,7 +751,7 @@ void begin(orcsdr::storage::FileSystem* filesystem, uint64_t free_bytes) {
       {"/orcsdr/data/aviation.idx", "/orcsdr/data/faa_aviation.idx", nullptr},
       {"/orcsdr/data/noaa_weather.idx", nullptr, nullptr},
       {"/orcsdr/data/fcc_broadcast.idx", nullptr, nullptr},
-      {"/orcsdr/data/lane_county_map.idx", nullptr, nullptr}};
+      {nullptr, nullptr, nullptr}};
   bool installed[kBuiltInPackCount]{};
   char versions[kBuiltInPackCount][sizeof(PackView::version)]{};
   for (uint8_t i = 0; filesystem != nullptr && g_worker == nullptr && i < kBuiltInPackCount; ++i) {
@@ -792,6 +796,7 @@ State state() {
   portENTER_CRITICAL(&g_lock);
   copy = g_state;
   portEXIT_CRITICAL(&g_lock);
+  copy.packs[kRetiredLegacyMapIndex]={};
   return copy;
 }
 

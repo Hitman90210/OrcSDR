@@ -3,6 +3,9 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "catalog_sync.hpp"
+#include "adsb_dashboard.hpp"
+
 namespace orcsdr::settings {
 
 enum class Section : uint8_t {
@@ -76,9 +79,9 @@ struct State {
   bool location_configured = false;
   int32_t latitude_e7 = 0;
   int32_t longitude_e7 = 0;
-  uint16_t radar_range_nm = 25;
+  uint16_t radar_range_nm = orcsdr::adsb::kDefaultRadarRangeNm;
   char location_label[40]{};
-  char map_pack[40]{};
+  char map_pack[256]{};
   bool ip_location_busy = false;
   bool ip_location_ready = false;
   int32_t ip_latitude_e7 = 0;
@@ -87,7 +90,7 @@ struct State {
   char ip_location_message[48]{};
 
   uint8_t brightness = 180;
-  uint8_t rotation = 1;
+  uint8_t rotation = 3;
   uint16_t screen_timeout_sec = 0;
   uint8_t volume = 128;
   bool sound_default = true;
@@ -105,7 +108,9 @@ struct State {
   uint8_t catalog_progress_percent = 0;
   char catalog_message[80]{};
   char catalog_date[16]{};
-  CatalogPackView catalog_packs[5]{};
+  // Mirrors catalog::kPackCount so dynamic catalog entries are visible in Settings.
+  static constexpr std::size_t kCatalogViewCapacity = catalog::kPackCount;
+  CatalogPackView catalog_packs[kCatalogViewCapacity]{};
   bool companion_supported = false;
   bool web_console_enabled = false;
   bool web_console_listening = false;
@@ -163,6 +168,9 @@ enum class ActionKind : uint8_t {
   ,clock_set_utc          // utc = UTC seconds, value = UTC offset in minutes: write the RTC and store the offset
   ,clock_offset_changed   // value = UTC offset in minutes: store it (the time itself was already right)
   ,clock_ntp_sync         // optional: set the RTC from the network (Wi-Fi must already be connected)
+  ,open_local_maps
+  ,open_location_picker
+  ,run_setup
 };
 
 struct Action {
@@ -175,6 +183,9 @@ void enter(const State& state, Section section = Section::connectivity);
 void leave();
 void draw();
 void update(const State& state);
+// Open an existing location method: network=0, address=1, coordinates=2.
+Action begin_location_method(int method);
+bool begin_clock_edit();
 Action handle_touch(int32_t x, int32_t y);
 bool active();
 const State& state();

@@ -1,0 +1,118 @@
+SOURCE maps-com39-picker-initial-20261017.log
+2026-10-17T19:01:34.459 RX RTL_HEALTH_STATUS uptime_ms=23747 free_heap=22956608 min_free_heap=22953224 dma_free=16367 dma_min=16247 dma_largest=15872 tasks=25 main_stack_hwm=6468 reset_reason=11 internal_free=51531 internal_min=50135 internal_largest=31744 psram_free=22921380 psram_largest=22544384
+2026-10-17T19:01:35.594 RX RTL_UI_STATUS screen=home band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=home
+2026-10-17T19:01:36.642 RX UI_SELF_CHECK am=1 fm=1 home=1 shortwave=1 keypad=1 editor=1
+2026-10-17T19:01:55.215 RX RTL_UI_STATUS screen=maps band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=home
+2026-10-17T19:01:56.356 RX ORC_MAP_STATUS state=1 generation=2 revision=1 cached_pushes=1 push_us=25373 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=87 stream_us=406742 render_us=941469 total_us=1352627 io_us=41072
+2026-10-17T19:01:56.357 RX ORC_MAP_MEMORY internal_free=16335 internal_largest=11264 dma_free=2011 dma_largest=1728 psram_free=4994460 psram_largest=4849664
+2026-10-17T19:02:07.590 RX ORC_MAP_STATUS state=1 generation=3 revision=2 cached_pushes=1 push_us=25393 frame_bytes=594000 tiles=12 missing=0 failed=0 features=715 reads=106 bytes=99618 lookup_us=229 stream_us=424199 render_us=894706 total_us=1328814 io_us=48138
+2026-10-17T19:02:07.591 RX ORC_MAP_MEMORY internal_free=16203 internal_largest=11264 dma_free=1879 dma_largest=1728 psram_free=4994460 psram_largest=4849664
+2026-10-17T19:02:13.761 RX ORC_MAP_STATUS state=1 generation=4 revision=3 cached_pushes=1 push_us=26256 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=85 stream_us=404722 render_us=937692 total_us=1352328 io_us=41058
+2026-10-17T19:02:13.763 RX ORC_MAP_MEMORY internal_free=16467 internal_largest=11264 dma_free=2011 dma_largest=1728 psram_free=4994460 psram_largest=4849664
+2026-10-17T19:02:19.945 RX ORC_MAP_STATUS state=1 generation=5 revision=4 cached_pushes=1 push_us=25249 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=98 stream_us=366547 render_us=781347 total_us=1157813 io_us=41501
+2026-10-17T19:02:19.946 RX ORC_MAP_MEMORY internal_free=16467 internal_largest=11264 dma_free=2011 dma_largest=1728 psram_free=4994460 psram_largest=4849664
+2026-10-17T19:02:27.256 RX RTL_UI_STATUS screen=settings band=LORA frequency_hz=906875000 settings=1 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=0 radio_ui=1 route=settings
+2026-10-17T19:02:37.713 RX RTL_UI_STATUS screen=settings band=LORA frequency_hz=906875000 settings=1 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=0 radio_ui=1 route=settings
+2026-10-17T19:02:43.963 RX RTL_HEALTH_STATUS uptime_ms=93257 free_heap=5009076 min_free_heap=4938252 dma_free=2011 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=3544 reset_reason=11 internal_free=16467 internal_min=751 internal_largest=11264 psram_free=4994460 psram_largest=4849664
+SOURCE maps-com39-picker-loaded-20261017.log
+2026-10-17T19:11:01.054 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=AUTO gain_tenth_db=0 rtl_agc=0 bias=0 bytes=9371648 blocks=286 effective_sps=958834 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T19:11:03.289 RX RTL_LORA_STATS events=0 crc_ok=0 encrypted=0 messages=0 failures=0 drops=0 relearns=0 last_decode_ms=0
+2026-10-17T19:11:04.414 RX RTL_HEALTH_STATUS uptime_ms=593753 free_heap=5625244 min_free_heap=4904208 dma_free=1863 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=27487 internal_min=751 internal_largest=22528 psram_free=5599608 psram_largest=5373952
+2026-10-17T19:11:05.520 RX HOME_PLOT active=1 cadence_ms=33 elapsed_ms=5573 frames=142 draw_us=23994 draw_max_us=32468 raster_us=8016 push_us=15972 waterfall_us=5 p50_ms=38 p95_ms=44 window=128
+2026-10-17T19:11:09.044 RX ORC_MAP_STATUS busy=1 generation=20
+2026-10-17T19:11:10.134 RX ORC_MAP_STATUS busy=1 generation=20
+2026-10-17T19:11:11.224 RX ORC_MAP_STATUS state=1 generation=20 revision=9 cached_pushes=0 push_us=0 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=90 stream_us=673040 render_us=1604738 total_us=2290741 io_us=60404
+2026-10-17T19:11:11.225 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:12.328 RX ORC_MAP_STATUS state=1 generation=20 revision=9 cached_pushes=1 push_us=28780 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=90 stream_us=673040 render_us=1604738 total_us=2290741 io_us=60404
+2026-10-17T19:11:12.329 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:13.417 RX ORC_MAP_STATUS state=1 generation=20 revision=9 cached_pushes=1 push_us=28780 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=90 stream_us=673040 render_us=1604738 total_us=2290741 io_us=60404
+2026-10-17T19:11:13.418 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:14.516 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=AUTO gain_tenth_db=0 rtl_agc=0 bias=0 bytes=35225600 blocks=1075 effective_sps=959877 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T19:11:15.599 RX RTL_LORA_STATS events=0 crc_ok=0 encrypted=0 messages=0 failures=0 drops=0 relearns=0 last_decode_ms=0
+2026-10-17T19:11:16.688 RX RTL_HEALTH_STATUS uptime_ms=606028 free_heap=4909104 min_free_heap=4863868 dma_free=1863 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=16135 internal_min=751 internal_largest=10752 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:18.077 RX ORC_MAP_STATUS busy=1 generation=21
+2026-10-17T19:11:19.010 RX ORC_MAP_STATUS busy=1 generation=21
+2026-10-17T19:11:19.961 RX ORC_MAP_STATUS state=1 generation=21 revision=10 cached_pushes=0 push_us=0 frame_bytes=594000 tiles=12 missing=0 failed=0 features=715 reads=106 bytes=99618 lookup_us=260 stream_us=738329 render_us=1378573 total_us=2136304 io_us=80632
+2026-10-17T19:11:19.962 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:21.206 RX ORC_MAP_STATUS busy=1 generation=22
+2026-10-17T19:11:22.136 RX ORC_MAP_STATUS busy=1 generation=22
+2026-10-17T19:11:23.066 RX ORC_MAP_STATUS busy=1 generation=22
+2026-10-17T19:11:24.311 RX ORC_MAP_STATUS busy=1 generation=23
+2026-10-17T19:11:25.239 RX ORC_MAP_STATUS busy=1 generation=23
+2026-10-17T19:11:26.176 RX ORC_MAP_STATUS state=1 generation=23 revision=12 cached_pushes=0 push_us=0 frame_bytes=594000 tiles=12 missing=0 failed=0 features=715 reads=106 bytes=99618 lookup_us=352 stream_us=707004 render_us=1398403 total_us=2125242 io_us=93393
+2026-10-17T19:11:26.177 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:27.414 RX ORC_MAP_STATUS busy=1 generation=24
+2026-10-17T19:11:28.351 RX ORC_MAP_STATUS busy=1 generation=24
+2026-10-17T19:11:29.281 RX ORC_MAP_STATUS busy=1 generation=24
+2026-10-17T19:11:30.523 RX ORC_MAP_STATUS busy=1 generation=25
+2026-10-17T19:11:31.457 RX ORC_MAP_STATUS busy=1 generation=25
+2026-10-17T19:11:32.396 RX ORC_MAP_STATUS state=1 generation=25 revision=14 cached_pushes=0 push_us=0 frame_bytes=594000 tiles=12 missing=0 failed=0 features=715 reads=106 bytes=99618 lookup_us=291 stream_us=714082 render_us=1381925 total_us=2115508 io_us=82352
+2026-10-17T19:11:32.397 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:33.637 RX ORC_MAP_STATUS busy=1 generation=26
+2026-10-17T19:11:34.571 RX ORC_MAP_STATUS busy=1 generation=26
+2026-10-17T19:11:35.504 RX ORC_MAP_STATUS busy=1 generation=26
+2026-10-17T19:11:37.376 RX ORC_MAP_STATUS busy=1 generation=32
+2026-10-17T19:11:38.311 RX ORC_MAP_STATUS busy=1 generation=32
+2026-10-17T19:11:39.246 RX ORC_MAP_STATUS busy=1 generation=32
+2026-10-17T19:11:40.192 RX ORC_MAP_STATUS state=1 generation=32 revision=16 cached_pushes=1 push_us=28894 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=88 stream_us=661697 render_us=1645818 total_us=2321570 io_us=61414
+2026-10-17T19:11:40.192 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:41.125 RX ORC_MAP_STATUS state=1 generation=32 revision=16 cached_pushes=1 push_us=28894 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=88 stream_us=661697 render_us=1645818 total_us=2321570 io_us=61414
+2026-10-17T19:11:41.126 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:42.064 RX ORC_MAP_STATUS state=1 generation=32 revision=16 cached_pushes=1 push_us=28894 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=88 stream_us=661697 render_us=1645818 total_us=2321570 io_us=61414
+2026-10-17T19:11:42.064 RX ORC_MAP_MEMORY internal_free=16135 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:43.002 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=AUTO gain_tenth_db=0 rtl_agc=0 bias=0 bytes=89915392 blocks=2744 effective_sps=959896 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T19:11:44.089 RX RTL_LORA_STATS events=0 crc_ok=0 encrypted=0 messages=0 failures=0 drops=0 relearns=0 last_decode_ms=0
+2026-10-17T19:11:45.182 RX RTL_LORA_NATIVE_STATUS ready=true busy=false key_loaded=false crc_ok=0 encrypted=0 failures=0 last_decode_ms=0 preambles=0 header_failures=0 crc_failures=0 raw_cfo_hz=0.0 cfo_hz=0.0
+2026-10-17T19:11:46.274 RX RTL_HEALTH_STATUS uptime_ms=635614 free_heap=4909104 min_free_heap=4862864 dma_free=1863 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=16135 internal_min=739 internal_largest=10752 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:11:55.439 RX RTL_UI_STATUS screen=rf_lab band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=sdr
+2026-10-17T19:11:57.032 RX RTL_UI_STATUS screen=home band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=home
+2026-10-17T19:11:58.590 RX RTL_UI_STATUS screen=lora band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=1 rf24=0 home_font=1 graphics=1 radio_ui=1 route=sdr
+2026-10-17T19:12:00.084 RX RTL_UI_STATUS screen=rf_lab band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=1 rf24=0 home_font=1 graphics=1 radio_ui=1 route=sdr
+2026-10-17T19:12:01.652 RX RTL_UI_STATUS screen=home band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=home
+2026-10-17T19:12:03.226 RX RTL_UI_STATUS screen=lora band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=1 rf24=0 home_font=1 graphics=1 radio_ui=1 route=sdr
+2026-10-17T19:12:04.798 RX RTL_UI_STATUS screen=rf_lab band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=1 rf24=0 home_font=1 graphics=1 radio_ui=1 route=sdr
+2026-10-17T19:12:06.230 RX RTL_UI_STATUS screen=home band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=home
+2026-10-17T19:12:07.776 RX RTL_UI_STATUS screen=lora band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=1 rf24=0 home_font=1 graphics=1 radio_ui=1 route=sdr
+2026-10-17T19:12:08.971 RX ORC_MAP_STATUS state=1 generation=33 revision=16 cached_pushes=1 push_us=28894 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=88 stream_us=661697 render_us=1645818 total_us=2321570 io_us=61414
+2026-10-17T19:12:08.972 RX ORC_MAP_MEMORY internal_free=15927 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:12:10.072 RX ORC_MAP_STATUS state=1 generation=33 revision=16 cached_pushes=1 push_us=28894 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=88 stream_us=661697 render_us=1645818 total_us=2321570 io_us=61414
+2026-10-17T19:12:10.073 RX ORC_MAP_MEMORY internal_free=15927 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:12:11.184 RX ORC_MAP_STATUS state=1 generation=33 revision=16 cached_pushes=1 push_us=28894 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=88 stream_us=661697 render_us=1645818 total_us=2321570 io_us=61414
+2026-10-17T19:12:11.185 RX ORC_MAP_MEMORY internal_free=15927 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:12:12.288 RX ORC_MAP_STATUS state=1 generation=33 revision=16 cached_pushes=1 push_us=28894 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=88 stream_us=661697 render_us=1645818 total_us=2321570 io_us=61414
+2026-10-17T19:12:12.289 RX ORC_MAP_MEMORY internal_free=15927 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:12:13.399 RX ORC_MAP_STATUS state=1 generation=33 revision=16 cached_pushes=1 push_us=28894 frame_bytes=594000 tiles=4 missing=0 failed=0 features=632 reads=56 bytes=78036 lookup_us=88 stream_us=661697 render_us=1645818 total_us=2321570 io_us=61414
+2026-10-17T19:12:13.400 RX ORC_MAP_MEMORY internal_free=15927 internal_largest=10752 dma_free=1863 dma_largest=1728 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:12:14.504 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=AUTO gain_tenth_db=0 rtl_agc=0 bias=0 bytes=150405120 blocks=4590 effective_sps=959975 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T19:12:16.692 RX RTL_LORA_STATS events=0 crc_ok=0 encrypted=0 messages=0 failures=0 drops=0 relearns=0 last_decode_ms=0
+2026-10-17T19:12:17.800 RX RTL_LORA_NATIVE_STATUS ready=true busy=false key_loaded=false crc_ok=0 encrypted=0 failures=0 last_decode_ms=0 preambles=0 header_failures=0 crc_failures=0 raw_cfo_hz=0.0 cfo_hz=0.0
+2026-10-17T19:12:18.908 RX RTL_HEALTH_STATUS uptime_ms=668249 free_heap=4908896 min_free_heap=4500468 dma_free=1863 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=2456 reset_reason=11 internal_free=15927 internal_min=739 internal_largest=10752 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:12:26.151 RX HOME_PLOT active=1 cadence_ms=33 elapsed_ms=1065 frames=23 draw_us=31022 draw_max_us=32068 raster_us=7526 push_us=15824 waterfall_us=7670 p50_ms=38 p95_ms=66 window=22
+2026-10-17T19:12:27.257 RX HOME_PLOT active=1 cadence_ms=33 elapsed_ms=2171 frames=52 draw_us=23711 draw_max_us=32068 raster_us=7382 push_us=16321 waterfall_us=7 p50_ms=38 p95_ms=66 window=51
+2026-10-17T19:12:28.349 RX HOME_PLOT active=1 cadence_ms=33 elapsed_ms=3262 frames=81 draw_us=30460 draw_max_us=32525 raster_us=6125 push_us=16359 waterfall_us=7974 p50_ms=38 p95_ms=44 window=80
+2026-10-17T19:12:29.450 RX HOME_PLOT active=1 cadence_ms=33 elapsed_ms=4364 frames=110 draw_us=30385 draw_max_us=32525 raster_us=6999 push_us=16789 waterfall_us=6596 p50_ms=38 p95_ms=44 window=109
+2026-10-17T19:12:30.559 RX HOME_PLOT active=1 cadence_ms=33 elapsed_ms=5472 frames=139 draw_us=22333 draw_max_us=32525 raster_us=6099 push_us=16230 waterfall_us=3 p50_ms=38 p95_ms=44 window=128
+2026-10-17T19:12:31.703 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=AUTO gain_tenth_db=0 rtl_agc=0 bias=0 bytes=183402496 blocks=5597 effective_sps=959840 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T19:12:32.823 RX RTL_LORA_STATS events=0 crc_ok=0 encrypted=0 messages=0 failures=0 drops=0 relearns=0 last_decode_ms=0
+2026-10-17T19:12:33.933 RX RTL_HEALTH_STATUS uptime_ms=683273 free_heap=4909028 min_free_heap=4500468 dma_free=1863 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=2456 reset_reason=11 internal_free=16059 internal_min=739 internal_largest=10752 psram_free=4894820 psram_largest=4718592
+2026-10-17T19:12:35.036 RX RTL_UI_STATUS screen=home band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=home
+2026-10-17T19:12:36.142 RX UI_SELF_CHECK am=1 fm=1 home=1 shortwave=1 keypad=1 editor=1
+SOURCE maps-com39-picker-setup-fetch-20261017.log
+2026-10-17T19:06:49.166 RX RTL_HEALTH_STATUS uptime_ms=338498 free_heap=5008960 min_free_heap=4904208 dma_free=1879 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=16331 internal_min=751 internal_largest=10240 psram_free=4994480 psram_largest=4849664
+2026-10-17T19:06:51.235 RX E (342030) cache: esp_cache_msync(113): invalid addr or null pointer
+2026-10-17T19:06:51.236 RX E (342031) sdmmc_cmd: sdmmc_read_sectors_dma: sdmmc_send_cmd returned 0x102, status 0x900
+2026-10-17T19:06:51.236 RX E (342031) diskio_sdmmc: sdmmc_read_blocks failed (0x102)
+2026-10-17T19:06:51.236 RX SD_GET_ERROR read_failed
+SOURCE maps-com39-picker-reclaim-fetch-20261017.log
+2026-10-17T19:08:14.772 RX RTL_HEALTH_STATUS uptime_ms=424072 free_heap=5009092 min_free_heap=4904208 dma_free=2011 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=16463 internal_min=751 internal_largest=10240 psram_free=4994480 psram_largest=4849664
+2026-10-17T19:08:16.836 RX ORC_MEMORY_RECLAIM total=594000
+2026-10-17T19:08:16.837 RX ORC_MEMORY_RECLAIM Map frame=594000
+2026-10-17T19:08:18.916 RX RTL_HEALTH_STATUS uptime_ms=428214 free_heap=5725244 min_free_heap=4904208 dma_free=2047 dma_min=323 dma_largest=1728 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=27827 internal_min=751 internal_largest=22528 psram_free=5699268 psram_largest=5505024
+SOURCE maps-com39-picker-persistence-boot-20261017.log
+2026-10-17T19:57:14.731 RX RTL_RESETTING
+2026-10-17T19:57:16.269 RX RTL_RESET_REASON code=7 name=wdt
+SOURCE maps-com39-picker-persistence-finish-20261017.log
+2026-10-17T19:58:57.885 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=AUTO gain_tenth_db=0 rtl_agc=0 bias=0 bytes=9306112 blocks=284 effective_sps=957221 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T19:58:59.975 RX RTL_LORA_STATS events=0 crc_ok=0 encrypted=0 messages=0 failures=0 drops=0 relearns=0 last_decode_ms=0
+2026-10-17T19:59:02.071 RX RTL_HEALTH_STATUS uptime_ms=105811 free_heap=5592820 min_free_heap=5532884 dma_free=1551 dma_min=595 dma_largest=1152 tasks=29 main_stack_hwm=3544 reset_reason=7 internal_free=27263 internal_min=21431 internal_largest=25600 psram_free=5566832 psram_largest=5373952
+2026-10-17T19:59:04.166 RX RTL_UI_STATUS screen=home band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=home

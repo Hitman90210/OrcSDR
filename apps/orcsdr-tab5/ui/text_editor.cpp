@@ -18,6 +18,7 @@ struct State {
   bool symbols = false;
   bool open = false;
 } g;
+uint64_t g_generation=0;
 
 // Full-width layout below the 72 px header: large keys and size-4 letters so
 // the keyboard is usable with a fingertip on the 1280x720 panel.
@@ -87,6 +88,7 @@ void draw_field() {
 
 void begin(const char* title, const char* initial, size_t maximum_length,
            bool masked, const char* accept_label) {
+  ++g_generation;
   g = {};
   strlcpy(g.title, title ? title : "EDIT TEXT", sizeof(g.title));
   strlcpy(g.value, initial ? initial : "", sizeof(g.value));
@@ -98,6 +100,7 @@ void begin(const char* title, const char* initial, size_t maximum_length,
 }
 
 bool active() { return g.open; }
+uint64_t generation() { return g_generation; }
 const char* value() { return g.value; }
 void close() { g.open = false; }
 

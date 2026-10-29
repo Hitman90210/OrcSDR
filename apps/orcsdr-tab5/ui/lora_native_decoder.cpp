@@ -60,6 +60,7 @@ void merge_profile(Stats* destination, const Stats& source) {
   destination->candidate_rejected |= source.candidate_rejected;
   destination->candidate_truncated |= source.candidate_truncated;
   destination->recovery_exhausted |= source.recovery_exhausted;
+  destination->workspace_failed |= source.workspace_failed;
 }
 
 constexpr uint32_t kDecodeRate = 500000;
@@ -664,6 +665,80 @@ bool filter_capture(const uint8_t* cu8, size_t samples, uint32_t sample_rate,
   return true;
 }
 
+// Keep only the final 500 ksps samples; the two filtered neighbours suffice
+// for the existing linear interpolation. Immutable callers retain their input;
+// automatic jobs can reuse their exclusively owned, already-consumed samples.
+bool compact_preprocess_capture(const uint8_t* cu8, size_t samples, uint32_t sample_rate,
+                                const uint8_t** output, size_t* output_samples,
+                                uint8_t* owned_capture = nullptr) {
+  if (cu8 == nullptr || output == nullptr || output_samples == nullptr ||
+      samples == 0 || sample_rate != 960000) return false;
+  const size_t needed = static_cast<size_t>(static_cast<uint64_t>(samples) * kDecodeRate / sample_rate);
+  if (needed == 0) return false;
+  if (owned_capture == nullptr) {
+    if (g_scratch.resampled_capacity < needed) {
+      heap_caps_free(g_scratch.resampled);
+      g_scratch.resampled = static_cast<uint8_t*>(
+          heap_caps_malloc(needed * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+      g_scratch.resampled_capacity = g_scratch.resampled == nullptr ? 0 : needed;
+    }
+    owned_capture = g_scratch.resampled;
+  }
+  if (owned_capture == nullptr) return false;
+  float i_state[std::size(kLoraLowpass)][2]{};
+  float q_state[std::size(kLoraLowpass)][2]{};
+  constexpr float kInvHalfScale = 1.0f / 127.5f;
+  const uint32_t gcd = std::gcd(sample_rate, kDecodeRate);
+  const uint32_t step_num = sample_rate / gcd;
+  const uint32_t step_den = kDecodeRate / gcd;
+  size_t first = 0, written = 0;
+  uint32_t reduced_remainder = 0;
+  uint8_t previous[2]{};
+  for (size_t index = 0; index < samples; ++index) {
+    float real = (static_cast<int>(cu8[index * 2]) - 127.5f) * kInvHalfScale;
+    float imaginary = (static_cast<int>(cu8[index * 2 + 1]) - 127.5f) * kInvHalfScale;
+#pragma GCC unroll 5
+    for (size_t section = 0; section < std::size(kLoraLowpass); ++section) {
+      const float* coeffs = kLoraLowpass[section];
+      const float filtered_real = coeffs[0] * real + i_state[section][0];
+      i_state[section][0] = coeffs[1] * real - coeffs[3] * filtered_real + i_state[section][1];
+      i_state[section][1] = coeffs[2] * real - coeffs[4] * filtered_real;
+      const float filtered_imaginary = coeffs[0] * imaginary + q_state[section][0];
+      q_state[section][0] = coeffs[1] * imaginary - coeffs[3] * filtered_imaginary + q_state[section][1];
+      q_state[section][1] = coeffs[2] * imaginary - coeffs[4] * filtered_imaginary;
+      real = filtered_real;
+      imaginary = filtered_imaginary;
+    }
+    const float scaled_real = real * 127.5f + 127.5f;
+    const float scaled_imaginary = imaginary * 127.5f + 127.5f;
+    const uint8_t current[] = {
+        scaled_real <= 0.0f ? uint8_t(0) : scaled_real >= 255.0f ? uint8_t(255)
+                                                                  : static_cast<uint8_t>(scaled_real + 0.5f),
+        scaled_imaginary <= 0.0f ? uint8_t(0) : scaled_imaginary >= 255.0f ? uint8_t(255)
+                                                                            : static_cast<uint8_t>(scaled_imaginary + 0.5f)};
+    if (written < needed && std::min(first + 1, samples - 1) == index) {
+      const uint32_t remainder = reduced_remainder * gcd;
+      for (size_t component = 0; component < 2; ++component) {
+        const int a = first == index ? current[component] : previous[component];
+        const int b = current[component];
+        // Downsampling writes behind the input already consumed by the filter.
+        owned_capture[written * 2 + component] = static_cast<uint8_t>(
+            (a * static_cast<int>(kDecodeRate - remainder) + b * static_cast<int>(remainder) +
+             static_cast<int>(kDecodeRate / 2)) / static_cast<int>(kDecodeRate));
+      }
+      ++written;
+      reduced_remainder += step_num;
+      first += reduced_remainder / step_den;
+      reduced_remainder %= step_den;
+    }
+    std::memcpy(previous, current, sizeof(previous));
+    if ((index & 0x3ffffu) == 0) vTaskDelay(1);
+  }
+  *output = owned_capture;
+  *output_samples = written;
+  return written == needed;
+}
+
 bool linear_resample_capture(const uint8_t* cu8, size_t samples, uint32_t sample_rate,
                              const uint8_t** output, size_t* output_samples) {
   if (cu8 == nullptr || output == nullptr || output_samples == nullptr || sample_rate < kDecodeRate)
@@ -984,6 +1059,14 @@ bool decode_mesh(const uint8_t* data, size_t size, const Config& config, Packet*
 
 }  // namespace
 
+void release_capture_workspace() {
+  heap_caps_free(g_scratch.resampled);
+  g_scratch.resampled = nullptr;
+  g_scratch.resampled_capacity = 0;
+}
+
+size_t capture_workspace_bytes() { return g_scratch.resampled_capacity * 2; }
+
 bool initialize() {
   if (g_scratch.fft != nullptr && g_scratch.downchirp != nullptr && g_scratch.twiddle != nullptr &&
       g_scratch.recovery_alternates != nullptr) {
@@ -1052,7 +1135,8 @@ Stats* task_stats() { return g_scratch.task == nullptr ? nullptr : &g_scratch.ta
 static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
                                   uint8_t spreading_factor, uint32_t bandwidth_hz,
                                   uint32_t frequency_hz, const Config& config, Packet* packets,
-                                  size_t packet_capacity, Stats* stats, float phase_cfo_hz) {
+                                  size_t packet_capacity, Stats* stats, float phase_cfo_hz,
+                                  bool preprocessed = false) {
   if (stats != nullptr) {
     ++stats->captures;
     stats->decode_millis = 0;
@@ -1068,15 +1152,36 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
   uint32_t decode_rate = sample_rate_sps;
   const uint8_t* filtered_cu8 = nullptr;
   size_t filtered_samples = 0;
-  const uint32_t filter_started = now_millis();
-  if (!filter_capture(cu8, samples, sample_rate_sps, &filtered_cu8, &filtered_samples)) return 0;
-  if (stats != nullptr) stats->filter_millis += now_millis() - filter_started;
   const uint8_t* resampled_cu8 = nullptr;
   size_t resampled_samples = 0;
-  const uint32_t resample_started = now_millis();
-  if (!linear_resample_capture(filtered_cu8, filtered_samples, sample_rate_sps, &resampled_cu8,
-                               &resampled_samples)) return 0;
-  if (stats != nullptr) stats->resample_millis += now_millis() - resample_started;
+  const uint32_t filter_started = now_millis();
+  if (preprocessed) {
+    if (sample_rate_sps != kDecodeRate || config.trace) return 0;
+    resampled_cu8 = cu8;
+    resampled_samples = samples;
+  } else if (config.trace) {
+    // Diagnostic replay retains the intermediate samples its trace reports.
+    if (!filter_capture(cu8, samples, sample_rate_sps, &filtered_cu8, &filtered_samples)) {
+      if (stats != nullptr) stats->workspace_failed = true;
+      return 0;
+    }
+    if (stats != nullptr) stats->filter_millis += now_millis() - filter_started;
+    const uint32_t resample_started = now_millis();
+    if (!linear_resample_capture(filtered_cu8, filtered_samples, sample_rate_sps, &resampled_cu8,
+                                &resampled_samples)) {
+      if (stats != nullptr) stats->workspace_failed = true;
+      return 0;
+    }
+    if (stats != nullptr) stats->resample_millis += now_millis() - resample_started;
+  } else {
+    if (!compact_preprocess_capture(cu8, samples, sample_rate_sps,
+                                    &resampled_cu8, &resampled_samples)) {
+      if (stats != nullptr) stats->workspace_failed = true;
+      return 0;
+    }
+    // Filtering and interpolation share one loop in the live path.
+    if (stats != nullptr) stats->filter_millis += now_millis() - filter_started;
+  }
   decode_cu8 = resampled_cu8;
   samples = resampled_samples;
   decode_rate = kDecodeRate;
@@ -1426,9 +1531,10 @@ static size_t decode_capture_pass(const uint8_t* cu8, size_t bytes, uint32_t sam
   return found;
 }
 
-size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
+static size_t decode_capture_impl(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
                       uint8_t spreading_factor, uint32_t bandwidth_hz, uint32_t frequency_hz,
-                      const Config& config, Packet* packets, size_t packet_capacity, Stats* stats) {
+                      const Config& config, Packet* packets, size_t packet_capacity, Stats* stats,
+                      bool preprocessed) {
   const uint32_t started = now_millis();
   uint32_t candidate_millis = 0;
   Stats prior_profile{};
@@ -1437,7 +1543,7 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
     const size_t candidate_bytes = config.candidate_samples * 2;
     const size_t found = decode_capture_pass(cu8, candidate_bytes, sample_rate_sps,
                                              spreading_factor, bandwidth_hz, frequency_hz,
-                                             config, packets, packet_capacity, &candidate, 0.0f);
+                                             config, packets, packet_capacity, &candidate, 0.0f, preprocessed);
     candidate.candidate_passes = 1;
     candidate.candidate_truncated = candidate.truncated;
     candidate_millis = now_millis() - started;
@@ -1458,7 +1564,7 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
   Stats* first = stats != nullptr ? stats : &raw;
   const size_t found = decode_capture_pass(cu8, bytes, sample_rate_sps, spreading_factor,
                                            bandwidth_hz, frequency_hz, config, packets,
-                                           packet_capacity, first, 0.0f);
+                                           packet_capacity, first, 0.0f, preprocessed);
   ++first->full_capture_passes;
   merge_profile(first, prior_profile);
   first->candidate_millis = candidate_millis;
@@ -1471,7 +1577,7 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
   const size_t retried = decode_capture_pass(cu8, bytes, sample_rate_sps, spreading_factor,
                                              bandwidth_hz, frequency_hz, config, packets,
                                              packet_capacity, &corrected,
-                                             first->raw_cfo_tenths_hz / 10.0f);
+                                             first->raw_cfo_tenths_hz / 10.0f, preprocessed);
   corrected.full_capture_passes = 1;
   corrected.cfo_retry_passes = 1;
   merge_profile(&corrected, *first);
@@ -1479,6 +1585,36 @@ size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps
   corrected.candidate_millis = candidate_millis;
   if (stats != nullptr) *stats = corrected;
   return retried;
+}
+
+size_t decode_capture(const uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
+                      uint8_t spreading_factor, uint32_t bandwidth_hz, uint32_t frequency_hz,
+                      const Config& config, Packet* packets, size_t packet_capacity, Stats* stats) {
+  return decode_capture_impl(cu8, bytes, sample_rate_sps, spreading_factor, bandwidth_hz,
+                             frequency_hz, config, packets, packet_capacity, stats, false);
+}
+
+size_t decode_capture_in_place(uint8_t* cu8, size_t bytes, uint32_t sample_rate_sps,
+                               uint8_t spreading_factor, uint32_t bandwidth_hz, uint32_t frequency_hz,
+                               const Config& config, Packet* packets, size_t packet_capacity, Stats* stats) {
+  const uint32_t started = now_millis();
+  if (cu8 == nullptr || (bytes & 1u) != 0 || packets == nullptr || packet_capacity == 0 ||
+      config.trace || sample_rate_sps != 960000 || spreading_factor < kMinSf ||
+      spreading_factor > kMaxSf || bandwidth_hz != 250000) return 0;
+  const uint8_t* processed = nullptr;
+  size_t samples = 0;
+  if (!compact_preprocess_capture(cu8, bytes / 2, sample_rate_sps, &processed, &samples, cu8)) return 0;
+  const uint32_t preprocess_millis = now_millis() - started;
+  Config converted = config;
+  converted.candidate_samples = static_cast<size_t>(
+      static_cast<uint64_t>(config.candidate_samples) * kDecodeRate / sample_rate_sps);
+  const size_t found = decode_capture_impl(processed, samples * 2, kDecodeRate,
+      spreading_factor, bandwidth_hz, frequency_hz, converted, packets, packet_capacity, stats, true);
+  if (stats != nullptr) {
+    stats->filter_millis += preprocess_millis;
+    stats->decode_millis = now_millis() - started;
+  }
+  return found;
 }
 
 bool self_check() {

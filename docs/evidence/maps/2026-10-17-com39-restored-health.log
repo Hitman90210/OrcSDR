@@ -1,0 +1,308 @@
+2026-10-17T17:31:18.900 TARGET COM39 E8:F6:0A:E2:D6:03; no reset requested
+2026-10-17T17:31:18.900 TX RTL_STATUS
+2026-10-17T17:31:19.115 RX I (524) esp_image: segment 4: paddr=00444e88 vaddr=4ff03810 size=163bch ( 91068) load
+2026-10-17T17:31:19.130 RX I (538) esp_image: segment 5: paddr=0045b24c vaddr=4ff19c00 size=107d0h ( 67536) load
+2026-10-17T17:31:19.140 RX I (549) esp_image: segment 6: paddr=0046ba24 vaddr=4ff40000 size=0baf8h ( 47864) load
+2026-10-17T17:31:19.148 RX I (557) esp_image: segment 7: paddr=00477524 vaddr=50108080 size=0000ch (    12) load
+2026-10-17T17:31:19.149 RX I (559) esp_image: segment 8: paddr=00477538 vaddr=501080a0 size=00020h (    32) load
+2026-10-17T17:31:19.159 RX I (569) boot: Loaded app from partition at offset 0x10000
+2026-10-17T17:31:19.160 RX I (569) boot: Disabling RNG early entropy source...
+2026-10-17T17:31:19.164 RX I (574) hex_psram: vendor id    : 0x0d (AP)
+2026-10-17T17:31:19.164 RX I (574) hex_psram: Latency      : 0x01 (Fixed)
+2026-10-17T17:31:19.165 RX I (575) hex_psram: DriveStr.    : 0x00 (25 Ohm)
+2026-10-17T17:31:19.165 RX I (575) hex_psram: dev id       : 0x03 (generation 4)
+2026-10-17T17:31:19.166 RX I (576) hex_psram: density      : 0x07 (256 Mbit)
+2026-10-17T17:31:19.166 RX I (576) hex_psram: good-die     : 0x06 (Pass)
+2026-10-17T17:31:19.167 RX I (577) hex_psram: SRF          : 0x02 (Slow Refresh)
+2026-10-17T17:31:19.167 RX I (577) hex_psram: BurstType    : 0x00 ( Wrap)
+2026-10-17T17:31:19.168 RX I (578) hex_psram: BurstLen     : 0x03 (2048 Byte)
+2026-10-17T17:31:19.168 RX I (578) hex_psram: BitMode      : 0x01 (X16 Mode)
+2026-10-17T17:31:19.169 RX I (579) hex_psram: Readlatency  : 0x04 (14 cycles@Fixed)
+2026-10-17T17:31:19.169 RX I (579) hex_psram: DriveStrength: 0x00 (1/1)
+2026-10-17T17:31:19.170 RX I (580) MSPI Timing: Enter psram timing tuning
+2026-10-17T17:31:19.338 RX I esp_psram: Found 32MB PSRAM device
+2026-10-17T17:31:19.339 RX I esp_psram: Speed: 200MHz
+2026-10-17T17:31:19.447 RX I (857) mmu_psram: .rodata xip on psram
+2026-10-17T17:31:19.548 RX I (958) mmu_psram: .text xip on psram
+2026-10-17T17:31:19.549 RX I (959) hex_psram: psram CS IO is dedicated
+2026-10-17T17:31:19.549 RX I (959) cpu_start: Multicore app
+2026-10-17T17:31:19.957 RX I (1367) esp_psram: SPI SRAM memory test OK
+2026-10-17T17:31:19.973 RX I (1383) cpu_start: Pro cpu start user code
+2026-10-17T17:31:19.973 RX I (1383) cpu_start: cpu freq: 360000000 Hz
+2026-10-17T17:31:19.974 RX I (1384) app_init: Application information:
+2026-10-17T17:31:19.974 RX I (1384) app_init: Project name:     orcsdr_tab5
+2026-10-17T17:31:19.975 RX I (1385) app_init: App version:      v0.4.0-beta.1
+2026-10-17T17:31:19.975 RX I (1385) app_init: Compile time:     Oct 16 2026 15:26:47
+2026-10-17T17:31:19.975 RX I (1385) app_init: ELF file SHA256:  81112a527...
+2026-10-17T17:31:19.976 RX I (1386) app_init: ESP-IDF:          v5.5.4-dirty
+2026-10-17T17:31:19.976 RX I (1386) efuse_init: Min chip rev:     v0.1
+2026-10-17T17:31:19.977 RX I (1387) efuse_init: Max chip rev:     v1.99
+2026-10-17T17:31:19.977 RX I (1387) efuse_init: Chip rev:         v1.3
+2026-10-17T17:31:19.978 RX I (1388) heap_init: Initializing. RAM available for dynamic allocation:
+2026-10-17T17:31:19.979 RX I (1389) heap_init: At 4FF2A3D0 len 00010BF0 (66 KiB): RETENT_RAM
+2026-10-17T17:31:19.979 RX I (1389) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+2026-10-17T17:31:19.980 RX I (1390) heap_init: At 4FF75200 len 0000AE00 (43 KiB): RAM
+2026-10-17T17:31:19.980 RX I (1390) heap_init: At 501080C0 len 00007F40 (31 KiB): RTCRAM
+2026-10-17T17:31:19.981 RX I (1391) heap_init: At 30100068 len 00001F98 (7 KiB): TCM
+2026-10-17T17:31:19.982 RX I (1391) esp_psram: Adding pool of 27769K of PSRAM memory to heap allocator
+2026-10-17T17:31:19.983 RX I (1392) esp_psram: Adding pool of 44K of PSRAM memory gap generated due to end address alignment of irom to the heap allocator
+2026-10-17T17:31:19.984 RX I (1394) esp_psram: Adding pool of 14K of PSRAM memory gap generated due to end address alignment of drom to the heap allocator
+2026-10-17T17:31:19.985 RX I (1395) spi_flash: detected chip: generic
+2026-10-17T17:31:19.985 RX I (1395) spi_flash: flash io: qio
+2026-10-17T17:31:19.986 RX I (1395) sleep_gpio: Configure to isolate all GPIO pins in sleep state
+2026-10-17T17:31:19.987 RX I (1396) sleep_gpio: Enable automatic switching of GPIO sleep configuration
+2026-10-17T17:31:19.987 RX I (1397) esp_core_dump_flash: Init core dump to flash
+2026-10-17T17:31:19.989 RX I (1398) esp_core_dump_flash: Found partition 'coredump' @ 610000 262144 bytes
+2026-10-17T17:31:20.008 RX I (1417) esp_core_dump_flash: Core dump data checksum is correct
+2026-10-17T17:31:20.009 RX I (1418) esp_core_dump_flash: Found core dump 34656 bytes in flash @ 0x610000
+2026-10-17T17:31:20.009 RX I (1419) main_task: Started on CPU0
+2026-10-17T17:31:20.011 RX I (1420) esp_psram: Reserving pool of 40K of internal memory for DMA/internal allocations
+2026-10-17T17:31:20.011 RX I (1421) main_task: Calling app_main()
+2026-10-17T17:31:20.021 RX RTL_RESET_REASON code=11 name=usb
+2026-10-17T17:31:20.021 RX RTL_BROWNOUT det=off reset=off
+2026-10-17T17:31:20.022 RX I (1431) M5GFX: [Autodetect] load from NVS : board:22
+2026-10-17T17:31:20.022 RX I (1432) M5GFX: [Autodetect] board_M5Tab5
+2026-10-17T17:31:20.188 RX I (1598) M5GFX: M5Tab5 ST touch FW version 01
+2026-10-17T17:31:20.268 RX I (1679) M5GFX: M5Tab5 detected ST7121 display
+2026-10-17T17:31:21.426 RX RTL_DRAM_BUDGET stage=boot dma_free=74691 dma_largest=38912 intern_free=114239 intern_largest=38912 psram_free=24797092 psram_largest=24641536 always_int=8192 reserve_int=40960 hosted_dma_psram=1 usb_dma_psram=1 lwip_psram=1
+2026-10-17T17:31:21.428 RX RTL_LORA_MEMORY stage=boot internal_free=114239 internal_largest=38912 dma_free=74691 dma_largest=38912 psram_free=24797092 psram_largest=24641536 decoder_psram=0 fft_table=UNALLOCATED fft_bytes=0 recovery=UNALLOCATED recovery_bytes=0 task_workspace=UNALLOCATED task_workspace_bytes=0 task_stack_hwm=0 reserve_int=40960
+2026-10-17T17:31:21.448 RX RTL_VIS_SELF_CHECK_OK
+2026-10-17T17:31:21.451 RX RTL_LAB_SELF_CHECK_OK
+2026-10-17T17:31:21.451 RX RTL_ADSB_SELF_CHECK_OK
+2026-10-17T17:31:21.469 RX RTL_POCSAG_SELF_CHECK_OK
+2026-10-17T17:31:21.469 RX RTL_FM_DASHBOARD_SELF_CHECK_OK
+2026-10-17T17:31:21.469 RX RTL_AM_DASHBOARD_SELF_CHECK_OK
+2026-10-17T17:31:21.469 RX RTL_SHORTWAVE_MODEL_SELF_CHECK_OK
+2026-10-17T17:31:21.470 RX RTL_SHORTWAVE_LIBRARY_SELF_CHECK_OK
+2026-10-17T17:31:21.470 RX RTL_SHORTWAVE_HUNT_SELF_CHECK_OK
+2026-10-17T17:31:21.470 RX RTL_SHORTWAVE_DASHBOARD_SELF_CHECK_OK
+2026-10-17T17:31:21.470 RX RTL_CB_DASHBOARD_SELF_CHECK_OK
+2026-10-17T17:31:21.471 RX RTL_AIRBAND_SELF_CHECK_OK
+2026-10-17T17:31:21.471 RX RTL_RECEIVER_CONTROLS_SELF_CHECK_OK
+2026-10-17T17:31:21.471 RX RTL_AM_FINDER_SELF_CHECK_OK
+2026-10-17T17:31:21.471 RX RTL_FM_CONFIG_SELF_CHECK_OK
+2026-10-17T17:31:21.472 RX RTL_P25_DASHBOARD_SELF_CHECK_OK
+2026-10-17T17:31:21.639 RX RTL_P25_DECODER_SELF_CHECK_OK
+2026-10-17T17:31:21.639 RX RTL_P25_VOICE_SELF_CHECK_OK
+2026-10-17T17:31:21.640 RX ORC_SETTINGS_SELF_CHECK_OK
+2026-10-17T17:31:21.640 RX ORC_TIME_SELF_CHECK_OK
+2026-10-17T17:31:21.640 RX ORC_LOCATION_SELF_CHECK_OK
+2026-10-17T17:31:21.640 RX ORC_RECEIVER_LOCATION_SELF_CHECK_OK
+2026-10-17T17:31:21.641 RX ORC_SCREEN_CONTROLLER_SELF_CHECK_OK
+2026-10-17T17:31:21.641 RX ORC_RADIO_UI_SELF_CHECK_OK
+2026-10-17T17:31:21.641 RX ORC_RADIO_SCAN_SELF_CHECK_OK
+2026-10-17T17:31:21.641 RX ORC_DEVICE_STATUS_SELF_CHECK_OK
+2026-10-17T17:31:21.641 RX ORC_HOME_SELF_CHECK_OK
+2026-10-17T17:31:21.642 RX RTL_WEB_SELF_CHECK_OK
+2026-10-17T17:31:21.642 RX RTL_LORA_DASHBOARD_SELF_CHECK_OK
+2026-10-17T17:31:21.642 RX RF24_DASHBOARD_SELF_CHECK_OK
+2026-10-17T17:31:21.642 RX FT8_DASHBOARD_SELF_CHECK_OK
+2026-10-17T17:31:21.642 RX UI_DOC_SELF_CHECK_OK
+2026-10-17T17:31:21.643 RX SPLASH_BOOT begin (loading screen)
+2026-10-17T17:31:21.643 RX SPLASH_ROTATION ui=3
+2026-10-17T17:31:21.720 RX W (3130) ldo: The voltage value 0 is out of the recommended range [500, 2700]
+2026-10-17T17:31:21.762 RX Name: SD32G
+2026-10-17T17:31:21.762 RX Type: SDHC
+2026-10-17T17:31:21.762 RX Speed: 40.00 MHz (limit: 40.00 MHz)
+2026-10-17T17:31:21.762 RX Size: 29820MB
+2026-10-17T17:31:21.763 RX CSD: ver=2, sector_size=512, capacity=61071360 read_bl_len=9
+2026-10-17T17:31:21.763 RX SSR: bus_width=4
+2026-10-17T17:31:21.763 RX SPLASH_SD ready bus=sdmmc
+2026-10-17T17:31:22.139 RX SPLASH_IMAGE ok bytes=137898 ms=376
+2026-10-17T17:31:22.140 RX SPLASH_STATUS Starting…
+2026-10-17T17:31:22.142 RX SPLASH_MODE embedded
+2026-10-17T17:31:22.142 RX SPLASH_STATUS Loading settings…
+2026-10-17T17:31:22.866 RX RTL_SERIAL_VERBOSITY mode=NORMAL
+2026-10-17T17:31:22.882 RX RTL_REC_SD ready bus=sdmmc
+2026-10-17T17:31:22.888 RX RTL_P25_CONFIG_LOAD status="No P25 system configured" channels=0 talkgroups=0 control_hz=851012500 modulation=auto
+2026-10-17T17:31:22.892 RX RTL_FM_CONFIG_LOAD status="FM.cfg loaded" frequency_hz=96100000 presets=0
+2026-10-17T17:31:22.892 RX RTL_FM_LOAD frequency_hz=96100000
+2026-10-17T17:31:22.896 RX RTL_BAND_RESTORE band=LORA frequency_hz=906875000
+2026-10-17T17:31:22.897 RX RTL_WIFI_DEFER_TO_LOOP issue66
+2026-10-17T17:31:22.905 RX RTL_WEB_DEFERRED catalog_wifi_session
+2026-10-17T17:31:22.905 TX AUTH [redacted]
+2026-10-17T17:31:22.906 RX RTL_WIFI_ANTENNA internal
+2026-10-17T17:31:22.906 RX SPLASH_STATUS Checking SD card…
+2026-10-17T17:31:22.907 RX SPLASH_STATUS Loading data packs and maps…
+2026-10-17T17:31:22.943 RX ORC_FT8_HEARD loaded records=288 stations=42 rejected=0 bytes=11536
+2026-10-17T17:31:22.943 RX LORA_SD_LOG ON
+2026-10-17T17:31:22.944 RX SPLASH_STATUS Connecting to Wi-Fi "hardcorewifi"…
+2026-10-17T17:31:22.947 RX RTL_WIFI_BOOT_CONNECT_QUEUED splash
+2026-10-17T17:31:22.949 RX RTL_RADIO_POWER reason=wlan_off direction_ok=1 output_ok=1 input_ok=1 direction=0xb1 output=0x88 input=0x08 wlan_latch=0 usb_latch=1
+2026-10-17T17:31:23.048 RX RTL_RADIO_POWER reason=wlan_on direction_ok=1 output_ok=1 input_ok=1 direction=0xb1 output=0x89 input=0x08 wlan_latch=1 usb_latch=1
+2026-10-17T17:31:23.245 RX RTL_WIFI_C6_POWER_CYCLE off_ok=1 on_ok=1
+2026-10-17T17:31:23.246 RX RTL_WIFI_DMA free=59179 largest=38912 txq=4 rxq=2
+2026-10-17T17:31:23.246 RX RTL_WIFI_ANTENNA internal
+2026-10-17T17:31:23.247 RX I (4657) eh_mcu_transport: transport_init: probing bus backend
+2026-10-17T17:31:23.248 RX I (4658) eh_sdio: transport[host]: SDIO 4-bit 10000 kHz CLK=12 CMD=13 D0=11 D1=10 D2=9 D3=8 RESET=15
+2026-10-17T17:31:23.249 RX I (4658) sdmmc_periph: sdmmc_host_init: SDMMC host already initialized, skipping init flow
+2026-10-17T17:31:23.249 RX W (4659) eh_sdio: SDIO clock freq set to [10000]KHz, Max possible (on PCB) is 40000KHz
+2026-10-17T17:31:23.250 RX I (4659) eh_sdio: sdio_data_to_rx_buf_task started
+2026-10-17T17:31:23.250 RX I (4660) eh_mcu_transport: transport_init: bus backend up
+2026-10-17T17:31:23.370 RX E (4779) sdmmc_io: sdmmc_io_read_byte: sdmmc_io_rw_direct (read 0x3) returned 0x107
+2026-10-17T17:31:23.370 RX E (4779) eh_host_port_sdio: sdio_card_fn_init failed
+2026-10-17T17:31:23.493 RX E (4903) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+2026-10-17T17:31:23.493 RX E (4903) eh_host_port_sdio: sdmmc_card_init failed
+2026-10-17T17:31:23.615 RX E (5025) sdmmc_common: sdmmc_init_ocr: send_op_cond (1) returned 0x107
+2026-10-17T17:31:23.616 RX E (5026) eh_host_port_sdio: sdmmc_card_init failed
+2026-10-17T17:31:23.748 RX I (5158) eh_host_port_sdio: Function 0 Blocksize: 512
+2026-10-17T17:31:23.748 RX I (5158) eh_host_port_sdio: Function 1 Blocksize: 512
+2026-10-17T17:31:23.848 RX I (5259) eh_sdio: Card init success, TRANSPORT_RX_ACTIVE
+2026-10-17T17:31:23.849 RX I (5260) eh_sdio: Starting SDIO process rx task
+2026-10-17T17:31:23.948 RX I (5359) eh_sdio: SDIO Host operating in STREAMING MODE
+2026-10-17T17:31:23.949 RX I (5359) eh_sdio: Open data path at slave
+2026-10-17T17:31:23.952 RX I (5362) eh_init_evt: slave chip id: 0x0d (esp32c6)
+2026-10-17T17:31:23.953 RX I (5362) eh_init_evt: capabilities: 0x0d
+2026-10-17T17:31:23.953 RX I (5363) eh_init_evt: Features supported are:
+2026-10-17T17:31:23.954 RX I (5363) eh_init_evt: 	 * WLAN over SDIO
+2026-10-17T17:31:23.954 RX I (5363) eh_init_evt: 	   - HCI over SDIO
+2026-10-17T17:31:23.954 RX I (5364) eh_init_evt: 	   - BLE only
+2026-10-17T17:31:23.954 RX I (5364) eh_raw_tp: raw TP inactive
+2026-10-17T17:31:23.955 RX I (5364) eh_init_evt: Default RPC to V2
+2026-10-17T17:31:23.955 RX I (5364) eh_init_evt: esp-hosted fw versions: host=3.0.6 coprocessor=0.0.0
+2026-10-17T17:31:23.956 RX E (5365) eh_init_evt: major version mismatch — OTA coprocessor from host
+2026-10-17T17:31:23.957 RX I (5365) eh_init_evt: CP without SDIO SW_AGGR; compatible streaming mode enabled
+2026-10-17T17:31:23.957 RX I (5366) eh_init_evt: Missing SDIO_MODE TLV; Continue anyway.
+2026-10-17T17:31:23.958 RX I (5366) eh_init_evt: chip=0x0d (esp32c6) fw=0x00000000 caps=0x0d ext=0x00000000
+2026-10-17T17:31:23.958 RX W (5367) eh_host_port_xport_defaults: SDIO clock freq set to [10000]KHz, Max possible (on PCB) is 40000KHz
+2026-10-17T17:31:23.959 RX I (5368) eh_auto_init: auto_init: found 2 descriptor(s)
+2026-10-17T17:31:23.959 RX I (5368) eh_auto_init: auto_init: initialising 'peer_data' (priority 80)
+2026-10-17T17:31:23.960 RX I (5368) eh_auto_init: auto_init: initialising 'wifi' (priority 150)
+2026-10-17T17:31:23.960 RX I (5369) eh_wifi_itwt: wifi iTWT ext init
+2026-10-17T17:31:24.051 RX W (5461) orcsdr_wifi: RTL_WIFI_C6_UNTESTED version=1.4.1 attempting Wi-Fi start
+2026-10-17T17:31:24.173 RX LORA_SD_LOG_READY path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T17:31:24.270 RX I OrcSDR: ESP32-C6 detected
+2026-10-17T17:31:24.270 RX I OrcSDR: ESP-Hosted C6 FW: 1.4.1
+2026-10-17T17:31:24.270 RX I OrcSDR: ESP-Hosted transport: SDIO
+2026-10-17T17:31:24.270 RX RTL_WIFI_INIT station=1 core=0
+2026-10-17T17:31:24.272 RX RTL_DRAM_BUDGET stage=after_wifi dma_free=45087 dma_largest=38912 intern_free=84635 intern_largest=38912 psram_free=23629488 psram_largest=23592960 always_int=8192 reserve_int=40960 hosted_dma_psram=1 usb_dma_psram=1 lwip_psram=1
+2026-10-17T17:31:24.273 RX RTL_WIFI_DMA pre_connect free=45087 largest=38912
+2026-10-17T17:31:24.273 RX I (5683) eh_wifi: rx RPC WifiEventNoArgs id=43
+2026-10-17T17:31:24.306 RX I (5716) eh_wifi: rx RPC WifiEventNoArgs id=2
+2026-10-17T17:31:24.318 RX RTL_WIFI_COEX event=connect_started elapsed_ms=0 effective_sps=0 usb_overruns=0 usb_drops=0 audio_chunks=0 audio_drops=0 dsp_block_us_max=0 ui_fps=0 connect_pause=1 rtl_ready=0 capture_state=0 capture_requested=0 band=LORA frequency_hz=906875000 audio_enabled=0 speaker_running=0
+2026-10-17T17:31:24.319 RX AUTH_OK [proof verified separately]
+2026-10-17T17:31:24.319 AUTHENTICATION verified using existing key; no PAIR command
+2026-10-17T17:31:24.319 TX PING
+2026-10-17T17:31:24.319 TX RTL_HEALTH
+2026-10-17T17:31:24.330 RX SPLASH_BOOT done
+2026-10-17T17:31:24.337 RX {"type":"hello","message_id":"m5tab5_hello_01","protocol_version":{"major":1,"minor":0},"payload":{"adapter":{"id":"m5tab5.serial","version":"0.8.31"},"features":["telemetry","display","touch","authenticated_session","journal","network_inventory","wifi_provisioning","power_telemetry","usb_host","rtl_sdr_probe","rtl_sdr_radio_ui","rtl_sdr_scope_scroll"],"capability_namespaces":["m5tab5"],"config_schema_version":1}}
+2026-10-17T17:31:24.350 RX {"type":"node_snapshot","message_id":"m5tab5_snapshot_4352","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","connection_state":"online","hardware":{"chip":"esp32p4","revision":103,"cores":2,"flash_bytes":16777216,"psram_bytes":33554432,"free_heap_bytes":23674592,"display":{"width":1280,"height":720,"touch_ready":true}},"network":{"transport":"esp_hosted_sdio","station_ready":true,"configured":true,"scan_result":-1,"connected":false,"ip":"0.0.0.0"},"power":{"source":"m5unified","pmic_detected":false,"pmic_type":0,"battery_level":96,"battery_mv":8141,"battery_ma":1,"vbus_mv":-1,"charging":"unknown"},"journal":{"latest_sequence":1059,"acknowledged_sequence":0,"pending":8,"dropped":1051},"offline_workflow":{"id":"status_on_disconnect","config_revision":0,"runs":0,"max_runs":0},"capabilities":["m5tab5.device.info","m5tab5.health.read","m5tab5.display.status","m5tab5.input.touch","m5tab5.event.journal.sync","m5tab5.network.inventory","m5tab5.network.configure","m5tab5.power.read"]}}
+2026-10-17T17:31:24.352 RX {"type":"event","message_id":"m5tab5_journal_1052","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","kind":"local_journal","journal_sequence":1052,"event_kind":"session_online","x":-1,"y":-1}}
+2026-10-17T17:31:24.353 RX {"type":"event","message_id":"m5tab5_journal_1053","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","kind":"local_journal","journal_sequence":1053,"event_kind":"sdr_lora","x":-1,"y":-1}}
+2026-10-17T17:31:24.355 RX {"type":"event","message_id":"m5tab5_journal_1054","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","kind":"local_journal","journal_sequence":1054,"event_kind":"session_online","x":-1,"y":-1}}
+2026-10-17T17:31:24.356 RX {"type":"event","message_id":"m5tab5_journal_1055","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","kind":"local_journal","journal_sequence":1055,"event_kind":"sdr_lora","x":-1,"y":-1}}
+2026-10-17T17:31:24.358 RX {"type":"event","message_id":"m5tab5_journal_1056","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","kind":"local_journal","journal_sequence":1056,"event_kind":"session_degraded","x":-1,"y":-1}}
+2026-10-17T17:31:24.360 RX {"type":"event","message_id":"m5tab5_journal_1057","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","kind":"local_journal","journal_sequence":1057,"event_kind":"session_online","x":-1,"y":-1}}
+2026-10-17T17:31:24.362 RX {"type":"event","message_id":"m5tab5_journal_1058","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","kind":"local_journal","journal_sequence":1058,"event_kind":"session_degraded","x":-1,"y":-1}}
+2026-10-17T17:31:24.363 RX {"type":"event","message_id":"m5tab5_journal_1059","protocol_version":{"major":1,"minor":0},"payload":{"node_id":"m5tab5_e8f60ae2d603","kind":"local_journal","journal_sequence":1059,"event_kind":"session_online","x":-1,"y":-1}}
+2026-10-17T17:31:24.365 RX RTL_HEALTH_STATUS uptime_ms=4353 free_heap=23674592 min_free_heap=23666924 dma_free=44679 dma_min=38867 dma_largest=38912 tasks=17 main_stack_hwm=6456 reset_reason=11 internal_free=84227 internal_min=78415 internal_largest=38912 psram_free=23629488 psram_largest=23592960
+2026-10-17T17:31:24.366 RX SPLASH_STATUS Wi-Fi not connected yet - will keep retrying
+2026-10-17T17:31:24.366 RX RTL_WIFI_BOOT_SPLASH connected=0 elapsed_ms=1408 reconnect_attempts=0 station=1
+2026-10-17T17:31:24.366 RX BOOT_STAGE usb_power_settle
+2026-10-17T17:31:24.367 RX SPLASH_STATUS Ready
+2026-10-17T17:31:24.367 RX SPLASH_READY 1
+2026-10-17T17:31:24.367 RX SPLASH_STATUS SD card: ready   |   Wi-Fi: retrying   |   RTL-SDR: not detected
+2026-10-17T17:31:24.368 RX BOOT_SPLASH_SUMMARY sd=1 wifi=0 rtl=0
+2026-10-17T17:31:24.368 RX SPLASH_WAIT start auto_enter_ms=30000
+2026-10-17T17:31:24.368 RX SPLASH_BOOT done
+2026-10-17T17:31:24.709 RX BOOT_STAGE speaker_start
+2026-10-17T17:31:24.709 RX RTL_SPEAKER_DMA len=256 count=2 largest=38912
+2026-10-17T17:31:24.739 RX RTL_SPEAKER_DMA len=256 count=2 largest=38912
+2026-10-17T17:31:24.749 RX RTL_SPEAKER_CODEC_PRIME ok
+2026-10-17T17:31:24.752 RX RTL_DRAM_BUDGET stage=speaker_before_usb dma_free=39495 dma_largest=38912 intern_free=79043 intern_largest=38912 psram_free=23628904 psram_largest=23592960 always_int=8192 reserve_int=40960 hosted_dma_psram=1 usb_dma_psram=1 lwip_psram=1
+2026-10-17T17:31:24.752 RX RTL_IQ_PIPELINE ready slots=3 bytes=33280 core=1 priority=6
+2026-10-17T17:31:24.780 RX I (6190) esp_rtl_sdr: [RTL0] USB host session started (shared)
+2026-10-17T17:31:24.780 RX I (6190) esp_rtl_sdr: [RTL0] install v0.9.3 caps=0x001fff7f xfer=3x32768 bind=any
+2026-10-17T17:31:24.781 RX RTL_INSTALL ok v0.9.3 caps=0x001fff7f delivery=callback xfer=3x32768 usb_core=0
+2026-10-17T17:31:24.781 RX RTL_CORE_SPLIT usb=core0 callback=enqueue dsp_audio_ui_hosted=core1
+2026-10-17T17:31:24.783 RX RTL_DRAM_BUDGET stage=after_usb dma_free=25003 dma_largest=24576 intern_free=61895 intern_largest=31744 psram_free=23356260 psram_largest=23068672 always_int=8192 reserve_int=40960 hosted_dma_psram=1 usb_dma_psram=1 lwip_psram=1
+2026-10-17T17:31:24.783 RX BOOT_STAGE rtl_enumerating
+2026-10-17T17:31:24.791 RX RTL_SPEAKER_IDLE reason=no_receiver
+2026-10-17T17:31:24.799 RX I (6210) esp_rtl_sdr: [RTL0] usb probe_rescan
+2026-10-17T17:31:24.990 RX RTL_DMA_WATCH largest 38912 -> 24576 free=30223 screen=1 band=4
+2026-10-17T17:31:25.181 RX I (6591) esp_rtl_sdr: [RTL0] usb new_device addr=1 queued=1
+2026-10-17T17:31:25.182 RX I (6591) esp_rtl_sdr: [RTL0] usb probe_begin addr=1
+2026-10-17T17:31:25.832 RX I (7241) esp_rtl_sdr: [RTL0] USB device opened addr=1 path=root serial=00000001 hs=1
+2026-10-17T17:31:25.832 RX I (7242) esp_rtl_sdr: [RTL0] tuner=blog_v3_r820t2 caps=0x001dff7f
+2026-10-17T17:31:25.833 RX RTL_SDR_PROBE_OK profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f driver=esp_rtl_sdr v0.9.3 ready=1 resume_pending=1
+2026-10-17T17:31:25.836 RX RTL_SPEAKER_DMA len=256 count=2 largest=24576
+2026-10-17T17:31:25.846 RX RTL_SPEAKER_RESUME ok=1 running=1 playing=0 volume=128
+2026-10-17T17:31:25.848 RX RTL_DRAM_BUDGET stage=after_speaker dma_free=24887 dma_largest=21504 intern_free=61779 intern_largest=31744 psram_free=23354848 psram_largest=23068672 always_int=8192 reserve_int=40960 hosted_dma_psram=1 usb_dma_psram=1 lwip_psram=1
+2026-10-17T17:31:25.849 RX BOOT_STAGE speaker_settle
+2026-10-17T17:31:26.153 RX RTL_DRAM_BUDGET stage=ready dma_free=24887 dma_largest=21504 intern_free=61779 intern_largest=31744 psram_free=23354848 psram_largest=23068672 always_int=8192 reserve_int=40960 hosted_dma_psram=1 usb_dma_psram=1 lwip_psram=1
+2026-10-17T17:31:26.153 RX BOOT_STAGE ready
+2026-10-17T17:31:26.154 RX RTL_WEB_RESTORED enabled=1
+2026-10-17T17:31:26.156 RX RTL_LORA_MEMORY stage=after_init internal_free=49003 internal_largest=31744 dma_free=12111 dma_largest=9728 psram_free=22656708 psram_largest=22544384 decoder_psram=665344 fft_table=PSRAM fft_bytes=131072 recovery=PSRAM recovery_bytes=6912 task_workspace=PSRAM task_workspace_bytes=3072 task_stack_hwm=11368 reserve_int=40960
+2026-10-17T17:31:26.471 TX PING
+2026-10-17T17:31:26.471 TX RTL_UI STATUS
+2026-10-17T17:31:26.483 RX RTL_UI_STATUS screen=home band=LORA frequency_hz=906875000 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=0 route=home
+2026-10-17T17:31:26.501 RX RTL_DMA_WATCH largest 21504 -> 9728 free=12111 screen=1 band=4
+2026-10-17T17:31:26.741 RX I (8151) eh_wifi: rx RPC WifiEventNoArgs id=43
+2026-10-17T17:31:27.271 RX I (8681) esp_wifi_remote: esp_wifi_internal_reg_rxcb: sta: 0x4819e7c4
+2026-10-17T17:31:28.520 TX PING
+2026-10-17T17:31:28.520 TX RTL_DRIVER STATUS
+2026-10-17T17:31:28.528 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=IDLE profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=AUTO gain_tenth_db=0 rtl_agc=0 bias=0 bytes=0 blocks=0 effective_sps=0 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=96100000 frequency_ok=0 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T17:31:28.949 RX I (10359) esp_netif_handlers: sta ip: 192.168.1.54, mask: 255.255.255.0, gw: 192.168.1.1
+2026-10-17T17:31:28.964 RX RTL_WIFI_CONNECTED
+2026-10-17T17:31:28.966 RX RTL_WIFI_COEX event=connect_complete elapsed_ms=4695 effective_sps=0 usb_overruns=0 usb_drops=0 audio_chunks=0 audio_drops=0 dsp_block_us_max=0 ui_fps=0 connect_pause=1 rtl_ready=1 capture_state=1 capture_requested=0 band=LORA frequency_hz=906875000 audio_enabled=0 speaker_running=1
+2026-10-17T17:31:28.974 RX RTL_ORCDIAL_BRIDGE_NOT_STARTED reason=no_pairing_and_no_request dma_free=12111 dma_largest=9728
+2026-10-17T17:31:28.980 RX RTL_HOTPLUG_RESUME band=LORA frequency_hz=906875000 queued=1
+2026-10-17T17:31:28.982 RX RTL_DRAM_BUDGET stage=rtl_before_start dma_free=12111 dma_largesI t=(97281 int0ern_3free9=490003 i)nter n_laergesst=31p744 _psramt_frele=66_7694s0dr ps:ram_ largbest=l6553o600 galwa_ys_ivnt=83192 _reserrve_8int=2409600 hotsted2_: dmRa_psr8am=12 usb0_dmaT_psr2am=1  lwisp_pstram=r1
+2026-10-17T17:31:28.982 RX em (I2C 0x34 remap); soak-verified 2026-09-21 (1.62 GB, 787 s, 0 usb errors)
+2026-10-17T17:31:28.983 RX I (10393) esp_rtl_sdr: init begin profile=blog_v3_r820t2 records=515
+2026-10-17T17:31:29.198 RX E (10609) USBH: Dev 1 EP 0 STALL
+2026-10-17T17:31:29.201 RX E (10611) USBH: Dev 1 EP 0 STALL
+2026-10-17T17:31:29.203 RX E (10614) USBH: Dev 1 EP 0 STALL
+2026-10-17T17:31:29.206 RX E (10617) USBH: Dev 1 EP 0 STALL
+2026-10-17T17:31:29.982 RX RTL_WIFI_BOOT_STATUS station=1 hosted_match=0 stage=none error=0x0 message="Connection successful"
+2026-10-17T17:31:30.049 RX I (11459) esp_rtl_sdr: init complete profile=blog_v3_r820t2 skipped_v4_board=12
+2026-10-17T17:31:30.105 RX I (11514) esp_rtl_sdr: [RTL0] rate readback sps=960000 expected=0x07800000 actual=0x07800000 match=1
+2026-10-17T17:31:30.246 RX I (11656) esp_rtl_sdr: demod IF restore profile=blog_v3_r820t2 pll_if_hz=3570000 demod_if_hz=3570000 applied=1 records=6
+2026-10-17T17:31:30.257 RX I (11666) esp_rtl_sdr: tune rf=906875000 Hz tuner=906875000 Hz ppm=0 hf_upconv=0 r16=24/04 r20=84 r21=d8 r22=9c pll_if_hz=3570000
+2026-10-17T17:31:30.287 RX I (11696) esp_rtl_sdr: [RTL0] stream start freq=906875000 sps=960000 urbs=3x32768
+2026-10-17T17:31:30.287 RX I (11697) esp_rtl_sdr: stream start freq=906875000 exact_rate=960000 urbs=3x32768
+2026-10-17T17:31:30.288 RX RTL_START ESP_OK rate=960000 display_hz=906875000 lo_hz=906875000
+2026-10-17T17:31:30.290 RX RTL_DRAM_BUDGET stage=rtl_after_start dma_free=5175 dma_largest=3840 intern_free=42067 intern_largest=31744 psram_free=6380640 psram_largest=6291456 always_int=8192 reserve_int=40960 hosted_dma_psram=1 usb_dma_psram=1 lwip_psram=1
+2026-10-17T17:31:30.290 RX RTL_SPEAKER_RESUME ok=1 running=1 playing=0 volume=128
+2026-10-17T17:31:30.290 RX RTL_STOP_REQUESTED
+2026-10-17T17:31:30.342 RX RTL_STOP_RESULT ESP_OK
+2026-10-17T17:31:30.342 RX RTL_STOP bytes=0
+2026-10-17T17:31:30.365 RX RTL_DRAM_BUDGET stage=rtl_before_start dma_free=5383 dma_largest20=3t840 i2nter:n_fr ee=4R22758 inte2rn_l0argesTt=312744 p sramstfrree=6e4803a08  (psIram_2largeCst=6 4225028 axlway3s_in4t=81 92 rresereve_imnt=a4096p0 hos)ted_;d smao_psraam=1 kusb_-dma_vpsraem=1 rlwipi_psrfam=1i
+2026-10-17T17:31:30.365 RX ed 2026-09-21 (1.62 GB, 787 s, 0 usb errors)
+2026-10-17T17:31:30.366 RX I (11774) esp_rtl_sdr: init begin profile=blog_v3_r820t2 records=515
+2026-10-17T17:31:30.522 RX RTL_DMA_WATCH largest 9728 -> 3840 free=5199 screen=1 band=4
+2026-10-17T17:31:30.522 TX PING
+2026-10-17T17:31:30.522 TX UI_SELF_CHECK
+2026-10-17T17:31:30.533 RX UI_SELF_CHECK am=1 fm=1 home=1 shortwave=1 keypad=1 editor=1
+2026-10-17T17:31:30.579 RX E (11990) USBH: Dev 1 EP 0 STALL
+2026-10-17T17:31:30.582 RX E (11993) USBH: Dev 1 EP 0 STALL
+2026-10-17T17:31:30.585 RX E (11996) USBH: Dev 1 EP 0 STALL
+2026-10-17T17:31:30.587 RX E (11998) USBH: Dev 1 EP 0 STALL
+2026-10-17T17:31:31.431 RX I (12841) esp_rtl_sdr: init complete profile=blog_v3_r820t2 skipped_v4_board=12
+2026-10-17T17:31:31.486 RX I (12896) esp_rtl_sdr: [RTL0] rate readback sps=960000 expected=0x07800000 actual=0x07800000 match=1
+2026-10-17T17:31:31.627 RX I (13037) esp_rtl_sdr: demod IF restore profile=blog_v3_r820t2 pll_if_hz=3570000 demod_if_hz=3570000 applied=1 records=6
+2026-10-17T17:31:31.638 RX I (13048) esp_rtl_sdr: tune rf=906875000 Hz tuner=906875000 Hz ppm=0 hf_upconv=0 r16=24/04 r20=84 r21=d8 r22=9c pll_if_hz=3570000
+2026-10-17T17:31:31.668 RX I (13077) esp_rtl_sdr: [RTL0] stream start freq=906875000 sps=960000 urbs=3x32768
+2026-10-17T17:31:31.668 RX I (13078) esp_rtl_sdr: stream start freq=906875000 exact_rate=960000 urbs=3x32768
+2026-10-17T17:31:31.669 RX RTL_START ESP_OK rate=960000 display_hz=906875000 lo_hz=906875000
+2026-10-17T17:31:31.671 RX RTL_DRAM_BUDGET stage=rtl_after_start dma_free=5183 dma_largest=3840 intern_free=42075 intern_largest=31744 psram_free=6380640 psram_largest=6291456 always_int=8192 reserve_int=40960 hosted_dma_psram=1 usb_dma_psram=1 lwip_psram=1
+2026-10-17T17:31:31.671 RX RTL_SPEAKER_RESUME ok=1 running=1 playing=0 volume=128
+2026-10-17T17:31:32.163 RX I (13570) OrcSDR: RTL_WEB_DMA pre_start free=4827 largest=3840
+2026-10-17T17:31:32.163 RX I (13573) mdns_mem: mDNS task will be created from SPIRAM
+2026-10-17T17:31:32.164 RX I (13573) OrcSDR: RTL_WEB_MDNS ok dma_largest=2688
+2026-10-17T17:31:32.164 RX I (13574) OrcSDR: RTL_WEB_LISTEN port=80
+2026-10-17T17:31:32.625 TX PING
+2026-10-17T17:31:32.625 TX RTL_UI OPEN LORA
+2026-10-17T17:31:32.755 RX RTL_UI_OPEN_OK target=LORA
+2026-10-17T17:31:37.737 TX PING
+2026-10-17T17:31:37.738 TX RTL_LISTEN LORA
+2026-10-17T17:31:49.879 TX PING
+2026-10-17T17:31:49.879 TX RTL_CAPTURE_STATUS
+2026-10-17T17:31:49.902 RX RTL_CAPTURE_STATUS state=running
+2026-10-17T17:31:51.923 TX PING
+2026-10-17T17:31:51.923 TX RTL_HEALTH
+2026-10-17T17:31:51.929 RX RTL_HEALTH_STATUS uptime_ms=31947 free_heap=6061788 min_free_heap=6058772 dma_free=2803 dma_min=2543 dma_largest=2688 tasks=29 main_stack_hwm=2476 reset_reason=11 internal_free=37239 internal_min=36039 internal_largest=31744 psram_free=6027340 psram_largest=5898240
+2026-10-17T17:31:53.961 TX PING
+2026-10-17T17:31:53.961 TX RTL_LORA_STATS
+2026-10-17T17:31:53.963 RX RTL_LORA_STATS events=0 crc_ok=0 encrypted=0 messages=0 failures=0 drops=0 relearns=0 last_decode_ms=0
+2026-10-17T17:31:55.977 PLAN COMPLETE

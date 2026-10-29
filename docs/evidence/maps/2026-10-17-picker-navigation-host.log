@@ -1,0 +1,13 @@
+Test project F:/Ai/OrcSDR-Temp/maps-integration-completion/.local/maps/pipeline-host
+    Start 1: setup_flow
+1/4 Test #1: setup_flow .......................   Passed    0.05 sec
+    Start 2: location_store
+2/4 Test #2: location_store ...................   Passed    0.03 sec
+    Start 3: map_pipeline
+3/4 Test #3: map_pipeline .....................   Passed    0.07 sec
+    Start 4: world_geometry
+4/4 Test #4: world_geometry ...................   Passed    1.07 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   1.24 sec

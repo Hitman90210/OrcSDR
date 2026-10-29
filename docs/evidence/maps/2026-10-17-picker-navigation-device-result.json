@@ -1,0 +1,30 @@
+{
+  "diagnostic": false,
+  "usb_serial": "E8:F6:0A:E2:D6:03",
+  "hardware_flashed": true,
+  "dma_reserve": 40960,
+  "app_sha256": "fd2693d0cce513cacc2925213c6d142132df9707574852ffbddad74e17e9bc01",
+  "app_bytes": 5025248,
+  "target": "COM39",
+  "source_commit": "048988919cbd7ad70d21ad466a5c0bcfe30650a6",
+  "boot": "PASS",
+  "flash_hashes": "PASS",
+  "preboot_nvs_core_world_verification": "PASS",
+  "changed_location_save_display": "PASS",
+  "changed_location_reboot_persistence": "PASS",
+  "original_live_location_restored": "PASS",
+  "physical_controls_and_world_detail": "USER CONFIRMED",
+  "com17_touched": false,
+  "c6_flashed": false,
+  "driver_drops": 0,
+  "driver_overruns": 0,
+  "final_lora": {
+    "events": 27,
+    "crc_ok": 18,
+    "encrypted": 17,
+    "messages": 17,
+    "failures": 9,
+    "drops": 0
+  },
+  "integration_complete": false
+}

@@ -1,0 +1,83 @@
+{
+  "device": "COM39",
+  "usb_serial": "E8:F6:0A:E2:D6:03",
+  "bytes": 16777216,
+  "sha256": "90b19ec8fe53ff1f807ba8f68e9872cb36601de6aa07a42bc356ad86c06e3751",
+  "old_partitions": [
+    {
+      "name": "nvs",
+      "type": 1,
+      "subtype": 2,
+      "offset": 36864,
+      "size": 24576,
+      "flags": 0
+    },
+    {
+      "name": "phy_init",
+      "type": 1,
+      "subtype": 1,
+      "offset": 61440,
+      "size": 4096,
+      "flags": 0
+    },
+    {
+      "name": "factory",
+      "type": 0,
+      "subtype": 0,
+      "offset": 65536,
+      "size": 6291456,
+      "flags": 0
+    },
+    {
+      "name": "coredump",
+      "type": 1,
+      "subtype": 3,
+      "offset": 6356992,
+      "size": 262144,
+      "flags": 0
+    }
+  ],
+  "new_partitions": [
+    {
+      "name": "nvs",
+      "type": 1,
+      "subtype": 2,
+      "offset": 36864,
+      "size": 24576,
+      "flags": 0
+    },
+    {
+      "name": "phy_init",
+      "type": 1,
+      "subtype": 1,
+      "offset": 61440,
+      "size": 4096,
+      "flags": 0
+    },
+    {
+      "name": "factory",
+      "type": 0,
+      "subtype": 0,
+      "offset": 65536,
+      "size": 6291456,
+      "flags": 0
+    },
+    {
+      "name": "coredump",
+      "type": 1,
+      "subtype": 3,
+      "offset": 6356992,
+      "size": 262144,
+      "flags": 0
+    },
+    {
+      "name": "orcmaps_world",
+      "type": 1,
+      "subtype": 64,
+      "offset": 6619136,
+      "size": 1048576,
+      "flags": 2
+    }
+  ],
+  "candidate_commit": "4971ee5b3ce564011bf0f330779194b1c7e08094"
+}

@@ -2,6 +2,7 @@
 #include "dashboard_audio_control.hpp"
 
 #include "orc_badge.hpp"
+#include "map_download_notice.hpp"
 
 #include <M5Unified.h>
 #include <esp_heap_caps.h>
@@ -121,7 +122,9 @@ void draw_badge() {
 }
 
 void draw_brand(const char* subtitle) {
-  M5.Display.fillRect(20, 12, 350, 92, kBg);
+  M5.Display.fillRect(20, 12, 298, 54, kBg);
+  M5.Display.fillRect(20, 66, 350, 38, kBg);
+  map_download_notice::invalidate();
   draw_badge();
   M5.Display.setTextDatum(middle_left);
   M5.Display.setTextColor(TFT_WHITE, kBg);

@@ -1,0 +1,25 @@
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+-- Configuring done (0.0s)
+-- Generating done (0.1s)
+-- Build files have been written to: F:/Ai/OrcSDR-Temp/maps-integration-completion/.local/maps/pipeline-host
+MSBuild version 18.3.0-release-26070-10+3972042b7 for .NET Framework
+
+  orcsdr_setup_tests.vcxproj -> F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\RelWithDebInfo\orcsdr_setup_tests.exe
+  orcsdr_location_store_tests.vcxproj -> F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\RelWithDebInfo\orcsdr_location_store_tests.exe
+cl : command line  warning D9025: overriding '/DNDEBUG' with '/UNDEBUG' [F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\orcsdr_maps_tests.vcxproj]
+  map_world_tests.cpp
+LINK : warning LNK4300: ignoring '/INCREMENTAL' because input module contains ASAN metadata [F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\orcsdr_maps_tests.vcxproj]
+  orcsdr_maps_tests.vcxproj -> F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\RelWithDebInfo\orcsdr_maps_tests.exe
+Test project F:/Ai/OrcSDR-Temp/maps-integration-completion/.local/maps/pipeline-host
+    Start 1: setup_flow
+1/4 Test #1: setup_flow .......................   Passed    0.03 sec
+    Start 2: location_store
+2/4 Test #2: location_store ...................   Passed    0.03 sec
+    Start 3: map_pipeline
+3/4 Test #3: map_pipeline .....................   Passed    0.07 sec
+    Start 4: world_geometry
+4/4 Test #4: world_geometry ...................   Passed    0.25 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =   0.41 sec

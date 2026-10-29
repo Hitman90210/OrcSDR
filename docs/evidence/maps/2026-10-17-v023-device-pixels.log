@@ -1,0 +1,4 @@
+DEVICE_PIXEL_VIEW map different_pixels=0 compared=653952
+DEVICE_PIXEL_VIEW zom different_pixels=0 compared=653952
+DEVICE_PIXEL_VIEW pan different_pixels=0 compared=653952
+DEVICE_PIXEL_COMPARISON_PASS: 3 views; original location fields preserved

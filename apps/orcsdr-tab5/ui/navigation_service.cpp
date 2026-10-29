@@ -77,7 +77,7 @@ void open_settings(settings::Section section) {
   if (!ready()) return;
   if (g_hooks.persist_settings_open) g_hooks.persist_settings_open();
   screens::begin_transition(screens::Id::settings, millis(), true);
-  g_restore_graphics = g_hooks.disable_graphics();
+  if (!settings::active()) g_restore_graphics = g_hooks.disable_graphics();
   g_hooks.close_overlays();
   M5.Display.fillScreen(TFT_BLACK);
   settings::enter(g_hooks.settings_state(), section);

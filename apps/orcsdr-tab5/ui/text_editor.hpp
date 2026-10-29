@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 #include "keyboard_input.hpp"
 
@@ -11,6 +12,8 @@ enum class Result { none, changed, accepted, cancelled };
 void begin(const char* title, const char* initial, size_t maximum_length,
            bool masked, const char* accept_label);
 bool active();
+// Identifies the current begin() owner, including after close().
+uint64_t generation();
 const char* value();
 void draw();
 Result handle_touch(int x, int y);

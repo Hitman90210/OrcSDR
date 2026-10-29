@@ -1,0 +1,23 @@
+{
+  "source_commit": "99affb1b4463b8438a0a3e2b939406e7434659a4",
+  "orcmaps_commit": "dc6bc12b7df9fb3decd751709da733a386cf386e",
+  "orcmaps_version": "0.2.3",
+  "component_hash": "cd07da117d4f084e09286956649334d9a649fb5e9ad16a087e380d02c4e10dfb",
+  "app_bytes": 5028464,
+  "factory_headroom_bytes": 1262992,
+  "app_sha256": "a862da09eb48d695c2653ddb8462784a35ccf88ead06179a0a15cc289b20f447",
+  "elf_sha256": "91b577c0e6c9532bce550894eb1d7ca1c5ca0f5706a5266add586b14e5585016",
+  "native_build": "PASS",
+  "miniz_symbol_gate": "PASS",
+  "pin_lock_fetched_gate": "PASS",
+  "dma_reserve_bytes": 40960,
+  "startup_diagnostic": false,
+  "host_tests_passed": 4,
+  "pixel_comparisons": 36,
+  "all_pixel_comparisons_identical": true,
+  "hardware_flashed": false,
+  "hardware_performance_tested": false,
+  "com17_touched": false,
+  "com39_touched": false,
+  "integration_complete": false
+}

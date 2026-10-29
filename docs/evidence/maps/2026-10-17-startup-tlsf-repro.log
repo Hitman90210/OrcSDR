@@ -1,0 +1,11 @@
+tlsf_startup_repro.c
+tlsf-msvc.c
+C:/Espressif/frameworks/esp-idf-v5.5.4/components/heap/tlsf\tlsf_control_functions.h(610): warning C4018: '<': signed/unsigned mismatch
+.local/maps/tlsf-msvc.c(81): warning C4018: '<': signed/unsigned mismatch
+.local/maps/tlsf-msvc.c(84): warning C4018: '<': signed/unsigned mismatch
+.local/maps/tlsf-msvc.c(150): warning C4018: '<': signed/unsigned mismatch
+.local/maps/tlsf-msvc.c(152): warning C4018: '<': signed/unsigned mismatch
+Generating Code...
+region=42528 metadata=784 raw_largest=41736 reported_largest=40960 plain_40960=PASS aligned64_40960=FAIL
+region=44000 metadata=784 raw_largest=43208 reported_largest=43008 plain_40960=PASS aligned64_40960=PASS
+PASS: 32-bit SDK TLSF reproduces unaligned-largest versus DMA-aligned allocation boundary.

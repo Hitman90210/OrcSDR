@@ -8,6 +8,8 @@ namespace orcsdr::catalog {
 
 constexpr uint8_t kBuiltInPackCount = 5;
 constexpr uint8_t kPackCount = 16;
+// Keep historical signed-catalog slot numbering without offering ORCMAP1 maps.
+constexpr uint8_t kRetiredLegacyMapIndex = 4;
 
 enum class Operation : uint8_t { none, check, install, remove };
 

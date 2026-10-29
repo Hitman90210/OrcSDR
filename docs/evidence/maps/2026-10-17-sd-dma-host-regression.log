@@ -1,0 +1,15 @@
+Test project F:/Ai/OrcSDR-Temp/maps-integration-completion/.local/maps/pipeline-host
+    Start 1: sd_dma_buffer
+1/5 Test #1: sd_dma_buffer ....................   Passed    0.03 sec
+    Start 2: setup_flow
+2/5 Test #2: setup_flow .......................   Passed    0.04 sec
+    Start 3: location_store
+3/5 Test #3: location_store ...................   Passed    0.05 sec
+    Start 4: map_pipeline
+4/5 Test #4: map_pipeline .....................   Passed    0.08 sec
+    Start 5: world_geometry
+5/5 Test #5: world_geometry ...................   Passed    1.08 sec
+
+100% tests passed, 0 tests failed out of 5
+
+Total Test time (real) =   1.36 sec

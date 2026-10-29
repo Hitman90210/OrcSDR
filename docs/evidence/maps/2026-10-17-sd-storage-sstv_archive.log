@@ -1,0 +1,2 @@
+slow: decode of a full image took 49 ms (worst 10-row slice 2313 us) while the card wrote at 100 ms per block
+SSTV archive: PASS

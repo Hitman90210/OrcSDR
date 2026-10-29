@@ -1,0 +1,60 @@
+{
+  "failed_4971ee5b": {
+    "symbols": {
+      "_ZN6orcsdr4maps12_GLOBAL__N_18g_canvasE": {
+        "address": "0x4ff6d888",
+        "bytes": 340
+      },
+      "_ZN6orcsdr4maps12_GLOBAL__N_19g_archiveE": {
+        "address": "0x4ff6d788",
+        "bytes": 256
+      }
+    },
+    "sections": {
+      ".ext_ram.bss": {
+        "address": "0x484a0000",
+        "bytes": 721588
+      },
+      ".dram1.bss": {
+        "address": "0x4ff4bf00",
+        "bytes": 171300
+      },
+      ".dram1.heap_start_high": {
+        "address": "0x4ff75c24",
+        "bytes": 12
+      }
+    }
+  },
+  "prepared": {
+    "symbols": {
+      "_ZN6orcsdr4maps12_GLOBAL__N_18g_canvasE": {
+        "address": "0x4850c340",
+        "bytes": 340
+      },
+      "_ZN6orcsdr4maps12_GLOBAL__N_19g_archiveE": {
+        "address": "0x4850c240",
+        "bytes": 256
+      }
+    },
+    "sections": {
+      ".ext_ram.bss": {
+        "address": "0x484a0000",
+        "bytes": 722188
+      },
+      ".dram1.bss": {
+        "address": "0x4ff4bf00",
+        "bytes": 170708
+      },
+      ".dram1.heap_start_high": {
+        "address": "0x4ff759d4",
+        "bytes": 12
+      }
+    }
+  },
+  "internal_bss_bytes_recovered": 592,
+  "prepared_application": {
+    "bytes": 5021344,
+    "sha256": "91ed8cef4026447684b7f7f8ce81eb8c8a1bef7e2feb486d5e732acfc573a02d",
+    "hardware_tested": false
+  }
+}

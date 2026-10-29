@@ -3,7 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace orcsdr::storage { class FileSystem; }
+namespace orcsdr::storage { class File; class FileSystem; }
 
 namespace orcsdr::lora_log {
 
@@ -28,6 +28,19 @@ struct Record {
 };
 
 size_t format_csv(char* output, size_t output_size, const Record& record);
+struct AppendCheckpoint {
+  size_t journal_begin=0, csv_begin=0, journal_end=0, csv_end=0;
+  bool valid=false;
+};
+struct AppendResult {
+  const char* stage=nullptr;
+  int error=0;
+  explicit operator bool() const { return stage==nullptr; }
+};
+// Keep the record/checkpoint until success; reopen failed files before retrying.
+AppendResult append_record(storage::File& journal, storage::File& csv,
+                           const Record& record, AppendCheckpoint& checkpoint,
+                           char* buffer, size_t capacity);
 bool export_snapshot(storage::FileSystem& filesystem, const Record* records, size_t count,
                      uint16_t* sequence, char* path, size_t path_size);
 bool self_check();

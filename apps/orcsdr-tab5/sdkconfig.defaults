@@ -23,6 +23,8 @@ CONFIG_HTTPD_WS_SUPPORT=y
 # Dashboard transitions run on app_main; 12 KiB left less than 1 KiB of
 # headroom and overflowed while opening LoRa during the serial smoke test.
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+CONFIG_COMPILER_CXX_EXCEPTIONS=y
+CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE=1024
 CONFIG_ESP_HOSTED_HOST_SDIO_TX_Q_SIZE=4
 CONFIG_ESP_HOSTED_HOST_SDIO_RX_Q_SIZE=2
 # Espressif requires proving the P4<->C6 transport at a conservative clock

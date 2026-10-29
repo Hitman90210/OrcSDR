@@ -1,0 +1,39 @@
+{
+  "source": "6eb224662a6c6866268b7abda8c3fc3d7e3316ac",
+  "app_bytes": 5023568,
+  "app_sha256": "bf32a59127bece56680da3a96bce7719fc7910662c2c4771bef61fdea8886d69",
+  "diagnostic": false,
+  "dma_reserve_bytes": 40960,
+  "hardware_flashed": true,
+  "target": "COM39",
+  "usb_serial": "E8:F6:0A:E2:D6:03",
+  "boot": "PASS",
+  "flash_hashes": "PASS",
+  "nvs_core_world_preboot_verification": "PASS",
+  "map_dimensions": [
+    1248,
+    568
+  ],
+  "frame_bytes": 1417728,
+  "location_preservation": "PASS",
+  "setup_skip_and_confirm": "PASS",
+  "invalid_e7_rejection": "PASS",
+  "physical_controls_visible": "USER CONFIRMED: both coordinate fields, Cancel, zoom +/-, Use Location",
+  "driver_overruns": 0,
+  "driver_drops": 0,
+  "lora_crc_ok": 1,
+  "lora_encrypted": 1,
+  "lora_failures": 0,
+  "lora_drops": 0,
+  "final_screen": "maps",
+  "final_receiver": "LoRa 906875000 Hz, 960000 sps",
+  "com17_touched": false,
+  "c6_flashed": false,
+  "integration_complete": false,
+  "remaining": [
+    "Some saved captures omit controls; physical visibility confirmed by user, capture discrepancy unresolved",
+    "Earlier intermittent SD-read failure remains unclosed; one held-cache read passed in this cycle",
+    "Large map redraws take seconds during reception",
+    "Regional SD PMTiles and dashboard verified-position acceptance remain pending"
+  ]
+}

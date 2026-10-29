@@ -1,0 +1,140 @@
+name: Dead Air host tests
+on:
+  push:
+    branches:
+      - 'chatgpt/dead-air-*'
+    paths:
+      - 'apps/orcsdr-tab5/ui/dead_air_*'
+      - 'tests/dead_air_model_tests.cpp'
+      - 'tests/dead_air_render_tests.cpp'
+      - 'tests/dead_air_sd_sink_tests.cpp'
+      - 'tests/dead_air_sweep_tests.cpp'
+      - 'tests/dead_air_palette_tests.cpp'
+      - 'tests/dead_air_audio_tests.cpp'
+      - 'tests/dead_air_clip_tests.cpp'
+      - 'tests/dead_air_format_tests.cpp'
+      - 'tests/dead_air_info_tests.cpp'
+      - 'tests/dead_air_journal_tests.cpp'
+      - '.github/workflows/dead-air-host-tests.yml'
+  pull_request:
+    paths:
+      - 'apps/orcsdr-tab5/ui/dead_air_*'
+      - 'tests/dead_air_model_tests.cpp'
+      - 'tests/dead_air_render_tests.cpp'
+      - 'tests/dead_air_sd_sink_tests.cpp'
+      - 'tests/dead_air_sweep_tests.cpp'
+      - 'tests/dead_air_palette_tests.cpp'
+      - 'tests/dead_air_audio_tests.cpp'
+      - 'tests/dead_air_clip_tests.cpp'
+      - 'tests/dead_air_format_tests.cpp'
+      - 'tests/dead_air_info_tests.cpp'
+      - '.github/workflows/dead-air-host-tests.yml'
+permissions:
+  contents: read
+jobs:
+  dead-air-model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile model with warnings as errors
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_model_tests.cpp \
+            apps/orcsdr-tab5/ui/dead_air_model.cpp \
+            -o /tmp/dead-air-model-tests
+      - name: Execute deterministic RF/event tests
+        run: /tmp/dead-air-model-tests
+      - name: Compile journal with warnings as errors
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_journal_tests.cpp \
+            apps/orcsdr-tab5/ui/dead_air_model.cpp \
+            apps/orcsdr-tab5/ui/dead_air_journal.cpp \
+            -o /tmp/dead-air-journal-tests
+      - name: Execute deterministic journal tests
+        run: /tmp/dead-air-journal-tests
+      - name: Compile M5GFX renderer against host stand-in
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Itests/acars_ui_stubs -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_render_tests.cpp \
+            tests/dead_air_ui_stubs/audio_header_stub.cpp \
+            apps/orcsdr-tab5/ui/dead_air_dashboard.cpp \
+            apps/orcsdr-tab5/ui/dead_air_sweep.cpp \
+            apps/orcsdr-tab5/ui/dead_air_palette.cpp \
+            apps/orcsdr-tab5/ui/dead_air_format.cpp \
+            apps/orcsdr-tab5/ui/dead_air_info.cpp \
+            apps/orcsdr-tab5/ui/acars_dirty_rects.cpp \
+            apps/orcsdr-tab5/ui/dead_air_model.cpp \
+            apps/orcsdr-tab5/ui/screen_controller.cpp \
+            -o /tmp/dead-air-render-tests
+      - name: Execute M5GFX render bounds and touch tests
+        run: /tmp/dead-air-render-tests
+      - name: Compile OrcSDR SD sink against host filesystem
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_sd_sink_tests.cpp \
+            apps/orcsdr-tab5/ui/dead_air_model.cpp \
+            apps/orcsdr-tab5/ui/dead_air_journal.cpp \
+            apps/orcsdr-tab5/ui/dead_air_sd_journal.cpp \
+            -o /tmp/dead-air-sd-tests
+      - name: Execute SD journal contract tests
+        run: /tmp/dead-air-sd-tests
+      - name: Compile sweep schedule and journal record with warnings as errors
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_sweep_tests.cpp \
+            apps/orcsdr-tab5/ui/dead_air_model.cpp \
+            apps/orcsdr-tab5/ui/dead_air_journal.cpp \
+            apps/orcsdr-tab5/ui/dead_air_sweep.cpp \
+            -o /tmp/dead-air-sweep-tests
+      - name: Execute sweep schedule tests
+        run: /tmp/dead-air-sweep-tests
+      - name: Compile ectoplasm palette with warnings as errors
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_palette_tests.cpp \
+            apps/orcsdr-tab5/ui/dead_air_palette.cpp \
+            -o /tmp/dead-air-palette-tests
+      - name: Execute palette tests
+        run: /tmp/dead-air-palette-tests
+      - name: Compile audio meter and detector with warnings as errors
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_audio_tests.cpp \
+            apps/orcsdr-tab5/ui/dead_air_audio.cpp \
+            apps/orcsdr-tab5/ui/dead_air_model.cpp \
+            -o /tmp/dead-air-audio-tests
+      - name: Execute audio tests
+        run: /tmp/dead-air-audio-tests
+      - name: Compile clip planner with warnings as errors
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_clip_tests.cpp \
+            apps/orcsdr-tab5/ui/dead_air_clip.cpp \
+            -o /tmp/dead-air-clip-tests
+      - name: Execute clip planner tests
+        run: /tmp/dead-air-clip-tests
+      - name: Compile event-row formatting with warnings as errors
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror \
+            -Iapps/orcsdr-tab5/ui \
+            tests/dead_air_format_tests.cpp \
+            apps/orcsdr-tab5/ui/dead_air_format.cpp \
+            apps/orcsdr-tab5/ui/dead_air_model.cpp \
+            -o /tmp/dead-air-format-tests
+      - name: Execute formatting tests
+        run: /tmp/dead-air-format-tests
+      - name: Compile (i) popup text with warnings as errors
+        run: |
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror             -Iapps/orcsdr-tab5/ui             tests/dead_air_info_tests.cpp             apps/orcsdr-tab5/ui/dead_air_info.cpp             -o /tmp/dead-air-info-tests
+      - name: Execute popup text tests
+        run: /tmp/dead-air-info-tests

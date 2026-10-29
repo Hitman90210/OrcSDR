@@ -432,7 +432,7 @@ const CatalogEntry* Catalog::match(uint32_t frequency_hz) const {
 }
 
 bool Catalog::self_check() {
-  return classify_service("KEUG TOWER") == Service::tower &&
+  return classify_service("TEST TOWER") == Service::tower &&
          classify_service("PORTLAND ATIS") == Service::atis &&
          classify_service("REGIONAL ASOS") == Service::awos &&
          classify_service("SINGAPORE DELIVERY") == Service::clearance &&

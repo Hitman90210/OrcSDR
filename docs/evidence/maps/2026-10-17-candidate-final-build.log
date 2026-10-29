@@ -1,0 +1,48 @@
+[1/10] Performing build step for 'bootloader'
+[1/1] C:\WINDOWS\system32\cmd.exe /C "cd /D F:\Ai\OrcSDR-Temp\maps-integration-completion\apps\orcsdr-tab5\build-native-hosted3\bootloader\esp-idf\esptool_py && C:\Espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe C:/Espressif/frameworks/esp-idf-v5.5.4/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x2000 F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/build-native-hosted3/bootloader/bootloader.bin"
+
+Bootloader binary size 0x5de0 bytes. 0x220 bytes (2%) free.
+
+
+[2/10] No install step for 'bootloader'
+[3/10] Completed 'bootloader'
+[4/10] Building CXX object esp-idf/main/CMakeFiles/__idf_main.dir/__/ui/map_screen.cpp.obj
+In file included from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/spi_share_hw_ctrl.h:14,
+                 from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_driver_spi/include/esp_private/spi_common_internal.h:19,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/esp32/Bus_SPI.hpp:36,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/device.hpp:74,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/M5GFX.h:47,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/ui/orcsdr_m5_time.hpp:5,
+                 from <command-line>:
+C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/periph_ctrl.h:88:64: warning: invalid suffix on literal; C++11 requires a space between literal and string macro [-Wliteral-suffix]
+   88 | #define __PERIPH_CTRL_DEPRECATE_ATTR __attribute__((deprecated("This function is not functional on "CONFIG_IDF_TARGET)))
+      |                                                                ^
+[5/10] Linking C static library esp-idf\main\libmain.a
+[6/10] Generating esp-idf/esp_system/ld/sections.ld
+[7/10] Linking CXX executable orcsdr_tab5.elf
+[8/10] C:\WINDOWS\system32\cmd.exe /C "cd /D F:\Ai\OrcSDR-Temp\maps-integration-completion\apps\orcsdr-tab5\build-native-hosted3 && C:\Espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/orcmaps/tools/check_miniz_symbols.py F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/build-native-hosted3 --nm C:/Espressif/tools/riscv32-esp-elf/esp-14.2.0_20260121/riscv32-esp-elf/bin/riscv32-esp-elf-nm.exe"
+archive: F:\Ai\OrcSDR-Temp\maps-integration-completion\apps\orcsdr-tab5\build-native-hosted3\esp-idf\orcmaps\liborcmaps.a
+
+elf:     F:\Ai\OrcSDR-Temp\maps-integration-completion\apps\orcsdr-tab5\build-native-hosted3\orcsdr_tab5.elf
+
+ROM-absolute miniz symbols in image (unused by OrcMaps): 16
+
+  T orcmap_mz_crc32
+
+  T orcmap_tinfl_decompress
+
+PASS: OrcMaps uses 2 bundled miniz symbols, none ROM-absolute
+
+[9/10] Generating binary image from built executable
+esptool.py v4.12.0
+
+Creating esp32p4 image...
+
+Merged 4 ELF sections
+
+Successfully created esp32p4 image.
+
+Generated F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/build-native-hosted3/orcsdr_tab5.bin
+[10/10] C:\WINDOWS\system32\cmd.exe /C "cd /D F:\Ai\OrcSDR-Temp\maps-integration-completion\apps\orcsdr-tab5\build-native-hosted3\esp-idf\esptool_py && C:\Espressif\python_env\idf5.5_py3.14_env\Scripts\python.exe C:/Espressif/frameworks/esp-idf-v5.5.4/components/partition_table/check_sizes.py --offset 0x8000 partition --type app F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/build-native-hosted3/partition_table/partition-table.bin F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/build-native-hosted3/orcsdr_tab5.bin"
+orcsdr_tab5.bin binary size 0x4c9ea0 bytes. Smallest app partition is 0x600000 bytes. 0x136160 bytes (20%) free.
+

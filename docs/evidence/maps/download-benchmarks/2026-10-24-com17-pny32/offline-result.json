@@ -1,0 +1,30 @@
+{
+  "result": "PASS native reboot discovery and offline SD rendering",
+  "source": "ORC_MAP_SOURCE camera_zoom=6 source_zoom=6 title=\"World regional detail - zoom 0-8\"",
+  "frame": {
+    "state": 1,
+    "generation": 8,
+    "revision": 5,
+    "cached_pushes": 1,
+    "push_us": 71427,
+    "frame_bytes": 1417728,
+    "tiles": 18,
+    "missing": 0,
+    "failed": 0,
+    "features": 598,
+    "reads": 528,
+    "bytes": 888626,
+    "lookup_us": 29560,
+    "stream_us": 2611821,
+    "render_us": 1327928,
+    "total_us": 4055722,
+    "io_us": 454792
+  },
+  "saved_location_matches_end_of_measured_run": true,
+  "user_location_save_during_measured_run": "2026-10-24T11:49:51.756 mono=769.214860 RX ORC_MAP_LOCATION_SAVE OK verified",
+  "driver_followup": "RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=1 profile_name=\"blog_v4_r828d\" provisional=0 device_caps=0x001fff3f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=MANUAL gain_tenth_db=254 rtl_agc=0 bias=0 bytes=113573888 blocks=3466 effective_sps=956621 overruns=3 drops=3 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0",
+  "radio_followup_limit": "3 drops/overruns observed after reboot; not attributed and not an all-followup continuity pass",
+  "raw_log_sha256": "161646e30971d17164296efb72e4bbe6b30ec71bc919204db953bcb807276181",
+  "physical_appearance": "User confirmed: Map looks complete; controls visible",
+  "physical_confirmation_recorded_local": "2026-10-24T12:27:31"
+}

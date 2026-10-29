@@ -6,6 +6,8 @@
 
 namespace orcsdr::storage {
 
+enum class EntryStatus {missing,file,directory,error};
+
 class File {
  public:
   File() = default;
@@ -23,6 +25,7 @@ class File {
   bool seek(size_t position);
   bool flush();
   bool sync();  // Flush stdio and commit filesystem data/metadata to the card.
+  bool truncate(size_t size); // Shrink only; caller must own the removed suffix.
   bool close();
   bool isDirectory() const;
   const char* name() const;
@@ -40,6 +43,7 @@ class FileSystem {
  public:
   File open(const char* path, const char* mode = "r", bool create = false) const;
   bool exists(const char* path) const;
+  EntryStatus status(const char* path) const; // Distinguish absence from SD I/O failure.
   bool mkdir(const char* path) const;
   bool remove(const char* path) const;
   bool rename(const char* from, const char* to) const;
@@ -57,8 +61,11 @@ namespace orcsdr::storage {
 bool mount_tab5_sd();
 bool mounted();
 FileSystem& filesystem();
+// Filesystem capacity, not raw card sectors. Unmounted/query failures return 0.
 uint64_t total_bytes();
 uint64_t used_bytes();
+uint64_t free_bytes();
+bool query_free_bytes(uint64_t* available); // False distinguishes unknown capacity from a full card.
 bool run_file_semantics_check();
 bool run_write_benchmark(uint32_t file_mib = 32);
 

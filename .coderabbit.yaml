@@ -1,5 +1,6 @@
 # Review ready pull requests automatically and recheck each pushed update.
 reviews:
+  # Source, tests and shipping documentation remain eligible for review.
   auto_review:
     enabled: true
     drafts: false

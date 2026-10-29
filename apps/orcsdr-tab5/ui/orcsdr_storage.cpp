@@ -1,8 +1,10 @@
 #include "orcsdr_storage.hpp"
 #include "sd_benchmark_plan.hpp"
+#include "sdmmc_dma_buffer.hpp"
 #include "wifi_service.hpp"
 #include <algorithm>
 #include <cerrno>
+#include <climits>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -32,6 +34,15 @@ sdmmc_card_t* g_card = nullptr;
 sd_pwr_ctrl_handle_t g_sd_power = nullptr;
 orcsdr::storage::FileSystem g_filesystem;
 bool g_report_next_write_buffer = false;
+
+bool sd_space(uint64_t* total, uint64_t* free) {
+  *total = *free = 0;
+  if (!g_mounted || esp_vfs_fat_info("/sd", total, free) != ESP_OK || *free > *total) {
+    *total = *free = 0;
+    return false;
+  }
+  return true;
+}
 
 std::string mounted_path(const char* path) {
   if (!path || strncmp(path, "/sd/", 4) == 0 || strcmp(path, "/sd") == 0) return path ? path : "";
@@ -83,6 +94,12 @@ bool File::sync() {
   return state_ && state_->stream && fflush(state_->stream) == 0 &&
          fsync(fileno(state_->stream)) == 0;
 }
+bool File::truncate(size_t length) {
+  if(!state_||!state_->stream||length>static_cast<size_t>(LONG_MAX)||
+      !sync()||length>size())return false;
+  return ftruncate(fileno(state_->stream),static_cast<off_t>(length))==0&&
+      fseek(state_->stream,0,SEEK_END)==0;
+}
 bool File::close() {
   if (!state_) return true;
   bool ok = true;
@@ -123,8 +140,13 @@ File FileSystem::open(const char* path, const char* mode, bool) const {
   }
   auto state = std::make_shared<File::State>();
   const bool appending = mode && mode[0] == 'a';   // FILE_APPEND: keep the existing content, create the file if missing
-  const bool writing = mode && (mode[0] == 'w' || appending);
-  state->stream = fopen(mounted.c_str(), appending ? "ab" : writing ? "wb" : "rb");
+  const bool updating = mode && strchr(mode, '+');
+  const bool truncating = mode && mode[0] == 'w';
+  const bool writing = truncating || appending || updating;
+  const char* native_mode = appending ? (updating ? "a+b" : "ab")
+      : truncating ? (updating ? "w+b" : "wb")
+      : updating ? "r+b" : "rb";
+  state->stream = fopen(mounted.c_str(), native_mode);
   if (state->stream && writing) {
     state->write_buffer = static_cast<uint8_t*>(heap_caps_malloc(
         kWriteBufferBytes,
@@ -159,6 +181,13 @@ File FileSystem::open(const char* path, const char* mode, bool) const {
 bool FileSystem::exists(const char* path) const { const std::string mounted = mounted_path(path); struct stat info{}; return path && stat(mounted.c_str(), &info) == 0; }
 bool FileSystem::mkdir(const char* path) const { const std::string mounted = mounted_path(path); return path && (::mkdir(mounted.c_str(), 0775) == 0 || errno == EEXIST); }
 bool FileSystem::remove(const char* path) const { const std::string mounted = mounted_path(path); return path && unlink(mounted.c_str()) == 0; }
+EntryStatus FileSystem::status(const char* path) const {
+  if(!path||!mounted())return EntryStatus::error;
+  struct stat info{};
+  if(::stat(mounted_path(path).c_str(),&info)==0)
+    return S_ISDIR(info.st_mode)?EntryStatus::directory:EntryStatus::file;
+  return errno==ENOENT?EntryStatus::missing:EntryStatus::error;
+}
 bool FileSystem::rename(const char* from, const char* to) const { const std::string source = mounted_path(from); const std::string destination = mounted_path(to); return from && to && ::rename(source.c_str(), destination.c_str()) == 0; }
 
 }  // namespace orcsdr::storage
@@ -171,6 +200,7 @@ bool mount_tab5_sd() {
   // M5Stack's Tab5 reference uses native SDMMC Slot 0 for the card. ESP-Hosted
   // owns Slot 1 for the C6, so both devices use their intended slots.
   sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+  host.check_buffer_alignment = &sdmmc_dma_buffer_aligned;
   host.slot = SDMMC_HOST_SLOT_0;
   host.max_freq_khz = SDMMC_FREQ_HIGHSPEED;
   if (orcsdr::wifi::hosted_transport_ready()) {
@@ -203,8 +233,13 @@ bool mount_tab5_sd() {
 
 bool mounted() { return g_mounted; }
 FileSystem& filesystem() { return g_filesystem; }
-uint64_t total_bytes() { return g_card ? static_cast<uint64_t>(g_card->csd.capacity) * g_card->csd.sector_size : 0; }
-uint64_t used_bytes() { return 0; }
+uint64_t total_bytes() { uint64_t total, free; return sd_space(&total, &free) ? total : 0; }
+uint64_t used_bytes() { uint64_t total, free; return sd_space(&total, &free) ? total - free : 0; }
+uint64_t free_bytes() { uint64_t total, free; return sd_space(&total, &free) ? free : 0; }
+bool query_free_bytes(uint64_t* available) {
+  if(!available)return false;
+  uint64_t total=0;return sd_space(&total,available);
+}
 
 bool run_file_semantics_check() {
   if (!mount_tab5_sd() || !g_filesystem.mkdir("/orcsdr")) return false;

@@ -15,6 +15,11 @@ The gear opens Settings without stopping ordinary reception.
 
 Saved Wi-Fi passwords are masked and never returned through the Settings UI or documentation capture interface.
 
+Maps integration builds add **LOCAL MAPS** under **Data & Maps**. The
+[offline maps guide](offline-maps.md) explains **GET MAPS**, installed-map
+selection and copying a downloaded pack onto the SD card yourself. Availability
+of remote downloads depends on the catalog configured in that firmware.
+
 System shows a green UTC value only after the hardware clock has been
 established. Otherwise it shows **TIME NOT SET** in orange. With the Tab5
 connected by USB, run `python tools/sync_tab5_rtc.py COM17` (replace `COM17`

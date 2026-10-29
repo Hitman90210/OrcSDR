@@ -1,0 +1,87 @@
+Reviewed COM39 SD-guard counters; raw coordinates, network, node IDs and packet payloads excluded.
+
+SOURCE maps-com39-sd-guard-preflight-20261017.log
+2026-10-17T23:39:07.547 RX RTL_HEALTH_STATUS uptime_ms=3257488 free_heap=4034732 min_free_heap=1989536 dma_free=1735 dma_min=191 dma_largest=928 tasks=28 main_stack_hwm=3544 reset_reason=11 internal_free=16335 internal_min=807 internal_largest=10240 psram_free=4020120 psram_largest=1998848
+2026-10-17T23:39:09.775 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=MANUAL gain_tenth_db=496 rtl_agc=0 bias=0 bytes=1632108544 blocks=49808 effective_sps=959908 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T23:39:10.927 RX ORC_MAP_STATUS state=1 generation=14 revision=9 cached_pushes=1 push_us=68889 frame_bytes=1417728 tiles=9 missing=0 failed=0 features=413 reads=76 bytes=65942 lookup_us=219 stream_us=433107 render_us=1438037 total_us=1909734 io_us=67052
+2026-10-17T23:39:10.929 RX ORC_MAP_MEMORY internal_free=16467 internal_largest=10240 dma_free=1735 dma_largest=928 psram_free=4020120 psram_largest=1998848
+2026-10-17T23:39:12.072 RX LORA_SD_LOG_STATUS requested=true ready=false error=true queued=0 dropped=33 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:39:13.243 RX LORA_HISTORY_STATUS loaded=1 nodes=58 replayed=409 rejected=0 written=2 error=1 directory=/orcsdr/lora
+2026-10-17T23:39:14.332 PLAN COMPLETE
+
+SOURCE maps-com39-sd-guard-pause-20261017.log
+2026-10-17T23:40:14.757 RX LORA_SD_LOG_STATUS requested=false ready=false error=true queued=0 dropped=33 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:40:16.270 RX SD_GET_DONE bytes=54790 sha256=13d82b33c004b94b525d3789e084fece7bc5372bfb4a690158062a96291ffa4e path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:40:16.340 RX RTL_HEALTH_STATUS uptime_ms=3326293 free_heap=4134732 min_free_heap=1989536 dma_free=1735 dma_min=191 dma_largest=928 tasks=28 main_stack_hwm=3544 reset_reason=11 internal_free=16663 internal_min=807 internal_largest=10240 psram_free=4119792 psram_largest=1998848
+2026-10-17T23:40:17.286 PLAN COMPLETE
+
+SOURCE maps-com39-sd-guard-boot-check-20261017.log
+2026-10-17T23:43:40.262 RX RTL_HEALTH_STATUS uptime_ms=45300 free_heap=5585812 min_free_heap=5583284 dma_free=1195 dma_min=1039 dma_largest=1024 tasks=29 main_stack_hwm=5320 reset_reason=11 internal_free=27279 internal_min=26183 internal_largest=25600 psram_free=5559716 psram_largest=5505024
+2026-10-17T23:43:41.408 RX UI_SELF_CHECK am=1 fm=1 home=1 shortwave=1 keypad=1 editor=1
+2026-10-17T23:43:42.567 RX LORA_SD_LOG_STATUS requested=true ready=true error=false queued=0 dropped=0 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:43:43.723 RX LORA_HISTORY_STATUS loaded=1 nodes=56 replayed=410 rejected=0 written=0 error=0 directory=/orcsdr/lora
+2026-10-17T23:43:44.807 PLAN COMPLETE
+
+SOURCE maps-com39-sd-guard-retained-20261017.log
+2026-10-17T23:44:28.695 RX ORC_MAP_STATUS state=1 generation=2 revision=1 cached_pushes=1 push_us=68631 frame_bytes=1417728 tiles=9 missing=0 failed=0 features=413 reads=76 bytes=65942 lookup_us=191 stream_us=407024 render_us=891965 total_us=1328189 io_us=52495
+2026-10-17T23:44:28.696 RX ORC_MAP_MEMORY internal_free=16167 internal_largest=8704 dma_free=1299 dma_largest=1024 psram_free=4019344 psram_largest=3997696
+2026-10-17T23:44:29.835 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=MANUAL gain_tenth_db=496 rtl_agc=0 bias=0 bytes=101974016 blocks=3112 effective_sps=958672 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T23:44:30.975 RX LORA_SD_LOG_STATUS requested=true ready=true error=false queued=0 dropped=0 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:44:32.038 RX RTL_HEALTH_STATUS uptime_ms=97078 free_heap=4034108 min_free_heap=4009456 dma_free=1219 dma_min=231 dma_largest=1024 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=15947 internal_min=2675 internal_largest=8704 psram_free=4019344 psram_largest=3997696
+2026-10-17T23:44:34.634 RX RTL_LORA_CAPTURE_ABORT reason=stalled drops=1
+2026-10-17T23:44:40.346 RX LORA_SD_LOG_STATUS requested=false ready=false error=false queued=0 dropped=0 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:44:41.474 RX ORC_MAP_STATUS state=1 generation=2 revision=1 cached_pushes=1 push_us=68631 frame_bytes=1417728 tiles=9 missing=0 failed=0 features=413 reads=76 bytes=65942 lookup_us=191 stream_us=407024 render_us=891965 total_us=1328189 io_us=52495
+2026-10-17T23:44:41.474 RX ORC_MAP_MEMORY internal_free=16591 internal_largest=8704 dma_free=1715 dma_largest=1024 psram_free=4151776 psram_largest=3997696
+2026-10-17T23:44:42.923 RX SD_GET_DONE bytes=54790 sha256=13d82b33c004b94b525d3789e084fece7bc5372bfb4a690158062a96291ffa4e path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:44:58.675 RX SD_GET_DONE bytes=2764854 sha256=eba5c3b7496c76604bcf0db0fafb633e9c1dbd6d68090fc483120ebd89616b12 path="/orcsdr/screenshots/v23cmap.bmp"
+2026-10-17T23:45:14.417 RX SD_GET_DONE bytes=2764854 sha256=1a84d0f508a63b9052330008eae8c7be7ee307c6d0cdefab243749105a2f3e35 path="/orcsdr/screenshots/v23czom.bmp"
+2026-10-17T23:45:30.148 RX SD_GET_DONE bytes=2764854 sha256=eba5c3b7496c76604bcf0db0fafb633e9c1dbd6d68090fc483120ebd89616b12 path="/orcsdr/screenshots/v23cmap.bmp"
+2026-10-17T23:45:31.049 RX SD_PUT_DONE bytes=131109 sha256=f1003b5b74a9466806c754554ba073677812fb387de4e10c4c0661f357c5ff22 path="/orcsdr/sdguard_5c6f2853_c92abf1f98e841ca85d1479c706e7e12.bin"
+2026-10-17T23:45:31.050 SCRATCH_UPLOAD_PASS bytes=131109 sha256=f1003b5b74a9466806c754554ba073677812fb387de4e10c4c0661f357c5ff22 path=/orcsdr/sdguard_5c6f2853_c92abf1f98e841ca85d1479c706e7e12.bin
+2026-10-17T23:45:31.842 RX SD_GET_DONE bytes=131109 sha256=f1003b5b74a9466806c754554ba073677812fb387de4e10c4c0661f357c5ff22 path="/orcsdr/sdguard_5c6f2853_c92abf1f98e841ca85d1479c706e7e12.bin"
+2026-10-17T23:45:31.887 RX ORC_MAP_STATUS state=1 generation=2 revision=1 cached_pushes=1 push_us=68631 frame_bytes=1417728 tiles=9 missing=0 failed=0 features=413 reads=76 bytes=65942 lookup_us=191 stream_us=407024 render_us=891965 total_us=1328189 io_us=52495
+2026-10-17T23:45:31.888 RX ORC_MAP_MEMORY internal_free=16459 internal_largest=8704 dma_free=1583 dma_largest=1024 psram_free=4151796 psram_largest=3997696
+2026-10-17T23:45:33.044 RX RTL_HEALTH_STATUS uptime_ms=158089 free_heap=4167204 min_free_heap=4009456 dma_free=1715 dma_min=231 dma_largest=1024 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=16591 internal_min=2675 internal_largest=8704 psram_free=4151796 psram_largest=3997696
+2026-10-17T23:45:33.989 PLAN COMPLETE
+
+SOURCE maps-com39-sd-guard-final-20261017.log
+2026-10-17T23:45:58.208 RX HOME_PLOT active=1 cadence_ms=33 elapsed_ms=7194 frames=185 draw_us=31738 draw_max_us=33052 raster_us=8430 push_us=16196 waterfall_us=7111 p50_ms=38 p95_ms=43 window=128
+2026-10-17T23:46:06.597 RX ORC_MAP_STATUS state=1 generation=4 revision=2 cached_pushes=1 push_us=67893 frame_bytes=1417728 tiles=9 missing=0 failed=0 features=413 reads=76 bytes=65942 lookup_us=206 stream_us=426260 render_us=1404253 total_us=1878706 io_us=52536
+2026-10-17T23:46:06.598 RX ORC_MAP_MEMORY internal_free=15799 internal_largest=8704 dma_free=1195 dma_largest=1024 psram_free=4019364 psram_largest=3932160
+2026-10-17T23:46:12.748 RX ORC_MAP_STATUS state=1 generation=5 revision=3 cached_pushes=1 push_us=69048 frame_bytes=1417728 tiles=6 missing=0 failed=0 features=690 reads=88 bytes=127776 lookup_us=142 stream_us=894150 render_us=1180536 total_us=2116778 io_us=114602
+2026-10-17T23:46:12.749 RX ORC_MAP_MEMORY internal_free=15415 internal_largest=9728 dma_free=1195 dma_largest=1024 psram_free=4011172 psram_largest=3932160
+2026-10-17T23:46:24.110 RX ORC_MAP_STATUS state=1 generation=7 revision=5 cached_pushes=1 push_us=68715 frame_bytes=1417728 tiles=12 missing=0 failed=0 features=715 reads=106 bytes=99618 lookup_us=269 stream_us=612716 render_us=1717293 total_us=2370134 io_us=75749
+2026-10-17T23:46:24.111 RX ORC_MAP_MEMORY internal_free=10023 internal_largest=3456 dma_free=1195 dma_largest=1024 psram_free=4011172 psram_largest=3932160
+2026-10-17T23:46:30.261 RX ORC_MAP_STATUS state=1 generation=8 revision=6 cached_pushes=1 push_us=69542 frame_bytes=1417728 tiles=9 missing=0 failed=0 features=413 reads=76 bytes=65942 lookup_us=205 stream_us=438964 render_us=1371158 total_us=1844408 io_us=46143
+2026-10-17T23:46:30.262 RX ORC_MAP_MEMORY internal_free=15415 internal_largest=9728 dma_free=1195 dma_largest=1024 psram_free=4011172 psram_largest=3932160
+2026-10-17T23:46:31.395 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=MANUAL gain_tenth_db=496 rtl_agc=0 bias=0 bytes=94863360 blocks=2895 effective_sps=958719 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T23:46:32.528 RX LORA_SD_LOG_STATUS requested=true ready=true error=false queued=0 dropped=0 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:46:33.686 RX LORA_HISTORY_STATUS loaded=1 nodes=56 replayed=410 rejected=0 written=0 error=0 directory=/orcsdr/lora
+2026-10-17T23:46:34.811 RX RTL_LORA_STATS events=1 crc_ok=0 encrypted=0 messages=0 failures=0 drops=1 relearns=2 last_decode_ms=0
+2026-10-17T23:46:35.932 RX RTL_HEALTH_STATUS uptime_ms=220981 free_heap=4025536 min_free_heap=3626392 dma_free=1195 dma_min=231 dma_largest=1024 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=15547 internal_min=791 internal_largest=9728 psram_free=4011172 psram_largest=3932160
+2026-10-17T23:46:37.020 PLAN COMPLETE
+
+SOURCE maps-com39-sd-guard-observe-20261017.log
+2026-10-17T23:47:12.413 RX RTL_LORA_STATS events=1 crc_ok=0 encrypted=0 messages=0 failures=0 drops=1 relearns=2 last_decode_ms=0
+2026-10-17T23:47:30.318 RX RTL_LORA_NATIVE_DONE packets=1 preambles=1 header_failures=0 crc_ok=1 crc_failures=0 encrypted=1 raw_cfo_hz=-610.4 cfo_hz=-610.4 elapsed_ms=1813 sequence=2 bytes=3855104 trigger_offset_samples=240000 queue_ms=0 candidate_ms=1813 clock_skew_ppm=0 drops=1 align_shift=0
+2026-10-17T23:47:52.443 RX LORA_SD_LOG_STATUS requested=true ready=true error=false queued=0 dropped=0 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:47:58.536 RX LORA_HISTORY_STATUS loaded=1 nodes=56 replayed=410 rejected=0 written=1 error=0 directory=/orcsdr/lora
+2026-10-17T23:47:59.675 RX RTL_LORA_STATS events=2 crc_ok=1 encrypted=1 messages=1 failures=0 drops=1 relearns=2 last_decode_ms=1813
+2026-10-17T23:48:00.823 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=MANUAL gain_tenth_db=496 rtl_agc=0 bias=0 bytes=266567680 blocks=8135 effective_sps=959539 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T23:48:01.946 RX RTL_HEALTH_STATUS uptime_ms=306993 free_heap=2059096 min_free_heap=2043928 dma_free=1019 dma_min=231 dma_largest=896 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=15019 internal_min=791 internal_largest=9728 psram_free=2045084 psram_largest=1966080
+2026-10-17T23:48:03.041 PLAN COMPLETE
+
+SOURCE maps-com39-sd-guard-log-readback-20261017.log
+2026-10-17T23:48:56.489 RX SD_GET_DONE bytes=55062 sha256=741c3708b34ed76e46a3212f87317c60b1bd471ddd975cd613684140928124a6 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:48:56.541 RX ORC_MAP_STATUS state=1 generation=8 revision=6 cached_pushes=1 push_us=69542 frame_bytes=1417728 tiles=9 missing=0 failed=0 features=413 reads=76 bytes=65942 lookup_us=205 stream_us=438964 render_us=1371158 total_us=1844408 io_us=46143
+2026-10-17T23:48:56.542 RX ORC_MAP_MEMORY internal_free=15707 internal_largest=9728 dma_free=1479 dma_largest=1024 psram_free=2210288 psram_largest=1998848
+2026-10-17T23:48:57.645 PLAN COMPLETE
+
+SOURCE maps-com39-sd-guard-leave-running-20261017.log
+2026-10-17T23:49:10.182 RX LORA_SD_LOG_STATUS requested=true ready=true error=false queued=0 dropped=0 path="/orcsdr/lora_packets_v2.csv"
+2026-10-17T23:49:11.327 RX LORA_HISTORY_STATUS loaded=1 nodes=56 replayed=410 rejected=0 written=2 error=0 directory=/orcsdr/lora
+2026-10-17T23:49:12.464 RX RTL_DRIVER_STATUS installed=1 version=0.9.3 state=STREAMING profile=2 profile_name="blog_v3_r820t2" provisional=0 device_caps=0x001dff7f library_caps=0x001fff7f delivery=callback gain_auto_cap=1 rtl_agc_cap=1 gain_cap=1 bias_cap=1 mode=MANUAL gain_tenth_db=496 rtl_agc=0 bias=0 bytes=17203200 blocks=525 effective_sps=952452 overruns=0 drops=0 shadow_ok=1 metrics_ok=1 frequency_hz=906875000 frequency_ok=1 route=TUNER bw_requested_hz=0 bw_applied_hz=0
+2026-10-17T23:49:13.607 RX ORC_MAP_STATUS state=1 generation=8 revision=6 cached_pushes=1 push_us=69542 frame_bytes=1417728 tiles=9 missing=0 failed=0 features=413 reads=76 bytes=65942 lookup_us=205 stream_us=438964 render_us=1371158 total_us=1844408 io_us=46143
+2026-10-17T23:49:13.608 RX ORC_MAP_MEMORY internal_free=15187 internal_largest=9728 dma_free=1107 dma_largest=960 psram_free=2077856 psram_largest=1998848
+2026-10-17T23:49:14.740 RX RTL_HEALTH_STATUS uptime_ms=379784 free_heap=2091948 min_free_heap=2043928 dma_free=1107 dma_min=231 dma_largest=960 tasks=29 main_stack_hwm=3480 reset_reason=11 internal_free=15187 internal_min=791 internal_largest=9728 psram_free=2077856 psram_largest=1998848
+2026-10-17T23:49:15.822 PLAN COMPLETE

@@ -143,6 +143,18 @@ void toggle_filter();
 void toggle_packet_details();
 void center_on_selected();
 void toggle_follow_node();
+enum class MapControl : uint8_t { pan, zoom_in, zoom_out, receiver, node, follow_on, follow_off };
+struct MapState {
+  bool ready=false,following=false;
+  uint32_t following_node_id=0;
+  int32_t latitude_e7=0,longitude_e7=0;
+  uint8_t zoom=0;
+};
+MapState map_state();
+void service_map();
+bool map_control(MapControl,int east_px=0,int south_px=0);
+bool map_touch(int32_t x,int32_t y,bool pressed,bool new_press);
+bool handle_map_command(const char*,bool authenticated,void (*write)(const char*));
 bool self_check();
 
 }  // namespace orcsdr::lora

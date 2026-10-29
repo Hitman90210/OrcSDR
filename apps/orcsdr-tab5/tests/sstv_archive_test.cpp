@@ -313,6 +313,10 @@ void test_full_card_fails_cleanly() {
   require(rx::metrics().frames_alive == rx::archive_count(), "full: pin released");
   rx::stop();
   rx::clear_gallery();
+  reset_world();g.free_bytes=UINT64_MAX;
+  produce(1801);arc::poll(1);arc::drain(2000);
+  require(arc::stats().saved==1,"unknown capacity: real write attempted instead of false no_space");
+  rx::stop();rx::clear_gallery();
 }
 
 void test_card_removed_mid_write() {

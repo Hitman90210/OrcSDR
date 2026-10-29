@@ -19,7 +19,7 @@ run js8_native_backend tests/js8_native_backend_tests.cpp \
 run js8_decoder tests/js8_decoder_tests.cpp "$ui"/{js8_decoder,js8_codec,js8_message,js8_osd,js8_fec}.cpp
 run heard_db tests/ft8_heard_db_tests.cpp "$ui/ft8_heard_db.cpp"
 run dashboard -Itests/ft8_ui_stubs tests/ft8_dashboard_tests.cpp \
-  "$ui"/{ft8_dashboard,ft8_model,ft8_conditions,ft8_hunter,ft8_tuning,ft8_info_text,ft8_world_data,focus_nav}.cpp
+  "$ui"/{ft8_dashboard,ft8_model,ft8_conditions,ft8_hunter,ft8_tuning,ft8_info_text,ft8_world_data,focus_nav,memory_reclaim,clock_sync_status}.cpp
 run info tests/ft8_info_text_tests.cpp "$ui/ft8_info_text.cpp"
 run controller orcdial/tests/controller_test.cpp
 run model tests/ft8_model_tests.cpp "$ui/ft8_model.cpp"

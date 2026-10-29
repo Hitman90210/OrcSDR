@@ -1,0 +1,26 @@
+{
+  "source_commit": "7c878d4c922c438272d3ad5e936b8580a14f5917",
+  "application_bytes": 5020800,
+  "application_sha256": "04733a8c2475e43ecf3596c107543ddb1343c423d05cfb6f685e6d9ed8f301a0",
+  "internal_data_bss_recovered": 1464,
+  "hardware_flashed": true,
+  "target": "COM39",
+  "usb_serial": "E8:F6:0A:E2:D6:03",
+  "boot_pass": true,
+  "full_dma_reserve_bytes": 40960,
+  "dma_largest_before_reserve": 43008,
+  "nvs_pre_reboot_verify": "PASS",
+  "coredump_pre_reboot_verify": "PASS",
+  "world_pre_reboot_verify": "PASS",
+  "saved_receiver_location_visual_comparison": "unchanged",
+  "com17_touched": false,
+  "c6_firmware_touched": false,
+  "complete_hardware_acceptance": false,
+  "blockers": [
+    "Picker initialized with swapped longitude/latitude bounds; default 256x256 viewport",
+    "Blue setup palette rejected by user",
+    "Map report output incomplete when using stdio alongside the established console",
+    "Some setup screen captures omit header or navigation controls; redraw acceptance pending",
+    "Active-RF map timings remain unverified"
+  ]
+}

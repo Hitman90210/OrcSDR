@@ -5,6 +5,10 @@
 #include <cstring>
 #include <cstdlib>
 inline int fault_step=0,operation=0,live_queues=0,live_stores=0;
+inline unsigned last_stack_caps=0,last_stack_bytes=0;
+inline unsigned internal_queue_creates=0;
+inline bool task_force_failure=false;
+using UBaseType_t=unsigned;
 inline bool failure(){return ++operation==fault_step;}
 using QueueHandle_t=void*;using TaskHandle_t=void*;using nvs_handle_t=unsigned;
 using portMUX_TYPE=int;
@@ -13,13 +17,17 @@ constexpr int pdTRUE=1,pdFALSE=0,pdPASS=1,ESP_OK=0,NVS_READWRITE=1;
 #define portENTER_CRITICAL(x) ((void)(x))
 #define portEXIT_CRITICAL(x) ((void)(x))
 #define pdMS_TO_TICKS(x) (x)
-inline QueueHandle_t xQueueCreate(unsigned,unsigned){if(failure())return nullptr;++live_queues;return std::malloc(1);}
+inline QueueHandle_t xQueueCreate(unsigned,unsigned){++internal_queue_creates;if(failure())return nullptr;++live_queues;return std::malloc(1);}
+inline QueueHandle_t xQueueCreateWithCaps(unsigned,unsigned,unsigned){if(failure())return nullptr;++live_queues;return std::malloc(1);}
 inline void vQueueDelete(QueueHandle_t q){--live_queues;std::free(q);}
+inline void vQueueDeleteWithCaps(QueueHandle_t q){vQueueDelete(q);}
 inline int xQueueSend(QueueHandle_t,const void*,unsigned){return pdTRUE;}
 inline int xQueueReceive(QueueHandle_t,void*,unsigned){return pdFALSE;}
 inline int xQueueReset(QueueHandle_t){return pdTRUE;}
 inline void vTaskDelay(unsigned){}
-inline int xTaskCreate(void(*)(void*),const char*,unsigned,void*,unsigned,TaskHandle_t* task){if(failure())return pdFALSE;*task=reinterpret_cast<void*>(1);return pdPASS;}
+inline unsigned uxTaskGetStackHighWaterMark(TaskHandle_t){return 0;}
+inline int xTaskCreate(void(*)(void*),const char*,unsigned bytes,void*,unsigned,TaskHandle_t* task){last_stack_caps=0;last_stack_bytes=bytes;if(task_force_failure||failure())return pdFALSE;*task=reinterpret_cast<void*>(1);return pdPASS;}
+inline int xTaskCreateWithCaps(void(*)(void*),const char*,unsigned bytes,void*,unsigned,TaskHandle_t* task,unsigned caps){last_stack_caps=caps;last_stack_bytes=bytes;if(task_force_failure||failure())return pdFALSE;*task=reinterpret_cast<void*>(1);return pdPASS;}
 inline int64_t esp_timer_get_time(){return 0;}
 inline void esp_fill_random(void* data,size_t n){static uint32_t seed=7;auto* p=static_cast<uint8_t*>(data);while(n--){seed=1664525*seed+1013904223;*p++=uint8_t(seed>>24);}}
 inline int nvs_open(const char*,int,nvs_handle_t* handle){if(failure())return -1;*handle=1;++live_stores;return ESP_OK;}

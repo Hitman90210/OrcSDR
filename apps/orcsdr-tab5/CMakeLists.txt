@@ -28,3 +28,33 @@ if (ORCSDR_BUILD_ID_LEN GREATER 39)
 endif()
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(orcsdr_tab5)
+
+execute_process(COMMAND ${PYTHON} "${CMAKE_CURRENT_LIST_DIR}/tools/check-orcmaps-pin.py"
+    "${CMAKE_CURRENT_LIST_DIR}" RESULT_VARIABLE orcmaps_pin_result)
+if(NOT orcmaps_pin_result EQUAL 0)
+    message(FATAL_ERROR "OrcMaps requested/locked/fetched revision mismatch; resolve this component before building")
+endif()
+
+# Keep the ROM/miniz collision gate on every build path, including idf.py.
+idf_component_get_property(orcmaps_dir orcmaps COMPONENT_DIR)
+add_custom_target(orcsdr_orcmaps_symbols ALL
+    COMMAND ${PYTHON} "${orcmaps_dir}/tools/check_miniz_symbols.py"
+            "${CMAKE_BINARY_DIR}" --nm "${CMAKE_NM}"
+    DEPENDS "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.elf"
+    VERBATIM)
+
+add_custom_target(orcsdr_ft8_scratch_placement ALL
+    COMMAND ${PYTHON} "${CMAKE_CURRENT_LIST_DIR}/../../tools/check_tab5_ft8_scratch.py"
+            "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.elf" --nm "${CMAKE_NM}"
+    DEPENDS "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.elf"
+    VERBATIM)
+
+# Optional, verified data artifact. An empty value never writes a world map.
+set(ORCSDR_WORLD_MAP "" CACHE FILEPATH "Natural Earth z0-z4 PMTiles archive to provision")
+if(ORCSDR_WORLD_MAP)
+    file(SHA256 "${ORCSDR_WORLD_MAP}" world_sha)
+    if(NOT world_sha STREQUAL "9aea08772bacf1f024d1da90cc52aa8fcf0b0e37405415dc7c91e75e56596f0f")
+        message(FATAL_ERROR "World map does not match the reviewed Natural Earth z0-z4 artifact")
+    endif()
+    esptool_py_flash_to_partition(flash "orcmaps_world" "${ORCSDR_WORLD_MAP}")
+endif()

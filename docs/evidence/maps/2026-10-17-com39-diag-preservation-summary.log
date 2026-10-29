@@ -1,0 +1,12 @@
+Extract from maps-com39-diag-preservation-20261017.log; progress omitted.
+esptool.py v4.12.0
+Serial port COM39
+Chip is ESP32-P4 (revision v1.3)
+MAC: e8:f6:0a:e2:d6:03
+Verifying 0x6000 (24576) bytes @ 0x00009000 in flash against .local/maps/com39-recovery/diag-20261017/nvs-before.bin...
+-- verify OK (digest matched)
+Verifying 0x40000 (262144) bytes @ 0x00610000 in flash against .local/maps/com39-recovery/diag-20261017/coredump-before.bin...
+-- verify OK (digest matched)
+Verifying 0xd4bb0 (871344) bytes @ 0x00650000 in flash against .local/maps/world/world-overview-z4.pmtiles...
+-- verify OK (digest matched)
+Staying in bootloader.

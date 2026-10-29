@@ -598,8 +598,11 @@ void filter_preset_rect(int i, int n, int* x, int* w) {
 
 // Direct tuning in MHz across the dongle's whole range; the Tab5 validates again before it tunes.
 void draw_keypad() {
-  freq_keypad::draw(kSpectrumY, TFT_BLACK, keypad_error ? "OUT OF RANGE: 24 - 1766 MHZ" : "ENTER FREQUENCY",
-                    "24.0 - 1766.0", "MHz", keypad_entry);
+  char banner[48], hint[32];
+  const double lo = current.tune_min_hz / 1e6, hi = current.tune_max_hz / 1e6;
+  snprintf(banner, sizeof(banner), "OUT OF RANGE: %.3f - %.0f MHZ", lo, hi);
+  snprintf(hint, sizeof(hint), "%.3f - %.1f", lo, hi);
+  freq_keypad::draw(kSpectrumY, TFT_BLACK, keypad_error ? banner : "ENTER FREQUENCY", hint, "MHz", keypad_entry);
 }
 
 // ---- Mode popup: pick the demodulation for the band on screen, with a plain-language note on each mode ------
@@ -917,6 +920,8 @@ Action tap_action(int32_t x, int32_t y) {
   if (mode_popup) return mode_popup_action(x, y);
   if (gain_popup) return gain_popup_action(x, y);
   if (filter_popup) return filter_popup_action(x, y);
+  if (inside(x,y,kHeaderStatusX+238,kHeaderStatusY,kHeaderStatusW-238,kHeaderStatusH))
+    return {ActionKind::open_clock};
   if (inside(x, y, kGainX, kGainY, kGainW, kGainH)) return {ActionKind::gain_open};
   if (inside(x, y, kFilterPanelX, kFilterPanelY, kFilterPanelW, kFilterPanelH))
     return {ActionKind::filter_open};
@@ -1199,7 +1204,8 @@ Action handle_touch(int32_t x, int32_t y, bool pressed) {
     } else if (result == freq_keypad::Result::submitted) {
       char* end = nullptr;
       const double mhz = strtod(keypad_entry, &end);
-      if (end != keypad_entry && *end == '\0' && mhz >= 24.0 && mhz <= 1766.0) {
+      if (end != keypad_entry && *end == '\0' &&
+          mhz >= current.tune_min_hz / 1e6 - 1e-9 && mhz <= current.tune_max_hz / 1e6 + 1e-9) {
         keypad = false;
         keypad_error = false;
         keypad_entry[0] = '\0';
@@ -1374,6 +1380,7 @@ bool self_check() {
          tap_action(kStepperTune + kStepperW - 5, kControlY + 8).kind == ActionKind::step_up &&
          tap_action(kStepperSize + 5, kControlY + 8).kind == ActionKind::step_size_down &&
          tap_action(1223, 13).kind == ActionKind::open_device_settings &&
+         tap_action(kHeaderStatusX+kHeaderStatusW-20,kHeaderStatusY+20).kind == ActionKind::open_clock &&
          tap_action(1100, 13).kind == ActionKind::sound_toggle &&
          std::abs(home_spectrum_floor(levels, std::size(levels), 10.0f) - 62.0f) < 0.01f;
 }

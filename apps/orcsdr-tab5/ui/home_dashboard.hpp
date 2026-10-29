@@ -14,6 +14,9 @@ struct Snapshot {
   uint32_t audio_revision = 0;
   uint32_t status_revision = 0;
   uint32_t frequency_hz = 0;
+  // What the attached dongle can tune; the keypad accepts exactly this range.
+  uint32_t tune_min_hz = 24000000;
+  uint32_t tune_max_hz = 1766000000;
   uint32_t requested_frequency_hz = 0;
   uint32_t span_hz = 960000;
   uint32_t step_hz = 12500;
@@ -74,6 +77,7 @@ enum class ActionKind : uint8_t {
   volume_down,
   volume_up,
   open_device_settings,
+  open_clock,
   waterfall_contrast_down,
   waterfall_contrast_up,
   waterfall_palette_next,

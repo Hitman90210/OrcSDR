@@ -1,0 +1,97 @@
+{
+  "run": "clean-github-com17-20261024",
+  "device": {
+    "port": "COM17",
+    "usb_serial": "30:ED:A0:E2:E6:95",
+    "app_source": "137e244a2912b03bca79c646ab0aeb96a71316ee",
+    "app_sha256": "ac5267a55ce1c2172b8acff77be555232d7b18efbc3145e8df5c64964c5eb040",
+    "elf_sha256": "07d674c65663d5cd5b8506cfa10da1a80bd216ff570acf499704447fea6c3216",
+    "engine": "2133547bf8e003e2f4c52de3b8abf737261a8397"
+  },
+  "card": {
+    "user_reported": "PNY 32 GB microSDHC U1",
+    "reported_name": "SD32G",
+    "reported_type": "SDHC",
+    "capacity_sectors": 61071360,
+    "sector_bytes": 512,
+    "bus": "SDMMC",
+    "bus_width": 4,
+    "clock_hz": 40000000,
+    "allocation_unit": "not measured"
+  },
+  "archive": {
+    "bytes": 543380195,
+    "sha256": "16adde0b4f67734535db6871b89949e68c7e1dabf1c34d2bd7bd23842a9e5991",
+    "url": "https://github.com/hardcoreerik/OrcMaps/releases/download/sha256/16adde0b4f67734535db6871b89949e68c7e1dabf1c34d2bd7bd23842a9e5991/global-regional-z0-z8.pmtiles"
+  },
+  "catalog": "https://github.com/hardcoreerik/OrcMaps/releases/download/maps-catalog-test-20261022",
+  "test_only": true,
+  "radio": "Stopped during transfer; reception started during verification. Mixed-load run, not idle-only verification.",
+  "clean_scope": "fresh map on spare card; existing device NVS/trust/location retained",
+  "sd_buffer": {
+    "bytes": 16384,
+    "allocation": "SPIRAM | 8BIT | CACHE_ALIGNED"
+  },
+  "measurement": {
+    "clock": "Python time.monotonic; raw local timestamps Pacific time",
+    "nominal_status_poll_seconds": 5,
+    "scheduled_pause_threshold_bytes": 33554432,
+    "observer_sha256": "c9277366eeef9942050e0021acb7d87ca2c0850972b8e97e25034a49fb4052e3"
+  },
+  "status": "PASS installer, controlled resume, reboot/offline rendering and physical offline appearance",
+  "physical_progress_check": {
+    "user_result": "Progress updates; controls respond",
+    "recorded_local": "2026-10-24T11:50:24",
+    "scope": "Get Maps progress/controls only; not active radio or navigation to another dashboard",
+    "ui_condition": "Started on Setup Welcome; user opened Get Maps and then left setup for Home partway through transfer"
+  },
+  "home_background_check": {
+    "user_report": "Setup closed; at Home",
+    "radio_status": {
+      "receiving": false,
+      "effective_sps": 0,
+      "rtl_ready": true,
+      "usb_connected": false,
+      "wifi_connected": true,
+      "mode": "CSS",
+      "frequency_hz": 906875000,
+      "sound_enabled": false,
+      "captured_local": "2026-10-24T11:52:47.643"
+    },
+    "observation": "One read-only /api/status HTTP request; serial timing observer kept running",
+    "scope": "Download continues after leaving setup; receiving=false/effective_sps=0; simultaneous active reception not established"
+  },
+  "configured_sdk_settings": {
+    "CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ": "360",
+    "CONFIG_FREERTOS_HZ": "1000",
+    "CONFIG_MBEDTLS_HARDWARE_SHA": "y",
+    "CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL": "40960",
+    "CONFIG_COMPILER_CXX_EXCEPTIONS_EMG_POOL_SIZE": "1024"
+  },
+  "radio_transition": {
+    "event": "2026-10-24T12:06:03.938 mono=1741.396319 RX RTL_START ESP_OK rate=960000 display_hz=906875000 lo_hz=906875000",
+    "live_status": {
+      "receiving": true,
+      "effective_sps": 959026,
+      "rtl_ready": true,
+      "mode": "CSS",
+      "frequency_hz": 906875000,
+      "recording": false,
+      "captured_local": "2026-10-24T12:16:48.349"
+    },
+    "iq_capture_activity_observed": true,
+    "cause": "not inferred; observed firmware event",
+    "comparison_limit": "Do not attribute final verification duration solely to SD card or firmware; reception/SD capture adds load partway through phase."
+  },
+  "observed_c6_firmware": "3.0.6 (boot firmware value 0x00030006); no C6 update",
+  "physical_offline_check": "User confirmed map complete and controls visible",
+  "final_status": {
+    "receiving": true,
+    "effective_sps": 958179,
+    "rtl_ready": true,
+    "wifi_connected": true,
+    "mode": "CSS",
+    "frequency_hz": 906875000,
+    "captured_local": "2026-10-24T12:26:06.224"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "schema": "orcmaps-catalog-input-v1",
+  "revision": 1,
+  "generated_at": "2026-10-22T00:00:00Z",
+  "expires_at": "2026-11-22T00:00:00Z",
+  "packs": [
+    {
+      "product_id": "global-regional",
+      "manifest": "global-regional-z0-z8.manifest.json",
+      "urls": [
+        "https://github.com/hardcoreerik/OrcMaps/releases/download/16adde0b4f67734535db6871b89949e68c7e1dabf1c34d2bd7bd23842a9e5991/global-regional-z0-z8.pmtiles"
+      ]
+    }
+  ]
+}

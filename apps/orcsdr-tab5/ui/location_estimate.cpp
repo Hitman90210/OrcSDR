@@ -7,11 +7,12 @@
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 namespace orcsdr::location_estimate { namespace {
-State g_state{}; portMUX_TYPE g_lock=portMUX_INITIALIZER_UNLOCKED; std::atomic_bool g_busy{false};
+State g_state{}; portMUX_TYPE g_lock=portMUX_INITIALIZER_UNLOCKED; std::atomic_bool g_busy{false},g_finished{false};
+TaskHandle_t g_task=nullptr;
 char g_query[64]{};
-char g_last_query[64]{};
 void set(const State& value) { portENTER_CRITICAL(&g_lock); g_state=value; portEXIT_CRITICAL(&g_lock); }
 bool encode_query(const char* input, char* output, size_t capacity) {
   if (!input || !input[0] || !output || capacity == 0) return false;
@@ -28,6 +29,14 @@ bool encode_query(const char* input, char* output, size_t capacity) {
   output[used] = '\0';
   return used != 0;
 }
+double coordinate(const cJSON* value,bool address) {
+  if(address&&cJSON_IsString(value)) {
+    char* end=nullptr;
+    const double parsed=std::strtod(value->valuestring,&end);
+    return end!=value->valuestring&&end&&*end=='\0'?parsed:NAN;
+  }
+  return cJSON_IsNumber(value)?value->valuedouble:NAN;
+}
 void worker(void*) { const bool address = g_query[0] != '\0'; State next{}; next.busy=true; strlcpy(next.message,address ? "Looking up address" : "Looking up IP area",sizeof(next.message)); set(next);
   char encoded[192]{}, url[320]{};
   bool ok = !address || encode_query(g_query, encoded, sizeof(encoded));
@@ -41,13 +50,45 @@ void worker(void*) { const bool address = g_query[0] != '\0'; State next{}; next
   const cJSON* result=address && cJSON_IsArray(root)?cJSON_GetArrayItem(root,0):root;
   const cJSON* lat=result?cJSON_GetObjectItem(result,address?"lat":"latitude"):nullptr;
   const cJSON* lon=result?cJSON_GetObjectItem(result,address?"lon":"longitude"):nullptr;
-  const double latitude=address && cJSON_IsString(lat)?strtod(lat->valuestring,nullptr):cJSON_IsNumber(lat)?lat->valuedouble:NAN;
-  const double longitude=address && cJSON_IsString(lon)?strtod(lon->valuestring,nullptr):cJSON_IsNumber(lon)?lon->valuedouble:NAN;
+  const double latitude=coordinate(lat,address);
+  const double longitude=coordinate(lon,address);
   const cJSON* label=result?cJSON_GetObjectItem(result,address?"display_name":"city"):nullptr;
-  if(result && std::isfinite(latitude) && std::isfinite(longitude) && fabs(latitude)<=90 && fabs(longitude)<=180) { next.ready=true; next.latitude_e7=(int32_t)llround(latitude*10000000.0); next.longitude_e7=(int32_t)llround(longitude*10000000.0); snprintf(next.label,sizeof(next.label),"%s: %s",address?"SEARCH":"IP AREA",cJSON_IsString(label)?label->valuestring:"UNKNOWN"); strlcpy(next.message,address?"Address found; confirm to save":"Approximate IP area; confirm to save",sizeof(next.message)); if(address)strlcpy(g_last_query,g_query,sizeof(g_last_query)); } else strlcpy(next.message,address?"Address not found":"IP area lookup failed",sizeof(next.message)); if(root)cJSON_Delete(root); set(next); g_busy.store(false,std::memory_order_release); vTaskDelete(nullptr); }
+  if(result && std::isfinite(latitude) && std::isfinite(longitude) && fabs(latitude)<=90 && fabs(longitude)<=180) { next.ready=true; next.latitude_e7=(int32_t)llround(latitude*10000000.0); next.longitude_e7=(int32_t)llround(longitude*10000000.0); snprintf(next.label,sizeof(next.label),"%s: %s",address?"SEARCH":"IP AREA",cJSON_IsString(label)?label->valuestring:"UNKNOWN"); strlcpy(next.message,address?"Address found; confirm to save":"Approximate IP area; confirm to save",sizeof(next.message));  } else strlcpy(next.message,address?"Address not found":"IP area lookup failed",sizeof(next.message)); if(root)cJSON_Delete(root); set(next); g_finished.store(true,std::memory_order_release); vTaskSuspend(nullptr); }
+}
+// All callers run on the UI task. The worker suspends after publishing its
+// result; delete its WithCaps allocation here, without allocating a reaper task.
+void service() {
+  if(!g_task || !g_finished.load(std::memory_order_acquire) ||
+     eTaskGetState(g_task)!=eSuspended)return;
+  vTaskDeleteWithCaps(g_task);
+  g_task=nullptr;
+  g_finished.store(false,std::memory_order_relaxed);
+  g_busy.store(false,std::memory_order_release);
 }
 bool request(bool wifi_connected) { return request(nullptr, wifi_connected); }
-bool request(const char* query, bool wifi_connected) { if(!wifi_connected){State error{};strlcpy(error.message,"Connect Wi-Fi before lookup",sizeof(error.message));set(error);return false;} if(query && query[0] && strcmp(query,g_last_query)==0 && state().ready)return true; bool expected=false; if(!g_busy.compare_exchange_strong(expected,true,std::memory_order_acq_rel))return false; strlcpy(g_query,query?query:"",sizeof(g_query)); State pending{}; pending.busy=true; strlcpy(pending.message,g_query[0]?"Address lookup queued":"IP area lookup queued",sizeof(pending.message)); set(pending); if(xTaskCreatePinnedToCoreWithCaps(worker,"location_lookup",8192,nullptr,3,nullptr,1,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)==pdPASS)return true; g_busy.store(false,std::memory_order_release); pending.busy=false; strlcpy(pending.message,"Location lookup unavailable",sizeof(pending.message)); set(pending); return false; }
-State state(){State copy{};portENTER_CRITICAL(&g_lock);copy=g_state;portEXIT_CRITICAL(&g_lock);return copy;}
+bool request(const char* query, bool wifi_connected) {
+  service();
+  if(!wifi_connected) {
+    State error{};
+    strlcpy(error.message,"Connect Wi-Fi before lookup",sizeof(error.message));
+    set(error);return false;
+  }
+  bool expected=false;
+  if(!g_busy.compare_exchange_strong(expected,true,std::memory_order_acq_rel))return false;
+  // Only the current published result belongs to g_query; an IP lookup replaces it.
+  if(query&&query[0]&&strcmp(query,g_query)==0&&state().ready) {
+    g_busy.store(false,std::memory_order_release);return true;
+  }
+  strlcpy(g_query,query?query:"",sizeof(g_query));
+  State pending{};pending.busy=true;
+  strlcpy(pending.message,g_query[0]?"Address lookup queued":"IP area lookup queued",sizeof(pending.message));
+  set(pending);
+  if(xTaskCreatePinnedToCoreWithCaps(worker,"location_lookup",8192,nullptr,3,&g_task,1,
+                                   MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT)==pdPASS)return true;
+  g_busy.store(false,std::memory_order_release);pending.busy=false;
+  strlcpy(pending.message,"Location lookup unavailable",sizeof(pending.message));
+  set(pending);return false;
+}
+State state(){service();State copy{};portENTER_CRITICAL(&g_lock);copy=g_state;portEXIT_CRITICAL(&g_lock);return copy;}
 bool self_check(){char encoded[64]{};return encode_query("97401 Main St",encoded,sizeof(encoded))&&strcmp(encoded,"97401%20Main%20St")==0&&!encode_query("bad\nquery",encoded,sizeof(encoded));}
 }

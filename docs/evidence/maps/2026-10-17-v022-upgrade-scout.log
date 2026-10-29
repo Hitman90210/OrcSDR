@@ -1,0 +1,50 @@
+REQUESTED e3028c60b722729a1fe7ef95341ac9c525edca26 v0.2.2
+CURRENT c3cc09de3882149e03c7c00d7897c6882b324c6b
+COMMAND git merge-base --is-ancestor CURRENT REQUESTED
+RESULT ancestry exit=1
+diff --git a/include/orcmap/render_target.hpp b/include/orcmap/render_target.hpp
+index 16e4b48..b83dc57 100644
+--- a/include/orcmap/render_target.hpp
++++ b/include/orcmap/render_target.hpp
+@@ -30,18 +30,8 @@ class RenderTarget {
+                         float width_px) = 0;
+ 
+   // Simple filled polygon, `n_points` vertices as [x0,y0,x1,y1,...].
+-  // One ring, no holes (use FillPolygonRings for those). n_points < 3 is a no-op. The target clips to its bounds.
++  // No holes. n_points < 3 is a no-op. The target clips to its bounds.
+   virtual void FillPolygon(const int* xy_pairs, size_t n_points, Color color) = 0;
+-
+-  // One polygon made of several rings, filled with the even-odd rule: an exterior ring and the holes inside it.
+-  // `xy_pairs` holds every ring's vertices back to back as [x0,y0,x1,y1,...]; `ring_point_counts[i]` is the vertex
+-  // count of ring i. The default fills only the first ring, which is the behaviour a target had before this existed,
+-  // so an existing RenderTarget keeps compiling and drawing exactly as it did; targets that can do better override it.
+-  virtual void FillPolygonRings(const int* xy_pairs, const size_t* ring_point_counts,
+-                                size_t ring_count, Color color) {
+-    if (xy_pairs == nullptr || ring_point_counts == nullptr || ring_count == 0) return;
+-    FillPolygon(xy_pairs, ring_point_counts[0], color);
+-  }
+ };
+ 
+ }  // namespace orcmap
+diff --git a/src/tiles/mvt_stream.cpp b/src/tiles/mvt_stream.cpp
+index 30f3fd2..738bbe6 100644
+--- a/src/tiles/mvt_stream.cpp
++++ b/src/tiles/mvt_stream.cpp
+@@ -192,11 +192,12 @@ bool StreamMvtTile(Compression compression, CompressedChunkReader reader,
+         std::vector<Path>().swap(scratch->feature.geometry.paths);
+       }
+       if (scratch->feature_bytes.capacity() > kMaxRetainedFeatureBytes) {
+-        // Cleanup also runs while unwinding bad_alloc: never allocate here.
+-        std::vector<uint8_t>().swap(scratch->feature_bytes);
++        std::vector<uint8_t> trimmed(scratch->feature_bytes);
++        trimmed.swap(scratch->feature_bytes);
+       }
+       // Layer tables belong to one tile only.
+-      std::vector<MvtStreamScratch::LayerTables>().swap(scratch->layers);
++      scratch->layers.clear();
++      scratch->layers.shrink_to_fit();
+     }
+   } trim{scratch};
+ 
+COMMAND git ls-remote origin refs/tags/v0.2.2* refs/heads/main
+14cdd418fe9101d56ea904eaa8c4da695a7fed9d	refs/heads/main

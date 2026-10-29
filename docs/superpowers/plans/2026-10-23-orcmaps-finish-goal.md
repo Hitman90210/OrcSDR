@@ -1,0 +1,37 @@
+/goal
+Complete the existing OrcMaps integration into OrcSDR and deliver an evidence-backed candidate ready for explicit merge/release approval. Continue the current work; do not restart, duplicate completed features, or redefine completion around whichever tests already pass.
+
+BASELINE AND FIRST STEP
+- OrcSDR worktree: F:\AI\OrcSDR-TEMP\maps-integration-completion
+- Branch: codex/maps-integration-completion
+- Current local checkpoint: 4d4f85a3; last device-tested application: cb1b567a.
+- OrcMaps worktree: F:\AI\OrcSDR-TEMP\orcmaps-quality-delivery
+- Current consumer pin: b59d47819cc3b81c1bbe50ed75b775275bb0218e.
+- These are local baselines, not a promise that a cloud checkout contains them. At the October 23 scout, the integration branch is 58 commits ahead of its published tracking branch and 48 commits behind origin/main. Re-fetch before reconciliation; preserve every local commit, dirty file, test log and recovery artifact. Do not blindly rebase or merge the shared branch.
+
+Read applicable AGENTS.md, docs/UI_RENDERING_STANDARD.md, docs/SD_CARD_RELIABILITY.md, docs/MAP_SERIAL_COMMANDS.md and docs/superpowers/plans/2026-10-18-orcmaps-orcsdr-quality-and-delivery.md. Read the latest linked evidence before acting on an unchecked item: much of the plan is a historical ledger. Produce a short current acceptance matrix distinguishing implemented, device-tested, physically accepted, unverified and blocked. Scout overlap with newer mainline/Claude/FT8 work before edits.
+
+PRESERVE WHAT WORKS
+The picker saves receiver latitude/longitude; shared map consumers, independent labels, self-contained setup and reception pause/restore exist. LoRa dragging and its prior flicker correction were physically accepted. The installed 256 KiB read cache passes focused host/pixel/sanitizer checks and bounded COM17 pan/zoom/cancel/reclaim/SD/radio tests. Four comparison pans observed a 6.23 to 4.10 second median detail refill; live decoder activity varied, so this is not an isolated speed multiplier. Physical acceptance of cb1b567a remains pending.
+
+A TEST-ONLY GitHub pilot already delivered the 543,380,195-byte global z0–8 archive through real HTTPS download, cancellation/resume, validation, activation, reboot discovery and fresh offline rendering. Do not repeat these as missing implementations. Production delivery and additional failure scenarios are still open. ORCMAP1 rendering is retired: preserve old user files, identify unsupported data clearly, and do not restore the legacy renderer or personal Oregon/Lane County shipping defaults.
+
+CLOSE THE REMAINING GATES IN THIS ORDER
+1. Reconcile current source/evidence and mainline overlap safely. Replace stale checklist claims with current results without deleting historical failures. Preserve the current RTL driver and other agents' work.
+2. Finish measured responsiveness. Confirm the installed candidate's physical behavior. Profile repeated tile decoding/drawing and reduce detailed refill work through the shared integration/engine, preserving detail and smooth cached motion. Define explicit numeric acceptance gates before further optimization; keep approximately 33 ms cached visible-motion updates distinct from uncached detail-frame latency. Measure representative p50/p95/max, cancellation, memory/stack/DMA and radio continuity. Do not add an arbitrary overnight soak or unbounded optimization loop.
+3. Close dashboard and worldwide-quality acceptance. Verify LoRa positioned-node Follow remains tied to identity as packets reorder history; ADS-B receiver centering/range and aircraft alignment; FT8 station/grid/receiver alignment including whole-world/polar behavior; and independent label persistence. Use the existing fixed worldwide views to check cities, state/county-equivalent boundaries, roads/water/land cover, English-first/local fallback and missing-glyph handling. Street-level detail is not required. Keep genuine engine fixes in OrcMaps and use pinned dependencies; never edit managed_components sources.
+4. Finish self-contained setup acceptance: Welcome -> optional Network -> Location -> Offline Maps -> Complete. Exercise network, address, map and direct-coordinate methods; explicit save/cancel, Back/Skip/Quick Start, existing-location retention, rerun, interrupted recovery, offline/no-SD, reception/audio restoration and paused hotplug. Test real first boot only after separate erase approval and fresh backups. Resolve production address-provider policy/configuration before claiming scalable address lookup. Do not expand into generic online map-provider support.
+5. Close delivery safety/usability. Verify insufficient space, removed SD, corruption/wrong metadata, interrupted download/activation and version replacement on authorized hardware, using disposable owned test data and preserving working packs. Reduce or clearly resolve the measured roughly 12-minute post-download verification/activation cost without weakening verification. Retain compatible manual import. Prepare concrete production catalog/hosting/signing, provenance and approximately 20,000-user delivery-cost decisions for approval; distinguish them from the already-published TEST-ONLY pilot. Optional local packs must use the existing OrcMaps process; custom-area build queues are deferred.
+6. Complete the maps/setup serial-action coverage matrix with named authenticated controls sharing UI validation and persistence. Run the affected regressions and scoped final integration review, reconcile approved changes, and prepare a reviewable final change. Verify any subsequently approved merge on origin/main before calling it landed.
+
+AUTHORITY AND LIMITS
+- Routine targeted tests, native builds and COM17 P4 app-only flashes are approved for this continuing local session; do not ask again for each build/flash.
+- Before device access verify COM17 USB serial 30:ED:A0:E2:E6:95, current firmware and recovery. Preserve NVS, SD, embedded-world partition, bootloader/table and C6. Recover promptly if a candidate fails; retain its dump and failed logs.
+- Do not access, reset or flash COM39; it belongs to the separate Dead Air work. Cloud sessions perform no hardware operations.
+- No erases, shared-branch rebase/force-push, main merge, new publication, production signing keys or paid services without explicit approval. Existing TEST-ONLY pilot authorization does not authorize a production release. Respect AGENTS.md approval requirements for large reviews/full suites; routine build permission is already granted.
+- Keep diffs narrow. No unrelated receiver/DSP/USB/Wi-Fi/audio/dashboard restructuring. Preserve UI ownership, static chrome, immediate feedback and the last valid map. No full-screen clear for ordinary updates; measure/reclaim additional PSRAM and protect the DMA reserve.
+
+REPORTING AND COMPLETION
+For each milestone record files/commit, exact test commands/results, device identity, logs saved beside invocation, memory/radio figures, physical acceptance separately, remaining blockers and next gate. Preserve failures and distinguish harness mistakes from firmware faults. Do not run broad suites repeatedly or rebuild without checking the active process/artifact.
+
+Finish with one current acceptance matrix and merge-readiness report. A test or physical gate without evidence stays open; a report alone does not complete unfinished authorized implementation. Bring required production/destructive/merge decisions to the user as concrete reviewable final steps. Do not declare this goal complete merely because a bounded subset passes.

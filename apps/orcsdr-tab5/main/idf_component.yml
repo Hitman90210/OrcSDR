@@ -4,15 +4,19 @@ dependencies:
   espressif/esp_hosted:
     version: "3.0.6"
   espressif/esp_wifi_remote:
-    version: ">=1.3.1"
+    version: "1.6.4"
   espressif/esp-dsp:
     version: "^1.3.4"
   espressif/mdns:
-    version: "^1.2.3"
+    version: "1.13.1"
   esp_rtl_sdr:
     git: https://github.com/hardcoreerik/esp-rtl-sdr.git
     # esp_rtl_sdr v0.9.3 (published release)
     version: 31a159df4f006a837d5041029bc6d1bc63520234
+  orcmaps:
+    git: https://github.com/hardcoreerik/OrcMaps.git
+    # Development candidate: offscreen feature rejection; native timing pending.
+    version: 6a621a70ebbf7906b1d6c089bd61dbbc456475ed
   m5stack/m5unified:
     version: "0.2.20"
   m5stack/m5gfx:

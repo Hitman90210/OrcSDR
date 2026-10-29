@@ -1,0 +1,13 @@
+{
+  "source_commit": "fa520a3452cb3e78ee458f99408610689f35dd19",
+  "application_bytes": 5021696,
+  "application_sha256": "5f3f9ef802e75b70d9ad7e7b7cd426d2a639861e3aa0fc087f82dbcd2ec98640",
+  "main_calls_wrapper": true,
+  "wrapper_calls_real_reservation": true,
+  "internal_bss_bytes": 170708,
+  "symbols": {
+    "esp_psram_extram_reserve_dma_pool": "0x4822817c",
+    "__wrap_esp_psram_extram_reserve_dma_pool": "0x48114f96"
+  },
+  "hardware_flashed": false
+}

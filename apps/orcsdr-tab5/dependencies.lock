@@ -133,6 +133,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 0.2.20
+  orcmaps:
+    component_hash: f81dcf37684c3f7989cd2f2c6841c737bf76a3b644e660973ef1161dd91d2033
+    dependencies:
+    - name: idf
+      version: '>=5.0'
+    source:
+      git: https://github.com/hardcoreerik/OrcMaps.git
+      path: .
+      type: git
+    version: 6a621a70ebbf7906b1d6c089bd61dbbc456475ed
 direct_dependencies:
 - esp_rtl_sdr
 - espressif/esp-dsp
@@ -142,6 +152,7 @@ direct_dependencies:
 - idf
 - m5stack/m5gfx
 - m5stack/m5unified
-manifest_hash: 87bb03b1f01a35e0dae35e96220e31051f4e240891053a02a38b455394f4afe1
+- orcmaps
+manifest_hash: 6659cbf43d5f87360c97bb42f22f68ae79784241dc9dc26df33c94d35e1e068d
 target: esp32p4
 version: 2.0.0

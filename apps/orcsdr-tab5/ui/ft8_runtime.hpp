@@ -111,6 +111,44 @@ void set_radio_context(uint8_t band_index, uint32_t dial_hz);
 uint32_t requested_dial_hz();
 Status status();
 
+// Wide time search (FT8 only): each slot is cut with 3 s of audio before and after it, so stations still decode while the clock is
+// seconds off. It delays each decode by 3 s and costs more decode time, so it is meant for a clock that is not known to be right.
+void set_wide_search(bool wide);
+// Our clock error as the decoded stations see it (median DT over the last few slots): positive = our clock is fast.
+struct DtReport {
+  bool valid = false;
+  int32_t error_ms = 0;
+  uint16_t stations = 0;
+  bool wide = false;       // the last slot was cut with the wide window
+};
+DtReport dt_report();
+// WWV tick measurement (bench command FT8 WWV): the decoder task feeds the audio ring to the WWV detector (wwv_tick) instead of decoding slots.
+// The receiver must already be tuned 1 kHz below the WWV carrier. `phase` 0 = idle, 1 = measuring, 2 = finished (the fields are valid).
+struct WwvReport {
+  uint8_t phase = 0;
+  uint32_t seconds = 0;          // whole seconds of audio folded so far
+  bool carrier_found = false;
+  float carrier_hz = 0.0f;
+  float carrier_snr_db = 0.0f;
+  bool ticks = false;
+  float tick_stream_ms = 0.0f;   // where the tick starts inside the audio stream's second
+  float tick_wall_ms = 0.0f;     // where it falls inside the Tab5's wall-clock second (0..999.99): the clock reading at the tick
+  float peak_z = 0.0f;
+  bool halves_agree = false;
+  float even_ms = 0.0f;
+  float odd_ms = 0.0f;
+  uint8_t note = 0;              // 0 ok, 1 stopped, 2 no carrier, 3 audio interrupted, 4 timed out
+};
+bool wwv_start(uint32_t seconds);   // false if the decoder is not running, a measurement is under way, or `seconds` is outside 20..240
+void wwv_stop();
+WwvReport wwv_report();
+// The correction (ms to add to the clock) the decoded stations ask for; true once per request. The application decides whether to apply it.
+bool take_clock_step(int32_t* delta_ms);
+// Tell the runtime the wall clock was stepped by `delta_ms` so the slot schedule and the DT evidence restart.
+void clock_stepped(int32_t delta_ms);
+// The clock was set by hand (or disturbed on purpose): drop a queued correction, restart the evidence and void a WWV measurement.
+void clock_changed();
+
 // A live waterfall of the tap's audio, 200-3000 Hz at 6.25 Hz per bin (one 1920-point FFT every 150 ms, each row normalised to its own
 // median so it adapts to any noise floor). Rows are 0-255 (8 counts per dB above the median plus 3 dB, so noise stays dark). Display only: it never feeds the decoder.
 constexpr size_t kWaterfallRows = 112;

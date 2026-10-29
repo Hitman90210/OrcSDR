@@ -40,7 +40,7 @@ Findings that changed the design (all measured, not assumed):
 - The tuner does not sit on the dial: the driver quantizes tuning (7.074 MHz was tuned at 7.070 MHz), so the dial is 4 kHz inside the baseband. The tap now
   takes the dial offset from the driver's reported centre (`esp_rtl_sdr_get_center_freq`) every 100 ms.
 - Clock (corrected): the hardware RTC only has one-second resolution and drifts (about 10 ppm measured, roughly 0.9 s per day), so FT8 slot timing needs a sub-second correction. Three things changed:
-  boot now waits for the RTC's seconds tick before taking the system time; the NTP sync (Settings, `FT8 NTP`, and once automatically per boot when the FT8 screen starts the decoder with Wi-Fi up) now writes the RTC exactly on a whole-second
+  boot now waits for the RTC's seconds tick before taking the system time; the NTP sync (Settings, `FT8 NTP`, the CLOCK chip on the FT8 screen, and automatically while the decoder runs with Wi-Fi up: at once, then every 2 hours; see `docs/ft8/CHANGELOG.md`, 2026-10-21) now writes the RTC exactly on a whole-second
   boundary (previously mid-second, which left the RTC off by up to a second); and `FT8 TIME` reports the wall clock so a host can compare. **Do not trust `settime` or the PC clock as a reference**: this PC's clock was measured 0.46 s ahead of true time
   (`w32tm /stripchart /computer:time.google.com`, source "Local CMOS Clock"), so an earlier "-14 ms against the PC" figure and the constant +0.58 s DT were that PC error, not the decoder. After an NTP sync the Tab5 reads -495 ms against the
   PC (that is the PC being ahead) and the decoded DT centres on zero: median -100 ms, mean -29 ms over 59 decodes.
@@ -64,7 +64,14 @@ Queries need no authentication; commands that change state need the PAIR/AUTH se
 | `FT8 BANDS` | no | the band table (index, label, dial Hz) |
 | `FT8 DECODES [n]` | no | the newest n decodes (default 20) |
 | `FT8 TIME` | no | the wall clock the slot scheduler uses, in ms |
-| `FT8 NTP` | yes | start a network time sync (also run once per boot automatically); the result prints as `ORC_NTP_OK` |
+| `FT8 NTP` | yes | start a network time sync (also run automatically while the decoder runs: at once, then every 2 hours); the result prints as `ORC_NTP_OK` |
+| `FT8 CLOCK` | no | the clock's trust level (`level`: 0 unsynced, 1 syncing, 2 synced, 3 stale, 4 failed, 5 no Wi-Fi, 6 corrected from decoded stations), ages, whether the wide search is on, and the decoded stations' view of the clock error (`dt_err_ms`, positive = our clock is fast) |
+| `FT8 CLOCKTEST <ms>` | yes | bench only: step the clock by `ms` (-5000..5000), forget the last sync and hold the automatic network sync off; `FT8 CLOCKTEST 0` releases the hold |
+| `FT8 DIAL <hz>` | yes | tune an exact dial frequency (what the Live DIAL chip does with expert tuning); `FT8 BAND <label>` returns to the band table |
+| `FT8 WWV` | no | status of the WWV tick measurement (idle, running with seconds folded, or the last result) |
+| `FT8 WWV <MHz> [<seconds>] [CAL\|SYNC]` | yes | measure the WWV (1000 Hz) tick on 2.5, 5, 10, 15 or 20 MHz (exact values only; 20-240 s, default 90): the receiver is retuned 1 kHz below the carrier and the band comes back afterward. `CAL` learns the site delay right after a fresh `FT8 NTP`; `SYNC` steps the clock from the tick. Setting the clock during a measurement cancels it. `tools/wwv_probe.py` wraps it |
+| `FT8 WWV STOP` | yes | end a running measurement early (the band comes back) |
+| `FT8 SNAP` | yes | the screen as a PNG over serial (`ORC_SNAP_BEGIN`, `ORC_SNAP_DATA <offset> <base64>` lines, `ORC_SNAP_END`), no SD card and no radio stop; `tools/tab5_ft8_shot.py` wraps it |
 | `FT8 DUMP` | no | the last decoded slot as base64 PCM16 lines (about 480 KB) |
 | `FT8 OPEN` | yes | open the FT8 dashboard |
 | `FT8 BAND <index|label|dial_hz>` | yes | tune a band (e.g. `40m`) |

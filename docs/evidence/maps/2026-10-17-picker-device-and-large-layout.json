@@ -1,0 +1,23 @@
+{
+  "source": "a32d2fd58c9d99737d74935e751a121b9400525a",
+  "bytes": 5021216,
+  "sha256": "6d0f5cb42c249947857f8c4986be0f201bdf235906e9471677ac6ce3fc893fbe",
+  "startup_diagnostic": false,
+  "dma_reserve_bytes": 40960,
+  "flashed": true,
+  "target": "COM39",
+  "usb_serial": "E8:F6:0A:E2:D6:03",
+  "boot": "PASS",
+  "nvs_preserved": "verify PASS before reboot",
+  "world_preserved": "verify PASS before reboot",
+  "location_retained": "PASS across Cancel, unchanged confirmation, invalid edit and reboot",
+  "com17_touched": false,
+  "c6_touched": false,
+  "release_acceptance": false,
+  "remaining": [
+    "Some captures omit static controls; physical confirmation unavailable",
+    "SD reads return cache error 0x102 while map cache is held; reclaim restores reads",
+    "No new CRC packets in short loaded-RF window",
+    "New 1248x568 layout has host/syntax evidence only"
+  ]
+}

@@ -1,0 +1,59 @@
+P4 syntax only: map_screen.cpp
+In file included from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/spi_share_hw_ctrl.h:14,
+                 from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_driver_spi/include/esp_private/spi_common_internal.h:19,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/esp32/Bus_SPI.hpp:36,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/device.hpp:74,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/M5GFX.h:47,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/ui/orcsdr_m5_time.hpp:5,
+                 from <command-line>:
+C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/periph_ctrl.h:88:64: warning: invalid suffix on literal; C++11 requires a space between literal and string macro [-Wliteral-suffix]
+   88 | #define __PERIPH_CTRL_DEPRECATE_ATTR __attribute__((deprecated("This function is not functional on "CONFIG_IDF_TARGET)))
+      |                                                                ^
+P4 syntax only: map_service.cpp
+In file included from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/spi_share_hw_ctrl.h:14,
+                 from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_driver_spi/include/esp_private/spi_common_internal.h:19,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/esp32/Bus_SPI.hpp:36,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/device.hpp:74,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/M5GFX.h:47,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/ui/orcsdr_m5_time.hpp:5,
+                 from <command-line>:
+C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/periph_ctrl.h:88:64: warning: invalid suffix on literal; C++11 requires a space between literal and string macro [-Wliteral-suffix]
+   88 | #define __PERIPH_CTRL_DEPRECATE_ATTR __attribute__((deprecated("This function is not functional on "CONFIG_IDF_TARGET)))
+      |                                                                ^
+P4 syntax only: map_pipeline.cpp
+In file included from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/spi_share_hw_ctrl.h:14,
+                 from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_driver_spi/include/esp_private/spi_common_internal.h:19,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/esp32/Bus_SPI.hpp:36,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/device.hpp:74,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/M5GFX.h:47,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/ui/orcsdr_m5_time.hpp:5,
+                 from <command-line>:
+C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/periph_ctrl.h:88:64: warning: invalid suffix on literal; C++11 requires a space between literal and string macro [-Wliteral-suffix]
+   88 | #define __PERIPH_CTRL_DEPRECATE_ATTR __attribute__((deprecated("This function is not functional on "CONFIG_IDF_TARGET)))
+      |                                                                ^
+P4 syntax only: settings_app.cpp
+In file included from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/spi_share_hw_ctrl.h:14,
+                 from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_driver_spi/include/esp_private/spi_common_internal.h:19,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/esp32/Bus_SPI.hpp:36,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/device.hpp:74,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/M5GFX.h:47,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/ui/orcsdr_m5_time.hpp:5,
+                 from <command-line>:
+C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/periph_ctrl.h:88:64: warning: invalid suffix on literal; C++11 requires a space between literal and string macro [-Wliteral-suffix]
+   88 | #define __PERIPH_CTRL_DEPRECATE_ATTR __attribute__((deprecated("This function is not functional on "CONFIG_IDF_TARGET)))
+      |                                                                ^
+P4 syntax only: main.cpp
+In file included from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/spi_share_hw_ctrl.h:14,
+                 from C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_driver_spi/include/esp_private/spi_common_internal.h:19,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/esp32/Bus_SPI.hpp:36,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/lgfx/v1/platforms/device.hpp:74,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/managed_components/m5stack__m5gfx/src/M5GFX.h:47,
+                 from F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/ui/orcsdr_m5_time.hpp:5,
+                 from <command-line>:
+C:/Espressif/frameworks/esp-idf-v5.5.4/components/esp_hw_support/include/esp_private/periph_ctrl.h:88:64: warning: invalid suffix on literal; C++11 requires a space between literal and string macro [-Wliteral-suffix]
+   88 | #define __PERIPH_CTRL_DEPRECATE_ATTR __attribute__((deprecated("This function is not functional on "CONFIG_IDF_TARGET)))
+      |                                                                ^
+F:\Ai\OrcSDR-Temp\maps-integration-completion\apps\orcsdr-tab5\ui\main.cpp:13195:52: warning: null character(s) preserved in literal
+13195 |     for (const char* p = decodes[i].message; *p != ' ' && m + 2 < sizeof(message); ++p) {
+      |                                                    ^
+P4_PICKER_NAVIGATION_SYNTAX_PASS (no link, no firmware rebuild)

@@ -1,0 +1,22 @@
+{
+  "status": "REVIEW_ONLY_UNSIGNED_UNPUBLISHED",
+  "catalog_revision_proposed": 1,
+  "catalog_base_url_proposed": "https://github.com/hardcoreerik/OrcMaps/releases/download/maps-catalog-test-20261022",
+  "archive_url_proposed": "https://github.com/hardcoreerik/OrcMaps/releases/download/16adde0b4f67734535db6871b89949e68c7e1dabf1c34d2bd7bd23842a9e5991/global-regional-z0-z8.pmtiles",
+  "data_release_tag_proposed": "16adde0b4f67734535db6871b89949e68c7e1dabf1c34d2bd7bd23842a9e5991",
+  "catalog_release_tag_proposed": "maps-catalog-test-20261022",
+  "release_target_commit_proposed": "b59d47819cc3b81c1bbe50ed75b775275bb0218e",
+  "archive_bytes": 543380195,
+  "archive_sha256_recorded": "16adde0b4f67734535db6871b89949e68c7e1dabf1c34d2bd7bd23842a9e5991",
+  "archive_hash_recomputed_this_run": false,
+  "source_full_archive_hash_verified": false,
+  "unsigned_payload_bytes": 3040,
+  "unsigned_payload_sha256": "9b6af40e66398fb39b440b06a5a8f55c2111d52a154361bc27509933dccc2829",
+  "signature_created": false,
+  "signing_material_created": false,
+  "device_accessed": false,
+  "archive_copied": false,
+  "archive_uploaded": false,
+  "production_key_or_catalog_configured": false,
+  "next_gate": "Explicit pilot publication approval, fresh hash/pack/signature checks, endpoint/P4 installation/recovery acceptance"
+}

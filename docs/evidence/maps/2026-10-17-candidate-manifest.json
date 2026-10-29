@@ -1,0 +1,9 @@
+{
+  "application_bytes": 5021344,
+  "application_sha256": "bd4000ae7c29d9608eddc7e03d2288ba65c101bb964c2274509fbd3248680fe1",
+  "factory_headroom_bytes": 1270112,
+  "release_guard_headroom_bytes": 1007968,
+  "orcmaps_revision": "c3cc09de3882149e03c7c00d7897c6882b324c6b",
+  "other_locked_dependencies_preserved": true,
+  "hardware_flashed": false
+}

@@ -1,0 +1,10 @@
+Native source 5c6f28532c9a8e7baf643a1076b715fc82942a8c
+app_bytes=5028688
+app_sha256=4e04eb639531cf462735c6fd7c55d587a41d7658155443cd02a4f8b2018a9e18
+elf_sha256=a9dfe4ba3d9ed723d373dba12a5876c2669684a02a8fd98c342bade3601e1cc0
+Build/link/partition gate PASS; existing warnings retained.
+OrcMaps requested/locked/fetched dc6bc12 PASS; miniz 2 bundled / none used from ROM PASS.
+Application only at 0x10000; written hash verified.
+Five preservation digests PASS: boot, table, NVS, previous core dump, embedded world.
+Boot ELF matches candidate; full 40960-byte DMA reserve retained.
+Build/flash/boot snapshot; runtime results are in the separate device report.

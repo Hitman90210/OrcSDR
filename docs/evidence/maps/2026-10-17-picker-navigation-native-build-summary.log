@@ -1,0 +1,5 @@
+SOURCE maps-picker-navigation-native-build-20261017.log (selected verification lines)
+Bootloader binary size 0x5de0 bytes. 0x220 bytes (2%) free.
+PASS: OrcMaps uses 2 bundled miniz symbols, none ROM-absolute
+orcsdr_tab5.bin binary size 0x4cade0 bytes. Smallest app partition is 0x600000 bytes. 0x135220 bytes (20%) free.
+Project build complete. To flash, run:

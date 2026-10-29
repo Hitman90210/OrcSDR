@@ -57,6 +57,7 @@ inline bool effective(const Prim& p, int* x, int* y, int* w, int* h) {
 }  // namespace host_display
 
 namespace lgfx {
+struct rgb565_t { uint16_t v; };
 class LovyanGFX {
  public:
   std::vector<Prim>* sink = &host_display::prims;
@@ -77,6 +78,13 @@ class LovyanGFX {
   }
   void fillRect(int x, int y, int w, int h, uint16_t c) { add(Prim::fill, x, y, w, h, c); }
   void fillRoundRect(int x, int y, int w, int h, int, uint16_t c) { add(Prim::fill, x, y, w, h, c); }
+  void drawPixel(int x, int y, uint16_t c) { add(Prim::fill, x, y, 1, 1, c); }
+  void pushImage(int x, int y, int w, int h, const uint16_t*) { add(Prim::fill, x, y, w, h); }
+  void pushImage(int x, int y, int w, int h, const rgb565_t*) { add(Prim::fill, x, y, w, h); }
+  void startWrite() {}
+  void endWrite() {}
+  void setScrollRect(int, int, int, int, uint16_t) {}
+  void scroll(int, int) {}
   void drawRoundRect(int x, int y, int w, int h, int, uint16_t) { add(Prim::outline, x, y, w, h); }
   void drawFastHLine(int x, int y, int w, uint16_t) { add(Prim::line, x, y, w, 1); }
   void drawFastVLine(int x, int y, int h, uint16_t) { add(Prim::line, x, y, 1, h); }

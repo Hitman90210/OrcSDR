@@ -26,7 +26,10 @@ enum class ActionKind : uint8_t {
   set_expert,          // value = 1 or 0: expert tuning (Tune panel, OrcDial rotation steps the dial in Hz)
   gain_auto,           // receiver gain back to automatic
   gain_manual,         // value = tuner gain in tenths of a dB (one of the receiver's steps)
-  free_memory          // the NOT ENOUGH MEMORY state's FREE MEMORY button: release what other features hold, then retry
+  rtl_agc,             // value = 1 or 0: the RTL2832's own digital AGC (separate from the tuner's), for dongles that have it (V3/V4)
+  free_memory,         // the NOT ENOUGH MEMORY state's FREE MEMORY button: release what other features hold, then retry
+  sync_clock,
+  open_clock           // displayed time/CLOCK chip: open the existing time editor
 };
 
 struct Action {
@@ -37,6 +40,10 @@ struct Action {
 struct Snapshot {
   uint64_t utc_ms = 0;
   bool clock_valid = false;
+  // How far the clock can be trusted (clock_sync::Level) and the age of the last network sync in seconds. clock_valid only says a
+  // date exists; FT8 also needs it accurate to a few hundred milliseconds, which only a recent sync shows.
+  uint8_t clock_sync_level = 0;
+  uint32_t clock_sync_age_s = 0;
   bool receiver_running = false;
   bool gain_auto = true;
   int16_t gain_tenth_db = 0;
@@ -44,7 +51,9 @@ struct Snapshot {
   bool gain_available = false;
   uint8_t gain_step_count = 0;
   int16_t gain_steps_tenth_db[32]{};
-  float iq_dbfs = -90.0f;        // smoothed input level, 0 = full scale
+  bool rtl_agc_available = false;   // the dongle exposes the RTL2832 AGC (shown as the RTL AGC button in the gain popup)
+  bool rtl_agc = false;
+  float iq_dbfs = -90.0f;       // smoothed input level, 0 = full scale
   float iq_clip_pct = 0.0f;      // smoothed share of IQ samples at full scale
   int16_t battery_percent = -1;
   uint8_t candidate_count = 0;

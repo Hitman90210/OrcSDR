@@ -68,6 +68,8 @@ const char* name(Id id) {
     case Id::ft8: return "ft8";
     case Id::sstv: return "sstv";
     case Id::acars: return "acars";
+    case Id::maps: return "maps";
+    case Id::dead_air: return "dead_air";
     default: return "none";
   }
 }
@@ -84,7 +86,7 @@ bool self_check() {
   uint32_t now = 20;
   for (const Id screen :
        {Id::home, Id::fm, Id::am, Id::shortwave, Id::cb, Id::airband, Id::p25, Id::adsb, Id::lora,
-        Id::wifi_analysis, Id::pocsag, Id::ft8, Id::sstv, Id::acars}) {
+        Id::wifi_analysis, Id::pocsag, Id::ft8, Id::sstv, Id::acars, Id::maps}) {
     begin_transition(screen, now++, false);
     finish_transition();
     begin_transition(Id::settings, now++, true);
@@ -105,7 +107,7 @@ bool self_check() {
   begin_transition(Id::rf_lab, now++, false);
   finish_transition();
   const bool rf_lab_owns = owns(Id::rf_lab);
-  const bool restored = g_status.transitions == 47;   // 14 screens x 3, plus the four single transitions, plus the SSTV entry
+  const bool restored = g_status.transitions == 50;   // 15 settings round trips plus five single transitions
   g_status = saved;
   g_transitioning = saved_transitioning;
   return entering_blocks_draw && home_owns && settings_return && documentation_owns &&

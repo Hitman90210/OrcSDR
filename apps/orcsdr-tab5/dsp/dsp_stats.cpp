@@ -7,7 +7,7 @@ namespace orcsdr::dsp::stats {
 namespace {
 
 constexpr size_t kStages = static_cast<size_t>(Stage::count);
-std::atomic<uint32_t> g_stage_us[kStages]{};
+std::atomic<uint32_t> g_stage_us[kStages]{},g_stage_max_us[kStages]{};
 std::atomic<uint32_t> g_blocks{0};
 std::atomic<uint32_t> g_total_us{0};
 std::atomic<uint32_t> g_max_us{0};
@@ -40,7 +40,10 @@ const char* stage_name(Stage stage) {
 
 void add(Stage stage, uint32_t elapsed_us) {
   const size_t index = static_cast<size_t>(stage);
-  if (index < kStages) g_stage_us[index].fetch_add(elapsed_us, std::memory_order_relaxed);
+  if (index < kStages) {
+    g_stage_us[index].fetch_add(elapsed_us, std::memory_order_relaxed);
+    store_max(g_stage_max_us[index],elapsed_us);
+  }
 }
 
 void block_done(uint32_t total_us, uint32_t samples, uint32_t queue_depth) {
@@ -76,9 +79,11 @@ size_t format_and_reset(char* out, size_t size, uint32_t window_ms) {
   size_t used = n > 0 ? static_cast<size_t>(n) : 0;
   for (size_t i = 0; i < kStages && used < size; ++i) {
     const uint32_t us = g_stage_us[i].exchange(0, std::memory_order_relaxed);
-    n = snprintf(out + used, size - used, " %s_avg_us=%lu",
+    const uint32_t peak=g_stage_max_us[i].exchange(0,std::memory_order_relaxed);
+    n = snprintf(out + used, size - used, " %s_avg_us=%lu %s_max_us=%lu",
                  stage_name(static_cast<Stage>(i)),
-                 static_cast<unsigned long>(blocks ? us / blocks : 0));
+                 static_cast<unsigned long>(blocks ? us / blocks : 0),
+                 stage_name(static_cast<Stage>(i)),static_cast<unsigned long>(peak));
     if (n > 0) used += static_cast<size_t>(n);
   }
   return used < size ? used : size - 1;

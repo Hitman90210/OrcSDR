@@ -33,6 +33,9 @@ struct Config {
   float min_score = 0.10f;        // coarse sync threshold
   uint8_t fine_rows = 4;          // fine-grid rows per symbol: 4 (40 ms) or 8 (20 ms); the grid is always half-bin in frequency
   uint32_t deadline_ms = 0;       // stop refining/gating after this long (0 = no limit); needs now_us
+  // Extra audio the caller may add on each side of the slot (a wide search, for a clock that is seconds off). The buffer and grids are
+  // sized for it; begin_slot() says how much of it leads the slot so DT is still measured against the nominal boundary.
+  uint32_t window_extra_ms = 0;
   uint64_t (*now_us)() = nullptr;
 };
 
@@ -95,7 +98,8 @@ class Backend {
   void end();
   bool set_mode(Mode mode);
   void reset();
-  bool begin_slot(uint64_t slot_epoch_ms);
+  // `lead_samples` = audio offered before the slot's nominal start (0 for a normal slot); DT is reported relative to the nominal start.
+  bool begin_slot(uint64_t slot_epoch_ms, size_t lead_samples = 0);
   bool offer_audio(const int16_t* samples, size_t count);
   // Decodes the buffered slot. `incomplete` marks a slot whose audio had a discontinuity: it is skipped, not "decoded".
   size_t finish_slot(orcsdr::ft8::Decode* output, size_t capacity, bool incomplete = false);
@@ -126,6 +130,7 @@ class Backend {
   Mode mode_ = Mode::ft8;
   uint32_t sample_rate_ = 0;
   uint64_t slot_epoch_ms_ = 0;
+  size_t lead_samples_ = 0;
   bool slot_open_ = false;
 
   int16_t* samples_ = nullptr;

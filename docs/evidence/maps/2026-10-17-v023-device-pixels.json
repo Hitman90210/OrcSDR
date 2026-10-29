@@ -1,0 +1,29 @@
+{
+  "baseline_firmware": "04898891",
+  "candidate_firmware": "99affb1b",
+  "views": [
+    {
+      "view": "map",
+      "pixels_compared": 653952,
+      "different_pixels": 0,
+      "baseline_sha256": "bb1b4776b6e999492ffffd7f1d1fa2e16c9732c420ff85498538ff3ba063053c",
+      "candidate_sha256": "bb1b4776b6e999492ffffd7f1d1fa2e16c9732c420ff85498538ff3ba063053c"
+    },
+    {
+      "view": "zom",
+      "pixels_compared": 653952,
+      "different_pixels": 0,
+      "baseline_sha256": "317511d48bd8a414454daf804ffbe343e8c8b7907a921ff89540505069a7afe1",
+      "candidate_sha256": "317511d48bd8a414454daf804ffbe343e8c8b7907a921ff89540505069a7afe1"
+    },
+    {
+      "view": "pan",
+      "pixels_compared": 653952,
+      "different_pixels": 0,
+      "baseline_sha256": "7c177de4381416d282f0cdede02832e77005ac2a4b630e178b45a91da9c8f0cb",
+      "candidate_sha256": "7c177de4381416d282f0cdede02832e77005ac2a4b630e178b45a91da9c8f0cb"
+    }
+  ],
+  "location_fields_identical": true,
+  "all_identical": true
+}

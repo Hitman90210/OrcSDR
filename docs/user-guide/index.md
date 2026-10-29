@@ -17,3 +17,7 @@ It explains the P4 build, application-only flash, and why C6 updates are
 optional for normal OrcSDR use.
 
 For digital reception, see [FT8 reception](dashboards/ft8.md).
+
+For the maps integration development builds, see [Offline maps](offline-maps.md)
+for in-app downloading and manual SD-card installation. The currently published
+global-map catalog is signed for production and has no scheduled expiry.

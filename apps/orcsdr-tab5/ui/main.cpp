@@ -61,6 +61,7 @@
 #include "sstv_diag.hpp"
 #include "sstv_receiver.hpp"
 #include "acars_app.hpp"
+#include "dead_air_app.hpp"
 #include "acars_archive_sd.hpp"
 #include "acars_receiver.hpp"
 #include "acars_selftest.hpp"
@@ -76,6 +77,7 @@
 #include "shortwave_model.hpp"
 #include "shortwave_audio_dsp.hpp"
 #include "shortwave_dashboard.hpp"
+#include "shortwave_ssb.hpp"
 #include "receiver_tuning_controls.hpp"
 #include "receiver_location.hpp"
 #include "am_finder.hpp"
@@ -117,8 +119,14 @@
 #include "realtime_log.hpp"
 #include "lora_channel_control.hpp"
 #include "location_estimate.hpp"
+#include "setup_ui.hpp"
+#include "orc_badge.hpp"
 #include "navigation_service.hpp"
-#include "offline_map.hpp"
+#include "map_service.hpp"
+#include "map_screen.hpp"
+#include "map_download_notice.hpp"
+#include "map_serial.hpp"
+#include "location_store.hpp"
 #include "nvs_store.hpp"
 #include "p25_dashboard.hpp"
 #include "p25_config.hpp"
@@ -134,6 +142,7 @@
 #include "rf_visualizer.hpp"
 #include "settings_app.hpp"
 #include "clock_settings.hpp"
+#include "clock_sync_status.hpp"
 #include "ntp_sync.hpp"
 #include "time_service.hpp"
 #include "ui_capture.hpp"
@@ -696,7 +705,7 @@ constexpr uint32_t kPocsagFallbackHz = 152007500;
 // load_pocsag_scan_list() and docs/RADIO_CONFIGURATION.md), exactly like
 // P25 system profiles and FM presets are already SD-editable rather than
 // compiled in. A user who researches their own local paging licenses (as
-// was done for one reference deployment in Lane County, Oregon) adds them
+// was done for one reference deployment) adds them
 // to that file -- the firmware itself stays geography-neutral.
 constexpr uint32_t kPocsagDiscoveryDefaultChannelsHz[] = {
     152007500, 152240000, 152480000, 152840000,
@@ -1428,6 +1437,7 @@ using LoraDisplayPacket = orcsdr::lora_log::Record;
 constexpr size_t kLoraDisplayPacketCount = 8;
 static LoraDisplayPacket lora_display_packets[kLoraDisplayPacketCount]{};
 constexpr size_t kLoraLogQueueDepth = 32;
+constexpr uint32_t kLoraLogRetryMs = 2000;
 constexpr char kLoraLogPath[] = "/orcsdr/lora_packets_v2.csv";
 EXT_RAM_BSS_ATTR static orcsdr::lora_history::Store lora_history;
 static std::atomic<bool> lora_history_loaded{false};
@@ -1441,10 +1451,14 @@ static TaskHandle_t lora_log_task_handle = nullptr;
 static std::atomic<bool> lora_log_requested{false};
 static std::atomic<bool> lora_log_ready{false};
 static std::atomic<bool> lora_log_error{false};
+static std::atomic<bool> lora_log_pending{false}, lora_log_retry_requested{false};
+static std::atomic<uint32_t> lora_log_retry_count{0};
+static std::atomic<const char*> lora_log_error_stage{"none"};
+static std::atomic<int> lora_log_error_errno{0};
 static std::atomic<uint32_t> lora_log_dropped{0};
 static std::atomic<uint32_t> lora_log_last_packet_ms{0};
 struct LoraNativeDecodeWork {
-  const uint8_t* iq = nullptr;
+  uint8_t* iq = nullptr; // Automatic jobs exclusively own this swapped capture buffer.
   size_t bytes = 0;
   uint8_t sf = 11;
   uint32_t bandwidth_hz = 250000;
@@ -1741,11 +1755,10 @@ bool orcdial_memory_blocked = false;
 // Set by orcdial_action() for the requests that need the bridge to exist (Pair, Connect, Forget and re-pair). Cancel, Confirm,
 // Disconnect, Forget and the boot toggle mean nothing when no bridge is running and must not start one.
 std::atomic<bool> orcdial_bridge_requested{false};
-// Internal DMA RAM that must be free to start the bridge on request. The firmware's own budget check (RTL_DRAM_BUDGET) warns below
-// 20 KB; a freshly restarted Tab5 settles at about 20.8 KB free with the bridge off, so this is the lowest limit that still lets a
-// first pairing start after a restart. The bridge itself takes up to about 19 KB (22.5 KB to 3.7 KB measured at boot), so even at this
-// limit Wi-Fi is left tight: shrinking the bridge (stack size, tx task) is the remaining work, and needs a Dial to measure the peak.
-constexpr size_t kOrcDialOnDemandDmaNeed = 20u * 1024u;
+// The 12 KiB security and 4 KiB relay stacks use internal RTC RAM, not DMA RAM.
+// Leave DMA space for task metadata, the peer link and the existing SD buffers.
+constexpr size_t kOrcDialOnDemandDmaNeed = 6u * 1024u;
+constexpr size_t kOrcDialRtcStackBytes = 16u * 1024u;
 uint32_t orcdial_pair_until = 0;
 orc::secure::Runtime orcdial_secure;
 bool orcdial_secure_started=false;
@@ -1814,7 +1827,7 @@ uint32_t wifi_last_scan_completed_ms = 0;
 uint16_t wifi_last_scan_duration_ms = 0;
 uint32_t wifi_scan_revision = 0;
 uint8_t settings_brightness = 180;
-uint8_t settings_rotation = 1;
+uint8_t settings_rotation = 3;
 uint16_t settings_screen_timeout_sec = 0;
 bool settings_sound_default = true;
 bool settings_auto_start_reception = true;
@@ -1822,16 +1835,18 @@ bool settings_graphics_default = true;
 bool settings_web_console_enabled = false;
 bool web_console_deferred = false;
 char settings_location_label[40]{};
-char settings_map_pack[40]{};
+EXT_RAM_BSS_ATTR char settings_map_pack[256]{};
 bool adsb_atc_listening = false;
 bool catalog_radio_paused = false;
+bool setup_radio_paused = false;
+std::atomic<bool> setup_receiver_inhibit{false};
 
 // True while an exclusive I/O client (Wi-Fi connect, probe or power-off,
 // catalog download) holds the radio paused. A hotplug start waits for it;
 // resume_radio_after_io() restarts a radio that was already running.
 bool radio_io_paused() {
   return catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused ||
-         wifi_c6_probe_radio_paused;
+         wifi_c6_probe_radio_paused || setup_receiver_inhibit.load(std::memory_order_acquire);
 }
 char rtl_sdr_status[96] = "RTL-SDR: waiting for USB-A host";
 char rtl_sdr_serial[48]{};
@@ -2707,12 +2722,14 @@ void draw_home_dashboard();
 void handle_home_action(const orcsdr::home::Action& action);
 void persist_dashboard_open(orcsdr::dashboards::Id id);
 void open_global_settings(orcsdr::settings::Section section);
+void open_clock_settings();
 void close_global_settings();
 void handle_global_settings_touch(int32_t x, int32_t y);
 void update_global_settings();
 void redraw_global_settings();
 void draw_global_header_controls();
 bool handle_global_header_audio_touch(int32_t x, int32_t y);
+bool shared_keypad_open();
 void navigation_restore_screen(orcsdr::screens::Id restore);
 void draw_global_bias_warning();
 void draw_ft8_dashboard(bool static_panel);
@@ -3106,10 +3123,12 @@ bool rtl_band_from_name(const char* name, RtlBand* out_band) {
   return false;
 }
 
+const char* shortwave_effective_mode_name();  // defined after effective_demod()
+
 const char* rtl_mode_name(RtlBand band) {
   switch (band) {
     case RtlBand::am: return "AM";
-    case RtlBand::shortwave: return "AM";
+    case RtlBand::shortwave: return shortwave_effective_mode_name();
     case RtlBand::airband: return "AM";
     case RtlBand::wx: return "NFM";
     case RtlBand::cb:
@@ -3176,10 +3195,20 @@ std::atomic<uint8_t> rtl_home_demod{static_cast<uint8_t>(HomeDemod::by_band)};
 // CB takes Home's choice while Home is on screen; a CB dashboard keeps its own mode switch.
 bool home_demod_band(RtlBand band) {
   return band == RtlBand::browse || band == RtlBand::fm || band == RtlBand::airband || band == RtlBand::wx ||
-         band == RtlBand::cb;
+         band == RtlBand::cb || band == RtlBand::am || band == RtlBand::shortwave;
+}
+
+// The shortwave band's sideband mode: the user's pin, or the band-plan suggestion for the tuned frequency.
+static orcsdr::shortwave_ssb::Mode shortwave_mode() {
+  return orcsdr::shortwave_ssb::current(rtl_requested_frequency_hz.load(std::memory_order_relaxed));
 }
 
 HomeDemod band_demod(RtlBand band) {
+  if (band == RtlBand::shortwave) {
+    const auto mode = shortwave_mode();
+    return mode == orcsdr::shortwave_ssb::Mode::usb ? HomeDemod::usb
+           : mode == orcsdr::shortwave_ssb::Mode::lsb ? HomeDemod::lsb : HomeDemod::am;
+  }
   if (band == RtlBand::am || band == RtlBand::shortwave || band == RtlBand::airband) return HomeDemod::am;
   return band == RtlBand::fm ? HomeDemod::wfm : HomeDemod::nfm;
 }
@@ -3196,7 +3225,25 @@ static std::atomic<uint8_t> g_sstv_demod{0};
 // The TUNE tab's IF filter width ahead of the FM discriminator in Hz; 0 = the radio's own setting.
 static std::atomic<uint32_t> g_sstv_if_hz{0};
 
+// Dead Air's demodulator choice on the browse band: 0 = not set, 1..5 = NFM, WFM, AM, USB, LSB. Only the real
+// receiver demodulators are offered; sweep patterns and generated audio are not demodulators.
+static std::atomic<uint8_t> g_dead_air_demod{0};
+static uint32_t g_dead_air_saved_filter_hz = 0;  // IF width in force before Dead Air changed mode; UI task only
+static uint32_t g_dead_air_return_hz = 0;        // frequency to give back to Home when Dead Air is left; UI task only
+static RtlBand g_dead_air_return_band = RtlBand::browse;  // the band Home was on (shortwave, MW... keep their own label)
+static uint8_t g_dead_air_return_demod = 0;      // Home's demodulator choice at that moment
+
 HomeDemod effective_demod(RtlBand band) {
+  if (band == RtlBand::browse) {
+    switch (g_dead_air_demod.load(std::memory_order_relaxed)) {
+      case 1: return HomeDemod::nfm;
+      case 2: return HomeDemod::wfm;
+      case 3: return HomeDemod::am;
+      case 4: return HomeDemod::usb;
+      case 5: return HomeDemod::lsb;
+      default: break;
+    }
+  }
   // Receiver DSP never reads screen ownership or UI-only frequency state.
   if (orcsdr::sstv::active() &&
       (band == RtlBand::shortwave || band == RtlBand::browse)) {
@@ -3210,6 +3257,11 @@ HomeDemod effective_demod(RtlBand band) {
   const auto chosen = static_cast<HomeDemod>(rtl_home_demod.load(std::memory_order_relaxed));
   return chosen != HomeDemod::by_band && home_demod_band(band) && orcsdr::home::active() ? chosen
                                                                                        : band_demod(band);
+}
+
+// The mode actually being played on shortwave: Home's pick while Home is on screen, else the dashboard's.
+const char* shortwave_effective_mode_name() {
+  return orcsdr::home_vfo::demod_name(effective_demod(RtlBand::shortwave));
 }
 
 // The SSTV TUNE tab shows an RF spectrum while it is on screen: the spectrum gates below treat it like a browser scope.
@@ -3392,11 +3444,12 @@ RtlBand home_band_for(const orcsdr::band_profile::Profile& profile) {
 }
 
 // Home is a full-range VFO on these bands, CB included (27 MHz carries AM, USB and LSB, and FM in some countries).
-// The MW and shortwave bands (the dongle's HF path), P25, LoRa, ADS-B and pager keep their own band-locked tuning
-// until they are folded in.
+// So are MW and shortwave (the dongle's HF path): the user picks the receive mode, not the band. Only the decoder
+// bands (P25, LoRa, ADS-B, pager) stay locked, because their decoders need their own demodulator.
 bool home_full_range() {
   return rtl_ui_band == RtlBand::browse || rtl_ui_band == RtlBand::fm || rtl_ui_band == RtlBand::airband ||
-         rtl_ui_band == RtlBand::wx || rtl_ui_band == RtlBand::cb;
+         rtl_ui_band == RtlBand::wx || rtl_ui_band == RtlBand::cb || rtl_ui_band == RtlBand::am ||
+         rtl_ui_band == RtlBand::shortwave;
 }
 
 void home_apply_auto(const orcsdr::band_profile::Profile& profile, RtlBand band);
@@ -3412,7 +3465,15 @@ bool home_tune_to(uint32_t frequency_hz, bool any_band = false) {
   const uint32_t hz = constrain(frequency_hz, kRtlBrowseMinHz, kRtlBrowseMaxHz);
   if (!validate_rtl_tune_frequency(hz)) return false;
   const auto& profile = orcsdr::band_profile::resolve(kBandRegion, hz);
-  const RtlBand band = home_band_for(profile);
+  // Below the tuner's own floor the dongle runs its HF path, which the Shortwave band owns (AM/USB/LSB, HF filters).
+  const RtlBand band = hz < kRtlNoHfMinHz ? RtlBand::shortwave : home_band_for(profile);
+  if (band == RtlBand::shortwave) {
+    g_home_memory.forget_band();
+    home_apply_auto(profile, band);   // a mode left by FM/2 m must not carry onto HF
+    if (band == rtl_ui_band && rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running)
+      return request_hot_retune(hz);
+    return queue_local_rtl_listen(band, hz, false);
+  }
   home_apply_auto(profile, band);
   if (band == rtl_ui_band &&
       rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running) {
@@ -3462,6 +3523,8 @@ void home_set_demod(HomeDemod demod, RtlBand band, bool refilter = false) {
 void home_apply_auto(const orcsdr::band_profile::Profile& profile, RtlBand band) {
   HomeDemod mode = HomeDemod::by_band;
   if (!g_home_memory.enter_band(profile, &mode)) return;
+  // On HF an unpinned mode stays AUTO, which follows the band plan for the tuned frequency (LSB 40 m, USB 20 m...).
+  if (band == RtlBand::shortwave && mode == demod_for_mode(profile.mode)) mode = HomeDemod::by_band;
   home_set_demod(mode, band, /*refilter=*/band != rtl_ui_band);
 }
 
@@ -3482,7 +3545,9 @@ void home_select_mode(HomeDemod choice) {
   if (g_home_memory.set_pin(profile, choice))
     preferences.putBytes("band_modes", g_home_memory.pins_data(), orcsdr::home_vfo::Memory::kPinsBytes);
   g_home_memory.note_band(profile);
-  home_set_demod(choice == HomeDemod::by_band ? demod_for_mode(profile.mode) : choice, rtl_ui_band, /*refilter=*/true);
+  const bool hf_auto = choice == HomeDemod::by_band && rtl_ui_band == RtlBand::shortwave;
+  home_set_demod(choice == HomeDemod::by_band && !hf_auto ? demod_for_mode(profile.mode) : choice, rtl_ui_band,
+                 /*refilter=*/true);
 }
 
 void band_mode_load() {
@@ -3586,7 +3651,8 @@ void log_lora_memory(const char* stage) {
 
 void apply_speaker_volume(uint8_t volume) {
   // Keep master and virtual-channel levels aligned; some M5 paths only honor one.
-  const uint8_t physical_volume = std::min(volume, kRtlSpeakerHardwareMax);
+  // Only the P25 voice burst tripped the amp's rail detector; every other band gets the speaker's full range.
+  const uint8_t physical_volume = rtl_ui_band == RtlBand::p25 ? std::min(volume, kRtlSpeakerHardwareMax) : volume;
   M5.Speaker.setVolume(physical_volume);
   M5.Speaker.setChannelVolume(0, physical_volume);
 }
@@ -3682,6 +3748,7 @@ bool restart_rtl_speaker_i2s(uint8_t volume) {
 }
 
 bool ensure_speaker_running(uint8_t volume) {
+  if(setup_receiver_inhibit.load(std::memory_order_acquire))return false;
   if (!rtl_speaker_start_allowed.load(std::memory_order_acquire)) return false;
   if (!rtl_speaker_codec_primed.load(std::memory_order_acquire)) {
     if (!M5.Speaker.isRunning() && !restart_rtl_speaker_i2s(volume)) return false;
@@ -3750,6 +3817,7 @@ void idle_rtl_speaker(const char* reason) {
 }
 
 void resume_rtl_speaker() {
+  if(setup_receiver_inhibit.load(std::memory_order_acquire))return;
   sync_rtl_audio_for_band(rtl_ui_band);
   if (!rtl_device_ready()) {
     idle_rtl_speaker("no_receiver");
@@ -3802,6 +3870,9 @@ bool rtl_audio_select_writable_block(uint32_t now) {
   return false;
 }
 
+// A Dead Air clip is playing on its own speaker channel: the receiver stands down so the two never mix.
+std::atomic<bool> g_dead_air_replay{false};
+
 void flush_audio_play_batch(bool force) {
   if (rtl_audio_play_count == 0) return;
   if (!force && rtl_audio_play_count < kRtlAudioPlayBatchSamples) return;
@@ -3816,7 +3887,7 @@ void flush_audio_play_batch(bool force) {
       return;
     }
   }
-  if (!rtl_audio_enabled.load(std::memory_order_acquire)) {
+  if (!rtl_audio_enabled.load(std::memory_order_acquire) || g_dead_air_replay.load(std::memory_order_relaxed)) {
     rtl_audio_play_count = 0;
     return;
   }
@@ -4412,20 +4483,49 @@ static bool lora_archive_name(const std::string& name) {
   return day.size() == 8 && day.find_first_not_of("0123456789") == std::string::npos;
 }
 
+void lora_sd_log_failure(const char* stage, int error) {
+  lora_log_error_stage.store(stage, std::memory_order_relaxed);
+  lora_log_error_errno.store(error, std::memory_order_relaxed);
+  lora_log_ready.store(false, std::memory_order_release);
+  lora_log_error.store(true, std::memory_order_release);
+  Serial.printf("LORA_SD_LOG_ERROR stage=%s errno=%d\n", stage, error);
+}
+
 void lora_sd_log_task(void*) {
   File csv, journal;
   EXT_RAM_BSS_ATTR static char line[orcsdr::lora_history::kLineMax];
+  EXT_RAM_BSS_ATTR static LoraDisplayPacket record;
+  EXT_RAM_BSS_ATTR static char journal_path[80];
+  orcsdr::lora_log::AppendCheckpoint checkpoint;
   bool replayed = false;
-  uint32_t sequence = 0, last_flush_ms = millis();
+  bool have_record = false, journal_owned = false, recovering = false;
+  uint32_t sequence = 0, retry_due_ms = 0;
   char journal_day[16]{};
-  size_t pending = 0;
   for (;;) {
     const bool requested = lora_log_requested.load(std::memory_order_acquire);
+    const bool retry_now = lora_log_retry_requested.exchange(false, std::memory_order_acq_rel);
+    if (lora_log_error.load(std::memory_order_acquire)) {
+      if (csv) csv.close();
+      if (journal) journal.close();
+      lora_log_ready.store(false, std::memory_order_release);
+      const uint32_t now = millis();
+      if (!retry_due_ms) { retry_due_ms = now + kLoraLogRetryMs; if (!retry_due_ms) retry_due_ms = 1; }
+      if (!requested || (!retry_now && static_cast<int32_t>(now - retry_due_ms) < 0)) {
+        vTaskDelay(pdMS_TO_TICKS(200));
+        continue;
+      }
+      retry_due_ms = 0;
+      lora_log_retry_count.fetch_add(1, std::memory_order_relaxed);
+      lora_log_error.store(false, std::memory_order_release);
+      recovering = true;
+      Serial.printf("LORA_SD_LOG_RETRY queued=%u pending=%u\n",
+          unsigned(uxQueueMessagesWaiting(lora_log_queue)), unsigned(have_record));
+    }
     if (requested && !csv && !lora_log_error.load(std::memory_order_relaxed)) {
       if (!ensure_tab5_sd() || !g_sd_fs ||
           (!g_sd_fs->exists("/orcsdr") && !g_sd_fs->mkdir("/orcsdr")) ||
           (!g_sd_fs->exists("/orcsdr/lora") && !g_sd_fs->mkdir("/orcsdr/lora"))) {
-        lora_log_error.store(true); Serial.println("LORA_SD_LOG_ERROR mount_or_directory");
+        lora_sd_log_failure("mount_or_directory", errno);
       } else {
         if (!replayed) {
           // A retry rebuilds from scratch; partial replay must not double counts.
@@ -4436,7 +4536,7 @@ void lora_sd_log_task(void*) {
           lora_history_rejected.store(0);
           std::vector<std::string> names;
           File dir = g_sd_fs->open("/orcsdr/lora");
-          if (!dir) lora_log_error.store(true);
+          if (!dir) lora_sd_log_failure("replay_directory", errno);
           for (File entry = dir.openNextFile(); entry; entry = dir.openNextFile()) {
             std::string name = entry.name();
             const auto slash = name.find_last_of('/');
@@ -4448,12 +4548,12 @@ void lora_sd_log_task(void*) {
             sequence = std::max<uint32_t>(sequence, strtoul(name.c_str(), nullptr, 10));
             const std::string path = "/orcsdr/lora/" + name;
             File input = g_sd_fs->open(path.c_str());
-            if (!input) { lora_log_error.store(true); break; }
+            if (!input) { lora_sd_log_failure("replay_open", errno); break; }
             size_t used = 0; bool overflow = false;
             uint8_t chunk[256];
             while (input.available()) {
               const size_t n = input.read(chunk, sizeof(chunk));
-              if (!n) { lora_log_error.store(true); break; }
+              if (!n) { lora_sd_log_failure("replay_read", errno); break; }
               for (size_t i = 0; i < n; ++i) {
                 if (chunk[i] == '\n') {
                   LoraDisplayPacket record{};
@@ -4472,65 +4572,93 @@ void lora_sd_log_task(void*) {
             }
             if (used || overflow) lora_history_rejected.fetch_add(1); // power-cut tail
             input.close();
+            if (lora_log_error.load()) break;
           }
           replayed = !lora_log_error.load();
           lora_history_loaded.store(replayed, std::memory_order_release);
           lora_history_revision.fetch_add(1);
         }
         if (!lora_log_error.load()) {
-          csv = g_sd_fs->open(kLoraLogPath, FILE_APPEND, true);
-          if (csv && csv.size() == 0) {
-            const char* header = "uptime_ms,wallclock_valid,wallclock_source,received_utc,frequency_hz,from,to,packet_id,port,snr_tenths,signal_tenths,latitude_e7,longitude_e7,text,short_name,long_name,encrypted,from_host\n";
-            if (csv.print(header) != strlen(header) || !csv.flush()) lora_log_error.store(true);
+          const auto status = g_sd_fs->status(kLoraLogPath);
+          if (status == orcsdr::storage::EntryStatus::error ||
+              status == orcsdr::storage::EntryStatus::directory ||
+              (checkpoint.valid && status != orcsdr::storage::EntryStatus::file)) {
+            lora_sd_log_failure("csv_status",
+                status == orcsdr::storage::EntryStatus::directory ? EISDIR :
+                status == orcsdr::storage::EntryStatus::missing ? ENOENT : errno);
+          } else {
+            csv = g_sd_fs->open(kLoraLogPath,
+                status == orcsdr::storage::EntryStatus::missing ? "w+" : "r+", true);
+            if (!csv) lora_sd_log_failure("csv_open", errno);
           }
-          if (!csv) lora_log_error.store(true);
           lora_log_ready.store(csv && !lora_log_error.load());
           if (lora_log_ready.load()) Serial.printf("LORA_SD_LOG_READY path=\"%s\"\n", kLoraLogPath);
         }
       }
     }
-    LoraDisplayPacket record;
-    if (xQueueReceive(lora_log_queue, &record, pdMS_TO_TICKS(200)) == pdTRUE) {
+    if (lora_log_error.load()) continue;
+    if (!have_record && xQueueReceive(lora_log_queue, &record, pdMS_TO_TICKS(200)) == pdTRUE) {
+      have_record = true;
+      lora_log_pending.store(true, std::memory_order_release);
+    }
+    if (have_record) {
       portENTER_CRITICAL(&lora_message_mux);
       const bool changed = !record.history_observed && lora_history.observe(record);
+      record.history_observed = true;
       portEXIT_CRITICAL(&lora_message_mux);
       if (changed) lora_history_revision.fetch_add(1);
-      bool ok = csv && !lora_log_error.load();
       char day[16]; orcsdr::lora_history::day_key(record.received_utc, day, sizeof(day));
-      if (ok && (!journal || strcmp(day, journal_day) != 0)) {
+      if (strcmp(day, journal_day) != 0) {
         if (journal) {
-          const bool flushed = journal.flush();
           const bool closed = journal.close();
-          if (!flushed || !closed) ok = false;
+          if (!closed) lora_sd_log_failure("journal_close", errno);
         }
-        if (ok && sequence < 99999999u) {
-          char path[80]; snprintf(path, sizeof(path), "/orcsdr/lora/%08lu-%s.jsonl",
-                                  static_cast<unsigned long>(++sequence), day);
-          if (g_sd_fs->exists(path)) ok = false; // never overwrite another session
-          else journal = g_sd_fs->open(path, FILE_WRITE, true);
-          strlcpy(journal_day, day, sizeof(journal_day));
-          ok = ok && static_cast<bool>(journal);
-        } else ok = false;
+        journal_owned = false;
+        journal_path[0] = '\0';
       }
-      size_t bytes = orcsdr::lora_history::format_line(record, line, sizeof(line));
-      if (ok) ok = bytes && journal.write(reinterpret_cast<const uint8_t*>(line), bytes) == bytes;
-      bytes = orcsdr::lora_log::format_csv(line, sizeof(line), record);
-      if (ok) ok = bytes && csv.write(reinterpret_cast<const uint8_t*>(line), bytes) == bytes;
-      if (ok) { ++pending; lora_history_written.fetch_add(1); }
-      else { lora_log_dropped.fetch_add(1); lora_log_error.store(true); }
+      if (lora_log_error.load()) continue;
+      if (!journal) {
+        if (journal_owned) {
+          journal = g_sd_fs->open(journal_path, "r+", true);
+          if (!journal) lora_sd_log_failure("journal_reopen", errno);
+        } else if (sequence < 99999999u) {
+          snprintf(journal_path, sizeof(journal_path), "/orcsdr/lora/%08lu-%s.jsonl",
+                   static_cast<unsigned long>(++sequence), day);
+          const auto status = g_sd_fs->status(journal_path);
+          if (status != orcsdr::storage::EntryStatus::missing) {
+            lora_sd_log_failure("journal_status",
+                status == orcsdr::storage::EntryStatus::file ? EEXIST :
+                status == orcsdr::storage::EntryStatus::directory ? EISDIR : errno);
+          } else {
+            journal = g_sd_fs->open(journal_path, "w+", true);
+            journal_owned = static_cast<bool>(journal);
+            if (!journal) lora_sd_log_failure("journal_open", errno);
+          }
+          strlcpy(journal_day, day, sizeof(journal_day));
+        } else lora_sd_log_failure("journal_sequence", EOVERFLOW);
+      }
+      if (lora_log_error.load()) continue;
+      const auto result = orcsdr::lora_log::append_record(journal, csv, record, checkpoint,
+                                                       line, sizeof(line));
+      if (!result) {
+        lora_sd_log_failure(result.stage, result.error);
+        continue;
+      }
+      have_record = false;
+      lora_log_pending.store(false, std::memory_order_release);
+      lora_history_written.fetch_add(1);
+      if (recovering) {
+        Serial.printf("LORA_SD_LOG_RECOVERED retries=%lu\n",
+            static_cast<unsigned long>(lora_log_retry_count.load()));
+        recovering = false;
+      }
     }
-    const uint32_t now = millis();
-    // Buffered writes stay off the decoder/UI tasks. Bound power-cut exposure
-    // to a five-second flush interval even during continuous reception.
-    if (pending && (now - last_flush_ms >= 5000 || !requested)) {
-      const bool journal_flushed = journal.sync();
-      const bool csv_flushed = csv.sync();
-      if (!journal_flushed || !csv_flushed) lora_log_error.store(true);
-      pending = 0; last_flush_ms = now;
-    }
-    if ((!requested && uxQueueMessagesWaiting(lora_log_queue) == 0) || lora_log_error.load()) {
-      if (csv) { if (!csv.close()) lora_log_error.store(true); }
-      if (journal) { if (!journal.close()) lora_log_error.store(true); }
+    if (!requested && !have_record && uxQueueMessagesWaiting(lora_log_queue) == 0) {
+      if (csv && !csv.close()) lora_sd_log_failure("csv_close", errno);
+      if (journal && !journal.close()) lora_sd_log_failure("journal_close", errno);
+      journal_owned = false;
+      journal_day[0] = '\0';
+      journal_path[0] = '\0';
       lora_log_ready.store(false);
     }
   }
@@ -4545,12 +4673,11 @@ void set_lora_sd_logging(bool enabled) {
         (lora_log_task_handle == nullptr &&
          xTaskCreatePinnedToCore(lora_sd_log_task, "lora_sd_log", 6144, nullptr, 1,
                                  &lora_log_task_handle, 0) != pdPASS)) {
-      lora_log_error.store(true, std::memory_order_release);
-      Serial.println("LORA_SD_LOG_ERROR task_failed");
+      lora_sd_log_failure("task_failed", 0);
       return;
     }
     if (!g_sd_ready) g_sd_tried = false;
-    lora_log_error.store(false, std::memory_order_release);
+    lora_log_retry_requested.store(true, std::memory_order_release);
   }
   lora_log_requested.store(enabled, std::memory_order_release);
   bump_rtl_ui();
@@ -4593,7 +4720,8 @@ bool iq_rec_ensure_buffer() {
 // (the FT8 screen's FREE MEMORY, RTL_MEM RECLAIM) when nothing is using them, and re-allocated by lora_iq_ensure_buffers() the next
 // time LoRa opens.
 size_t lora_iq_held_bytes() {
-  return (g_iq_rec_buf ? kIqRecMaxBytes : 0u) + (g_lora_decode_buf ? kIqRecMaxBytes : 0u) + (g_lora_pre_roll_buf ? kLoraPreRollBytes : 0u);
+  return (g_iq_rec_buf ? kIqRecMaxBytes : 0u) + (g_lora_decode_buf ? kIqRecMaxBytes : 0u) +
+         (g_lora_pre_roll_buf ? kLoraPreRollBytes : 0u) + orcsdr::lora_native::capture_workspace_bytes();
 }
 
 size_t lora_iq_release_buffers() {
@@ -4623,6 +4751,7 @@ size_t lora_iq_release_buffers() {
   heap_caps_free(capture);
   heap_caps_free(decode);
   heap_caps_free(pre_roll);
+  orcsdr::lora_native::release_capture_workspace();
   return held;
 }
 
@@ -4822,8 +4951,20 @@ bool p25_iq_rec_start() {
 
 bool queue_lora_auto_decode() {
   if (!g_iq_rec_ready.load(std::memory_order_acquire) ||
-      !g_iq_rec_auto_triggered.load(std::memory_order_acquire) ||
-      g_lora_decode_buf == nullptr || lora_native_decode_queue == nullptr) return false;
+      !g_iq_rec_auto_triggered.load(std::memory_order_acquire)) return false;
+  if (!lora_native_decoder_ready.load(std::memory_order_acquire) ||
+      g_lora_decode_buf == nullptr || lora_native_decode_queue == nullptr) {
+    // A failed decoder startup must not pin the automatic capture forever.
+    if(g_iq_rec_ready.exchange(false,std::memory_order_acq_rel)) {
+      g_iq_rec_auto_triggered.store(false,std::memory_order_release);
+      g_iq_rec_write.store(0,std::memory_order_release);
+      lora_capture_drops.fetch_add(1,std::memory_order_relaxed);
+      Serial.printf("RTL_LORA_CAPTURE_DROP sequence=%lu reason=decoder_unavailable drops=%lu\n",
+          static_cast<unsigned long>(g_iq_rec_sequence),
+          static_cast<unsigned long>(lora_capture_drops.load(std::memory_order_relaxed)));
+    }
+    return false;
+  }
   bool expected = false;
   if (!lora_native_decode_busy.compare_exchange_strong(
           expected, true, std::memory_order_acq_rel)) return false;
@@ -4938,10 +5079,16 @@ void lora_native_decode_task(void*) {
         !work.automatic && work.sequence != 0};
     const uint32_t queue_millis = millis() - work.queued_ms;
     if (!work.automatic && work.sequence != 0) log_lora_memory("replay_before");
-    const size_t count = orcsdr::lora_native::decode_capture(
-        work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
-        work.frequency_hz, config,
-        decoded, orcsdr::lora_native::kMaxPacketsPerCapture, &stats);
+    size_t count = 0;
+    if (work.automatic) {
+      count = orcsdr::lora_native::decode_capture_in_place(
+          work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
+          work.frequency_hz, config, decoded, orcsdr::lora_native::kMaxPacketsPerCapture, &stats);
+    } else {
+      count = orcsdr::lora_native::decode_capture(
+          work.iq, work.bytes, kRtlSampleRateSps, work.sf, work.bandwidth_hz,
+          work.frequency_hz, config, decoded, orcsdr::lora_native::kMaxPacketsPerCapture, &stats);
+    }
     if (!work.automatic && work.sequence != 0) log_lora_memory("replay_after");
     lora_native_crc_ok.fetch_add(stats.crc_ok, std::memory_order_relaxed);
     lora_native_encrypted.fetch_add(stats.encrypted, std::memory_order_relaxed);
@@ -4953,7 +5100,14 @@ void lora_native_decode_task(void*) {
     lora_native_last_cfo_tenths_hz.store(stats.cfo_tenths_hz, std::memory_order_release);
     if (stats.preambles == 0)
       lora_detector_relearn_requested.store(true, std::memory_order_release);
-    if (!stats.ready) lora_native_failures.fetch_add(1, std::memory_order_relaxed);
+    if (!stats.ready) {
+      lora_native_failures.fetch_add(1, std::memory_order_relaxed);
+      if (stats.workspace_failed) {
+        Serial.printf("RTL_LORA_NATIVE_ERROR stage=preprocess_workspace sequence=%lu bytes=%u\n",
+                      static_cast<unsigned long>(work.sequence), static_cast<unsigned>(work.bytes));
+        log_lora_memory("preprocess_failed");
+      }
+    }
     for (size_t i = 0; i < count; ++i) {
       LoraDisplayPacket packet{};
       strlcpy(packet.text, decoded[i].text, sizeof(packet.text));
@@ -5092,6 +5246,7 @@ void lora_native_decode_task(void*) {
       }
       Serial.println();
     }
+    if (!work.automatic) orcsdr::lora_native::release_capture_workspace();
     lora_native_decode_busy.store(false, std::memory_order_release);
     (void)queue_lora_auto_decode();
     bump_rtl_ui();
@@ -5116,8 +5271,13 @@ bool lora_native_decoder_start() {
   }
   lora_native_decode_queue = xQueueCreate(1, sizeof(LoraNativeDecodeWork));
   if (lora_native_decode_queue == nullptr ||
-      xTaskCreatePinnedToCore(lora_native_decode_task, "lora_native", 12288, nullptr, 1,
-                              &lora_native_decode_task_handle, 0) != pdPASS) {
+      xTaskCreatePinnedToCoreWithCaps(lora_native_decode_task, "lora_native", 12288, nullptr, 1,
+                                     &lora_native_decode_task_handle, 0,
+                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+    // A queue without a worker would accept one capture and stay busy forever.
+    if (lora_native_decode_queue != nullptr) vQueueDelete(lora_native_decode_queue);
+    lora_native_decode_queue = nullptr;
+    lora_native_decode_task_handle = nullptr;
     Serial.println("RTL_LORA_NATIVE_INIT_FAIL stage=task");
     return false;
   }
@@ -6666,7 +6826,16 @@ void draw_global_header_controls() {
   draw_global_bias_warning();
 }
 
+bool map_download_notice_blocked() {
+  return g_suppress_home_paint||ui_documentation_mode||orcsdr::text_editor::active()||
+      rtl_header_audio_control.expanded||shared_keypad_open()||orcsdr::home::popup_open();
+}
 bool handle_global_header_audio_touch(int32_t x, int32_t y) {
+  const bool blocked=map_download_notice_blocked();
+  if(orcsdr::map_download_notice::hit(x,y,orcsdr::screens::status().active,blocked)) {
+    (void)orcsdr::map_screen::open(orcsdr::map_screen::Mode::downloads);
+    return true;
+  }
   const auto action = orcsdr::audio_header::handle_touch(
       rtl_header_audio_control, x, y, millis(),
       rtl_live_volume.load(std::memory_order_acquire));
@@ -7030,6 +7199,7 @@ void refresh_active_screen() {
     case Id::ft8: draw_ft8_dashboard(false); break;
     case Id::sstv: draw_sstv_dashboard(false); break;
     case Id::acars: orcsdr::acars_app::draw(false); break;
+    case Id::dead_air: orcsdr::dead_air_app::draw(false); break;
     default: break;  // Settings, documentation, and no screen own their draws.
   }
 }
@@ -7101,6 +7271,7 @@ void close_visualizer() {
     case orcsdr::screens::Id::shortwave: orcsdr::shortwave::draw(); break;
     case orcsdr::screens::Id::sstv: draw_sstv_dashboard(true); break;
     case orcsdr::screens::Id::acars: orcsdr::acars_app::draw(true); break;
+    case orcsdr::screens::Id::dead_air: orcsdr::dead_air_app::draw(true); break;
     case orcsdr::screens::Id::airband: orcsdr::airband::redraw(); break;
     case orcsdr::screens::Id::cb: orcsdr::cb::draw(); break;
     case orcsdr::screens::Id::p25: orcsdr::p25::draw(); break;
@@ -7422,6 +7593,7 @@ void draw_sdr_screen(RtlBand band, uint32_t frequency_hz, uint8_t volume) {
   orcsdr::ft8::leave();
   orcsdr::sstv_app::close();
   orcsdr::acars_app::close();
+  orcsdr::dead_air_app::close();
   orcsdr::settings::leave();
   if (band != RtlBand::fm) orcsdr::fm::leave();
   if (band != RtlBand::am) orcsdr::am::leave();
@@ -7609,7 +7781,8 @@ void draw_band_edges() {
  * Two-window Welch averaging keeps the single render core responsive.
  */
 void draw_spectrum(const uint8_t* iq, size_t bytes) {
-  const bool web_scope = orcsdr::web_console::spectrum_demanded() || sstv_tune_spectrum_wanted();
+  const bool web_scope = orcsdr::web_console::spectrum_demanded() || sstv_tune_spectrum_wanted() ||
+                         orcsdr::dead_air_app::wants_spectrum();
   if (!web_scope && !orcsdr::home::active() && rtl_ui_band == RtlBand::lora &&
       !orcsdr::lora::spectrum_active()) return;
   if (!web_scope && !orcsdr::home::active() && rtl_ui_band == RtlBand::airband &&
@@ -7888,6 +8061,13 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
     rtl_spectrum_trace_valid = true;
     return;
   }
+  if (orcsdr::dead_air_app::wants_spectrum()) {
+    orcsdr::dead_air_app::feed_spectrum(rtl_spectrum_levels, kRtlSpectrumBins,
+                                        rtl_active_sample_rate_sps.load(std::memory_order_relaxed));
+    rtl_spectrum_trace_last_ms = now;
+    rtl_spectrum_trace_valid = true;
+    return;
+  }
 
   if (!orcsdr::screens::owns(orcsdr::screens::Id::radio)) return;
   M5.Display.startWrite();
@@ -8021,6 +8201,7 @@ void queue_audio_samples(int16_t* audio, size_t audio_count) {
   orcsdr::sstv::offer_audio_48k(audio, audio_count);
   orcsdr::web_audio::note_generated(audio_count);
   orcsdr::web_audio::publish(audio, audio_count);
+  orcsdr::dead_air_app::offer_audio(audio, audio_count);  // level meter only, lock-free
   orcsdr::visualizer::offer_audio(audio, nullptr, audio_count, 48000);
   /* Capture the post-DSP mono stream before expanding it for the stereo codec. */
   if (g_audio_rec_active.load(std::memory_order_acquire)) {
@@ -8779,6 +8960,46 @@ __attribute__((noinline)) void demodulate_ssb(const uint8_t* iq, size_t bytes, f
 }
 
 
+// Shortwave sideband listening: the DSP lives in shortwave_ssb.hpp; this only feeds it and finishes the audio.
+__attribute__((noinline)) void demodulate_shortwave_ssb(RtlBand band, const uint8_t* iq, size_t bytes,
+                                                        float audio_scale, uint32_t sample_rate_sps) {
+  using namespace orcsdr::shortwave_ssb;
+  int16_t* audio = rtl_audio_buffers[rtl_audio.buffer];
+  size_t audio_count = 0;
+  int16_t peak = rtl_audio.peak;
+  uint64_t square_sum = rtl_audio.square_sum, samples = rtl_audio.samples;
+  uint32_t clipped_pairs = 0;
+  const uint32_t tuned_hz = rtl_requested_frequency_hz.load(std::memory_order_relaxed);
+  // The sideband in force: Home's pick while Home is on screen, else the Shortwave dashboard's.
+  const Mode wanted = effective_demod(band) == HomeDemod::lsb ? Mode::lsb : Mode::usb;
+  const bool direct_sampling = g_rtl_profile.load(std::memory_order_acquire) == ESP_RTL_SDR_PROFILE_BLOG_V3;
+  const Mode sideband = demod_sideband(wanted, tuned_hz, direct_sampling);
+  // Hot retunes quantize the LO to 5 kHz while the dial moves in 100 Hz steps: pass the dial's offset from the IQ centre.
+  uint32_t centre_hz = 0;
+  int32_t carrier_offset = 0;
+  if (g_rtl != nullptr && esp_rtl_sdr_get_center_freq(g_rtl, &centre_hz) == ESP_OK && centre_hz != 0)
+    carrier_offset = std::clamp<int32_t>(static_cast<int32_t>(tuned_hz) - static_cast<int32_t>(centre_hz), -6000, 6000);
+  if (sideband != wanted) carrier_offset = -carrier_offset;  // a folded spectrum is mirrored about the centre
+  audio_scale *= 3.0f;  // SSB has no carrier: the same station is about 10 dB below its AM level
+  process(demod_state(), iq, bytes, rtl_rf_decimation(sample_rate_sps), sideband,
+          control().clarifier_hz.load(std::memory_order_relaxed), static_cast<float>(sample_rate_sps),
+          [&](float demodulated) {
+            const int16_t sample = shape_audio_sample(demodulated, audio_scale);
+            audio[audio_count++] = sample;
+            const int16_t magnitude = sample < 0 ? -sample : sample;
+            if (magnitude > peak) peak = magnitude;
+            square_sum += static_cast<uint32_t>(sample * sample);
+            ++samples;
+          },
+          &clipped_pairs, carrier_offset);
+  rtl_audio.peak = peak;
+  rtl_audio.square_sum = square_sum;
+  rtl_audio.samples = samples;
+  rtl_block_clip.note(clipped_pairs);
+  if (band == RtlBand::shortwave) orcsdr::shortwave::audio_dsp::process(audio, audio_count, rtl_signal_dbfs_smooth);
+  queue_audio_samples(audio, audio_count);
+}
+
 // One demodulator choice for every band. CB follows Home's choice while Home is on screen (its squelch gate is skipped
 // then); a CB dashboard keeps its own mode switch and gate.
 
@@ -8789,9 +9010,17 @@ void demodulate_home(RtlBand band, const uint8_t* iq, size_t bytes, float audio_
 
     case HomeDemod::am: demodulate_am(iq, bytes, audio_scale, sample_rate_sps); break;
 
-    case HomeDemod::usb: demodulate_ssb(iq, bytes, audio_scale, CbMode::usb, sample_rate_sps); break;
+    case HomeDemod::usb:
+      if ((band == RtlBand::shortwave || band == RtlBand::am) && !orcsdr::sstv::active())
+        demodulate_shortwave_ssb(band, iq, bytes, audio_scale, sample_rate_sps);
+      else demodulate_ssb(iq, bytes, audio_scale, CbMode::usb, sample_rate_sps);
+      break;
 
-    case HomeDemod::lsb: demodulate_ssb(iq, bytes, audio_scale, CbMode::lsb, sample_rate_sps); break;
+    case HomeDemod::lsb:
+      if ((band == RtlBand::shortwave || band == RtlBand::am) && !orcsdr::sstv::active())
+        demodulate_shortwave_ssb(band, iq, bytes, audio_scale, sample_rate_sps);
+      else demodulate_ssb(iq, bytes, audio_scale, CbMode::lsb, sample_rate_sps);
+      break;
 
     case HomeDemod::wfm: demodulate_fm(iq, bytes, audio_scale, true, sample_rate_sps); break;
 
@@ -9240,6 +9469,7 @@ void usb_host_task(void*) {
       clear_rtl_sdr_device();
     }
     if (rtl_sdr_device != nullptr && !rtl_sdr_gone &&
+        !radio_io_paused() &&
         rtl_capture_requested.exchange(false, std::memory_order_acq_rel)) {
       run_rtl_capture();
       if (rtl_restart_requested.exchange(false, std::memory_order_acq_rel) &&
@@ -9527,7 +9757,7 @@ static void rtl_dsp_task(void *) {
         block.band != RtlBand::lora && block.band != RtlBand::p25 &&
         block.band != RtlBand::pocsag &&
         (rtl_audio_enabled.load(std::memory_order_relaxed) || sstv_owns_audio(block.band) ||
-         orcsdr::web_audio::demanded() ||
+         orcsdr::web_audio::demanded() || orcsdr::dead_air_app::wants_audio() ||
          g_audio_rec_active.load(std::memory_order_relaxed)) &&
         !rtl_audio_test_tone.load(std::memory_order_relaxed)) {
       if (block.band == RtlBand::cb && !orcsdr::home::active()) {
@@ -9606,6 +9836,7 @@ static void rtl_driver_app_task(void *) {
                     rtl_band_name(band), static_cast<unsigned>(frequency_hz), queued ? 1 : 0);
     }
     if (g_rtl != nullptr && g_rtl_device_ready.load(std::memory_order_acquire) &&
+        !radio_io_paused() &&
         rtl_capture_requested.exchange(false, std::memory_order_acq_rel)) {
       rtl_capture_state.store(RtlCaptureState::queued, std::memory_order_release);
       const RtlBand band = rtl_requested_band.load(std::memory_order_acquire);
@@ -10418,7 +10649,7 @@ bool pause_radio_for_io(bool& paused) {
   // Overlapping I/O clients share one physical pause. Each keeps its own flag
   // so the final client to finish is the only one that resumes the radio.
   if (catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused ||
-      wifi_c6_probe_radio_paused) {
+      wifi_c6_probe_radio_paused || setup_radio_paused) {
     paused = true;
     return true;
   }
@@ -10459,7 +10690,7 @@ void resume_radio_after_io(bool& paused) {
   if (!paused) return;
   paused = false;
   if (catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused ||
-      wifi_c6_probe_radio_paused) return;
+      wifi_c6_probe_radio_paused || setup_radio_paused) return;
   const bool resume_radio = radio_io_resume_pending;
   const bool resume_speaker = radio_io_speaker_resume_pending;
   radio_io_resume_pending = false;
@@ -11111,6 +11342,14 @@ orcsdr::shortwave::Snapshot shortwave_dashboard_snapshot() {
   snapshot.sound_enabled = rtl_audio_user_enabled.load(std::memory_order_relaxed);
   snapshot.dsp = orcsdr::shortwave::audio_dsp::settings();
   snapshot.dsp_metrics = orcsdr::shortwave::audio_dsp::metrics();
+  {
+    namespace ssb = orcsdr::shortwave_ssb;
+    const ssb::Mode mode = ssb::current(rtl_ui_frequency_hz);
+    strlcpy(snapshot.mode, ssb::mode_name(mode), sizeof(snapshot.mode));
+    snapshot.mode_auto = ssb::control().choice.load(std::memory_order_relaxed) == 0;
+    snapshot.clarifier_hz = static_cast<int16_t>(ssb::control().clarifier_hz.load(std::memory_order_relaxed));
+    if (mode != ssb::Mode::am) snapshot.filter_bandwidth_hz = ssb::kPassbandHz;
+  }
   snapshot.battery_percent = M5.Power.getBatteryLevel();
   snapshot.controls.audio_boost =
       rtl_shortwave_audio_boost.load(std::memory_order_relaxed);
@@ -11286,6 +11525,23 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
                           g_rtl, action.value != 0)));
 #endif
       break;
+    case ActionKind::mode_cycle: {
+      namespace ssb = orcsdr::shortwave_ssb;
+      const auto next = ssb::next_choice(static_cast<ssb::Choice>(ssb::control().choice.load(std::memory_order_relaxed)));
+      ssb::control().choice.store(static_cast<uint8_t>(next), std::memory_order_relaxed);
+      Serial.printf("RTL_SHORTWAVE_MODE choice=%u mode=%s\n", static_cast<unsigned>(next),
+                    ssb::mode_name(ssb::current(rtl_ui_frequency_hz)));
+      break;
+    }
+    case ActionKind::clarifier_down:
+    case ActionKind::clarifier_up: {
+      namespace ssb = orcsdr::shortwave_ssb;
+      const int32_t step = action.kind == ActionKind::clarifier_up ? ssb::kClarifierStepHz : -ssb::kClarifierStepHz;
+      ssb::control().clarifier_hz.store(
+          ssb::clamp_clarifier(ssb::control().clarifier_hz.load(std::memory_order_relaxed) + step),
+          std::memory_order_relaxed);
+      break;
+    }
     case ActionKind::audio_boost:
       rtl_shortwave_audio_boost.store(action.value != 0, std::memory_order_release);
       Serial.printf("RTL_SHORTWAVE_AUDIO_BOOST enabled=%ld gain_db=12\n",
@@ -11339,7 +11595,8 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       memory.frequency_hz = rtl_ui_frequency_hz;
       memory.bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
       memory.saved_utc = orcsdr::time_service::now().utc;
-      strlcpy(memory.mode, "AM", sizeof(memory.mode));
+      strlcpy(memory.mode, orcsdr::shortwave_ssb::mode_name(orcsdr::shortwave_ssb::current(memory.frequency_hz)),
+              sizeof(memory.mode));
       strlcpy(memory.station, orcsdr::shortwave::pending_memory_label(),
               sizeof(memory.station));
       strlcpy(memory.notes, orcsdr::shortwave::pending_memory_notes(),
@@ -11421,7 +11678,8 @@ void handle_shortwave_dashboard_action(const orcsdr::shortwave::Action& action) 
       entry.frequency_hz = rtl_ui_frequency_hz;
       entry.bandwidth_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
       entry.signal_dbfs = rtl_signal_dbfs_smooth;
-      strlcpy(entry.mode, "AM", sizeof(entry.mode));
+      strlcpy(entry.mode, orcsdr::shortwave_ssb::mode_name(orcsdr::shortwave_ssb::current(entry.frequency_hz)),
+              sizeof(entry.mode));
       const auto snapshot = shortwave_dashboard_snapshot();
       strlcpy(entry.device, snapshot.device, sizeof(entry.device));
       strlcpy(entry.antenna,
@@ -12769,7 +13027,7 @@ const orcsdr::settings::State& global_settings_state() {
   state.orcdial_code=accessory.code;
   snprintf(state.orcdial_identity,sizeof state.orcdial_identity,"%02X%02X-%02X%02X",accessory.peer_identity[0],accessory.peer_identity[1],accessory.peer_identity[14],accessory.peer_identity[15]);
   strlcpy(state.orcdial_connection,orc::secure::state_name(accessory.state),sizeof state.orcdial_connection);
-  strlcpy(state.orcdial_failure,orcdial_memory_blocked?"Low memory: restart to pair":orc::secure::failure_name(accessory.failure),sizeof state.orcdial_failure);
+  strlcpy(state.orcdial_failure,orcdial_memory_blocked?"Not enough memory to pair":orc::secure::failure_name(accessory.failure),sizeof state.orcdial_failure);
 #endif
   state.wifi_c6_image_embedded = c6_update.image_embedded;
   state.wifi_c6_update_percent = c6_update.progress_percent;
@@ -12827,8 +13085,7 @@ const orcsdr::settings::State& global_settings_state() {
   state.fm_frequency_hz = rtl_saved_fm_hz;
   state.sd_ready = g_sd_ready;
   state.sd_total_bytes = sd_total_bytes();
-  state.sd_free_bytes = g_sd_ready && g_sd_fs ? state.sd_total_bytes -
-      orcsdr::storage::used_bytes() : 0;
+  state.sd_free_bytes = g_sd_ready && g_sd_fs ? orcsdr::storage::free_bytes() : 0;
   const auto catalog_state = orcsdr::catalog::state();
   state.catalog_ready = catalog_state.ready;
   state.catalog_busy = catalog_state.busy;
@@ -12906,6 +13163,8 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
   const auto device = orcsdr::device_status::collect(
       wifi_connected, wifi_ssid, rtl_device_ready(), rtl_sdr_status);
   snapshot.frequency_hz = demo ? 145700000 : rtl_ui_frequency_hz;
+  // The keypad accepts whatever the attached dongle can tune: HF too when it has direct sampling or an upconverter.
+  snapshot.tune_min_hz = demo || !rtl_frequency_supported(kRtlBrowseMinHz) ? kRtlNoHfMinHz : kRtlBrowseMinHz;
   snapshot.requested_frequency_hz = demo
                                         ? snapshot.frequency_hz
                                         : rtl_requested_frequency_hz.load(
@@ -13094,7 +13353,9 @@ void navigation_persist_settings_open() {
 }
 
 void navigation_restore_screen(orcsdr::screens::Id restore) {
-  if (restore == orcsdr::screens::Id::home) {
+  if (restore == orcsdr::screens::Id::maps) {
+    orcsdr::map_screen::draw();
+  } else if (restore == orcsdr::screens::Id::home) {
     orcsdr::home::draw();
   } else if (restore == orcsdr::screens::Id::adsb) {
     draw_adsb_dashboard(true);
@@ -13130,13 +13391,96 @@ void navigation_restore_screen(orcsdr::screens::Id restore) {
     orcsdr::sstv_app::draw(true);   // Settings opened from the SSTV header returns here, not to Home
   } else if (restore == orcsdr::screens::Id::acars) {
     orcsdr::acars_app::draw(true);
+  } else if (restore == orcsdr::screens::Id::dead_air) {
+    orcsdr::dead_air_app::draw(true);
   } else {
     draw_sdr_screen(rtl_ui_band, rtl_ui_frequency_hz,
                     rtl_live_volume.load(std::memory_order_acquire));
   }
 }
 
+bool save_map_receiver_location(int32_t latitude, int32_t longitude) {
+  if (!orcsdr::receiver_location::valid(true, latitude, longitude)) return false;
+  if (!orcsdr::location_store::save(preferences,{true,latitude,longitude})) {
+    Serial.println("ORC_MAP_LOCATION_SAVE ERROR storage_verification");
+    return false;
+  }
+  const auto current = orcsdr::receiver_location::snapshot();
+  orcsdr::receiver_location::set(true, latitude, longitude, current.label, current.map_pack);
+  adsb_settings.location_configured = true;
+  adsb_settings.latitude_e7 = latitude;
+  adsb_settings.longitude_e7 = longitude;
+  refresh_adsb_atc_preset();
+  Serial.println("ORC_MAP_LOCATION_SAVE OK verified");
+  return true;
+}
+
+bool save_map_selection(const char* identity) {
+  if (!identity || strlen(identity) >= sizeof(settings_map_pack) ||
+      !preferences.putString("map_pack", identity)) return false;
+  strlcpy(settings_map_pack, identity, sizeof(settings_map_pack));
+  const auto current = orcsdr::receiver_location::snapshot();
+  orcsdr::receiver_location::set(current.configured, current.latitude_e7,
+      current.longitude_e7, current.label, identity);
+  return true;
+}
+
+void setup_snapshot(orcsdr::setup_ui::Snapshot* out) {
+  *out=orcsdr::setup_ui::Snapshot{};
+  out->connected=wifi_connected;out->connecting=wifi_connecting;out->scanning=wifi_scan_running;
+  strlcpy(out->ssid,orcsdr::wifi::ssid(),sizeof(out->ssid));
+  strlcpy(out->message,wifi_status_message,sizeof(out->message));
+  if(!wifi_scan_running&&wifi_scan_result_count>0) {
+    out->count=std::min<uint8_t>(wifi_scan_result_count,std::size(out->networks));
+    for(uint8_t i=0;i<out->count;++i) {
+      strlcpy(out->networks[i].ssid,wifi_scan_results[i].ssid,sizeof(out->networks[i].ssid));
+      out->networks[i].secure=wifi_scan_results[i].secure;
+    }
+  }
+  const auto location=orcsdr::receiver_location::snapshot();
+  out->location_set=location.configured;out->latitude_e7=location.latitude_e7;out->longitude_e7=location.longitude_e7;
+  const auto lookup=orcsdr::location_estimate::state();
+  out->lookup_busy=lookup.busy;out->lookup_ready=lookup.ready;
+  out->lookup_latitude_e7=lookup.latitude_e7;out->lookup_longitude_e7=lookup.longitude_e7;
+  strlcpy(out->lookup_label,lookup.label,sizeof(out->lookup_label));
+  strlcpy(out->lookup_message,lookup.message,sizeof(out->lookup_message));
+}
+void setup_scan() {
+  settings_wifi_power_enabled=true;preferences.putBool("set_wifi_power",true);
+  wifi_scan_requested.store(true,std::memory_order_release);
+}
+bool setup_connect(const char* ssid,const char* password) {
+  if(!ssid||!ssid[0]||!password||std::strlen(ssid)>32||std::strlen(password)>63)return false;
+  bool saved=false;
+  for(uint8_t i=0;i<wifi_profile_count;++i)saved|=std::strcmp(wifi_profiles[i].ssid,ssid)==0;
+  if(!saved&&wifi_profile_count>=std::size(wifi_profiles))return false;
+  settings_wifi_power_enabled=true;preferences.putBool("set_wifi_power",true);
+  start_wifi_connection(ssid,password,true);return true;
+}
+bool setup_lookup(const char* query) {return orcsdr::location_estimate::request(query,wifi_connected);}
+void setup_brand() {
+  (void)orcsdr::badge::draw(20,4,64);
+  M5.Display.setTextDatum(top_left);M5.Display.setTextColor(TFT_WHITE,0x0841);M5.Display.setTextSize(5);
+  M5.Display.drawString("OrcSDR",100,4);
+  M5.Display.setTextColor(0x2e7f,0x0841);M5.Display.setTextSize(3);M5.Display.drawString("SETUP",100,46);
+}
+bool setup_reception(bool pause) {
+  if(!pause) {
+    setup_receiver_inhibit.store(false,std::memory_order_release);
+    resume_radio_after_io(setup_radio_paused);
+    return true;
+  }
+  setup_receiver_inhibit.store(true,std::memory_order_release);
+  if(pause_radio_for_io(setup_radio_paused))return true;
+  setup_receiver_inhibit.store(false,std::memory_order_release);
+  Serial.println("RTL_SETUP_PAUSE failed; setup not opened");
+  return false;
+}
+
 void configure_navigation_service() {
+  orcsdr::map_screen::configure({navigation_restore_screen,
+      save_map_receiver_location, save_map_selection, setup_brand,setup_reception});
+  orcsdr::setup_ui::configure({setup_snapshot,setup_scan,setup_connect,setup_lookup,save_map_receiver_location});
   orcsdr::navigation::configure({
       home_dashboard_snapshot,
       navigation_sync_audio,
@@ -13161,9 +13505,19 @@ void show_home(bool demo) {
   }
   orcsdr::sstv_app::close();
   orcsdr::acars_app::close();
+  const uint32_t dead_air_return_hz = orcsdr::dead_air_app::active() ? g_dead_air_return_hz : 0u;
+  const RtlBand dead_air_return_band = g_dead_air_return_band;
+  const uint8_t dead_air_return_demod = g_dead_air_return_demod;
+  orcsdr::dead_air_app::close();
   home_enter();
   orcsdr::audio_header::reset(rtl_header_audio_control);
   orcsdr::navigation::show_home(demo);
+  // Home re-derives the band and demodulator for the frequency it had before Dead Air took the general band.
+  if (dead_air_return_hz != 0 && rtl_device_ready()) {
+    // Give back exactly what Dead Air took: the same band label (shortwave, CB, FM...) and demodulator choice.
+    rtl_home_demod.store(dead_air_return_demod, std::memory_order_release);
+    (void)queue_local_rtl_listen(dead_air_return_band, dead_air_return_hz, false);
+  }
 }
 
 void draw_home_dashboard() {
@@ -13337,6 +13691,9 @@ static void ft8_log_stage_rows(const orcsdr::ft8::Decode* decodes, const uint8_t
 
 // Writes the staged rows if the card can be used right now. Returns true when nothing is left staged.
 static bool ft8_log_flush(bool force) {
+  // The staged batch survives failed flushes. Retry its original position,
+  // including a partially written header, rather than appending it again.
+  static size_t batch_offset = SIZE_MAX;
   if (g_ft8_log_stage_rows == 0) return true;
   const uint32_t now = millis();
   if (!force && now - g_ft8_log_last_try_ms < 20000u) return false;
@@ -13354,32 +13711,51 @@ static bool ft8_log_flush(bool force) {
   snprintf(path, sizeof(path), "/orcsdr/ft8/log-%04d%02d%02d.csv", tm_utc.tm_year + 1900, tm_utc.tm_mon + 1, tm_utc.tm_mday);
   (void)g_sd_fs->mkdir("/orcsdr");
   (void)g_sd_fs->mkdir("/orcsdr/ft8");
-  const bool existed = g_sd_fs->exists(path);
-  File file = g_sd_fs->open(path, FILE_APPEND, true);
+  const auto entry = g_sd_fs->status(path);
+  const bool existed = entry == orcsdr::storage::EntryStatus::file;
+  if ((!existed && entry != orcsdr::storage::EntryStatus::missing) ||
+      (!existed && batch_offset != SIZE_MAX)) {
+    ++g_ft8_log_errors;
+    Serial.println("ORC_FT8_LOG_ERR stage=file_identity");
+    return false;
+  }
+  File file = g_sd_fs->open(path, existed ? "r+" : "w+", true);
   if (!file) {
     ++g_ft8_log_errors;
     Serial.printf("ORC_FT8_LOG_ERR stage=open path=%s existed=%d dma_largest=%u\n", path, existed ? 1 : 0,
                   static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA)));
     return false;
   }
-  if (file.size() > kFt8LogMaxFileBytes) {
+  if (batch_offset == SIZE_MAX && file.size() > kFt8LogMaxFileBytes) {
     file.close();
     g_ft8_log_dropped += g_ft8_log_stage_rows;   // day's cap reached: drop, never grow without bound
     g_ft8_log_stage_len = 0;
     g_ft8_log_stage_rows = 0;
     return true;
   }
-  if (!existed || file.size() == 0) file.print("utc,mode,band,dial_hz,audio_hz,dt_ms,snr_db,callsign,grid,kind,message\n");
-  const size_t written = file.write(reinterpret_cast<const uint8_t*>(g_ft8_log_stage), g_ft8_log_stage_len);
-  file.close();
-  if (written != g_ft8_log_stage_len) {
+  if (batch_offset == SIZE_MAX) batch_offset = file.size();
+  if (file.size() < batch_offset || !file.seek(batch_offset)) {
+    (void)file.close();
     ++g_ft8_log_errors;
-    Serial.printf("ORC_FT8_LOG_ERR stage=write wrote=%u of=%u\n", static_cast<unsigned>(written), static_cast<unsigned>(g_ft8_log_stage_len));
+    Serial.println("ORC_FT8_LOG_ERR stage=retry_position");
+    return false;
+  }
+  constexpr char header[] = "utc,mode,band,dial_hz,audio_hz,dt_ms,snr_db,callsign,grid,kind,message\n";
+  const bool header_ok = batch_offset != 0 || file.print(header) == sizeof(header) - 1;
+  const size_t written = header_ok ? file.write(reinterpret_cast<const uint8_t*>(g_ft8_log_stage), g_ft8_log_stage_len) : 0;
+  const bool sync_ok = header_ok && written == g_ft8_log_stage_len && file.sync();
+  const bool close_ok = file.close();
+  if (!header_ok || written != g_ft8_log_stage_len || !sync_ok || !close_ok) {
+    ++g_ft8_log_errors;
+    Serial.printf("ORC_FT8_LOG_ERR stage=%s wrote=%u of=%u\n",
+                  !header_ok ? "header" : written != g_ft8_log_stage_len ? "write" : !sync_ok ? "sync" : "close",
+                  static_cast<unsigned>(written), static_cast<unsigned>(g_ft8_log_stage_len));
     return false;
   }
   g_ft8_log_rows += g_ft8_log_stage_rows;
   g_ft8_log_stage_len = 0;
   g_ft8_log_stage_rows = 0;
+  batch_offset = SIZE_MAX;
   g_ft8_log_errors = 0;
   return true;
 }
@@ -13766,10 +14142,107 @@ void ft8_free_memory_and_retry() {
     (void)ft8_select_band(ft8_selected_band());   // "queued or running" is exactly what that predicate tests
 }
 
+uint32_t g_ft8_signal_sync_utc = 0;       // when the clock was last corrected from the decoded stations' DT (0 = never)
+bool g_ft8_clock_test_hold = false;       // FT8 CLOCKTEST: the clock was set wrong on purpose; keep the network sync off until it is cleared
+
+// When the clock was last known right (a network sync, or a correction from decoded stations) is kept in flash so a restart does not forget it.
+// The RTC keeps counting through a restart and drifts only slowly, so the age stays meaningful. Anything that changes the clock without
+// vouching for it (the user setting it by hand, FT8 CLOCKTEST) must call ft8_clock_trust_forget().
+constexpr const char* kClockNtpKey = "clk_ntp";
+constexpr const char* kClockSignalKey = "clk_sig";
+
+void ft8_clock_trust_save() {
+  (void)preferences.putUInt(kClockNtpKey, orcsdr::ntp_sync::last_success_utc());
+  (void)preferences.putUInt(kClockSignalKey, g_ft8_signal_sync_utc);
+}
+
+void ft8_wwv_clock_changed();   // defined with the WWV state below
+
+void ft8_clock_trust_forget() {
+  orcsdr::ft8_runtime::clock_changed();   // a queued signal correction was decoded against the old clock
+  ft8_wwv_clock_changed();   // every caller has just set or deliberately disturbed the clock: a WWV measurement spanning it means nothing
+  orcsdr::ntp_sync::forget_last_success();
+  g_ft8_signal_sync_utc = 0;
+  // A stamp that stays in flash would be believed again after a restart: if the erase fails, overwrite it with zero (which restore ignores).
+  for (const char* key : {kClockNtpKey, kClockSignalKey}) {
+    if (!preferences.remove(key)) {
+      Serial.printf("ORC_FT8_CLOCK_TRUST_ERASE_FAILED key=%s\n", key);
+      (void)preferences.putUInt(key, 0);
+    }
+  }
+}
+
+void ft8_clock_trust_restore() {
+  const auto clock = orcsdr::time_service::now();
+  if (!clock.wallclock_valid) return;   // no trustworthy date yet: nothing can be vouched for
+  orcsdr::ntp_sync::restore_last_success(orcsdr::clock_sync::restore_stamp(preferences.getUInt(kClockNtpKey, 0), clock.utc));
+  g_ft8_signal_sync_utc = orcsdr::clock_sync::restore_stamp(preferences.getUInt(kClockSignalKey, 0), clock.utc);
+}
+
+orcsdr::clock_sync::Input ft8_clock_sync_input() {
+  const auto clock = orcsdr::time_service::now();
+  orcsdr::clock_sync::Input in;
+  in.clock_valid = clock.wallclock_valid;
+  in.wifi_connected = wifi_connected;
+  in.syncing = orcsdr::ntp_sync::state() == orcsdr::ntp_sync::State::syncing;
+  in.last_attempt_failed = orcsdr::ntp_sync::last_attempt_failed();
+  in.now_utc = clock.utc;
+  in.last_sync_utc = orcsdr::ntp_sync::last_success_utc();
+  in.last_signal_sync_utc = g_ft8_signal_sync_utc;
+  return in;
+}
+
+// A network sync steps the wall clock: the FT8 slot schedule and its timing evidence restart with it. Installed before the first sync can be polled.
+void ft8_install_clock_hooks() {
+  static bool installed = false;
+  if (installed) return;
+  installed = true;
+  orcsdr::ntp_sync::set_step_listener([](int32_t delta_ms) { orcsdr::ft8_runtime::clock_stepped(delta_ms); });
+}
+
+// While the decoder runs, keep the clock right: the RTC drifts about 0.9 s a day and FT8 needs a few hundred milliseconds.
+// Called every UI loop; the policy (age, retry delay, Wi-Fi) lives in clock_sync::auto_sync_due. Without a recent network sync the decoder
+// searches a wider time window and, from the DT of the stations it decodes, asks for the clock to be corrected (no Wi-Fi needed).
+void ft8_auto_clock_sync() {
+  if (!orcsdr::ft8_runtime::active()) return;
+  const auto status = ft8_clock_sync_input();
+  const auto level = orcsdr::clock_sync::evaluate(status);
+  orcsdr::ft8_runtime::set_wide_search(orcsdr::clock_sync::wants_wide_search(level));
+  int32_t step_ms = 0;
+  if (orcsdr::ft8_runtime::take_clock_step(&step_ms)) {
+    if (!orcsdr::clock_sync::may_apply_signal_correction(level)) {
+      Serial.printf("ORC_FT8_CLOCK_DT ignored step_ms=%d (a network sync is recent)\n", static_cast<int>(step_ms));
+    } else {
+      int32_t applied_ms = 0;
+      const bool stepped = orcsdr::time_service::step_ms(step_ms, &applied_ms);
+      // Tell the decoder how far the wall clock really moved, also after a rolled-back step: its slot schedule and evidence follow the clock.
+      if (applied_ms > 50 || applied_ms < -50) orcsdr::ft8_runtime::clock_stepped(applied_ms);
+      if (stepped) {
+        g_ft8_signal_sync_utc = orcsdr::time_service::now().utc;
+        ft8_clock_trust_save();
+        Serial.printf("ORC_FT8_CLOCK_DT applied step_ms=%d\n", static_cast<int>(step_ms));
+      } else {
+        Serial.printf("ORC_FT8_CLOCK_DT step_failed step_ms=%d moved_ms=%d\n", static_cast<int>(step_ms), static_cast<int>(applied_ms));
+      }
+    }
+  }
+  if (g_ft8_clock_test_hold) return;
+  orcsdr::clock_sync::DueInput due;
+  due.status = status;
+  due.decoder_running = true;
+  due.ms_since_last_attempt = orcsdr::ntp_sync::ms_since_last_attempt();
+  if (orcsdr::clock_sync::auto_sync_due(due) && orcsdr::ntp_sync::start(true)) Serial.println("ORC_FT8_NTP auto sync requested");
+}
+
 void ft8_dashboard_fill_snapshot(orcsdr::ft8::Snapshot& snapshot) {
   new (&snapshot) orcsdr::ft8::Snapshot();
   const auto clock = orcsdr::time_service::now();
   snapshot.clock_valid = clock.wallclock_valid;
+  {
+    const auto sync = ft8_clock_sync_input();
+    snapshot.clock_sync_level = static_cast<uint8_t>(orcsdr::clock_sync::evaluate(sync));
+    snapshot.clock_sync_age_s = orcsdr::clock_sync::age_seconds(sync);
+  }
   if (clock.wallclock_valid) {
     timeval now{};
     gettimeofday(&now, nullptr);
@@ -13855,6 +14328,15 @@ void ft8_dashboard_fill_snapshot(orcsdr::ft8::Snapshot& snapshot) {
     snapshot.gain_step_count = static_cast<uint8_t>(step_count);
     for (size_t i = 0; i < step_count; ++i) snapshot.gain_steps_tenth_db[i] = steps[i];
   }
+  // The RTL2832's own AGC (V3/V4 dongles) is independent of the tuner gain, so the button does not depend on tuner gain being available.
+  if (g_rtl != nullptr && rtl_has_device_capability(ESP_RTL_SDR_CAP_RTL_AGC)) {
+    // Only offer the button when the state could be read: a failed read must not show OFF and then send an ON request on a guess.
+    bool agc = false;
+    if (esp_rtl_sdr_get_rtl_agc(g_rtl, &agc) == ESP_OK) {
+      snapshot.rtl_agc_available = true;
+      snapshot.rtl_agc = agc;
+    }
+  }
 #endif
   snapshot.decode_count = std::min(g_ft8_store.size(), orcsdr::ft8::kDecodeCapacity);
   for (size_t i = 0; i < snapshot.decode_count; ++i) {
@@ -13875,6 +14357,8 @@ void draw_ft8_dashboard(bool static_panel) {
 }
 
 // Choose a band and, when the receiver can take it, listen there (HF dial frequencies use the shortwave path).
+// Counts accepted FT8 band or dial changes; a WWV measurement compares it to skip its restore after the user tuned elsewhere.
+static uint32_t g_ft8_tune_generation = 0;
 bool ft8_select_band(size_t index) {
   if (index >= orcsdr::ft8::band_count()) return false;
   const auto* preset = orcsdr::ft8::band(index);
@@ -13898,6 +14382,7 @@ bool ft8_select_band(size_t index) {
                             ? request_hot_retune(dial_hz) : queue_local_rtl_listen(target, dial_hz);
   if (accepted) {
     g_ft8_band = index;
+    ++g_ft8_tune_generation;
     orcsdr::ft8_runtime::set_radio_context(static_cast<uint8_t>(index), dial_hz);
   }
   return accepted;
@@ -13947,6 +14432,7 @@ void handle_ft8_dashboard_action(const orcsdr::ft8::Action& action) {
     case Kind::tune_dial: (void)ft8_tune_dial(action.value); break;
     case Kind::gain_auto: (void)rtl_gain_set_auto("FT8"); break;
     case Kind::gain_manual: (void)rtl_gain_set_manual("FT8", static_cast<int>(action.value)); break;
+    case Kind::rtl_agc: (void)rtl_gain_set_rtl_agc("FT8", action.value != 0); break;
     case Kind::tune_auto: (void)ft8_select_band_table(ft8_selected_band()); break;
     case Kind::set_expert:
       g_ft8_expert = action.value != 0;
@@ -13957,6 +14443,11 @@ void handle_ft8_dashboard_action(const orcsdr::ft8::Action& action) {
       }
       break;
     case Kind::free_memory: ft8_free_memory_and_retry(); break;
+    case Kind::open_clock: open_clock_settings(); break;
+    case Kind::sync_clock:
+      if (orcsdr::ntp_sync::start(wifi_connected)) Serial.println("ORC_NTP_START ft8 chip");
+      else Serial.println(wifi_connected ? "ORC_NTP_ERROR busy" : "ORC_NTP_ERROR no_wifi");
+      break;
     case Kind::clear_decodes: g_ft8_store.clear(); g_ft8_item = 0; break;
     case Kind::select_mode:
       // A mode is selectable only when the bound decoder reports it; the dashboard already enforces this.
@@ -14202,6 +14693,118 @@ void open_acars_dashboard() {
   orcsdr::acars_app::install(acars_app_hooks());
   orcsdr::acars_app::open();
 }
+// Dead Air logic lives in dead_air_app; these adapters hand it what only this file can reach. It rides the
+// general (BROWSE, NFM) receive path and never owns the radio, so every reading below is the live receiver's.
+orcsdr::dead_air_app::Hooks dead_air_app_hooks() {
+  orcsdr::dead_air_app::Hooks hooks;
+  hooks.receiver_ready = [] {
+    return rtl_device_ready() && rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running;
+  };
+  hooks.frequency_hz = [] { return rtl_ui_frequency_hz; };
+  hooks.demod = [] { return orcsdr::home_vfo::demod_name(effective_demod(rtl_ui_band)); };
+  hooks.set_demod = [](uint8_t index) {
+    static const HomeDemod kModes[] = {HomeDemod::nfm, HomeDemod::wfm, HomeDemod::am, HomeDemod::usb, HomeDemod::lsb};
+    if (index >= std::size(kModes)) return;
+    if (g_dead_air_demod.load(std::memory_order_relaxed) == 0)
+      g_dead_air_saved_filter_hz = rtl_filter_bandwidth_hz.load(std::memory_order_relaxed);
+    g_dead_air_demod.store(static_cast<uint8_t>(index + 1), std::memory_order_relaxed);
+    // Same rule as Home: the mode's standard filter width replaces whatever the previous mode left behind.
+    const auto kind = orcsdr::home_vfo::filter_kind(kModes[index], rtl_ui_frequency_hz);
+    rtl_filter_bandwidth_hz.store(rtl_clamp_filter_hz(RtlBand::browse, orcsdr::filter_standards::standards(kind).standard_hz),
+                                  std::memory_order_relaxed);
+    rtl_audio_reset_demod_filters();
+  };
+  hooks.release_demod = [] {
+    if (g_dead_air_demod.exchange(0, std::memory_order_relaxed) != 0 && g_dead_air_saved_filter_hz != 0) {
+      rtl_filter_bandwidth_hz.store(g_dead_air_saved_filter_hz, std::memory_order_relaxed);
+      rtl_audio_reset_demod_filters();
+    }
+  };
+  hooks.sample_rate = [] { return rtl_active_sample_rate_sps.load(std::memory_order_acquire); };
+  hooks.config_signature = [] {
+    uint32_t h = rtl_ui_frequency_hz * 2654435761u;
+    h ^= rtl_active_sample_rate_sps.load(std::memory_order_acquire) + 0x9e3779b9u + (h << 6) + (h >> 2);
+    h ^= static_cast<uint32_t>(rtl_ui_band) * 40503u + (h << 5);
+    h ^= (static_cast<uint32_t>(effective_demod(rtl_ui_band)) + 1u) * 668265263u;
+#if !RTL_USE_LEGACY_USB
+    if (g_rtl != nullptr) {
+      int gain = 0;
+      esp_rtl_sdr_gain_mode_t mode = ESP_RTL_SDR_GAIN_MODE_MANUAL;
+      if (esp_rtl_sdr_get_tuner_gain(g_rtl, &gain) == ESP_OK) h ^= static_cast<uint32_t>(gain) * 2246822519u;
+      if (esp_rtl_sdr_get_tuner_gain_mode(g_rtl, &mode) == ESP_OK) h ^= static_cast<uint32_t>(mode) * 3266489917u;
+    }
+#endif
+    return h;
+  };
+  hooks.rf_sample_counter = [] {
+    return static_cast<uint32_t>(rtl_iq_processed_samples.load(std::memory_order_relaxed) >> 8);
+  };
+  hooks.rf_level_dbfs = [](float* out) {
+    const float v = rtl_signal_dbfs.load(std::memory_order_relaxed);
+    if (v <= -89.9f) return false;  // -90 is the meter's "no data" reset value
+    *out = v;
+    return true;
+  };
+  hooks.tune = [](uint32_t hz) { (void)queue_local_rtl_listen(RtlBand::browse, hz, false); };
+  hooks.hot_retune = [](uint32_t hz) { return request_hot_retune(rtl_clamp_frequency(RtlBand::browse, hz)); };
+  hooks.step_frequency = [](uint32_t hz, int direction) { return rtl_step_frequency(RtlBand::browse, hz, direction); };
+  hooks.sound_enabled = [] { return rtl_audio_user_enabled.load(std::memory_order_relaxed); };
+  hooks.overlay_open = [] { return rtl_header_audio_control.expanded; };
+  hooks.battery_percent = [] { return static_cast<int>(M5.Power.getBatteryLevel()); };
+  hooks.utc_epoch = [] {
+    const auto clock = orcsdr::time_service::now();
+    return clock.wallclock_valid ? static_cast<uint32_t>(clock.utc) : 0u;
+  };
+  hooks.sd_ready = [] {
+    if (!orcsdr::storage::mounted()) (void)orcsdr::storage::mount_tab5_sd();
+    return orcsdr::storage::mounted();
+  };
+  hooks.toggle_mute = [] { set_rtl_audio_user_enabled(!rtl_audio_user_enabled.load(std::memory_order_acquire)); };
+  hooks.go_home = [] { show_home(); };
+  hooks.open_settings = [] { open_global_settings(orcsdr::settings::Section::system); };
+  hooks.replay_begin = [](const int16_t* pcm, size_t samples) {
+    g_dead_air_replay.store(true, std::memory_order_release);
+    const uint8_t volume = rtl_live_volume.load(std::memory_order_acquire);
+    if (!M5.Speaker.isRunning() && !ensure_speaker_running(volume)) {
+      g_dead_air_replay.store(false, std::memory_order_release);
+      return false;
+    }
+    apply_speaker_volume(volume);
+    // The channel needs the same level as the receiver's (channel 0); left alone it plays at full scale.
+    M5.Speaker.setChannelVolume(2, std::min(volume, kRtlSpeakerHardwareMax));
+    // Its own virtual channel (2): the receiver uses channel 0, so stopping one never cuts the other.
+    const bool queued = M5.Speaker.playRaw(pcm, samples, 48000, false, 1, 2, true);
+    if (!queued) g_dead_air_replay.store(false, std::memory_order_release);
+    return queued;
+  };
+  hooks.replay_playing = [] { return M5.Speaker.isPlaying(2) != 0; };
+  hooks.replay_stop = [] {
+    M5.Speaker.stop(2);
+    g_dead_air_replay.store(false, std::memory_order_release);
+    if (!rtl_audio_enabled.load(std::memory_order_acquire)) (void)end_rtl_speaker();  // sound is off: leave the speaker idle again
+  };
+  return hooks;
+}
+void open_dead_air_dashboard() {
+  persist_dashboard_open(orcsdr::dashboards::Id::dead_air);
+  // Dead Air rides the general (BROWSE, NFM) band. Remember where the radio was so Home can take it back to the right
+  // band and demodulator when Dead Air is left; 0 means there was nothing to return to.
+  if (!orcsdr::dead_air_app::active()) {
+    g_dead_air_return_hz = rtl_device_ready() ? rtl_ui_frequency_hz : 0u;
+    g_dead_air_return_band = rtl_ui_band;
+    g_dead_air_return_demod = rtl_home_demod.load(std::memory_order_acquire);
+  }
+  orcsdr::home::leave();
+  orcsdr::ft8::leave();
+  orcsdr::sstv_app::close();
+  orcsdr::acars_app::close();
+  rtl_rate_override_sps.store(0, std::memory_order_release);
+  orcsdr::dead_air_app::install(dead_air_app_hooks());
+  // Keep the current tuning when a receiver is running; otherwise start on the general receive default.
+  const uint32_t hz = rtl_ui_frequency_hz ? rtl_ui_frequency_hz : kRtlBrowseDefaultHz;
+  (void)queue_local_rtl_listen(RtlBand::browse, hz, false);
+  orcsdr::dead_air_app::open();
+}
 void open_sstv_dashboard() {
   persist_dashboard_open(orcsdr::dashboards::Id::sstv);
   orcsdr::home::leave();
@@ -14219,6 +14822,8 @@ const orcsdr::sstv_diag::Hooks kSstvDiagHooks = {
 void open_dashboard(orcsdr::dashboards::Id id) {
   using Id = orcsdr::dashboards::Id;
   if (id != Id::settings && orcsdr::settings::active()) close_global_settings();
+  if (id != Id::dead_air) orcsdr::dead_air_app::close();
+  if (id == Id::dead_air) { open_dead_air_dashboard(); return; }
   if (id == Id::rf_lab) {
     persist_dashboard_open(id);
     orcsdr::rf24::leave();
@@ -14280,6 +14885,9 @@ void open_dashboard(orcsdr::dashboards::Id id) {
   }
   persist_dashboard_open(id);
   orcsdr::home::leave();
+  // LoRa allocates capture buffers in queue_local_rtl_listen; release the
+  // outgoing FT8 map sprites first, before they fragment that allocation.
+  if (band == RtlBand::lora) orcsdr::ft8::leave();
   if (rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running &&
       band == rtl_ui_band) {
     request_hot_retune(frequency);
@@ -14409,6 +15017,7 @@ void handle_home_action(const orcsdr::home::Action& action) {
     case ActionKind::open_device_settings:
       open_global_settings(orcsdr::settings::Section::connectivity);
       return;
+    case ActionKind::open_clock: open_clock_settings(); return;
     case ActionKind::tune_frequency:
       if (rtl_ui_band == RtlBand::am) orcsdr::am::note_tuned(action.value);
       if (rtl_ui_band == RtlBand::p25) {
@@ -14495,6 +15104,10 @@ void handle_home_action(const orcsdr::home::Action& action) {
 
 void open_global_settings(orcsdr::settings::Section section) {
   orcsdr::navigation::open_settings(section);
+}
+void open_clock_settings() {
+  open_global_settings(orcsdr::settings::Section::system);
+  (void)orcsdr::settings::begin_clock_edit();
 }
 
 void close_global_settings() {
@@ -14624,6 +15237,12 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
       }
       break;
     }
+    case orcsdr::settings::ActionKind::open_local_maps:
+      orcsdr::map_screen::open(orcsdr::map_screen::Mode::inventory); break;
+    case orcsdr::settings::ActionKind::open_location_picker:
+      orcsdr::map_screen::open(orcsdr::map_screen::Mode::picker); break;
+    case orcsdr::settings::ActionKind::run_setup:
+      orcsdr::map_screen::open(orcsdr::map_screen::Mode::setup); break;
     case orcsdr::settings::ActionKind::location_changed: {
       const auto& state = orcsdr::settings::state();
       adsb_settings.location_configured = state.location_configured;
@@ -14662,7 +15281,9 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
       break;
     }
     case orcsdr::settings::ActionKind::range_changed:
+      if(!orcsdr::adsb::valid_map_range(action.value))break;
       adsb_settings.radar_range_nm = static_cast<uint16_t>(action.value);
+      if(orcsdr::adsb::active())orcsdr::adsb::set_map_range(adsb_settings.radar_range_nm);
       adsb_settings_persist_pending.store(true, std::memory_order_release);
       break;
     case orcsdr::settings::ActionKind::brightness_changed:
@@ -14710,10 +15331,12 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
       update_global_settings();
       bump_rtl_ui();
       break;
-    case orcsdr::settings::ActionKind::clock_set_utc:
+    case orcsdr::settings::ActionKind::clock_set_utc: {
       if (!orcsdr::time_service::store_utc_offset_minutes(preferences, action.value))
         Serial.println("ORC_TZ_ERROR not_stored");
-      if (orcsdr::time_service::set_utc(action.utc) && preferences.putBool("rtc_est", true)) {
+      const bool utc_set = orcsdr::time_service::set_utc(action.utc);
+      if (utc_set) ft8_clock_trust_forget();   // set by hand: nothing vouches for its accuracy, so the sync status starts over (even if persisting fails)
+      if (utc_set && preferences.putBool("rtc_est", true)) {
         Serial.printf("ORC_RTC_SET_OK utc=%lu source=touch\n", static_cast<unsigned long>(action.utc));
       } else {
         Serial.println("ORC_RTC_SET_ERROR touch_set_failed");
@@ -14721,6 +15344,7 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
       update_global_settings();
       bump_rtl_ui();
       break;
+    }
     case orcsdr::settings::ActionKind::clock_ntp_sync:
       if (orcsdr::ntp_sync::start(wifi_connected)) {
         Serial.println("ORC_NTP_START");
@@ -14743,9 +15367,7 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
       if (orcsdr::catalog::state().busy) {
         Serial.println("ORC_CATALOG_CHECK_REJECTED");
       } else if (ensure_tab5_sd()) {
-        orcsdr::catalog::begin(g_sd_fs, sd_total_bytes() -
-            orcsdr::storage::used_bytes());
-        (void)orcsdr::offline_map::load(g_sd_fs);
+        orcsdr::catalog::begin(g_sd_fs, orcsdr::storage::free_bytes());
         if (!orcsdr::wifi::connected()) {
           (void)orcsdr::catalog::request_check();
           Serial.println("ORC_CATALOG_CHECK_REJECTED");
@@ -14787,12 +15409,127 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
   }
 }
 
+// ---- FT8 WWV: measuring the WWV time-signal tick with the FT8 audio path (bench command; see wwv_tick.hpp)
+// The decoder task folds the tick; this side tunes, restores the band, and when asked learns the fixed delay against a fresh network sync
+// (CAL) or corrects the clock from the tick (SYNC). The delay (audio filters, propagation, which station) differs by site and frequency, so
+// it is learned on the device and never built in.
+enum class WwvAction : uint8_t { none, report, calibrate, sync };
+WwvAction g_wwv_action = WwvAction::none;
+float g_wwv_mhz = 0.0f;
+size_t g_wwv_previous_band = SIZE_MAX;
+uint32_t g_wwv_previous_dial_override = 0;   // the expert dial in use before the measurement (0 = the band table's)
+uint32_t g_wwv_tune_generation = 0;
+
+bool ft8_wwv_key(float mhz, char* key, size_t size) {
+  const int tenths = static_cast<int>(mhz * 10.0f + 0.5f);
+  if (tenths != 25 && tenths != 50 && tenths != 100 && tenths != 150 && tenths != 200) return false;
+  snprintf(key, size, "wwvb%d", tenths);
+  return true;
+}
+
+// Brings an offset (ms) into -500..500: the tick repeats every second, so only the fraction of a second means anything.
+float ft8_wwv_wrap_ms(float ms) {
+  while (ms > 500.0f) ms -= 1000.0f;
+  while (ms <= -500.0f) ms += 1000.0f;
+  return ms;
+}
+
+bool g_wwv_clock_changed = false;   // the clock was set by hand (or by CLOCKTEST) during the measurement: its result must not be applied
+
+void ft8_wwv_clock_changed() {
+  if (g_wwv_action == WwvAction::none) return;
+  g_wwv_clock_changed = true;
+  orcsdr::ft8_runtime::wwv_stop();   // ends it (band restored by the service); a report already finished is discarded by the flag
+}
+
+void ft8_wwv_service() {
+  if (g_wwv_action == WwvAction::none) return;
+  const auto r = orcsdr::ft8_runtime::wwv_report();
+  if (r.phase != 2) {
+    if (r.phase == 0) g_wwv_action = WwvAction::none;   // nothing is running any more
+    return;
+  }
+  const WwvAction action = g_wwv_action;
+  g_wwv_action = WwvAction::none;
+  if (g_wwv_previous_band != SIZE_MAX && g_ft8_tune_generation == g_wwv_tune_generation) {   // not if the person tuned meanwhile
+    if (g_wwv_previous_dial_override != 0) (void)ft8_tune_dial(g_wwv_previous_dial_override);
+    else (void)ft8_select_band_table(g_wwv_previous_band);   // listen where the person was listening
+  }
+  g_wwv_previous_band = SIZE_MAX;
+  if (g_wwv_clock_changed) {
+    g_wwv_clock_changed = false;
+    Serial.println("ORC_FT8_WWV_RESULT cancelled (the clock was set during the measurement)");
+    return;
+  }
+  char key[16];
+  const bool have_key = ft8_wwv_key(g_wwv_mhz, key, sizeof(key));
+  const int32_t kNoBias = INT32_MIN;
+  const int32_t bias = have_key ? preferences.getInt(key, kNoBias) : kNoBias;
+  Serial.printf("ORC_FT8_WWV mhz=%.1f note=%u seconds=%u carrier=%d carrier_hz=%.2f carrier_snr_db=%.1f ticks=%d tick_wall_ms=%.2f tick_stream_ms=%.2f z=%.1f agree=%d even_ms=%.2f odd_ms=%.2f bias_ms=%ld\n",
+                static_cast<double>(g_wwv_mhz), static_cast<unsigned>(r.note), static_cast<unsigned>(r.seconds), r.carrier_found ? 1 : 0,
+                static_cast<double>(r.carrier_hz), static_cast<double>(r.carrier_snr_db), r.ticks ? 1 : 0, static_cast<double>(r.tick_wall_ms),
+                static_cast<double>(r.tick_stream_ms), static_cast<double>(r.peak_z), r.halves_agree ? 1 : 0, static_cast<double>(r.even_ms),
+                static_cast<double>(r.odd_ms), bias == kNoBias ? 0L : static_cast<long>(bias));
+  if (r.note == 1 || r.note == 3 || r.note == 4) {   // stopped, interrupted or timed out: a partial fold is reported above but never applied
+    Serial.printf("ORC_FT8_WWV_RESULT incomplete note=%u (not applied)\n", static_cast<unsigned>(r.note));
+    return;
+  }
+  if (!r.ticks) {
+    Serial.println(r.carrier_found ? "ORC_FT8_WWV_RESULT no_tick (carrier heard, tick not found: too weak or too short)"
+                                   : "ORC_FT8_WWV_RESULT no_carrier (no WWV carrier line near 1000 Hz)");
+    return;
+  }
+  if (action == WwvAction::calibrate) {
+    const auto status = ft8_clock_sync_input();
+    const bool fresh = orcsdr::clock_sync::evaluate(status) == orcsdr::clock_sync::Level::synced && orcsdr::clock_sync::age_seconds(status) <= 900;
+    if (!have_key || !fresh) {
+      Serial.println("ORC_FT8_WWV_RESULT cal_refused (needs a network sync in the last 15 minutes: run FT8 NTP first)");
+    } else if (preferences.putInt(key, static_cast<int32_t>(r.tick_wall_ms + 0.5f))) {
+      Serial.printf("ORC_FT8_WWV_RESULT cal_stored bias_ms=%d\n", static_cast<int>(r.tick_wall_ms + 0.5f));
+    }
+    return;
+  }
+  if (action == WwvAction::sync) {
+    if (bias == kNoBias) {
+      Serial.println("ORC_FT8_WWV_RESULT sync_refused (not calibrated for this frequency: run FT8 WWV <MHz> CAL right after an NTP sync)");
+      return;
+    }
+    const float error_ms = ft8_wwv_wrap_ms(r.tick_wall_ms - static_cast<float>(bias));   // positive: our clock reads late, i.e. it is fast
+    if (error_ms > 400.0f || error_ms < -400.0f) {
+      Serial.printf("ORC_FT8_WWV_RESULT sync_refused error_ms=%.1f (a tick cannot tell a second from a few hundred ms: fix the clock first)\n", static_cast<double>(error_ms));
+    } else if (error_ms < 20.0f && error_ms > -20.0f) {
+      Serial.printf("ORC_FT8_WWV_RESULT in_step error_ms=%.1f (no change)\n", static_cast<double>(error_ms));
+    } else {
+      int32_t applied = 0;
+      const bool stepped = orcsdr::time_service::step_ms(static_cast<int32_t>(-error_ms), &applied);
+      if (applied > 50 || applied < -50) orcsdr::ft8_runtime::clock_stepped(applied);
+      if (stepped) {
+        g_ft8_signal_sync_utc = orcsdr::time_service::now().utc;
+        ft8_clock_trust_save();
+      }
+      Serial.printf("ORC_FT8_WWV_RESULT %s error_ms=%.1f step_ms=%d moved_ms=%d\n", stepped ? "synced" : "sync_failed", static_cast<double>(error_ms),
+                    static_cast<int>(-error_ms), static_cast<int>(applied));
+    }
+    return;
+  }
+  const float error_ms = bias == kNoBias ? 0.0f : ft8_wwv_wrap_ms(r.tick_wall_ms - static_cast<float>(bias));
+  if (bias == kNoBias) Serial.println("ORC_FT8_WWV_RESULT tick_found (not calibrated: FT8 WWV <MHz> CAL after an NTP sync stores the delay)");
+  else Serial.printf("ORC_FT8_WWV_RESULT tick_found error_ms=%.1f (positive: the clock is fast)\n", static_cast<double>(error_ms));
+}
+
 // Runs an optional network sync to its end and records that the RTC is now established. Called every UI loop.
 void service_clock() {
+  ft8_install_clock_hooks();
+  ft8_wwv_service();
+  if(orcsdr::maps::downloads::take_time_sync_request() &&
+     !orcsdr::time_service::now().wallclock_valid)
+    (void)orcsdr::ntp_sync::start(orcsdr::wifi::connected());
   orcsdr::ntp_sync::poll();
+  ft8_auto_clock_sync();
   bool ok = false;
   if (!orcsdr::ntp_sync::take_result(&ok)) return;
   if (ok && !preferences.putBool("rtc_est", true)) ok = false;
+  if (ok) ft8_clock_trust_save();   // remember the sync across a restart
   Serial.printf("ORC_NTP_%s\n", ok ? "OK" : "FAILED");
   update_global_settings();
   bump_rtl_ui();
@@ -15022,8 +15759,10 @@ void persist_workflow() {
 
 void load_state() {
   preferences.begin("orclink", false);
+  orcsdr::map_screen::load(preferences);
   orcsdr::time_service::initialize(preferences.getBool("rtc_est", false));
   orcsdr::time_service::load_config(preferences);
+  ft8_clock_trust_restore();   // when the clock was last known right survives a restart
   orcsdr::am::load(preferences);
   rtl_am_step_hz = orcsdr::am::tune_step();
   band_step_load();
@@ -15090,8 +15829,8 @@ void load_state() {
   }
   settings_brightness = preferences.getUChar("set_bright", 180);
   if (settings_brightness < 16) settings_brightness = 16;
-  settings_rotation = preferences.getUChar("set_rotation", 1);
-  if (settings_rotation != 1 && settings_rotation != 3) settings_rotation = 1;
+  settings_rotation = preferences.getUChar("set_rotation", 3);
+  if (settings_rotation != 1 && settings_rotation != 3) settings_rotation = 3;
   settings_screen_timeout_sec = preferences.getUShort("set_timeout", 0);
   settings_wifi_power_enabled = preferences.getBool("set_wifi_power", true);
   settings_wifi_start_at_boot = preferences.getBool("set_wifi_boot", false);
@@ -15149,10 +15888,11 @@ void load_state() {
     Serial.printf("RTL_LORA_PLAN_LOAD region=%s slot=%u frequency_hz=%u\n",
                   lora_region_name, selected.slot, selected.frequency_hz);
   }
-  adsb_settings.location_configured = preferences.getBool("adsb_loc_set", false);
-  adsb_settings.latitude_e7 = preferences.getInt("adsb_lat_e7", 0);
-  adsb_settings.longitude_e7 = preferences.getInt("adsb_lon_e7", 0);
-  adsb_settings.radar_range_nm = preferences.getUShort("adsb_range", 25);
+  const auto stored_location = orcsdr::location_store::load(preferences);
+  adsb_settings.location_configured = stored_location.configured;
+  adsb_settings.latitude_e7 = stored_location.latitude;
+  adsb_settings.longitude_e7 = stored_location.longitude;
+  adsb_settings.radar_range_nm = preferences.getUShort("adsb_range", orcsdr::adsb::kDefaultRadarRangeNm);
   load_cb_settings();
   if (adsb_settings.latitude_e7 < -900000000 || adsb_settings.latitude_e7 > 900000000 ||
       adsb_settings.longitude_e7 < -1800000000 ||
@@ -15160,7 +15900,7 @@ void load_state() {
       (adsb_settings.radar_range_nm != 10 && adsb_settings.radar_range_nm != 25 &&
        adsb_settings.radar_range_nm != 50 && adsb_settings.radar_range_nm != 100)) {
     adsb_settings = {};
-    adsb_settings.radar_range_nm = 25;
+    adsb_settings.radar_range_nm = orcsdr::adsb::kDefaultRadarRangeNm;
   }
   orcsdr::receiver_location::set(
       adsb_settings.location_configured, adsb_settings.latitude_e7,
@@ -15380,6 +16120,12 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
     Serial.println("RTL_ADSB_CAPTURE live_rf=true ui_data=live");
   }
   if (band == RtlBand::lora) {
+    if (band != rtl_ui_band) {
+      // Reclaim inactive caches before capture/workspace allocations fragment
+      // the remaining PSRAM. Each holder protects its live data itself.
+      const size_t reclaimed = orcsdr::memory_reclaim::reclaim_all(nullptr, 0, nullptr);
+      Serial.printf("RTL_LORA_MEMORY_RECLAIM bytes=%u\n", static_cast<unsigned>(reclaimed));
+    }
     if (!lora_native_decoder_start())
       Serial.println("RTL_LORA_WARN native_decoder_unavailable dashboard=PHY_PENDING");
     lora_iq_reset_detector();
@@ -15473,7 +16219,7 @@ bool queue_local_rtl_listen(RtlBand band, uint32_t frequency_hz,
   // check) defers the start until resume_radio_after_io(). Starting here
   // anyway put USB streaming on top of a Hosted connect, which then timed
   // out (boot auto-start during the #66 start-at-boot connect).
-  if (catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused ||
+  if (setup_radio_paused || catalog_radio_paused || wifi_connect_radio_paused || wifi_poweroff_radio_paused ||
       wifi_c6_probe_radio_paused) {
     radio_io_resume_pending = true;
   } else {
@@ -16029,7 +16775,7 @@ bool orcdial_apply(const orc::Packet& p) {
     if (p.value < 24000 || p.value > 1766000000) return false;
     const uint32_t hz = static_cast<uint32_t>(p.value);
     if (active == Dash::sstv) return orcsdr::sstv_app::tune_to(hz);   // the SSTV tuner owns its frequency and demodulator
-    if (active == Dash::home) return p.value >= 24000000 && home_tune_to(hz, true);
+    if (active == Dash::home) return home_tune_to(hz, true);   // validates against the dongle's own range
     if (active == Dash::fm) {
       if (hz < kRtlFmMinHz || hz > kRtlFmMaxHz) return false;
       handle_fm_dashboard_action({orcsdr::fm::ActionKind::tune_hz, hz});
@@ -16165,6 +16911,19 @@ bool orcdial_apply(const orc::Packet& p) {
   return false; // No invented channel plan, target list, message, AP, or settings action.
 }
 
+bool orcdial_prepare_memory() {
+  orcsdr::memory_reclaim::Report released[orcsdr::memory_reclaim::kMaxHolders];
+  size_t count=0;
+  const size_t total=orcsdr::memory_reclaim::reclaim_all(released,orcsdr::memory_reclaim::kMaxHolders,&count);
+  const size_t dma=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA);
+  const size_t dma_largest=heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA);
+  const size_t rtc=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT|MALLOC_CAP_RTCRAM);
+  const size_t rtc_largest=heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT|MALLOC_CAP_RTCRAM);
+  Serial.printf("RTL_ORCDIAL_MEMORY reclaimed=%u dma_free=%u rtc_free=%u rtc_largest=%u\n",
+                (unsigned)total,(unsigned)dma,(unsigned)rtc,(unsigned)rtc_largest);
+  return dma>=kOrcDialOnDemandDmaNeed && dma_largest>=4096u && rtc>=kOrcDialRtcStackBytes && rtc_largest>=12288u;
+}
+
 void orcdial_action(orc::secure::Action action,uint32_t value) {
   // Keep local requests ordered while splash/Wi-Fi staging delays the worker.
   if(!orcdial_pending_actions)orcdial_pending_actions=xQueueCreate(8,sizeof(OrcDialAction));
@@ -16237,28 +16996,26 @@ void orcdial_poll() {
   }
   if(orcdial_transport_ready)orcdial_memory_blocked=false;
   if(!orcdial_transport_ready&&bridge_requested&&!stored_trust&&!boot_trust&&orcsdr::wifi::hosted_transport_ready()) {
-    // A request to pair or connect with no stored pairing (so the bridge is not already running from boot): start it only if Wi-Fi and
-    // the C6 link keep enough DMA RAM afterwards. If not, say so and drop the request; restarting OrcSDR restores the memory.
-    const size_t dma_free=heap_caps_get_free_size(MALLOC_CAP_INTERNAL|MALLOC_CAP_DMA);
-    if(dma_free>=kOrcDialOnDemandDmaNeed)orcdial_memory_blocked=false;   // this attempt is not a memory refusal, whatever happens next
-    if(dma_free<kOrcDialOnDemandDmaNeed) {
+    // Reclaim only buffers their owners report safe to release, then check both memory pools.
+    orcdial_memory_blocked=!orcdial_prepare_memory();
+    if(orcdial_memory_blocked) {
       xQueueReset(orcdial_pending_actions);
       orcdial_bridge_requested.store(false,std::memory_order_release);
-      orcdial_memory_blocked=true;
       // The request may have brought Wi-Fi up for this accessory-only session (Wi-Fi power setting off); the idle shutdown later in
       // this function needs a running bridge, so stop it here and restore the configured state.
       if(!settings_wifi_power_enabled&&wifi_station_ready)stop_wifi();
-      Serial.printf("RTL_ORCDIAL_ERROR low_dma_memory free=%u need=%u restart_to_pair\n",(unsigned)dma_free,(unsigned)kOrcDialOnDemandDmaNeed);
+      Serial.println("RTL_ORCDIAL_ERROR low_memory after_reclaim");
       return;
     }
   }
   if(!orcdial_transport_ready&&bridge_wanted&&orcsdr::wifi::hosted_transport_ready()) {
     // The two frame queues hold 36 frames (about 24 KB). Allocated in internal RAM they took almost all of the internal DMA
     // memory the SD card and Wi-Fi need (largest DMA block 27 KB -> 3 KB at ORCDIAL_V4_BRIDGE_READY), so keep them in PSRAM.
-    if(!orcdial_inbox){orcdial_inbox=xQueueCreateWithCaps(20,sizeof(OrcDialFrame),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);if(!orcdial_inbox)orcdial_inbox=xQueueCreate(20,sizeof(OrcDialFrame));}
-    if(!orcdial_outbox){orcdial_outbox=xQueueCreateWithCaps(16,sizeof(OrcDialFrame),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);if(!orcdial_outbox)orcdial_outbox=xQueueCreate(16,sizeof(OrcDialFrame));}
-    if(orcdial_outbox&&!orcdial_tx_task && xTaskCreatePinnedToCore(orcdial_transmit,"orcdial_tx",4096,nullptr,2,&orcdial_tx_task,0)!=pdPASS)orcdial_tx_task=nullptr;
+    if(!orcdial_inbox)orcdial_inbox=xQueueCreateWithCaps(20,sizeof(OrcDialFrame),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(!orcdial_outbox)orcdial_outbox=xQueueCreateWithCaps(16,sizeof(OrcDialFrame),MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
+    if(orcdial_outbox&&!orcdial_tx_task && xTaskCreatePinnedToCoreWithCaps(orcdial_transmit,"orcdial_tx",4096,nullptr,2,&orcdial_tx_task,0,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT|MALLOC_CAP_RTCRAM)!=pdPASS)orcdial_tx_task=nullptr;
     log_dram_budget("orcdial_queues_task");
+    if(!orcdial_inbox||!orcdial_outbox||!orcdial_tx_task){initialization_retry_ms=millis()+5000;return;}
     if(orcdial_inbox&&orcdial_tx_task&&eh_host_feat_peer_data_init()==ESP_OK && (log_dram_budget("orcdial_peer_init"),true) && eh_host_peer_data_register(kOrcDialFromC6,orcdial_receive,nullptr)==ESP_OK) {
       log_dram_budget("orcdial_peer_register");
       uint8_t mac[6];
@@ -16659,6 +17416,9 @@ void handle_radio_key(const orcsdr::keyboard_input::Key& key) {
 }
 
 void route_key(const orcsdr::keyboard_input::Key& key) {
+  if (orcsdr::screens::owns(orcsdr::screens::Id::maps)) {
+    orcsdr::map_screen::key(key); return;
+  }
   using orcsdr::keyboard_input::Special;
   if (orcsdr::text_editor::active()) {
     handle_editor_key(key);
@@ -16728,7 +17488,8 @@ void poll_sdr_touch(bool from_stream) {
   if (ui_documentation_mode) return;
   if (orcsdr::screens::transitioning()) return;
   const auto active_screen = orcsdr::screens::status().active;
-  if (active_screen == orcsdr::screens::Id::visualizer) return;
+  if (active_screen == orcsdr::screens::Id::visualizer ||
+      active_screen == orcsdr::screens::Id::maps) return;
   static uint32_t last_touch_poll_ms = 0;
   static bool flick_thresh_set = false;
   static bool scope_dragging = false;
@@ -16753,7 +17514,8 @@ void poll_sdr_touch(bool from_stream) {
   const int scope_width = spectrum_draw_width();
 
   if ((orcsdr::sstv::ui_active() && orcsdr::screens::owns(orcsdr::screens::Id::sstv)) ||
-      (orcsdr::acars_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::acars))) {
+      (orcsdr::acars_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::acars)) ||
+      (orcsdr::dead_air_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::dead_air))) {
     if (pressed && !was_pressed) handle_sdr_touch(touch.x, touch.y);
     was_pressed = pressed;
     return;
@@ -16776,6 +17538,10 @@ void poll_sdr_touch(bool from_stream) {
   // The LoRa dashboard owns its plot and controls. Generic SDR scope gestures
   // overlap the channel-picker arrows and must not turn those taps into retunes.
   if (rtl_ui_band == RtlBand::lora && orcsdr::lora::active()) {
+    orcsdr::lora::service_map();
+    if(orcsdr::lora::map_touch(touch.x,touch.y,pressed,pressed&&!was_pressed)) {
+      was_pressed=pressed;return;
+    }
     if (pressed && !was_pressed) handle_sdr_touch(touch.x, touch.y);
     was_pressed = pressed;
     return;
@@ -17067,6 +17833,9 @@ void poll_sdr_touch(bool from_stream) {
 }
 
 void handle_sdr_touch(int32_t x, int32_t y) {
+  if (orcsdr::screens::owns(orcsdr::screens::Id::maps)) {
+    orcsdr::map_screen::touch(x, y, true, true); return;
+  }
   if (orcsdr::settings::active()) {
     if (!handle_global_header_audio_touch(x, y))
       handle_global_settings_touch(x, y);
@@ -17099,7 +17868,8 @@ void handle_sdr_touch(int32_t x, int32_t y) {
     return;
   }
   if (orcsdr::audio_header::settings_hit(x, y)) {
-    open_global_settings(orcsdr::ft8::active() || orcsdr::acars_app::active() ? orcsdr::settings::Section::system :
+    open_global_settings(orcsdr::ft8::active() || orcsdr::acars_app::active() || orcsdr::dead_air_app::active()
+                             ? orcsdr::settings::Section::system :
                          rtl_ui_band == RtlBand::adsb
                              ? orcsdr::settings::Section::location_adsb
                              : (rtl_ui_band == RtlBand::p25 || rtl_ui_band == RtlBand::lora)
@@ -17113,6 +17883,10 @@ void handle_sdr_touch(int32_t x, int32_t y) {
   }
   if (orcsdr::acars_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::acars)) {
     orcsdr::acars_app::touch(x, y);
+    return;
+  }
+  if (orcsdr::dead_air_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::dead_air)) {
+    orcsdr::dead_air_app::touch(x, y);
     return;
   }
   if (orcsdr::ft8::active()) {
@@ -17652,10 +18426,10 @@ orcsdr::settings::State ui_doc_settings_state() {
   strlcpy(state.profiles[0].ssid, "OrcSDR Demo", sizeof(state.profiles[0].ssid));
   state.profiles[0].connected = true;
   state.location_configured = true;
-  state.latitude_e7 = 455230640;
-  state.longitude_e7 = -1226764830;
-  strlcpy(state.location_label, "Portland, Oregon", sizeof(state.location_label));
-  strlcpy(state.map_pack, "Portland 10/25/50/100 NM", sizeof(state.map_pack));
+  state.latitude_e7 = 100000000;
+  state.longitude_e7 = 200000000;
+  strlcpy(state.location_label, "Example location", sizeof(state.location_label));
+  strlcpy(state.map_pack, "firmware-world", sizeof(state.map_pack));
   state.wifi_external_antenna = true;
   state.sd_ready = true;
   state.sd_total_bytes = 32ull * 1024 * 1024 * 1024;
@@ -17793,12 +18567,12 @@ bool ui_doc_render(const char* screen_id, bool demo) {
       lora_display_packets[0].destination = 0xFFFFFFFF;
       lora_display_packets[0].packet_id = 7;
       lora_display_packets[0].received_ms = millis();
-      lora_display_packets[0].latitude_e7 = 455230640;
-      lora_display_packets[0].longitude_e7 = -1226764830;
+      lora_display_packets[0].latitude_e7 = 100000000;
+      lora_display_packets[0].longitude_e7 = 200000000;
       lora_display_packets[0].snr_tenths = 94;
       lora_display_packets[0].signal_tenths = -720;
       lora_display_packets[0].port = 1;
-      lora_node_positions[0] = {0xA1B2C3D4, millis(), 455230640, -1226764830};
+      lora_node_positions[0] = {0xA1B2C3D4, millis(), 100000000, 200000000};
       lora_messages.store(1, std::memory_order_relaxed);
       lora_noise_dbfs.store(-80.0f, std::memory_order_relaxed);
       lora_trigger_dbfs.store(-71.0f, std::memory_order_relaxed);
@@ -17910,6 +18684,7 @@ void ui_doc_enter() {
   ui_documentation_mode = true;
   orcsdr::screens::begin_transition(orcsdr::screens::Id::documentation, millis());
   orcsdr::screens::finish_transition();
+  orcsdr::map_screen::service_navigation(); // UI owner; release before a live queued start
 }
 
 bool ui_doc_pause_reception() {
@@ -17950,7 +18725,15 @@ bool ui_doc_pause_reception() {
     orcsdr::settings::enter(global_settings_state(), ui_doc.settings_section);
     orcsdr::screens::finish_transition();
   } else if (ui_doc.was_ui_active) {
-    if (ui_doc.screen == orcsdr::screens::Id::acars) {
+    if (ui_doc.screen == orcsdr::screens::Id::dead_air) {
+      if (orcsdr::dead_air_app::active()) {
+        orcsdr::screens::begin_transition(orcsdr::screens::Id::dead_air, millis());
+        orcsdr::dead_air_app::draw(true);
+        orcsdr::screens::finish_transition();
+      } else {
+        orcsdr::dead_air_app::open();
+      }
+    } else if (ui_doc.screen == orcsdr::screens::Id::acars) {
       // ACARS rides the browse band, so the band-based fallback below would close it and show Home. The documentation
       // screen may have closed the app, so reopen it when it is no longer active; otherwise just redraw it as it was.
       if (orcsdr::acars_app::active()) {
@@ -18284,6 +19067,7 @@ const char* ui_touch_route() {
   const bool pocsag_ui = rtl_ui_band == RtlBand::pocsag && orcsdr::pocsag::active();
   if (orcsdr::sstv::ui_active() && orcsdr::screens::owns(orcsdr::screens::Id::sstv)) return "sstv";
   if (orcsdr::acars_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::acars)) return "acars";
+  if (orcsdr::dead_air_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::dead_air)) return "dead_air";
   const bool radio_ui = rtl_ui_active.load(std::memory_order_acquire);
   const bool fm_ui = rtl_ui_band == RtlBand::fm && orcsdr::fm::active();
   const bool am_ui = rtl_ui_band == RtlBand::am && orcsdr::am::active();
@@ -18319,13 +19103,7 @@ bool ft8_native_ensure_started() {
   if (!orcsdr::ft8_runtime::start(g_ft8_mode, ft8_native_on_decode, nullptr, ft8_native_clock_valid, ft8_native_dial_offset_hz)) return false;
   Serial.println("ORC_FT8_NATIVE bound");
   orcsdr::ftx::snr::set_user_offset_db(static_cast<float>(preferences.getInt("ft8_snr_off10", 0)) / 10.0f);   // stored in tenths of a dB
-  // FT8 needs the clock within about half a second and the RTC drifts (about 10 ppm measured): ask for one network sync per boot.
-  static bool ntp_requested = false;
-  if (!ntp_requested && wifi_connected) {
-    ntp_requested = true;
-    if (orcsdr::ntp_sync::start(true)) Serial.println("ORC_FT8_NTP auto sync requested");
-    log_dram_budget("after_ft8_ntp");
-  }
+  // The network sync (first one, then every two hours) is requested by ft8_auto_clock_sync() while the decoder runs.
   return true;
 }
 
@@ -18395,9 +19173,9 @@ void process_ft8_command(const char* args) {
   };
 
   if (verb[0] == '\0' || strcmp(verb, "HELP") == 0) {
-    Serial.println("ORC_FT8_HELP queries: STATUS | DECODES [n] | BANDS | DUMP | TIME | HUNTSTATUS | HELP");
+    Serial.println("ORC_FT8_HELP queries: STATUS | DECODES [n] | BANDS | DUMP | TIME | CLOCK | HUNTSTATUS | HELP");
     Serial.println("ORC_FT8_HELP control (authenticated): OPEN | BAND <index|label|dial_hz> | MODE <FT8|FT4> | CLEAR | RUN <0|1> | "
-                   "CONFIG <k> <gate> <fine_rows 4|8> <deadline_ms> | INJECT BEGIN|RUN|<offset> <b64> | LOG [ON|OFF|FLUSH] | SNR [OFFSET <dB>|RESET] | NTP | HUNT <FAST|DECODE|STOP> | TAB <name> | SHOT <name> | SAVE <name> | ADIF <name>");
+                   "CONFIG <k> <gate> <fine_rows 4|8> <deadline_ms> | INJECT BEGIN|RUN|<offset> <b64> | LOG [ON|OFF|FLUSH] | SNR [OFFSET <dB>|RESET] | NTP | HUNT <FAST|DECODE|STOP> | TAB <name> | SHOT <name> | SNAP | SAVE <name> | ADIF <name> | DIAL <hz> | CLOCKTEST <ms>");
     return;
   }
 
@@ -18521,6 +19299,84 @@ void process_ft8_command(const char* args) {
     return;
   }
 
+  if (strcmp(verb, "CLOCK") == 0) {
+    // A query (no authentication): the clock's trust state and the decoded stations' view of it (median DT): positive dt_err_ms = our clock is fast.
+    const auto status = ft8_clock_sync_input();
+    const auto level = orcsdr::clock_sync::evaluate(status);
+    const auto dt = orcsdr::ft8_runtime::dt_report();
+    Serial.printf("ORC_FT8_CLOCK level=%u age_s=%lu ntp_utc=%lu signal_utc=%lu wide=%d last_slot_wide=%d dt_valid=%d dt_err_ms=%d dt_stations=%u hold=%d\n",
+                  static_cast<unsigned>(level), static_cast<unsigned long>(orcsdr::clock_sync::age_seconds(status)),
+                  static_cast<unsigned long>(status.last_sync_utc), static_cast<unsigned long>(status.last_signal_sync_utc),
+                  orcsdr::clock_sync::wants_wide_search(level) ? 1 : 0, dt.wide ? 1 : 0, dt.valid ? 1 : 0, static_cast<int>(dt.error_ms),
+                  static_cast<unsigned>(dt.stations), g_ft8_clock_test_hold ? 1 : 0);
+    return;
+  }
+
+  if (strcmp(verb, "WWV") == 0) {
+    // FT8 WWV                                            status (no authentication)
+    // FT8 WWV <2.5|5|10|15|20> [seconds 20-240] [CAL|SYNC]  tune 1 kHz below the WWV carrier and fold the tick for `seconds` (default 90)
+    // FT8 WWV STOP                                       end a measurement early
+    // CAL stores the fixed delay against a fresh NTP sync; SYNC corrects the clock from the tick (needs that calibration). The decoder must
+    // be running (FT8 RUN 1) and the band is put back afterwards. Needs authentication to start.
+    const auto status = orcsdr::ft8_runtime::wwv_report();
+    if (*rest == '\0') {
+      Serial.printf("ORC_FT8_WWV_STATUS phase=%u seconds=%u action=%u mhz=%.1f\n", static_cast<unsigned>(status.phase), static_cast<unsigned>(status.seconds),
+                    static_cast<unsigned>(g_wwv_action), static_cast<double>(g_wwv_mhz));
+      return;
+    }
+    if (need_auth()) return;
+    if (strcasecmp(rest, "STOP") == 0) {
+      orcsdr::ft8_runtime::wwv_stop();
+      Serial.println("ORC_FT8_WWV_STOP requested");
+      return;
+    }
+    char* end = nullptr;
+    const float mhz = strtof(rest, &end);
+    unsigned long seconds = 90;
+    WwvAction action = WwvAction::report;
+    const char* p = end;
+    while (*p == ' ') ++p;
+    if (*p >= '0' && *p <= '9') {
+      seconds = strtoul(p, &end, 10);
+      p = end;
+      while (*p == ' ') ++p;
+    }
+    if (strcasecmp(p, "CAL") == 0) action = WwvAction::calibrate;
+    else if (strcasecmp(p, "SYNC") == 0) action = WwvAction::sync;
+    char key[16];
+    // The key rounds to the nearest supported frequency, so require the typed value to be that frequency (10.04 must not tune 40 kHz off).
+    if (end == rest || !ft8_wwv_key(mhz, key, sizeof(key)) || std::fabs(mhz * 10.0f - std::round(mhz * 10.0f)) > 0.01f || seconds < 20 || seconds > 240 ||
+        (*p != '\0' && action == WwvAction::report)) {
+      Serial.println("ORC_FT8_ERROR WWV invalid use WWV <2.5|5|10|15|20> [20-240 seconds] [CAL|SYNC] | WWV STOP | WWV");
+      return;
+    }
+    if (!orcsdr::ft8_runtime::active()) {
+      Serial.println("ORC_FT8_ERROR WWV the decoder is not running (FT8 RUN 1 or open the FT8 screen)");
+      return;
+    }
+    if (status.phase == 1 || g_wwv_action != WwvAction::none) {
+      Serial.println("ORC_FT8_ERROR WWV a measurement is already running (FT8 WWV STOP)");
+      return;
+    }
+    g_wwv_previous_band = ft8_selected_band();
+    g_wwv_previous_dial_override = g_ft8_dial_override_hz;
+    const uint32_t dial = static_cast<uint32_t>(mhz * 1000000.0f + 0.5f) - 1000u;   // 1 kHz below the carrier: the carrier is then a line at 1000 Hz
+    if (!ft8_tune_dial(dial) || !orcsdr::ft8_runtime::wwv_start(static_cast<uint32_t>(seconds))) {
+      if (g_wwv_previous_dial_override != 0) (void)ft8_tune_dial(g_wwv_previous_dial_override);
+      else (void)ft8_select_band_table(g_wwv_previous_band);
+      g_wwv_previous_band = SIZE_MAX;
+      Serial.println("ORC_FT8_ERROR WWV could not start (tuning refused or no memory)");
+      return;
+    }
+    g_wwv_tune_generation = g_ft8_tune_generation;   // after the measurement's own tune
+    g_wwv_clock_changed = false;
+    g_wwv_action = action;
+    g_wwv_mhz = mhz;
+    Serial.printf("ORC_FT8_WWV_START mhz=%.1f dial_hz=%lu seconds=%lu action=%u (about %lu s with the retune; the band comes back by itself)\n", static_cast<double>(mhz),
+                  static_cast<unsigned long>(dial), seconds, static_cast<unsigned>(action), seconds + 12);
+    return;
+  }
+
   // ---- everything below changes state
   if (need_auth()) return;
 
@@ -18640,6 +19496,16 @@ void process_ft8_command(const char* args) {
     return;
   }
 
+  if (strcmp(verb, "SNAP") == 0) {
+    // The screen as a PNG over serial: no SD card, no RTL_STOP, no retune (tools/tab5_ft8_shot.py uses this).
+    if (need_auth()) return;
+    (void)orcsdr::ui_capture::stream_png(M5.Display, [](const char* data, size_t size, void*) {
+      // Blocking (never drops while the host reads); a short write means the host stopped reading, so the capture aborts.
+      return Serial.writeBytes(reinterpret_cast<const uint8_t*>(data), size) == size;
+    }, nullptr);
+    return;
+  }
+
   if (strcmp(verb, "SHOT") == 0) {
     // Saves the screen as a BMP on the SD card without pausing reception (UI_CAPTURE needs documentation mode); fetch it with
     // SD_GET_BEGIN / tools/tab5_ft8.py shot.
@@ -18673,6 +19539,42 @@ void process_ft8_command(const char* args) {
       return;
     }
     Serial.println("ORC_FT8_ERROR HUNT invalid use HUNT <FAST|DECODE|STOP>");
+    return;
+  }
+
+  if (strcmp(verb, "DIAL") == 0) {
+    // Bench: tune an exact dial frequency in Hz (what the Live DIAL chip does with expert tuning), e.g. a time-signal station.
+    // FT8 BAND <label> returns to the band table.
+    if (need_auth()) return;
+    char* dial_end = nullptr;
+    const unsigned long hz = strtoul(rest, &dial_end, 10);
+    while (dial_end != nullptr && *dial_end == ' ') ++dial_end;
+    // The whole argument must be the number ("14074000oops" is rejected, not tuned as 14074000).
+    if (hz == 0 || dial_end == rest || *dial_end != '\0' || !ft8_tune_dial(static_cast<uint32_t>(hz)))
+      Serial.println("ORC_FT8_ERROR DIAL invalid use DIAL <hz> (0.5 MHz to the tuner limit)");
+    return;
+  }
+
+  if (strcmp(verb, "CLOCKTEST") == 0) {
+    // Bench only: FT8 CLOCKTEST <ms> steps the clock by ms (positive = later), forgets the last sync and holds the automatic network sync
+    // off, so the DT-based correction can be exercised. FT8 CLOCKTEST 0 releases the hold (then FT8 NTP, or the automatic sync, restores the clock).
+    if (need_auth()) return;
+    const long delta = strtol(rest, nullptr, 10);
+    if (delta < -5000 || delta > 5000) {
+      Serial.println("ORC_FT8_ERROR CLOCKTEST invalid use CLOCKTEST <-5000..5000 ms>");
+      return;
+    }
+    if (delta == 0) {
+      g_ft8_clock_test_hold = false;
+      Serial.println("ORC_FT8_CLOCKTEST released");
+      return;
+    }
+    g_ft8_clock_test_hold = true;
+    ft8_clock_trust_forget();   // the clock is about to be wrong on purpose: a restart must not call it synced
+    int32_t applied_ms = 0;
+    const bool ok = orcsdr::time_service::step_ms(static_cast<int32_t>(delta), &applied_ms);
+    if (applied_ms > 50 || applied_ms < -50) orcsdr::ft8_runtime::clock_stepped(applied_ms);
+    Serial.printf("ORC_FT8_CLOCKTEST %s step_ms=%ld\n", ok ? "OK" : "FAILED", delta);
     return;
   }
 
@@ -18776,7 +19678,7 @@ void process_ft8_command(const char* args) {
     } else if (strncasecmp(rest, "FLUSH", 5) == 0) {
       if (need_auth()) return;
       const bool done = ft8_log_flush(true);
-      Serial.printf("ORC_FT8_LOG_FLUSH %s\n", done ? "ok" : "deferred (internal DMA memory is too low for the card right now)");
+      Serial.printf("ORC_FT8_LOG_FLUSH %s\n", done ? "ok" : "pending (check SD errors and DMA memory)");
     }
     Serial.printf("ORC_FT8_LOG enabled=%d written=%u staged=%u dropped=%u errors=%u dir=/orcsdr/ft8 dma_largest=%u need=%u\n", g_ft8_log_enabled ? 1 : 0,
                   static_cast<unsigned>(g_ft8_log_rows), static_cast<unsigned>(g_ft8_log_stage_rows), static_cast<unsigned>(g_ft8_log_dropped),
@@ -19200,7 +20102,8 @@ void process_command(char* command) {
     }
     if (strncmp(command, "UI_CAPTURE ", 11) == 0) {
       const char* slug = command + 11;
-      const bool visualizer_capture = orcsdr::visualizer::active();
+      // The live Visualizer and Dead Air screens capture as they are, without pausing reception.
+      const bool visualizer_capture = orcsdr::visualizer::active() || orcsdr::dead_air_app::active();
       const bool lab_capture = orcsdr::rf_lab::active();
       if ((!ui_doc.active || !ui_doc.current_screen[0]) && !visualizer_capture &&
           !lab_capture) {
@@ -19349,6 +20252,11 @@ void process_command(char* command) {
     Serial.printf("RTL_SERIAL_VERBOSITY_OK mode=%s\n", serial_verbosity_name(level));
     return;
   }
+  if (strcmp(command, "RTL_MAP_STATUS") == 0) {
+    orcsdr::maps::report([](const char* line) { Serial.print(line); }); return;
+  }
+  if(orcsdr::lora::handle_map_command(command,authenticated,[](const char* line){Serial.print(line);}))return;
+  if(orcsdr::maps::serial_control::handle(command,authenticated,[](const char* line){Serial.print(line);}))return;
   if (strcmp(command, "RTL_HEALTH") == 0) {
     const uint32_t dma_caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_DMA;
     Serial.printf("RTL_HEALTH_STATUS uptime_ms=%u free_heap=%u min_free_heap=%u "
@@ -19367,6 +20275,21 @@ void process_command(char* command) {
                   heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
                   heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                   heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    return;
+  }
+  if (strncmp(command, "RTL_DEAD_AIR FLOOD ", 19) == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_DEAD_AIR_FLOOD_ERROR auth_required");
+      return;
+    }
+    const uint32_t logged = orcsdr::dead_air_app::flood_manual_marks(static_cast<uint32_t>(atoi(command + 19)));
+    Serial.printf("RTL_DEAD_AIR_FLOOD logged=%lu\n", static_cast<unsigned long>(logged));
+    return;
+  }
+  if (strcmp(command, "RTL_DEAD_AIR STATUS") == 0) {
+    char line[768];
+    orcsdr::dead_air_app::describe(line, sizeof(line));
+    Serial.println(line);
     return;
   }
   if (strcmp(command, "RTL_ACARS STATUS") == 0) {
@@ -19426,6 +20349,7 @@ void process_command(char* command) {
     const char* name = command + 12;
     using Id = orcsdr::dashboards::Id;
     if (strcmp(name, "HOME") == 0) show_home();
+    else if (strcmp(name, "CLOCK") == 0) open_clock_settings();
     else if (strcmp(name, "FM") == 0) open_dashboard(Id::fm);
     else if (strcmp(name, "AM") == 0) open_dashboard(Id::am);
     else if (strcmp(name, "SHORTWAVE") == 0) open_dashboard(Id::shortwave);
@@ -19441,10 +20365,11 @@ void process_command(char* command) {
     else if (strcmp(name, "WEATHER") == 0) open_dashboard(Id::weather);
     else if (strcmp(name, "POCSAG") == 0) open_dashboard(Id::pocsag);
     else if (strcmp(name, "ACARS") == 0) open_dashboard(Id::acars);
+    else if (strcmp(name, "DEAD_AIR") == 0) open_dashboard(Id::dead_air);
     else if (strcmp(name, "MARINE") == 0) open_dashboard(Id::marine);
     else if (strcmp(name, "SATELLITE") == 0) open_dashboard(Id::satellite);
     else if (strcmp(name, "UTILITIES") == 0) open_dashboard(Id::utilities);
-    else { Serial.println("RTL_UI_OPEN_INVALID use HOME|FM|AM|SHORTWAVE|P25|ADSB|LORA|RF_LAB|WIFI_ANALYSIS|FT8|SETTINGS|WEATHER|CB|POCSAG|AIRBAND|ACARS|MARINE|SATELLITE|UTILITIES"); return; }
+    else { Serial.println("RTL_UI_OPEN_INVALID use HOME|FM|AM|SHORTWAVE|P25|ADSB|LORA|RF_LAB|WIFI_ANALYSIS|FT8|SETTINGS|WEATHER|CB|POCSAG|AIRBAND|ACARS|DEAD_AIR|MARINE|SATELLITE|UTILITIES"); return; }
     Serial.printf("RTL_UI_OPEN_OK target=%s\n", name);
     return;
   }
@@ -19689,6 +20614,10 @@ void process_command(char* command) {
            (wifi_profile_count < 2 || value >= wifi_profile_count - 1))) {
         Serial.println("RTL_UI_ACTION_INVALID profile_move");
         return;
+      }
+      if(kind==K::range_changed&&(fields!=3||
+          (value!=10&&value!=25&&value!=50&&value!=100))) {
+        Serial.println("RTL_UI_ACTION_INVALID range_must_be_10_25_50_100");return;
       }
       if (kind != K::none) { handle_global_settings_action({kind, static_cast<int32_t>(value)}); Serial.println("RTL_UI_ACTION_OK"); return; }
     }
@@ -19941,24 +20870,36 @@ void process_command(char* command) {
                   queued ? "QUEUED" : "REJECTED");
     return;
   }
+  if(strcmp(command,"RTL_ADSB_RANGE")==0) {
+    Serial.printf("RTL_ADSB_RANGE_STATUS range_nm=%u dashboard_range_nm=%u active=%u pending=%u\n",
+        adsb_settings.radar_range_nm,orcsdr::adsb::settings().radar_range_nm,
+        orcsdr::adsb::active(),adsb_settings_persist_pending.load(std::memory_order_acquire));
+    return;
+  }
+  if(strncmp(command,"RTL_ADSB_RANGE ",15)==0) {
+    if(!authenticated){Serial.println("RTL_ADSB_RANGE_ERROR auth_required");return;}
+    uint16_t range=0;
+    if(!orcsdr::adsb::parse_map_range(command+15,&range)) {
+      Serial.println("RTL_ADSB_RANGE_ERROR invalid_range");return;
+    }
+    handle_global_settings_action({orcsdr::settings::ActionKind::range_changed,range});
+    Serial.printf("RTL_ADSB_RANGE_OK range_nm=%u persistence=pending\n",range);return;
+  }
   if (strncmp(command, "RTL_ADSB_LOCATION ", 18) == 0) {
+    if (!authenticated) { Serial.println("RTL_ADSB_LOCATION_ERROR auth_required"); return; }
     double latitude = 0, longitude = 0;
     char trailing = 0;
     if (sscanf(command + 18, "%lf %lf %c", &latitude, &longitude, &trailing) != 2 ||
+        !std::isfinite(latitude) || !std::isfinite(longitude) ||
         latitude < -90.0 || latitude > 90.0 || longitude < -180.0 || longitude > 180.0) {
       Serial.println("RTL_ADSB_LOCATION_ERROR invalid_coordinate");
       return;
     }
-    adsb_settings.location_configured = true;
-    adsb_settings.latitude_e7 = static_cast<int32_t>(llround(latitude * 10000000.0));
-    adsb_settings.longitude_e7 = static_cast<int32_t>(llround(longitude * 10000000.0));
-    orcsdr::receiver_location::set(
-        true, adsb_settings.latitude_e7, adsb_settings.longitude_e7,
-        settings_location_label, settings_map_pack);
-    refresh_adsb_atc_preset();
-    preferences.putBool("adsb_loc_set", true);
-    preferences.putInt("adsb_lat_e7", adsb_settings.latitude_e7);
-    preferences.putInt("adsb_lon_e7", adsb_settings.longitude_e7);
+    const int32_t latitude_e7 = static_cast<int32_t>(llround(latitude * 10000000.0));
+    const int32_t longitude_e7 = static_cast<int32_t>(llround(longitude * 10000000.0));
+    if (!save_map_receiver_location(latitude_e7,longitude_e7)) {
+      Serial.println("RTL_ADSB_LOCATION_ERROR storage"); return;
+    }
     if (orcsdr::adsb::active()) orcsdr::adsb::enter(adsb_settings);
     Serial.println("RTL_ADSB_LOCATION_OK");
     return;
@@ -20204,7 +21145,7 @@ void process_command(char* command) {
   if (strcmp(command, "LORA_SD_LOG STATUS") == 0) {
     Serial.printf(
         "LORA_SD_LOG_STATUS requested=%s ready=%s error=%s queued=%u "
-        "dropped=%lu path=\"%s\"\n",
+        "dropped=%lu path=\"%s\" pending=%u retry_attempts=%lu last_error_stage=%s last_errno=%d\n",
         lora_log_requested.load(std::memory_order_relaxed) ? "true" : "false",
         lora_log_ready.load(std::memory_order_relaxed) ? "true" : "false",
         lora_log_error.load(std::memory_order_relaxed) ? "true" : "false",
@@ -20213,7 +21154,10 @@ void process_command(char* command) {
             : static_cast<unsigned>(uxQueueMessagesWaiting(lora_log_queue)),
         static_cast<unsigned long>(
             lora_log_dropped.load(std::memory_order_relaxed)),
-        kLoraLogPath);
+        kLoraLogPath, unsigned(lora_log_pending.load(std::memory_order_acquire)),
+        static_cast<unsigned long>(lora_log_retry_count.load(std::memory_order_relaxed)),
+        lora_log_error_stage.load(std::memory_order_relaxed),
+        lora_log_error_errno.load(std::memory_order_relaxed));
     return;
   }
   if (strncmp(command, "LORA_MESSAGE ", 13) == 0) {
@@ -20573,7 +21517,7 @@ void process_command(char* command) {
     // Window since the previous RTL_DSP STATS (read-only, resets on read).
     static uint32_t last_ms = 0;  // first window runs from boot, like the counters
     const uint32_t now = millis();
-    char line[512];
+    char line[768];
     (void)orcsdr::dsp::stats::format_and_reset(line, sizeof(line), now - last_ms);
     last_ms = now;
     // Loss counters are cumulative since stream start (not windowed).
@@ -20906,8 +21850,11 @@ void process_command(char* command) {
     Serial.println("RTL_CATALOG_FETCH              - fetch+verify signed catalog (Wi-Fi required)");
     Serial.println("RTL_CATALOG_INSTALL <id>       - fetch+verify+activate data/map pack");
     Serial.println("RTL_CATALOG_REMOVE <id> CONFIRM - remove installed pack (SD only)");
-    Serial.println("RTL_CATALOG packs: faa_aircraft|faa_aviation|noaa_weather|fcc_broadcast|lane_county_map");
+    Serial.println("RTL_CATALOG packs: faa_aircraft|faa_aviation|noaa_weather|fcc_broadcast");
     Serial.println("RTL_LOCATION STATUS|IP|LOOKUP <zip/address>|CONFIRM - resolve and save receiver location");
+    Serial.println("RTL_MAP HELP - named setup, picker, labels, pack and download controls (mutations require auth)");
+    Serial.println("RTL_ADSB_RANGE [10|25|50|100] - query/set map radius in nautical miles (set requires auth)");
+    Serial.println("RTL_LORA_MAP HELP - map pan/zoom, receiver/node centering and follow (mutations require auth)");
     Serial.println("ORC_RTC_STATUS                 - trusted hardware UTC clock status");
     Serial.println("ORC_RTC_SET <unix_utc>         - establish hardware UTC clock (auth)");
     Serial.println("ORC_TZ_SET <minutes>           - UTC offset in minutes east of UTC, -720..840 (auth)");
@@ -20957,6 +21904,7 @@ void process_command(char* command) {
       Serial.println("ORC_RTC_SET_ERROR invalid_or_unavailable");
       return;
     }
+    ft8_clock_trust_forget();   // set by hand: nothing vouches for its accuracy, so the sync status starts over (even if persisting below fails)
     if (!preferences.putBool("rtc_est", true)) {
       Serial.println("ORC_RTC_SET_ERROR persistence_failed");
       return;
@@ -22166,10 +23114,10 @@ void setup() {
   {
     orcsdr::NvsStore rot_prefs;
     if (rot_prefs.begin("orclink", true)) {
-      settings_rotation = rot_prefs.getUChar("set_rotation", 1);
+      settings_rotation = rot_prefs.getUChar("set_rotation", 3);
       rot_prefs.end();
     }
-    if (settings_rotation != 1 && settings_rotation != 3) settings_rotation = 1;
+    if (settings_rotation != 1 && settings_rotation != 3) settings_rotation = 3;
   }
   M5.Display.setRotation(settings_rotation);
   M5.Display.setBrightness(180);
@@ -22188,7 +23136,7 @@ void setup() {
   Serial.println("RTL_LAB_SELF_CHECK_OK");
   configure_navigation_service();
   if (!orcsdr::adsb::self_check() || !orcsdr::adsb_rx::Decoder::self_check() ||
-      !orcsdr::offline_map::self_check() || !orcsdr::atc::self_check()) {
+      !orcsdr::atc::self_check()) {
     Serial.println("RTL_ADSB_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_ADSB_SELF_CHECK_OK");
@@ -22340,7 +23288,6 @@ void setup() {
   (void)orcsdr::rf_lab::initialize(g_sd_fs);
   load_pocsag_scan_list();
   if (test_sd_ready) {
-    (void)orcsdr::offline_map::load(g_sd_fs);
     refresh_adsb_atc_preset();
   }
   initialize_rtl_sdr_host();
@@ -22420,12 +23367,12 @@ void setup() {
     orcsdr_splash_set_status("Loading data packs and maps…");
     (void)orcsdr::rf_lab::initialize(g_sd_fs);
     load_pocsag_scan_list();
-    orcsdr::catalog::begin(g_sd_fs, sd_total_bytes() - orcsdr::storage::used_bytes());
-    (void)orcsdr::offline_map::load(g_sd_fs);
+    orcsdr::catalog::begin(g_sd_fs, orcsdr::storage::free_bytes());
     refresh_adsb_atc_preset();
     heard_db_load_from_sd();   // stations-heard journal: replayed now, while internal DMA memory is free
     set_lora_sd_logging(true);  // worker replays persistent node history; no SD IO on the decoder path
   }
+  if (!orcsdr::maps::begin(g_sd_fs)) Serial.println("ORC_MAP_WORKER_UNAVAILABLE");
   boot_wifi_on_splash();
   begin_boot_device_staging();
   /* Bring up the attached RTL-SDR while the splash is showing. The OrcSDR
@@ -22552,6 +23499,7 @@ void loop() {
   const bool rf_lab_ui = orcsdr::rf_lab::active();
   orcsdr::sstv_app::tick();
   orcsdr::acars_app::tick();
+  orcsdr::dead_air_app::tick();
   if (rtl_stream_ui_refresh_pending.exchange(false, std::memory_order_acq_rel) &&
       !settings_ui && !home_ui && !visualizer_ui && !rf_lab_ui) {
     refresh_active_screen();
@@ -22577,7 +23525,8 @@ void loop() {
   orcsdr::realtime_log::drain([](const char* line) { Serial.print(line); });
   if (rtl_stream_spectrum_pending.exchange(false, std::memory_order_acq_rel) &&
       !orcsdr::visualizer::active() && !orcsdr::rf_lab::active() &&
-      (orcsdr::web_console::spectrum_demanded() || sstv_tune_spectrum_wanted() || fm_ui || am_ui || shortwave_ui || cb_ui ||
+      (orcsdr::web_console::spectrum_demanded() || sstv_tune_spectrum_wanted() ||
+       orcsdr::dead_air_app::wants_spectrum() || fm_ui || am_ui || shortwave_ui || cb_ui ||
        (rtl_ui_band == RtlBand::cb &&
         rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running) ||
        p25_ui ||
@@ -22593,6 +23542,8 @@ void loop() {
       Serial.printf("RTL_MAIN_STALL stage=serial_dispatch elapsed_ms=%u\n", elapsed_ms);
   }
   service_clock();
+  orcsdr::location_estimate::service();
+  orcsdr::maps::service_downloads();
   // Keep connection success/failure/timeout and radio resume progressing even
   // when a full-screen mode returns early from the rest of the UI loop.
   if (boot_auto_start_allowed) {
@@ -22602,6 +23553,7 @@ void loop() {
     if (elapsed_ms >= 500)
       Serial.printf("RTL_MAIN_STALL stage=wifi_poll elapsed_ms=%u\n", elapsed_ms);
   }
+  orcsdr::map_screen::service_navigation();
   service_rtl_speaker_idle();  // before the full-screen modes' early returns
   if (orcsdr::visualizer::active()) {
     service_rtl_speaker_watchdog();
@@ -22632,6 +23584,11 @@ void loop() {
   }
   rtl_audio_test_service();
   service_boot_device_staging();
+  orcsdr::map_screen::tick(); // Also releases setup pause after external navigation.
+  if (orcsdr::map_screen::first_run_pending() &&
+      boot_init_stage == BootInitStage::ready &&
+      orcsdr::screens::owns(orcsdr::screens::Id::home))
+    orcsdr::map_screen::open(orcsdr::map_screen::Mode::setup, true);
   if (web_console_deferred && boot_init_stage == BootInitStage::ready) {
     web_console_deferred = false;
     orcsdr::web_console::set_enabled(settings_web_console_enabled);
@@ -22642,7 +23599,7 @@ void loop() {
     static bool catalog_was_busy = false;
     const auto catalog_state = orcsdr::catalog::state();
     if (catalog_was_busy && !catalog_state.busy && g_sd_fs != nullptr) {
-      (void)orcsdr::offline_map::load(g_sd_fs);
+      orcsdr::maps::rescan();
       refresh_adsb_atc_preset();
       resume_radio_after_catalog();
     }
@@ -22814,9 +23771,9 @@ void loop() {
     ++p25_config_revision;
   }
   if (adsb_settings_persist_pending.exchange(false, std::memory_order_acq_rel)) {
-    preferences.putBool("adsb_loc_set", adsb_settings.location_configured);
-    preferences.putInt("adsb_lat_e7", adsb_settings.latitude_e7);
-    preferences.putInt("adsb_lon_e7", adsb_settings.longitude_e7);
+    if (!orcsdr::location_store::save(preferences,{adsb_settings.location_configured,
+        adsb_settings.latitude_e7,adsb_settings.longitude_e7}))
+      Serial.println("RTL_ADSB_SETTINGS_SAVE_ERROR location_storage");
     preferences.putUShort("adsb_range", adsb_settings.radar_range_nm);
     Serial.printf("RTL_ADSB_SETTINGS_SAVE configured=%d range_nm=%u\n",
                   adsb_settings.location_configured ? 1 : 0,
@@ -22846,6 +23803,8 @@ void loop() {
       orcsdr::screens::status().active != orcsdr::screens::Id::ft8 &&
        orcsdr::screens::status().active != orcsdr::screens::Id::sstv &&
       orcsdr::screens::status().active != orcsdr::screens::Id::acars &&
+      orcsdr::screens::status().active != orcsdr::screens::Id::maps &&
+      orcsdr::screens::status().active != orcsdr::screens::Id::dead_air &&
       !orcsdr::screens::owns(screen_for_band(rtl_ui_band)) &&
       !orcsdr::home::active()) {
     draw_sdr_screen(rtl_ui_band, rtl_ui_frequency_hz,
@@ -22868,7 +23827,10 @@ void loop() {
     orcsdr::audio_header::restore_volume_background();
   }
 
-  if (orcsdr::visualizer::active()) {
+  if (orcsdr::screens::owns(orcsdr::screens::Id::maps)) {
+    const auto touch = ui_touch_detail(0);
+    orcsdr::map_screen::touch(touch.x, touch.y, touch.isPressed(), touch.wasPressed());
+  } else if (orcsdr::visualizer::active()) {
     // service_visualizer() above owns the complete full-screen surface.
   } else if (settings_ui) {
     static uint32_t settings_last_update_ms = 0;
@@ -22921,6 +23883,8 @@ void loop() {
     draw_sstv_dashboard(false);
   } else if (orcsdr::acars_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::acars)) {
     poll_sdr_touch(false);
+  } else if (orcsdr::dead_air_app::active() && orcsdr::screens::owns(orcsdr::screens::Id::dead_air)) {
+    poll_sdr_touch(false);
   } else if (pocsag_ui && orcsdr::screens::owns(orcsdr::screens::Id::pocsag)) {
     const auto touch = ui_touch_detail(0);
     const bool pressed = touch.isPressed() || touch.wasPressed();
@@ -22956,6 +23920,15 @@ void loop() {
   }
 
   const uint32_t now = millis();
+  static uint32_t last_map_notice_ms=0;
+  if(now-last_map_notice_ms>=250) {
+    last_map_notice_ms=now;
+    EXT_RAM_BSS_ATTR static orcsdr::maps::downloads::Snapshot notice;
+    if(orcsdr::maps::downloads::snapshot(&notice)) {
+      const bool blocked=map_download_notice_blocked();
+      orcsdr::map_download_notice::update(notice,orcsdr::screens::status().active,blocked);
+    }
+  }
   if (!rtl_ui_active.load(std::memory_order_acquire) &&
       now - last_power_draw_ms >= 10000) {
     last_power_draw_ms = now;

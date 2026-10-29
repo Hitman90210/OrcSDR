@@ -1,5 +1,9 @@
 # Tab5 SD Write Performance
 
+For the shared SSTV/FT8/LoRa/maps failure history and the current regression gate,
+see [SD card reliability](SD_CARD_RELIABILITY.md). The measurements below are
+historical write-performance evidence, not qualification of the latest firmware.
+
 ## Scope
 
 This investigation measured the Tab5 microSD write path without changing the

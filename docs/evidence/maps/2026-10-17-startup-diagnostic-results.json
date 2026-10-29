@@ -1,0 +1,23 @@
+{
+  "sdk_revision": "735507283d5b2f9fb363a1901172dbd9e847945d",
+  "inputs_sha256": {
+    "components/esp_mm/heap_align_hw.c": "cbd145627cf1d13a68f836c20d2cd8e304493ccfacfe4ed0f82c13a6225648e2",
+    "components/heap/tlsf/tlsf.c": "ca8f8c1941e0e34a4b127a7d2bd7c77e66ad39d02450111087f32b552b2f3628",
+    "components/heap/tlsf/tlsf_control_functions.h": "2820bc0a4ca906a40836fc5360181484cf3fba056ba49df70bb5c11bfc488766"
+  },
+  "diagnostic_source_commit": "fa520a3452cb3e78ee458f99408610689f35dd19",
+  "diagnostic_application_sha256": "5f3f9ef802e75b70d9ad7e7b7cd426d2a639861e3aa0fc087f82dbcd2ec98640",
+  "target": "COM39",
+  "usb_serial": "E8:F6:0A:E2:D6:03",
+  "flashed": true,
+  "boot_passed": false,
+  "restored_original_firmware": true,
+  "nvs_preservation_verified": true,
+  "prepared_placement_payload_bytes": 1472,
+  "prepared_placement_firmware_built": false,
+  "host_repro_compatibility": [
+    "MSVC intrinsic and attribute adapter",
+    "Three GNU void-pointer arithmetic expressions cast to char pointers in ignored local SDK copy",
+    "No-op weak poisoning hooks with poisoning disabled"
+  ]
+}

@@ -2,14 +2,28 @@
 
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 
 namespace orcsdr::adsb {
 
+// About 47 statute miles across the wide dashboard map at its initial scale.
+inline constexpr uint16_t kDefaultRadarRangeNm = 10;
+inline constexpr uint16_t kMapRangesNm[] = {10,25,50,100};
+constexpr bool valid_map_range(int32_t range) {
+  for(const auto value:kMapRangesNm)if(value==range)return true;
+  return false;
+}
+inline bool parse_map_range(const char* input,uint16_t* output) {
+  if(!input||!output)return false;
+  const char* names[]={"10","25","50","100"};
+  for(size_t i=0;i<4;++i)if(std::strcmp(input,names[i])==0){*output=kMapRangesNm[i];return true;}
+  return false;
+}
 struct Settings {
   bool location_configured = false;
   int32_t latitude_e7 = 0;
   int32_t longitude_e7 = 0;
-  uint16_t radar_range_nm = 25;
+  uint16_t radar_range_nm = kDefaultRadarRangeNm;
   uint32_t atc_frequency_hz = 0;
   int16_t gain_tenth_db = 0;
   bool gain_supported = false;
@@ -78,6 +92,7 @@ void set_atc_listening(bool listening, uint32_t frequency_hz);
 uint32_t atc_frequency_hz();
 Action handle_touch(int32_t x, int32_t y);
 const Settings& settings();
+bool set_map_range(uint16_t range_nm); // Shared UI/serial setter; repaint stays with the screen owner.
 int gain_tenth_db();
 bool active();
 void show_documentation_view(uint8_t view, const Settings& settings);

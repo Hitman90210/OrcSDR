@@ -1,0 +1,19 @@
+Extract from maps-com39-boot-retry-20261017.log; first failure only; register/stack memory omitted.
+2026-10-17 17:29:41 I (1452) app_init: Application information:
+2026-10-17 17:29:41 I (1453) app_init: Project name:     orcsdr_tab5
+2026-10-17 17:29:41 I (1453) app_init: App version:      v0.4.0-beta.1
+2026-10-17 17:29:41 I (1454) app_init: Compile time:     Oct 17 2026 17:00:27
+2026-10-17 17:29:41 I (1454) app_init: ELF file SHA256:  d75562835...
+2026-10-17 17:29:41 I (1455) app_init: ESP-IDF:          v5.5.4-dirty
+2026-10-17 17:29:41 I (1457) heap_init: At 4FF2A3F0 len 00010BD0 (66 KiB): RETENT_RAM
+2026-10-17 17:29:41 I (1458) heap_init: At 4FF3AFC0 len 00004BF0 (18 KiB): RAM
+2026-10-17 17:29:41 I (1458) heap_init: At 4FF75C30 len 0000A3D0 (40 KiB): RAM
+2026-10-17 17:29:41 I (1459) heap_init: At 501080C0 len 00007F40 (31 KiB): RTCRAM
+2026-10-17 17:29:41 I (1459) heap_init: At 30100068 len 00001F98 (7 KiB): TCM
+2026-10-17 17:29:41 I (1460) esp_psram: Adding pool of 27327K of PSRAM memory to heap allocator
+2026-10-17 17:29:41 I (1461) esp_psram: Adding pool of 19K of PSRAM memory gap generated due to end address alignment of irom to the heap allocator
+2026-10-17 17:29:41 I (1462) esp_psram: Adding pool of 29K of PSRAM memory gap generated due to end address alignment of drom to the heap allocator
+2026-10-17 17:29:41 I (1473) esp_psram: Reserving pool of 40K of internal memory for DMA/internal allocations
+2026-10-17 17:29:41 E (1473) main_task: Could not reserve internal/DMA pool (error 0x101)
+2026-10-17 17:29:41 abort() was called at PC 0x48229109 on core 0
+2026-10-17 17:29:41 rst:0xc (SW_CPU_RESET),boot:0x20c (SPI_FAST_FLASH_BOOT)

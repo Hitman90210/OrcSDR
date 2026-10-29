@@ -10,6 +10,12 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <sys/time.h>
+
+#include <esp_timer.h>
+
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 namespace orcsdr::time_service {
 namespace {
@@ -112,6 +118,54 @@ bool format_local(char* output, size_t output_size, uint32_t epoch) {
 
 void resync_system_from_rtc() {
   if (M5.Rtc.isEnabled()) M5.Rtc.setSystemTimeFromRtc();
+}
+
+bool wait_for_second_boundary(timeval* out) {
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    gettimeofday(out, nullptr);
+    const uint32_t wait_us = 1000000u - static_cast<uint32_t>(out->tv_usec);
+    if (wait_us > 3000u) vTaskDelay(pdMS_TO_TICKS((wait_us - 2000u) / 1000u));
+    do {
+      gettimeofday(out, nullptr);
+    } while (out->tv_usec > 500000);   // spin the last couple of milliseconds until the second rolls over
+    if (out->tv_usec < 20000) return true;  // just past the boundary: write this second now
+    // A late wake-up missed the boundary (we are mid-second): writing now would move the clock by the fraction, so wait for the next one.
+  }
+  return false;   // never landed on a boundary: the caller must not write the RTC as if it had
+}
+
+bool step_ms(int32_t delta_ms, int32_t* applied_ms) {
+  if (applied_ms != nullptr) *applied_ms = 0;
+  if (!g_wallclock_valid.load(std::memory_order_acquire) || !M5.Rtc.isEnabled()) return false;
+  timeval tv{};
+  gettimeofday(&tv, nullptr);
+  const timeval wall0 = tv;
+  const int64_t mono0 = esp_timer_get_time();
+  // How far the wall clock really moved by the time we return (wall change minus elapsed monotonic time), on success and on a rollback alike.
+  const auto finish = [&](bool ok) {
+    if (applied_ms != nullptr) {
+      timeval now{};
+      gettimeofday(&now, nullptr);
+      const int64_t wall_ms = (static_cast<int64_t>(now.tv_sec - wall0.tv_sec) * 1000000 + (now.tv_usec - wall0.tv_usec)) / 1000;
+      const int64_t mono_ms = (esp_timer_get_time() - mono0) / 1000;
+      *applied_ms = static_cast<int32_t>(wall_ms - mono_ms);
+    }
+    return ok;
+  };
+  int64_t us = static_cast<int64_t>(tv.tv_sec) * 1000000 + tv.tv_usec + static_cast<int64_t>(delta_ms) * 1000;
+  const time_t stepped = static_cast<time_t>(us / 1000000);
+  if (!valid_epoch(stepped)) return false;
+  timeval target{};
+  target.tv_sec = stepped;
+  target.tv_usec = static_cast<suseconds_t>(us % 1000000);
+  if (settimeofday(&target, nullptr) != 0) return finish(false);
+  // Same discipline as the network sync: write the RTC on a second boundary so it is not left off by the fraction of a second.
+  const bool at_boundary = wait_for_second_boundary(&tv);
+  const bool ok = at_boundary && set_utc(static_cast<uint32_t>(tv.tv_sec));
+  if (!ok) {   // leave the clocks in step with each other: the RTC (unchanged) wins; applied_ms then reports that rollback to the caller
+    resync_system_from_rtc();
+  }
+  return finish(ok);
 }
 
 bool format_utc(char* output, size_t output_size, uint32_t epoch) {

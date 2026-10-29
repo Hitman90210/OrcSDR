@@ -15,7 +15,13 @@ param(
   # Enables authenticated C6-only power fault injection. Never ship.
   [switch]$C6FaultTest,
   # Logs receive-interface callbacks for the Settings Wi-Fi crash investigation.
-  [switch]$WifiRxDiag
+  [switch]$WifiRxDiag,
+  # Logs the pre-app DMA reservation budget. Test builds only; never ship.
+  [switch]$MapStartupDiag,
+  # Host artifact only. Inclusion in flash_args does not flash a device.
+  [string]$WorldMap,
+  [string]$MapCatalogBaseUrl = 'https://github.com/hardcoreerik/OrcMaps/releases/download/maps-catalog-v1',
+  [string]$MapCatalogPublicKeyFile = (Join-Path $PSScriptRoot '..\main\maps_production_public.pem')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -76,12 +82,16 @@ $buildDir = 'build-native-hosted3'
 New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
 Copy-Item -LiteralPath 'sdkconfig.defaults' -Destination (Join-Path $buildDir 'sdkconfig') -Force
 $configureArgs = @('-B', $buildDir, '-D', "SDKCONFIG=$buildDir/sdkconfig",
+                   '-D', "ORCSDR_WORLD_MAP=$WorldMap",
+                   '-D', "ORCSDR_MAP_CATALOG_BASE_URL=$MapCatalogBaseUrl",
+                   '-D', "ORCSDR_MAP_CATALOG_PUBLIC_KEY_FILE=$MapCatalogPublicKeyFile",
                    '-D', 'SDKCONFIG_DEFAULTS=sdkconfig.defaults',
                    '-D', "ORCSDR_DSP_AB=$(if ($DspAb) { 1 } else { 0 })",
                    '-D', "ORCSDR_DSP_STAGE_TIMING=$(if ($NoDspStageTiming) { 0 } else { 1 })",
                    '-D', "ORCSDR_DSP_LAB=$(if ($DspLab) { 1 } else { 0 })",
                    '-D', "ORCSDR_C6_FAULT_TEST=$(if ($C6FaultTest) { 1 } else { 0 })",
-                   '-D', "ORCSDR_WIFI_RX_DIAG=$(if ($WifiRxDiag) { 1 } else { 0 })")
+                   '-D', "ORCSDR_WIFI_RX_DIAG=$(if ($WifiRxDiag) { 1 } else { 0 })",
+                   '-D', "ORCSDR_MAP_STARTUP_DIAG=$(if ($MapStartupDiag) { 1 } else { 0 })")
 if ($resolvedC6Firmware) {
   $configureArgs += @('-D', "C6_FIRMWARE_BIN=$resolvedC6Firmware")
 }
@@ -155,3 +165,5 @@ foreach ($line in $required) {
 
 idf.py -B $buildDir build
 if ($LASTEXITCODE -ne 0) { throw "ESP-IDF build failed with exit code $LASTEXITCODE." }
+
+# The CMake ALL target verifies OrcMaps' linked miniz symbols before success.

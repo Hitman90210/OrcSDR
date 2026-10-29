@@ -1,0 +1,13 @@
+Test project F:/Ai/OrcSDR-Temp/maps-integration-completion/.local/maps/pipeline-host
+    Start 1: sd_dma_buffer
+1/1 Test #1: sd_dma_buffer ....................***Failed    0.03 sec
+FAILED: !accepts(0, at(0x30100100), 512)
+
+
+0% tests passed, 1 tests failed out of 1
+
+Total Test time (real) =   0.04 sec
+
+The following tests FAILED:
+	  1 - sd_dma_buffer (Failed)
+Errors while running CTest

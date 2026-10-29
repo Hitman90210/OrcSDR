@@ -1,0 +1,10 @@
+{
+  "users": 20000,
+  "archive_bytes": 543380195,
+  "one_copy_each_bytes": 10867603900000,
+  "one_copy_each_decimal_TB": 10.8676039,
+  "range_4MiB_gets_per_user": 130,
+  "range_4MiB_gets_total": 2600000,
+  "ten_retained_versions_bytes": 5433801950,
+  "note": "Arithmetic only; provider rates and scope are in README. No large archive read, copy or publication."
+}

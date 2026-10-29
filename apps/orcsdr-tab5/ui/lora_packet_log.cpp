@@ -1,10 +1,68 @@
 #include "lora_packet_log.hpp"
 #include "orcsdr_storage.hpp"
+#include "lora_history.hpp"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstring>
 
 namespace orcsdr::lora_log {
+namespace {
+constexpr char kCsvHeader[] = "uptime_ms,wallclock_valid,wallclock_source,received_utc,frequency_hz,from,to,packet_id,port,snr_tenths,signal_tenths,latitude_e7,longitude_e7,text,short_name,long_name,encrypted,from_host\n";
+}
+
+AppendResult append_record(storage::File& journal, storage::File& csv,
+                          const Record& record, AppendCheckpoint& checkpoint,
+                          char* buffer, size_t capacity) {
+  if(!journal || !csv) return {"append_unavailable",0};
+  const size_t journal_bytes=lora_history::format_line(record,buffer,capacity);
+  if(!journal_bytes)return {"journal_format",0};
+  const size_t csv_bytes=format_csv(buffer,capacity,record);
+  if(!csv_bytes)return {"csv_format",0};
+  errno=0;
+  const size_t journal_size=journal.size();
+  if(errno)return {"journal_size",errno};
+  errno=0;
+  const size_t csv_size=csv.size();
+  if(errno)return {"csv_size",errno};
+  if(checkpoint.valid) {
+    // Only this record's uncommitted suffix belongs to this writer.
+    if(journal_size<checkpoint.journal_begin || journal_size>checkpoint.journal_end ||
+       csv_size<checkpoint.csv_begin || csv_size>checkpoint.csv_end)
+      return {"rollback_bounds",EIO};
+    errno=0;
+    if(!journal.truncate(checkpoint.journal_begin))return {"journal_rollback",errno};
+    errno=0;
+    if(!csv.truncate(checkpoint.csv_begin))return {"csv_rollback",errno};
+  } else {
+    const size_t header_bytes=csv_size==0?sizeof(kCsvHeader)-1:0;
+    if(journal_bytes>SIZE_MAX-journal_size || csv_bytes>SIZE_MAX-header_bytes ||
+       csv_bytes+header_bytes>SIZE_MAX-csv_size)return {"checkpoint_overflow",EOVERFLOW};
+    checkpoint={journal_size,csv_size,journal_size+journal_bytes,
+                csv_size+header_bytes+csv_bytes,true};
+  }
+  errno=0;
+  if(!journal.seek(checkpoint.journal_begin) || !csv.seek(checkpoint.csv_begin))
+    return {"append_seek",errno};
+  lora_history::format_line(record,buffer,capacity);
+  errno=0;
+  if(journal.write(reinterpret_cast<const uint8_t*>(buffer),journal_bytes)!=journal_bytes)
+    return {"journal_write",errno};
+  if(checkpoint.csv_begin==0) {
+    errno=0;
+    if(csv.print(kCsvHeader)!=sizeof(kCsvHeader)-1)return {"csv_header",errno};
+  }
+  format_csv(buffer,capacity,record);
+  errno=0;
+  if(csv.write(reinterpret_cast<const uint8_t*>(buffer),csv_bytes)!=csv_bytes)
+    return {"csv_write",errno};
+  errno=0;
+  if(!journal.sync())return {"journal_sync",errno};
+  errno=0;
+  if(!csv.sync())return {"csv_sync",errno};
+  checkpoint={};
+  return {};
+}
 
 size_t format_csv(char* output, size_t output_size, const Record& record) {
   if (output == nullptr || output_size < 4) return 0;

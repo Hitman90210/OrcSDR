@@ -1,0 +1,195 @@
+cmake_minimum_required(VERSION 3.16)
+project(orcsdr_maps_tests LANGUAGES C CXX)
+set(CMAKE_CXX_STANDARD 17)
+set(ORCMAPS_ROOT "" CACHE PATH "Reviewed OrcMaps checkout")
+if(NOT EXISTS "${ORCMAPS_ROOT}/include/orcmap/pmtiles.hpp")
+  message(FATAL_ERROR "Set ORCMAPS_ROOT to the reviewed OrcMaps checkout")
+endif()
+set(ui "${CMAKE_CURRENT_SOURCE_DIR}/../../ui")
+set(engine "${ORCMAPS_ROOT}")
+add_executable(orcsdr_maps_tests
+  map_screen_tests.cpp "${ui}/map_preferences.cpp" "${ui}/text_editor.cpp" "${ui}/map_screen.cpp" "${ui}/map_serial.cpp" "${ui}/setup_ui.cpp" "${ui}/settings_app.cpp"
+  "${ui}/screen_controller.cpp" "${ui}/receiver_location.cpp"
+  "${ui}/focus_nav.cpp" "${ui}/keyboard_input.cpp" "${ui}/clock_settings.cpp"
+  map_pipeline_tests.cpp map_inventory_tests.cpp map_world_tests.cpp "${ui}/map_pipeline.cpp" "${ui}/map_inventory.cpp"
+  "${engine}/src/core/geo.cpp" "${engine}/src/core/viewport.cpp"
+  "${engine}/src/core/location_picker.cpp"
+  "${engine}/src/core/pack.cpp" "${engine}/src/core/pack_json.cpp" "${engine}/src/core/pack_discovery.cpp"
+  "${engine}/src/tiles/pmtiles_reader.cpp" "${engine}/src/tiles/compression.cpp"
+  "${engine}/src/tiles/mvt_decoder.cpp" "${engine}/src/tiles/mvt_stream.cpp"
+  "${engine}/src/tiles/feature_replay.cpp"
+  "${engine}/src/tiles/mvt_translate.cpp" "${engine}/src/tiles/mvt_classify_experimental.cpp"
+  "${engine}/src/render/style.cpp" "${engine}/src/render/renderer.cpp" "${engine}/src/render/clip.cpp"
+  "${engine}/src/render/labels.cpp"
+  "${engine}/adapters/host/file_byte_source.cpp" "${engine}/adapters/host/framebuffer_target.cpp"
+  "${engine}/third_party/miniz/miniz.c" "${engine}/third_party/miniz/miniz_tinfl.c")
+target_include_directories(orcsdr_maps_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ui_stubs" "${ui}" "${engine}/include"
+  "${engine}/adapters/host" "${engine}/third_party/miniz")
+target_compile_definitions(orcsdr_maps_tests PRIVATE MINIZ_NO_DEFLATE_APIS
+  MINIZ_NO_ZLIB_APIS MINIZ_NO_ARCHIVE_APIS _CRT_SECURE_NO_WARNINGS)
+if(MSVC)
+  target_compile_options(orcsdr_maps_tests PRIVATE /UNDEBUG /EHsc)
+else()
+  target_compile_options(orcsdr_maps_tests PRIVATE -UNDEBUG)
+endif()
+enable_testing()
+add_executable(orcsdr_map_download_notice_tests map_download_notice_tests.cpp
+  "${ui}/map_download_notice.cpp" "${ui}/screen_controller.cpp" "${ui}/focus_nav.cpp")
+target_include_directories(orcsdr_map_download_notice_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ui_stubs" "${ui}")
+if(MSVC)
+  target_compile_options(orcsdr_map_download_notice_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_map_download_notice_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME map_download_notice COMMAND orcsdr_map_download_notice_tests)
+add_executable(orcsdr_map_feature_cache_tests map_feature_cache_tests.cpp
+  "${engine}/src/tiles/feature_replay.cpp")
+target_include_directories(orcsdr_map_feature_cache_tests PRIVATE "${ui}" "${engine}/include")
+if(MSVC)
+  target_compile_options(orcsdr_map_feature_cache_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_map_feature_cache_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME map_feature_cache COMMAND orcsdr_map_feature_cache_tests)
+add_executable(orcsdr_map_http_stream_tests http_stream_tests.cpp "${ui}/map_http_stream.cpp")
+target_include_directories(orcsdr_map_http_stream_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/http_stubs" "${ui}" "${engine}/include")
+if(MSVC)
+  target_compile_options(orcsdr_map_http_stream_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_map_http_stream_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME map_http_stream COMMAND orcsdr_map_http_stream_tests)
+add_executable(orcsdr_adsb_map_range_tests adsb_map_range_tests.cpp)
+target_include_directories(orcsdr_adsb_map_range_tests PRIVATE "${ui}")
+if(MSVC)
+  target_compile_options(orcsdr_adsb_map_range_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_adsb_map_range_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME adsb_map_range COMMAND orcsdr_adsb_map_range_tests)
+add_executable(orcsdr_lora_map_tests
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../../tests/lora_map_controls_tests.cpp"
+  "${ui}/lora_dashboard.cpp" "${ui}/map_view.cpp" "${ui}/focus_nav.cpp" "${ui}/waterfall_style.cpp"
+  "${engine}/src/core/geo.cpp" "${engine}/src/core/viewport.cpp")
+target_include_directories(orcsdr_lora_map_tests PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../../tests/ft8_ui_stubs"
+  "${CMAKE_CURRENT_SOURCE_DIR}/ui_stubs" "${ui}" "${engine}/include")
+if(MSVC)
+  target_compile_options(orcsdr_lora_map_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_lora_map_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME lora_map_controls COMMAND orcsdr_lora_map_tests)
+add_executable(orcsdr_map_view_tests map_view_tests.cpp "${ui}/map_view.cpp")
+target_include_directories(orcsdr_map_view_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ui_stubs" "${ui}" "${engine}/include")
+if(MSVC)
+  target_compile_options(orcsdr_map_view_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_map_view_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME map_view COMMAND orcsdr_map_view_tests)
+add_executable(orcsdr_map_preview_tests map_preview_tests.cpp
+  "${engine}/src/core/geo.cpp" "${engine}/src/core/viewport.cpp")
+target_include_directories(orcsdr_map_preview_tests PRIVATE "${ui}" "${engine}/include")
+if(MSVC)
+  target_compile_options(orcsdr_map_preview_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_map_preview_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME map_preview COMMAND orcsdr_map_preview_tests)
+# Optional actual-M5GFX byte-order regression; no copied vendor implementation.
+set(M5GFX_ROOT "" CACHE PATH "Resolved M5GFX component for format checks")
+if(M5GFX_ROOT)
+  if(NOT EXISTS "${M5GFX_ROOT}/src/lgfx/v1/misc/pixelcopy.cpp")
+    message(FATAL_ERROR "M5GFX_ROOT must contain the resolved M5GFX component")
+  endif()
+  add_executable(orcsdr_map_preview_format_tests map_preview_format_tests.cpp
+    "${M5GFX_ROOT}/src/lgfx/v1/misc/pixelcopy.cpp")
+  target_include_directories(orcsdr_map_preview_format_tests PRIVATE "${M5GFX_ROOT}/src")
+  add_test(NAME map_preview_format COMMAND orcsdr_map_preview_format_tests)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(native_preview_test "${CMAKE_CURRENT_BINARY_DIR}/native_preview_test.cpp")
+  add_custom_command(OUTPUT "${native_preview_test}"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/generate_native_preview_test.py"
+      "${M5GFX_ROOT}/src/lgfx/v1/LGFXBase.cpp" "${native_preview_test}"
+    DEPENDS generate_native_preview_test.py "${M5GFX_ROOT}/src/lgfx/v1/LGFXBase.cpp"
+    VERBATIM)
+  add_executable(orcsdr_map_preview_native_tests "${native_preview_test}")
+  target_include_directories(orcsdr_map_preview_native_tests PRIVATE "${ui}" "${engine}/include" "${M5GFX_ROOT}/src")
+  if(MSVC)
+    target_compile_options(orcsdr_map_preview_native_tests PRIVATE /UNDEBUG)
+  else()
+    target_compile_options(orcsdr_map_preview_native_tests PRIVATE -UNDEBUG)
+  endif()
+  add_test(NAME map_preview_native COMMAND orcsdr_map_preview_native_tests)
+endif()
+
+add_executable(orcsdr_map_timing_tests map_timing_tests.cpp)
+target_include_directories(orcsdr_map_timing_tests PRIVATE "${ui}")
+if(MSVC)
+  target_compile_options(orcsdr_map_timing_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_map_timing_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME map_timing COMMAND orcsdr_map_timing_tests)
+add_executable(orcsdr_map_download_tests map_download_response_tests.cpp)
+target_include_directories(orcsdr_map_download_tests PRIVATE "${ui}")
+add_test(NAME map_download_response COMMAND orcsdr_map_download_tests)
+add_executable(orcsdr_setup_ui_tests setup_ui_tests.cpp "${ui}/setup_ui.cpp"
+  "${ui}/text_editor.cpp" "${ui}/keyboard_input.cpp" "${ui}/focus_nav.cpp")
+target_include_directories(orcsdr_setup_ui_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ui_stubs" "${ui}")
+if(MSVC)
+  target_compile_options(orcsdr_setup_ui_tests PRIVATE /UNDEBUG /EHsc)
+else()
+  target_compile_options(orcsdr_setup_ui_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME setup_ui COMMAND orcsdr_setup_ui_tests)
+add_executable(orcsdr_sd_dma_tests ../sdmmc_dma_buffer_tests.cpp)
+target_include_directories(orcsdr_sd_dma_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/ui_stubs" "${ui}")
+if(MSVC)
+  target_compile_options(orcsdr_sd_dma_tests PRIVATE /UNDEBUG /EHsc)
+else()
+  target_compile_options(orcsdr_sd_dma_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME sd_dma_buffer COMMAND orcsdr_sd_dma_tests)
+add_executable(orcsdr_setup_tests setup_flow_tests.cpp)
+target_include_directories(orcsdr_setup_tests PRIVATE "${ui}")
+if(MSVC)
+  target_compile_options(orcsdr_setup_tests PRIVATE /UNDEBUG /EHsc)
+else()
+  target_compile_options(orcsdr_setup_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME setup_flow COMMAND orcsdr_setup_tests)
+add_executable(orcsdr_location_store_tests location_store_tests.cpp)
+target_include_directories(orcsdr_location_store_tests PRIVATE "${ui}")
+if(MSVC)
+  target_compile_options(orcsdr_location_store_tests PRIVATE /UNDEBUG /EHsc)
+else()
+  target_compile_options(orcsdr_location_store_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME location_store COMMAND orcsdr_location_store_tests)
+add_test(NAME map_pipeline COMMAND orcsdr_maps_tests "${engine}/tests/fixtures/tiny-gzip.pmtiles"
+  "${engine}/examples/m5stack-tab5/test-pack/springfield-97477.manifest.json")
+set(ORCSDR_WORLD_FIXTURE "" CACHE FILEPATH "Verified optional world archive")
+if(ORCSDR_WORLD_FIXTURE)
+  file(SHA256 "${ORCSDR_WORLD_FIXTURE}" world_sha)
+  if(NOT world_sha STREQUAL "9aea08772bacf1f024d1da90cc52aa8fcf0b0e37405415dc7c91e75e56596f0f")
+    message(FATAL_ERROR "Unexpected world fixture hash")
+  endif()
+  add_test(NAME world_geometry COMMAND orcsdr_maps_tests "${engine}/tests/fixtures/tiny-gzip.pmtiles"
+    "${engine}/examples/m5stack-tab5/test-pack/springfield-97477.manifest.json" "${ORCSDR_WORLD_FIXTURE}")
+endif()
+
+add_executable(orcsdr_map_preferences_tests map_preferences_tests.cpp "${ui}/map_preferences.cpp")
+target_include_directories(orcsdr_map_preferences_tests PRIVATE "${ui}" "${CMAKE_CURRENT_SOURCE_DIR}/ui_stubs")
+add_test(NAME map_preferences COMMAND orcsdr_map_preferences_tests)
+
+add_executable(orcsdr_map_read_cache_tests map_read_cache_tests.cpp)
+target_include_directories(orcsdr_map_read_cache_tests PRIVATE "${ui}" "${engine}/include")
+if(MSVC)
+  target_compile_options(orcsdr_map_read_cache_tests PRIVATE /UNDEBUG)
+else()
+  target_compile_options(orcsdr_map_read_cache_tests PRIVATE -UNDEBUG)
+endif()
+add_test(NAME map_read_cache COMMAND orcsdr_map_read_cache_tests)

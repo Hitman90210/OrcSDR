@@ -9,7 +9,7 @@ struct Snapshot {
   int32_t latitude_e7 = 0;
   int32_t longitude_e7 = 0;
   char label[40]{};
-  char map_pack[40]{};
+  char map_pack[256]{};
   uint32_t revision = 0;
 };
 

@@ -1,6 +1,11 @@
+#include <esp_attr.h>
 #include "ft8_dashboard.hpp"
+#include "clock_sync_status.hpp"
 #include "ft8_conditions.hpp"
-#include "ft8_world_data.hpp"
+#include "ft8_map_source.hpp"
+#include "ft8_world_projection.hpp"
+#include "map_preferences.hpp"
+#include "memory_reclaim.hpp"
 
 #include "dashboard_audio_control.hpp"
 #include "ft8_decoder_backend.hpp"
@@ -10,6 +15,9 @@
 
 #include <M5Unified.h>
 #include <esp_heap_caps.h>
+#ifdef ESP_PLATFORM
+#include <esp_attr.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -37,11 +45,17 @@ constexpr int kTabCount = 6;
 constexpr int kTabW = 1280 / kTabCount;
 constexpr Rect kBody{24, 104, 1232, 514};
 constexpr Rect kClear{1088, 556, 144, 46};
+constexpr Rect kMapLabels{690, 110, 190, 44};
 constexpr Rect kNewer{760, 556, 150, 46};
 constexpr Rect kOlder{922, 556, 150, 46};
 constexpr size_t kDecodePageSize = 8;
 
 Snapshot g_snapshot{};
+// UI updates are single-owner; keep the full comparison copy off the main stack.
+#ifdef ESP_PLATFORM
+EXT_RAM_BSS_ATTR
+#endif
+Snapshot g_previous_snapshot;
 bool g_active = false;
 bool g_sprite_ready = false;
 void (*g_header_hook)() = nullptr;
@@ -69,6 +83,7 @@ constexpr Rect kGainChip{1036, 104, 220, 58};
 constexpr Rect kGainPanel{180, 104, 920, 512};
 constexpr Rect kGainAuto{200, 150, 200, 56};
 constexpr Rect kGainManual{420, 150, 200, 56};
+constexpr Rect kGainRtlAgc{640, 150, 220, 56};
 constexpr Rect kGainClose{880, 150, 200, 56};
 constexpr Rect kGainMinus{200, 262, 70, 64};
 constexpr Rect kGainPlus{1010, 262, 70, 64};
@@ -90,6 +105,8 @@ constexpr Rect kModePanel{246, 168, 540, 132};
 Rect mode_pick_rect(size_t i) { return {262 + static_cast<int>(i) * 172, 218, 164, 64}; }
 bool overlay_open() { return g_tune_open || g_info_open || g_mode_open || g_station_open || g_gain_open; }
 constexpr Rect kDialChip{24, 104, 212, 58};
+constexpr Rect kClockChipLive{626, 104, 190, 58};    // tap = open time settings
+constexpr Rect kClockChipDecodes{824, 104, 204, 58};
 constexpr Rect kTunePanel{240, 104, 800, 512};
 constexpr Rect kTuneEntry{260, 168, 300, 46};
 constexpr Rect kTuneEnter{260, 462, 300, 52};
@@ -238,8 +255,8 @@ void draw_header() {
   // repaints only its own band; the screen is never cleared.
   M5.Display.fillRect(0, 0, 1280, 92, TFT_BLACK);
   audio_header::draw_brand(family_brand(g_snapshot.mode));
-  M5.Display.drawFastVLine(365, 18, 66, kCyan);
-  text(family_title(g_snapshot.mode), 392, 38, TFT_WHITE, 4, middle_left);
+  M5.Display.drawFastVLine(audio_header::kTitleDividerX, 18, 66, kCyan);
+  text(family_title(g_snapshot.mode), audio_header::kTitleTextX, 38, TFT_WHITE, 4, middle_left);
   text("RECEIVE ONLY", 600, 40, kMuted, 1, middle_left);
 
   const BandPreset* preset = band(g_snapshot.selected_band);
@@ -272,6 +289,20 @@ void chip(const Rect& r, const char* title, const char* value, uint16_t color = 
   frame(r, kGrid);
   text(title, cx(r), r.y + 16, kCyan, 0);
   text(value, cx(r), r.y + 42, color, 2);
+}
+
+// The CLOCK chip shows whether the clock is known to be right (a recent network sync), not just whether a date exists.
+void draw_clock_chip(const Rect& r) {
+  const auto level = static_cast<clock_sync::Level>(g_snapshot.clock_sync_level);
+  char title[40]{};
+  char value[24]{};
+  clock_sync::chip_text(level, g_snapshot.clock_sync_age_s, title, sizeof(title), value, sizeof(value));
+  const uint16_t color = (level == clock_sync::Level::synced || level == clock_sync::Level::signal) ? kGreen : level == clock_sync::Level::syncing ? kCyan : kAmber;
+  chip(r, title, value, color);
+}
+
+uint32_t clock_chip_key(const Snapshot& v) {
+  return clock_sync::display_key(static_cast<clock_sync::Level>(v.clock_sync_level), v.clock_sync_age_s);
 }
 
 const Decode* decode_newest(size_t offset) {
@@ -421,7 +452,7 @@ void draw_waterfall() {
   const size_t rows = std::min<size_t>(g_snapshot.wf_rows, 112);
   const size_t bins = g_snapshot.wf_bins;
   if (g_snapshot.waterfall == nullptr || rows == 0 || bins == 0 || g_snapshot.wf_sequence == 0) return;
-  static uint16_t line[kWidth * kRowPx];
+  EXT_RAM_BSS_ATTR static uint16_t line[kWidth * kRowPx];
   const uint32_t seq = g_snapshot.wf_sequence;
   const size_t visible = std::min<size_t>(rows, seq);
   for (size_t r = 0; r < visible; ++r) {
@@ -475,7 +506,7 @@ void scroll_waterfall(size_t max_rows) {
     }
   }
   M5.Display.scroll(0, static_cast<int>(fresh) * kRowPx);
-  static uint16_t line[kWidth];
+  EXT_RAM_BSS_ATTR static uint16_t line[kWidth];
   for (size_t k = 0; k < fresh; ++k) {
     const uint8_t* src = g_snapshot.waterfall + ((target - 1 - k) % rows) * bins;
     for (int x = 0; x < kWidth; ++x) line[x] = waterfall_color(src[static_cast<size_t>(x) * bins / kWidth]);
@@ -517,8 +548,7 @@ void draw_live() {
   chip(kModeChip, "MODE - TAP", mode_name(g_snapshot.mode),
        mode_experimental(g_snapshot.mode) ? kAmber : TFT_WHITE);
   chip({406, 104, 210, 58}, "AUDIO PASS", "200-3000 Hz", TFT_WHITE);
-  chip({626, 104, 190, 58}, "CLOCK", g_snapshot.clock_valid ? "LOCKED" : "NEEDED",
-       g_snapshot.clock_valid ? kGreen : kAmber);
+  draw_clock_chip(kClockChipLive);
   chip({826, 104, 200, 58}, "DECODER", decoder_name(), decoder_color());
   if (g_snapshot.gain_auto) std::snprintf(value, sizeof(value), "AUTO");   // the readout under AUTO is not the effective gain
   else std::snprintf(value, sizeof(value), "MAN %.1f dB", g_snapshot.gain_tenth_db / 10.0);
@@ -604,8 +634,7 @@ void draw_decodes() {
     else std::snprintf(value, sizeof(value), "%s", g_snapshot.station_known ? "--" : "SET LOCATION");
     chip({624, 104, 190, 58}, "FARTHEST", value, g_snapshot.station_known ? kGreen : kAmber);
   }
-  chip({824, 104, 204, 58}, "CLOCK", g_snapshot.clock_valid ? "LOCKED" : "NEEDED",
-       g_snapshot.clock_valid ? kGreen : kAmber);
+  draw_clock_chip(kClockChipDecodes);
   chip({1038, 104, 218, 58}, "DECODER", decoder_name(), decoder_color());
 
   const Rect list{24, 176, 1232, 442};
@@ -669,149 +698,189 @@ void draw_decodes() {
   button(kClear, "CLEAR");
 }
 
-// The map frames the receiver and the stations that were decoded (with a margin), or the whole world when there is nothing to frame.
-struct MapView {
-  float lon_min = -180.0f, lat_max = 90.0f, lon_span = 360.0f, lat_span = 180.0f;
-};
-MapView g_map_view{};
 
-void map_point(const GeoPoint& p, int* x, int* y) {
-  constexpr int left = 50, top = 158, width = 824, height = 420;
-  *x = left + static_cast<int>((p.longitude - g_map_view.lon_min) / g_map_view.lon_span * width);
-  *y = top + static_cast<int>((g_map_view.lat_max - p.latitude) / g_map_view.lat_span * height);
-}
+M5Canvas g_map_canvas(&M5.Display); // FT8's completed, overlay-composited whole-world frame
+M5Canvas g_world_canvas(&M5.Display); // one OrcMaps Mercator world; NEVER sampled while pending
+bool g_map_canvas_ready = false, g_world_canvas_ready = false;
+bool g_map_composed = false, g_map_composed_labels = true;
+uint32_t g_map_revision_seen = 0;
+uint32_t g_map_poll_ms = 0, g_map_poll_revision = 0;
+bool g_map_pending = false;
+bool g_map_memory_retry = false, g_map_memory_attempted = false;
+uint32_t g_map_memory_attempt_ms = 0;
+constexpr uint32_t kMapMemoryRetryMs = 2000;
+char g_map_attribution[192]{};
+bool g_map_you_valid = false;
+int g_map_you_x = 0, g_map_you_y = 0;
 
-// The MAP tab always shows the whole world (owner's preference); the view stays a variable so zoom/pan can be added later.
-void fit_map_view() { g_map_view = MapView{}; }
-
-// Offline world basemap in the fitted view, styled like the OrcMaps dark theme: slate land on navy water, thin borders.
-// Points are 0.01 degree units. Land is filled with an even-odd scanline pass; polygons never cross the antimeridian.
-// Draws on `d`, whose origin is the screen point (sub_x, sub_y), so the whole map can be composed off-screen.
-void draw_world(lgfx::LovyanGFX& d, int sub_x, int sub_y, int left, int top, int width, int height) {
-  constexpr uint16_t kWater = 0x1105, kLand = 0x1082, kCoast = 0x2A2A, kBorder = 0x2124;
-  // Projected points for this frame, 16 KB: kept in PSRAM (allocated once) because internal RAM is scarce.
-  static int16_t* projected = static_cast<int16_t*>(heap_caps_malloc(2u * 4096u * sizeof(int16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (projected == nullptr) return;
-  int16_t* const sx = projected;
-  int16_t* const sy = projected + 4096;
-  const size_t points = std::min<size_t>(kWorldPointCount, 4096);
-  for (size_t i = 0; i < points; ++i) {
-    int x = 0, y = 0;
-    map_point(GeoPoint{kWorldPoints[2 * i + 1] * 0.01f, kWorldPoints[2 * i] * 0.01f, 0}, &x, &y);
-    sx[i] = static_cast<int16_t>(std::max(-30000, std::min(30000, x)));
-    sy[i] = static_cast<int16_t>(std::max(-30000, std::min(30000, y)));
-  }
-  d.fillRect(left - sub_x, top - sub_y, width, height, kWater);
-  d.setClipRect(left - sub_x, top - sub_y, width, height);
-  for (int y = top; y < top + height; ++y) {
-    int xs[96];
-    int count = 0;
-    const int yc = y * 2 + 1;   // sample at the pixel centre in half-pixel units
-    for (size_t s = 0; s < kWorldSegmentCount && count < 94; ++s) {
-      const WorldSegment& seg = kWorldSegments[s];
-      if (seg.kind != 0) continue;
-      for (uint16_t i = 0; i + 1 < seg.count && count < 94; ++i) {
-        const size_t a = seg.start + i, b = a + 1;
-        const int y0 = sy[a] * 2, y1 = sy[b] * 2;
-        if ((y0 <= yc) == (y1 <= yc)) continue;
-        xs[count++] = sx[a] + static_cast<int>(static_cast<int32_t>(sx[b] - sx[a]) * (yc - y0) / (y1 - y0));
+void draw_globe(lgfx::LovyanGFX& d, int sub_x, int sub_y, bool basemap) {
+  constexpr int left=50, top=158, width=824, height=420;
+  d.fillRect(left-sub_x,top-sub_y,width,height,kPanel);
+  if(basemap) {
+    // One geographic revolution: latitude comes from the output row centre,
+    // OrcMaps' Mercator scale from the fixed source square. No invented polar coastlines.
+    // Typed native RGB565 rows preserve color independently of destination
+    // byte-swap settings. Reuse PSRAM scratch instead of per-pixel driver calls.
+#ifdef ESP_PLATFORM
+    EXT_RAM_BSS_ATTR
+#endif
+    static uint16_t source_row[world_map::kMercatorSide];
+#ifdef ESP_PLATFORM
+    EXT_RAM_BSS_ATTR
+#endif
+    static lgfx::rgb565_t output_row[width];
+    const bool swap=g_world_canvas.getSwapBytes();
+    g_world_canvas.setSwapBytes(true);
+    int previous_source_y=-1;
+    for(int row=0;row<height;++row) {
+      int ignored=0,src_y=0;
+      if(!world_map::source_pixel(0,row,width,height,&ignored,&src_y))continue;
+      if(src_y!=previous_source_y) {
+        g_world_canvas.readRect(0,src_y,world_map::kMercatorSide,1,source_row);
+        previous_source_y=src_y;
+        for(int col=0;col<width;++col) {
+          const int src_x=((2*col+1)*world_map::kMercatorSide)/(2*width);
+          output_row[col].raw=source_row[src_x];
+        }
       }
+      d.pushImage(left-sub_x,top+row-sub_y,width,1,output_row);
     }
-    for (int i = 1; i < count; ++i) {   // insertion sort: few crossings per row
-      const int v = xs[i];
-      int j = i - 1;
-      while (j >= 0 && xs[j] > v) { xs[j + 1] = xs[j]; --j; }
-      xs[j + 1] = v;
-    }
-    for (int i = 0; i + 1 < count; i += 2) {
-      const int x0 = std::max(left, xs[i]), x1 = std::min(left + width - 1, xs[i + 1]);
-      if (x1 >= x0) d.drawFastHLine(x0 - sub_x, y - sub_y, x1 - x0 + 1, kLand);
-    }
+    g_world_canvas.setSwapBytes(swap);
   }
-  for (size_t s = 0; s < kWorldSegmentCount; ++s) {
-    const WorldSegment& seg = kWorldSegments[s];
-    for (uint16_t i = 0; i + 1 < seg.count; ++i) {
-      const size_t a = seg.start + i, b = a + 1;
-      if (a >= points || b >= points) break;
-      d.drawLine(sx[a] - sub_x, sy[a] - sub_y, sx[b] - sub_x, sy[b] - sub_y, seg.kind == 0 ? kCoast : kBorder);
-    }
+  d.drawRect(left-sub_x,top-sub_y,width,height,kGrid);
+  for(int lon=-180;lon<180;lon+=30) {
+    int x=0,y=0;
+    if(world_map::project(0,lon,width,height,&x,&y))
+      d.drawFastVLine(left+x-sub_x,top-sub_y,height,kGrid);
   }
-  d.clearClipRect();
+  for(int lat=-90;lat<=90;lat+=30) {
+    int x=0,y=0;
+    if(world_map::project(lat,0,width,height,&x,&y))
+      d.drawFastHLine(left-sub_x,top+y-sub_y,width,kGrid);
+  }
+  const size_t count=std::min(g_snapshot.decode_count,kDecodeCapacity);
+  for(size_t i=0;i<count;++i) {
+    const Decode& dec=g_snapshot.decodes[i];
+    if(!maidenhead_valid(dec.grid))continue;
+    GeoPoint station{};
+    if(!maidenhead_center(dec.grid,&station))continue;
+    int x=0,y=0;
+    if(!world_map::project(station.latitude,station.longitude,width,height,&x,&y))continue;
+    d.fillCircle(left+x-sub_x,top+y-sub_y,4,dec.kind==DecodeKind::cq?kGreen:kYellow);
+  }
+  // Capture the label anchor with the same snapshot as the composed pixels.
+  // Do not recompute from a newer receiver snapshot over a retained old frame.
+  g_map_you_valid=g_snapshot.station_known &&
+      world_map::project(g_snapshot.station_latitude,g_snapshot.station_longitude,
+                         width,height,&g_map_you_x,&g_map_you_y);
+  if(g_map_you_valid) {
+    const int x=left+g_map_you_x-sub_x,y=top+g_map_you_y-sub_y;
+    d.drawCircle(x,y,7,TFT_WHITE);
+    d.drawFastHLine(x-11,y,22,TFT_WHITE);
+    d.drawFastVLine(x,y-11,22,TFT_WHITE);
+  }
 }
 
-M5Canvas g_map_canvas(&M5.Display);   // the map is composed here and pushed in one go: no blank-then-paint flash on updates
-bool g_map_canvas_ready = false;
+void draw_map(bool frame_only=false) {
+  const Rect map{24,104,884,514};
+  constexpr int left=50,top=158,width=824,height=420;
+  const bool labels=maps::preferences::labels(maps::preferences::Consumer::ft8);
+  const auto now=millis();
+  const bool memory_due=!g_map_memory_attempted ||
+      static_cast<uint32_t>(now-g_map_memory_attempt_ms)>=kMapMemoryRetryMs;
+  if(memory_due && (g_map_memory_retry || !g_map_canvas_ready || !g_world_canvas_ready)) {
+    // Holders protect live captures themselves. Retry busy holders later,
+    // without requiring navigation, a decoder restart or a worker revision.
+    memory_reclaim::reclaim_all(nullptr,0,nullptr);
+    g_map_memory_attempted=true;g_map_memory_attempt_ms=now;
+    if(!g_map_canvas_ready) {
+      g_map_canvas.setPsram(true);
+      g_map_canvas.setColorDepth(16);
+      g_map_canvas_ready=g_map_canvas.createSprite(width,height)!=nullptr;
+    }
+    if(!g_world_canvas_ready) {
+      g_world_canvas.setPsram(true);
+      g_world_canvas.setColorDepth(16);
+      g_world_canvas_ready=g_world_canvas.createSprite(world_map::kMercatorSide,world_map::kMercatorSide)!=nullptr;
+    }
+    if(!g_map_canvas_ready||!g_world_canvas_ready) {
+      // A partial pair cannot display geography; return it before retrying.
+      g_map_canvas.deleteSprite();g_world_canvas.deleteSprite();
+      g_map_canvas_ready=false;g_world_canvas_ready=false;
+    }
+  }
+  // Observe the worker generation BEFORE draw: a publication racing draw()
+  // must remain visible to the next tick, not be marked as already painted.
+  const auto observed_revision=map_source::revision();
+  map_source::Result result{};
+  if(g_map_canvas_ready&&g_world_canvas_ready)result=map_source::draw(g_world_canvas,labels);
+  result.low_memory|=!g_map_canvas_ready||!g_world_canvas_ready;
+  g_map_memory_retry=result.low_memory;
+  g_map_pending=result.state==map_source::State::pending;
+  g_map_poll_ms=now;g_map_poll_revision=observed_revision;
+  if(frame_only&&g_map_pending)return; // retain the displayed frame and all static panels
+  if(g_map_canvas_ready) {
+    // A retained off-screen frame already covers the map rectangle. Redraw
+    // header and footer only; avoid blanking geography before pushSprite.
+    M5.Display.fillRect(map.x,map.y,map.w,54,kPanel);
+    M5.Display.fillRect(map.x,578,map.w,map.y+map.h-578,kPanel);
+    M5.Display.drawRoundRect(map.x,map.y,map.w,map.h,10,kCyan);
+  } else frame(map);
+  text("MAIDENHEAD GRID",42,124,kCyan,1,middle_left);
+  text("WHOLE WORLD",664,124,kMuted,0,middle_right);
 
-void draw_map() {
-  fit_map_view();
-  const Rect map{24, 104, 884, 514};
-  frame(map);
-  text("MAIDENHEAD GRID", 42, 124, kCyan, 1, middle_left);
-  {
-    char scale[48];
-    std::snprintf(scale, sizeof(scale), "Station-reported locators only   grid %s", g_map_view.lon_span >= 359.0f ? "world" : "fitted");
-    text(scale, 890, 124, kMuted, 1, middle_right);
-  }
-  constexpr int left = 50, top = 158, width = 824, height = 420;
-  if (!g_map_canvas_ready) {
-    g_map_canvas.setPsram(true);
-    g_map_canvas.setColorDepth(16);
-    g_map_canvas_ready = g_map_canvas.createSprite(width, height) != nullptr;
-  }
-  lgfx::LovyanGFX& d = g_map_canvas_ready ? static_cast<lgfx::LovyanGFX&>(g_map_canvas) : static_cast<lgfx::LovyanGFX&>(M5.Display);
-  const int sub_x = g_map_canvas_ready ? left : 0, sub_y = g_map_canvas_ready ? top : 0;
-  draw_world(d, sub_x, sub_y, left, top, width, height);
-  d.drawRect(left - sub_x, top - sub_y, width, height, kGrid);
-  const float want = g_map_view.lon_span / 6.0f;   // about six grid columns across the view
-  float step = 30.0f;
-  for (float candidate : {1.0f, 2.0f, 5.0f, 10.0f, 15.0f, 20.0f, 30.0f}) {
-    if (candidate >= want) { step = candidate; break; }
-  }
-  for (float lon = std::ceil(g_map_view.lon_min / step) * step; lon < g_map_view.lon_min + g_map_view.lon_span; lon += step) {
-    int x = 0, y = 0;
-    map_point(GeoPoint{0.0f, lon, 0}, &x, &y);
-    d.drawFastVLine(x - sub_x, top - sub_y, height, kGrid);
-  }
-  for (float lat = std::ceil((g_map_view.lat_max - g_map_view.lat_span) / step) * step; lat < g_map_view.lat_max; lat += step) {
-    int x = 0, y = 0;
-    map_point(GeoPoint{lat, 0.0f, 0}, &x, &y);
-    d.drawFastHLine(left - sub_x, y - sub_y, width, kGrid);
-  }
-  const size_t n = std::min(g_snapshot.decode_count, kDecodeCapacity);
-  for (size_t i = 0; i < n; ++i) {
-    const Decode& dec = g_snapshot.decodes[i];
-    if (!maidenhead_valid(dec.grid)) continue;
-    GeoPoint point{};
-    if (!maidenhead_center(dec.grid, &point)) continue;
-    int x = 0, y = 0;
-    map_point(point, &x, &y);
-    d.fillCircle(x - sub_x, y - sub_y, 4, dec.kind == DecodeKind::cq ? kGreen : kYellow);
-  }
-  int you_x = 0, you_y = 0;
-  if (g_snapshot.station_known) {   // the receiver itself: a white ring with a cross, labelled
-    map_point(GeoPoint{g_snapshot.station_latitude, g_snapshot.station_longitude, 0}, &you_x, &you_y);
-    d.drawCircle(you_x - sub_x, you_y - sub_y, 7, TFT_WHITE);
-    d.drawFastHLine(you_x - 11 - sub_x, you_y - sub_y, 22, TFT_WHITE);
-    d.drawFastVLine(you_x - sub_x, you_y - 11 - sub_y, 22, TFT_WHITE);
-  }
-  if (g_map_canvas_ready) g_map_canvas.pushSprite(left, top);
-  if (g_snapshot.station_known) text("YOU", you_x + 14, you_y - 12, TFT_WHITE, 1, middle_left);
+  // A published revision may still be locked. Do not consume it until draw
+  // observes ready/unavailable, so the unchanged revision is retried next tick.
+  if(result.state!=map_source::State::pending)g_map_revision_seen=observed_revision;
 
-  const Rect recent{926, 104, 330, 514};
-  frame(recent, kGrid);
-  text("RECENT GRIDS", 946, 127, kCyan, 1, middle_left);
-  size_t row = 0;
-  for (size_t offset = 0; offset < n && row < 7; ++offset) {
-    const Decode* d = decode_newest(offset);
-    if (!d || !maidenhead_valid(d->grid)) continue;
-    const int y = 166 + static_cast<int>(row) * 61;
-    M5.Display.drawRoundRect(942, y, 298, 50, 7, kGrid);
-    text(d->grid, 956, y + 15, kGreen, 1, middle_left);
-    text(d->callsign[0] ? d->callsign : "--", 1050, y + 15, TFT_WHITE, 1, middle_left);
-    text(kind_name(d->kind), 956, y + 37, kMuted, 0, middle_left);
+
+  const bool ready=result.state==map_source::State::ready && g_map_canvas_ready && g_world_canvas_ready;
+  if(ready) {
+    draw_globe(g_map_canvas,left,top,true);
+    g_map_composed=true;
+    g_map_composed_labels=labels;
+    std::snprintf(g_map_attribution,sizeof(g_map_attribution),"%s",
+                  result.credit[0]?result.credit:"Made with Natural Earth");
+  } else if(!g_map_composed && g_map_canvas_ready) {
+    // A truthful grid-only frame is safe while the worker is busy or unavailable.
+    draw_globe(g_map_canvas,left,top,false);
+  }
+  if(g_map_canvas_ready)g_map_canvas.pushSprite(left,top);
+  else draw_globe(M5.Display,0,0,false); // sprite allocation failure: no stale map/coordinate mismatch
+
+  // The caption describes actual coverage, not a fictional polar basemap.
+  text(g_map_composed?g_map_attribution:"No geography available",54,594,kMuted,0,middle_left);
+  text("Polar caps: grid only",530,594,kMuted,0,middle_center);
+  const char* status=ready ? "ORCMAPS WORLD" :
+      g_map_composed ? (result.state==map_source::State::pending && labels!=g_map_composed_labels ?
+                        "APPLYING LABELS" : "LAST MAP FRAME") :
+      result.low_memory ? "LOW MEMORY - GRID ONLY" :
+      result.state==map_source::State::pending ? "LOADING WORLD" : "NO BASEMAP - GRID ONLY";
+  text(status,888,594,kMuted,0,middle_right);
+  button(kMapLabels,labels?"LABELS ON":"LABELS OFF",labels,true,1);
+
+  // The receiver marker and basemap share world_map::project; the YOU
+  // annotation is display-space only and must not move the marker.
+  if(g_map_you_valid)
+    text("YOU",std::min(left+width-34,left+g_map_you_x+14),
+         std::clamp(top+g_map_you_y-12,top+14,top+height-14),TFT_WHITE,1,middle_left);
+  const size_t n=std::min(g_snapshot.decode_count,kDecodeCapacity);
+  if(frame_only)return;
+  const Rect recent{926,104,330,514};
+  frame(recent,kGrid);
+  text("RECENT GRIDS",946,127,kCyan,1,middle_left);
+  size_t row=0;
+  for(size_t offset=0;offset<n&&row<7;++offset) {
+    const Decode* dec=decode_newest(offset);
+    if(!dec||!maidenhead_valid(dec->grid))continue;
+    const int y=166+static_cast<int>(row)*61;
+    M5.Display.drawRoundRect(942,y,298,50,7,kGrid);
+    text(dec->grid,956,y+15,kGreen,1,middle_left);
+    text(dec->callsign[0]?dec->callsign:"--",1050,y+15,TFT_WHITE,1,middle_left);
+    text(kind_name(dec->kind),956,y+37,kMuted,0,middle_left);
     ++row;
   }
-  if (row == 0) text("No decoded locators yet", cx(recent), 280, kMuted, 1);
+  if(row==0)text("No decoded locators yet",cx(recent),280,kMuted,1);
 }
 
 constexpr Rect kHunterFast{34, 144, 206, 52};
@@ -1058,6 +1127,13 @@ void setup_row(int row, const char* label, const char* value, uint16_t color) {
   text(value, 1226, y + 18, color, 2, middle_right);
 }
 
+void draw_setup_clock_row() {
+  const auto level = static_cast<clock_sync::Level>(g_snapshot.clock_sync_level);
+  char value[40]{};
+  clock_sync::long_text(level, g_snapshot.clock_sync_age_s, value, sizeof(value));
+  setup_row(kSetupStatusRow + 1, "UTC SLOT CLOCK", value, (level == clock_sync::Level::synced || level == clock_sync::Level::signal) ? kGreen : kAmber);
+}
+
 // The rows whose value follows the decoder or the clock. Repainted alone (row background first) so a status change never repaints the page.
 void draw_setup_status_rows() {
   std::printf("ORC_FT8_UI setup_rows\n");
@@ -1066,8 +1142,7 @@ void draw_setup_status_rows() {
     M5.Display.fillRect(46, y, 1188, 41, kPanel);
   }
   setup_row(kSetupStatusRow, "DECODER BINDING", decoder_name(), decoder_color());
-  setup_row(kSetupStatusRow + 1, "UTC SLOT CLOCK", g_snapshot.clock_valid ? "READY" : "NOT ESTABLISHED",
-            g_snapshot.clock_valid ? kGreen : kAmber);
+  draw_setup_clock_row();
 }
 
 // What the selected standard is, as the decoder implements it. Shown in Setup so each mode's own parameters are visible when it is selected.
@@ -1122,8 +1197,7 @@ void draw_setup() {
   setup_row(2, "DECODED MESSAGES", facts.messages, TFT_WHITE);
   setup_row(3, "SNR", facts.snr, g_snapshot.mode == DigitalMode::ft8 || g_snapshot.mode == DigitalMode::ft4 ? kGreen : kAmber);
   setup_row(kSetupStatusRow, "DECODER BINDING", decoder_name(), decoder_color());
-  setup_row(kSetupStatusRow + 1, "UTC SLOT CLOCK", g_snapshot.clock_valid ? "READY" : "NOT ESTABLISHED",
-            g_snapshot.clock_valid ? kGreen : kAmber);
+  draw_setup_clock_row();
   draw_expert_checkbox();
 }
 
@@ -1145,6 +1219,7 @@ void draw_live_dynamic(const Snapshot& previous) {
   draw_dial_chip(band(g_snapshot.selected_band) != nullptr && mode_has_band_table(g_snapshot.mode));
   char value[48];
   chip({826, 104, 200, 58}, "DECODER", decoder_name(), decoder_color());
+  if (clock_chip_key(previous) != clock_chip_key(g_snapshot)) draw_clock_chip(kClockChipLive);
   if (previous.gain_auto != g_snapshot.gain_auto || previous.gain_tenth_db != g_snapshot.gain_tenth_db) {
     if (g_snapshot.gain_auto) std::snprintf(value, sizeof(value), "AUTO");
     else std::snprintf(value, sizeof(value), "MAN %.1f dB", g_snapshot.gain_tenth_db / 10.0);
@@ -1336,6 +1411,7 @@ void draw_gain_panel() {
   const bool usable = g_snapshot.gain_available;
   button(kGainAuto, "AUTO", g_snapshot.gain_auto, usable, 1);
   button(kGainManual, "MANUAL", !g_snapshot.gain_auto, usable && g_snapshot.gain_step_count > 1, 1);
+  if (g_snapshot.rtl_agc_available) button(kGainRtlAgc, g_snapshot.rtl_agc ? "RTL AGC ON" : "RTL AGC OFF", g_snapshot.rtl_agc, true, 1);
   button(kGainClose, "CLOSE", false, true, 1);
   if (usable && g_snapshot.gain_step_count > 1) {
     button(kGainMinus, "-", false, true, 2);
@@ -1421,6 +1497,10 @@ bool handle_overlay_touch(int32_t x, int32_t y, Action* out) {
   if (g_gain_open) {
     if (hit(x, y, kGainClose) || !hit(x, y, kGainPanel)) {
       close_overlays();
+      return true;
+    }
+    if (g_snapshot.rtl_agc_available && hit(x, y, kGainRtlAgc)) {
+      *out = {ActionKind::rtl_agc, g_snapshot.rtl_agc ? 0u : 1u};
       return true;
     }
     if (!g_snapshot.gain_available) return true;
@@ -1605,8 +1685,10 @@ namespace {
 bool same_content(const Snapshot& a, const Snapshot& b) {
   // Everything the body draws, except the running clock (utc_ms), which has its own partial updates.
   return a.mode == b.mode && a.decoder_capabilities == b.decoder_capabilities && a.clock_valid == b.clock_valid &&
+         clock_chip_key(a) == clock_chip_key(b) &&
          a.receiver_running == b.receiver_running && a.gain_auto == b.gain_auto &&
-         a.gain_tenth_db == b.gain_tenth_db && a.candidate_count == b.candidate_count &&
+         a.gain_tenth_db == b.gain_tenth_db && a.rtl_agc == b.rtl_agc && a.rtl_agc_available == b.rtl_agc_available &&
+         a.candidate_count == b.candidate_count &&
          a.last_slot_decodes == b.last_slot_decodes && a.selected_band == b.selected_band &&
          a.decoder_state == b.decoder_state && a.decode_count == b.decode_count &&
          same_memory_text(a, b) &&
@@ -1626,7 +1708,7 @@ bool station_differs(const Snapshot& a, const Snapshot& b) {
 bool tab_content_changed(Tab tab, const Snapshot& a, const Snapshot& b) {
   switch (tab) {
     case Tab::decodes:
-      return decodes_differ(a, b) || station_differs(a, b) || a.clock_valid != b.clock_valid || a.decoder_state != b.decoder_state || a.mode != b.mode;
+      return decodes_differ(a, b) || station_differs(a, b) || a.clock_valid != b.clock_valid || clock_chip_key(a) != clock_chip_key(b) || a.decoder_state != b.decoder_state || a.mode != b.mode;
     case Tab::map: return decodes_differ(a, b) || station_differs(a, b) || a.mode != b.mode || a.selected_band != b.selected_band;
     case Tab::hunter:
       return std::memcmp(&a.hunter, &b.hunter, sizeof(a.hunter)) != 0 || a.mode != b.mode || a.selected_band != b.selected_band || a.dial_hz != b.dial_hz;
@@ -1664,7 +1746,8 @@ void enter(const Snapshot& snapshot_value) {
 // small regions, so the screen never flashes.
 void update(const Snapshot& snapshot_value) {
   if (!g_active) return;
-  const Snapshot previous = g_snapshot;
+  g_previous_snapshot = g_snapshot;
+  const Snapshot& previous = g_previous_snapshot;
   g_snapshot = snapshot_value;
   g_snapshot.decode_count = std::min(g_snapshot.decode_count, kDecodeCapacity);
   g_snapshot.selected_band = std::min(g_snapshot.selected_band, band_count() - 1);
@@ -1682,10 +1765,19 @@ void update(const Snapshot& snapshot_value) {
                               previous.dial_custom != g_snapshot.dial_custom ||
                               previous.clock_valid != g_snapshot.clock_valid ||
                               previous.battery_percent != g_snapshot.battery_percent;
+  if (g_tab==Tab::map && !overlay_open() && !tab_content_changed(g_tab,previous,g_snapshot) &&
+      !header_changed && ((!g_map_pending || map_source::revision()!=g_map_poll_revision ||
+      static_cast<uint32_t>(millis()-g_map_poll_ms)>=250) &&
+      (map_source::revision()!=g_map_revision_seen ||
+      (g_map_memory_retry && static_cast<uint32_t>(millis()-g_map_memory_attempt_ms)>=kMapMemoryRetryMs)))) {
+    draw_map(true); // retry publication without repainting static map-tab panels
+    return;
+  }
   if (tab_content_changed(g_tab, previous, g_snapshot) || header_changed) {
     if (header_changed) draw_header();
     if (g_gain_open) {   // the gain popup keeps its readout and level meter live
       if (previous.gain_auto != g_snapshot.gain_auto || previous.gain_tenth_db != g_snapshot.gain_tenth_db ||
+          previous.rtl_agc != g_snapshot.rtl_agc || previous.rtl_agc_available != g_snapshot.rtl_agc_available ||
           previous.gain_available != g_snapshot.gain_available || previous.gain_step_count != g_snapshot.gain_step_count)
         draw_gain_panel();
       else draw_gain_readout();
@@ -1779,6 +1871,8 @@ Action handle_touch(int32_t x, int32_t y) {
   }
   if (g_tab == Tab::live && g_snapshot.decoder_state == DecoderState::no_memory && has_holders(g_snapshot) && hit(x, y, kFreeMemory))
     return {ActionKind::free_memory, 0};
+  if (hit(x,y,{630,60,230,32}) || (g_tab == Tab::live && hit(x, y, kClockChipLive)) || (g_tab == Tab::decodes && hit(x, y, kClockChipDecodes)))
+    return {ActionKind::open_clock, 0};
   if (g_tab == Tab::live && hit(x, y, kGainChip)) {
     open_gain_panel();
     return {};
@@ -1799,6 +1893,11 @@ Action handle_touch(int32_t x, int32_t y) {
     draw_body();
     draw_tabs();
     return {};
+  }
+  if (g_tab == Tab::map && hit(x,y,kMapLabels)) {
+    const bool current=maps::preferences::labels(maps::preferences::Consumer::ft8);
+    if(maps::preferences::set_labels(maps::preferences::Consumer::ft8,!current))draw_map();
+    return {}; // failed NVS write leaves both stored and displayed value unchanged
   }
   if (g_tab == Tab::hunter) {
     if (hit(x, y, kHunterFast) && !hunter_active() && g_snapshot.mode == DigitalMode::ft8)
@@ -1882,6 +1981,12 @@ Action handle_touch(int32_t x, int32_t y) {
 
 void leave() {
   g_active = false;
+  // FT8 owns both sprites; never retain a map frame across an exit/re-entry.
+  g_map_canvas.deleteSprite();g_world_canvas.deleteSprite();
+  g_map_canvas_ready=false;g_world_canvas_ready=false;g_map_composed=false;
+  g_map_memory_retry=false;g_map_memory_attempted=false;
+  g_map_attribution[0]=0;
+  g_map_you_valid=false;
   g_tune_open = false;
   g_info_open = false;
   g_mode_open = false;

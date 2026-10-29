@@ -1,0 +1,17 @@
+OPEN DTR=false RTS=false read-only commands; no authentication
+QUERY RTL_HEALTH
+RTL_HEALTH_STATUS uptime_ms=143725176 free_heap=17677000 min_free_heap=15387012 dma_free=10699 dma_min=4331 dma_largest=10240 tasks=28 main_stack_hwm=3228 reset_reason=11 internal_free=44663 internal_min=32519 internal_largest=31744 psram_free=17642988 psram_largest=17301504
+QUERY UI_DOC_LIST
+QUERY RTL_CATALOG_STATUS
+RTL_CATALOG_STATUS ready=0 busy=0 operation=0 progress=0 date=-- message=""
+RTL_CATALOG_PACK id=faa_aircraft version=2026-08-14 source_date=-- runtime_bytes=0 archive_bytes=0 installed=1 update=0 status="INSTALLED"
+RTL_CATALOG_PACK id=aviation version=-- source_date=-- runtime_bytes=0 archive_bytes=0 installed=1 update=0 status="INSTALLED"
+RTL_CATALOG_PACK id=noaa_weather version=-- source_date=-- runtime_bytes=0 archive_bytes=0 installed=0 update=0 status="CHECK CATALOG"
+RTL_CATALOG_PACK id=fcc_broadcast version=-- source_date=-- runtime_bytes=0 archive_bytes=0 installed=0 update=0 status="CHECK CATALOG"
+RTL_CATALOG_PACK id=lane_county_map version=2026-08-21 source_date=-- runtime_bytes=0 archive_bytes=0 installed=1 update=0 status="INSTALLED"
+QUERY RTL_UI STATUS
+RTL_UI_STATUS screen=home band=AIRBAND frequency_hz=122109270 settings=0 fm=0 am=0 p25=0 adsb=0 lora=0 rf24=0 home_font=1 graphics=1 radio_ui=1 route=home
+QUERY RTL_HOTPLUG_STATUS
+RTL_HOTPLUG_STATUS pending=0 ready=1 state=running band=AIRBAND frequency_hz=122109270
+QUERY RTL_LOCATION STATUS
+RTL_LOCATION_STATUS busy=0 ready=0 latitude_e7=0 longitude_e7=0 message=""

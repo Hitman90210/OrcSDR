@@ -31,7 +31,7 @@ struct Io {
   int (*rename)(const char* from, const char* to) = nullptr;
   int (*remove)(const char* path) = nullptr;
   bool (*exists)(const char* path) = nullptr;
-  uint64_t (*free_bytes)() = nullptr;
+  uint64_t (*free_bytes)() = nullptr; // UINT64_MAX: unknown, skip advisory space preflight
   // Calls visit(name, ctx) for every entry in dir; false if the directory is unreadable.
   bool (*list_dir)(const char* dir, void (*visit)(const char* name, void* ctx), void* ctx) = nullptr;
   uint32_t (*now_ms)() = nullptr;

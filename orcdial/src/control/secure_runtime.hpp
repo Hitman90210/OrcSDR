@@ -4,13 +4,14 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
-#include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <esp_timer.h>
 #include <nvs.h>
 #include <mbedtls/ctr_drbg.h>
 #if CONFIG_IDF_TARGET_ESP32P4
+#include <esp_heap_caps.h>
 #include <bootloader_random.h>
+#include <freertos/idf_additions.h>
 #endif
 #include <atomic>
 
@@ -50,8 +51,7 @@ class Runtime {
 #endif
     role_=role;transmit_=transmit;scan_=scan;evidence_=evidence;std::memcpy(mac_,mac,6);
 #if CONFIG_IDF_TARGET_ESP32P4
-    // On the Tab5 these three queues (about 5 KB) would take internal DMA memory that the SD card and Wi-Fi need; PSRAM is fine for
-    // queues touched only from tasks. Fall back to internal RAM if PSRAM is unavailable.
+    // These task-only queues must not fall back into SD/Wi-Fi's internal DMA pool.
     caps_mask_=0;queue_count_=0;
     input_=queue(20,sizeof(Event));actions_=queue(8,sizeof(Event));output_=queue(8,sizeof(Control));
 #else
@@ -72,7 +72,13 @@ class Runtime {
       trust.upgrade=legacy;
     }
     initial_=trust;publish_initial(trust);
-    if(xTaskCreate(run,"orcdial_secure",12288,this,1,&task_)!=pdPASS)
+#if CONFIG_IDF_TARGET_ESP32P4
+    // NVS needs an internal stack; RTC RAM keeps this CPU-only stack out of the DMA pool.
+    const auto created=xTaskCreateWithCaps(run,"orcdial_secure",12288,this,1,&task_,MALLOC_CAP_INTERNAL|MALLOC_CAP_8BIT|MALLOC_CAP_RTCRAM);
+#else
+    const auto created=xTaskCreate(run,"orcdial_secure",12288,this,1,&task_);
+#endif
+    if(created!=pdPASS)
       return initialization_failed(Failure::transport);
     return true;
   }
@@ -100,7 +106,6 @@ class Runtime {
   QueueHandle_t queue(UBaseType_t length,UBaseType_t item) {
     QueueHandle_t q=xQueueCreateWithCaps(length,item,MALLOC_CAP_SPIRAM|MALLOC_CAP_8BIT);
     if(q){caps_mask_=uint8_t(caps_mask_|(1u<<queue_count_));}
-    else q=xQueueCreate(length,item);
     ++queue_count_;
     return q;
   }

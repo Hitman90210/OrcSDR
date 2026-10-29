@@ -69,7 +69,7 @@ bool Backend::configure_mode(Mode mode) {
   bin_count_ = static_cast<size_t>(std::floor(kHighHz / bin_hz_)) - first_bin_ + 1;
   fine_bin_count_ = 2 * bin_count_ - 1;
 
-  const size_t needed_samples = static_cast<size_t>(p.slot_ms) * sample_rate_ / 1000u + sample_rate_ / 2u;
+  const size_t needed_samples = (static_cast<size_t>(p.slot_ms) + 2u * config_.window_extra_ms) * sample_rate_ / 1000u + sample_rate_ / 2u;
   if (needed_samples > capacity_) {
     drop(samples_);
     samples_ = static_cast<int16_t*>(grab(needed_samples * sizeof(int16_t)));
@@ -114,11 +114,12 @@ bool Backend::begin(uint32_t sample_rate_hz, Mode mode, const Config& config, co
 
 void Backend::set_config(const Config& config) {
   const uint8_t previous_rows = config_.fine_rows;
+  const uint32_t previous_extra = config_.window_extra_ms;
   config_ = config;
   config_.candidate_k = std::min<uint16_t>(std::max<uint16_t>(config_.candidate_k, 1), kMaxCandidateK);
   config_.gate = std::min<uint16_t>(std::max<uint16_t>(config_.gate, 1), kMaxCandidateK);
   config_.fine_rows = config_.fine_rows == 8 ? 8 : 4;
-  if (config_.fine_rows != previous_rows && sample_rate_ != 0) {
+  if ((config_.fine_rows != previous_rows || config_.window_extra_ms != previous_extra) && sample_rate_ != 0) {
     filled_ = 0;
     slot_open_ = false;
     (void)configure_mode(mode_);   // reallocates the grids for the new resolution
@@ -137,9 +138,10 @@ void Backend::reset() {
   slot_open_ = false;
 }
 
-bool Backend::begin_slot(uint64_t slot_epoch_ms) {
+bool Backend::begin_slot(uint64_t slot_epoch_ms, size_t lead_samples) {
   if (samples_ == nullptr) return false;
   slot_epoch_ms_ = slot_epoch_ms;
+  lead_samples_ = lead_samples;
   filled_ = 0;
   slot_open_ = true;
   return true;
@@ -304,7 +306,8 @@ size_t Backend::finish_slot(orcsdr::ft8::Decode* output, size_t capacity, bool i
     orcsdr::ft8::Decode d{};
     d.utc_epoch = static_cast<uint32_t>(slot_epoch_ms_ / 1000u);
     d.snr_db = frame.snr_valid ? static_cast<int16_t>(std::lround(frame.snr_db)) : 0;
-    d.dt_ms = static_cast<int16_t>(std::lround((start_s - 0.5) * 1000.0));
+    const double lead_s = static_cast<double>(lead_samples_) / sample_rate_;
+    d.dt_ms = static_cast<int16_t>(std::lround((start_s - lead_s - 0.5) * 1000.0));
     d.audio_hz = static_cast<uint16_t>(std::lround(hz));
     d.sync_score = static_cast<int16_t>(std::lround(r.score * 100.0f));
     std::snprintf(d.message, sizeof(d.message), "%.47s", frame.standard.text);

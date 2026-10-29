@@ -4,9 +4,18 @@ on:
   pull_request:
     paths:
       - 'apps/orcsdr-tab5/ui/**'
+      - 'apps/orcsdr-tab5/dsp/dsp_stats.*'
+      - 'tests/dsp_stage_stats_tests.cpp'
       - 'tests/home_cadence_tests.cpp'
       - 'tests/waterfall_style_tests.cpp'
       - 'tests/lora_history_tests.cpp'
+      - 'tests/setup_navigation_pause_test.py'
+      - 'tests/location_task_lifetime_test.py'
+      - 'tests/orcdial_init_backoff_test.py'
+      - 'tests/adsb_zoom_redraw_test.py'
+      - 'tests/map_download_scheduling_test.py'
+      - 'tests/map_worker_startup_test.py'
+      - 'tests/map_download_task_lifetime_test.py'
       - 'tools/test-tab5-cadence-history.sh'
       - '.github/workflows/tab5-cadence-history-tests.yml'
   workflow_dispatch:

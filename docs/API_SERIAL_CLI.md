@@ -681,6 +681,10 @@ factor or bandwidth yet — those load once from `/orcsdr/lora.cfg` at boot;
 tracked as follow-up work alongside POCSAG's `SET_BAUD`/`SET_POLARITY`
 precedent.
 
+LoRa logging status also reports pending records, retry_attempts, last_error_stage
+and last_errno. Enabled logging retries transient SD errors on the worker every
+two seconds while retaining pending/queued records. ON requests an immediate retry.
+
 LoRa detector and decoder diagnostics (these make the receive path testable
 without touching the screen):
 

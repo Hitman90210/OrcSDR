@@ -1,0 +1,32 @@
+-- Selecting Windows SDK version 10.0.26100.0 to target Windows 10.0.26200.
+-- Configuring done (0.2s)
+-- Generating done (0.1s)
+-- Build files have been written to: F:/Ai/OrcSDR-Temp/maps-integration-completion/.local/maps/pipeline-host
+MSBuild version 18.3.0-release-26070-10+3972042b7 for .NET Framework
+
+  Building Custom Rule F:/Ai/OrcSDR-Temp/maps-integration-completion/apps/orcsdr-tab5/tests/maps/CMakeLists.txt
+cl : command line  warning D9025: overriding '/DNDEBUG' with '/UNDEBUG' [F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\orcsdr_location_store_tests.vcxproj]
+  location_store_tests.cpp
+  orcsdr_setup_tests.vcxproj -> F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\RelWithDebInfo\orcsdr_setup_tests.exe
+  orcsdr_maps_tests.vcxproj -> F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\RelWithDebInfo\orcsdr_maps_tests.exe
+LINK : warning LNK4300: ignoring '/INCREMENTAL' because input module contains ASAN metadata [F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\orcsdr_location_store_tests.vcxproj]
+  orcsdr_location_store_tests.vcxproj -> F:\Ai\OrcSDR-Temp\maps-integration-completion\.local\maps\pipeline-host\RelWithDebInfo\orcsdr_location_store_tests.exe
+Test project F:/Ai/OrcSDR-Temp/maps-integration-completion/.local/maps/pipeline-host
+    Start 1: setup_flow
+1/4 Test #1: setup_flow .......................   Passed    0.05 sec
+    Start 2: location_store
+2/4 Test #2: location_store ...................Exit code 0xc0000409***Exception:   1.54 sec
+Assertion failed: same(load(device),saved?next:original), file F:\Ai\OrcSDR-Temp\maps-integration-completion\apps\orcsdr-tab5\tests\maps\location_store_tests.cpp, line 39
+
+    Start 3: map_pipeline
+3/4 Test #3: map_pipeline .....................   Passed    0.07 sec
+    Start 4: world_geometry
+4/4 Test #4: world_geometry ...................   Passed    0.19 sec
+
+75% tests passed, 1 tests failed out of 4
+
+Total Test time (real) =   1.88 sec
+
+The following tests FAILED:
+	  2 - location_store (Exit code 0xc0000409)
+Errors while running CTest

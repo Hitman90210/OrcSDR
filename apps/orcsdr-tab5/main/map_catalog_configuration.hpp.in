@@ -1,0 +1,5 @@
+#pragma once
+namespace orcsdr::maps::catalog_source {
+inline constexpr char base_url[]=R"ORCURL(@ORCSDR_MAP_CATALOG_BASE_URL@)ORCURL";
+inline constexpr char public_key[]=R"ORCKEY(@ORCSDR_MAP_CATALOG_PUBLIC_KEY@)ORCKEY";
+}

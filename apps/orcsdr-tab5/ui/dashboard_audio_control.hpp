@@ -7,6 +7,9 @@ namespace orcsdr::audio_header {
 // The header's status-bar area, between the brand and the battery/buttons. Home draws the Wi-Fi /
 // RTL-SDR / clock bar here; every other dashboard leaves it empty (a design constraint so the shared
 // status bar can appear on any screen without colliding with dashboard content).
+// x318..412, y12..66 is reserved for the shared map-download status/shortcut.
+constexpr int kTitleDividerX = 420;
+constexpr int kTitleTextX = 442;
 constexpr int kStatusBarX = 420;
 constexpr int kStatusBarY = 12;
 constexpr int kStatusBarW = 446;

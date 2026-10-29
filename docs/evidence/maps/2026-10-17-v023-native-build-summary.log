@@ -1,0 +1,6 @@
+SOURCE maps-v023-resolved-native-build-20261017.log (selected verification lines)
+NOTICE: [11/12] orcmaps (dc6bc12b7df9fb3decd751709da733a386cf386e)
+PASS: requested, locked and fetched OrcMaps agree: dc6bc12b7df9fb3decd751709da733a386cf386e
+PASS: OrcMaps uses 2 bundled miniz symbols, none ROM-absolute
+orcsdr_tab5.bin binary size 0x4cba70 bytes. Smallest app partition is 0x600000 bytes. 0x134590 bytes (20%) free.
+Project build complete. To flash, run:
