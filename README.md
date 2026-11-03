@@ -1,5 +1,18 @@
 # OrcSDR
 
+> [!WARNING]
+> **Untested build — not yet compiled or run on hardware.**
+> On 2026-11-03 this fork was consolidated onto the latest upstream OrcSDR
+> (`cdc8181`) and its own changes were re-applied on top. None of that work has
+> been built or flashed to a Tab5 yet, so it may not compile, and features may
+> not behave as described. Do not flash it to a device you rely on until this
+> notice is removed.
+>
+> The release, installer and M5Burner links below are upstream's published
+> builds from hardcoreerik/OrcSDR, not builds of this fork. What changed and
+> what still needs testing is listed in
+> [docs/FORK_HANDOFF.md](docs/FORK_HANDOFF.md#0-consolidation-onto-upstream-2026-11-03).
+
 ![OrcSDR logo above a glowing radio spectrum and waterfall](docs/images/orcsdr-tab5.png)
 
 **Turn an M5Stack Tab5 and a compatible RTL-SDR receiver into a portable, touchscreen software-defined radio.** OrcSDR runs its radio processing, dashboards, audio, and controls on the Tab5—no laptop, Raspberry Pi, or desktop SDR application is required after installation.
