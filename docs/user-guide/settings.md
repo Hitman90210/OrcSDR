@@ -30,7 +30,11 @@ Once established, Home shows UTC; otherwise its uptime clock is labeled
 
 Companion → ENABLE starts the TV Mission Control page at `http://<tab5-ip>/` and
 advertises `orcsdr.local`. Use that URL from a browser or the sideloaded
-`apps/orcsdr-tv` app. This is a read/write HTTP control surface, not only a
-viewer: it can tune, change volume or mute state, adjust span/step, and open
-dashboards. It has no TLS or application authentication. Enable it only on a
-trusted LAN, and do not expose port 80 to the Internet.
+`apps/orcsdr-tv` app. Device control is a separate switch: **Companion →
+REMOTE CONTROL** reads **VIEW ONLY** by default, and `POST /api/action` is then
+refused with `403 control disabled`. Set it to **ALLOWED** (or send
+`RTL_WEB CONTROL ON` over serial) and the same endpoint can tune, change volume
+or mute state, adjust span/step, and open dashboards. There is no TLS or
+application authentication either way, and the Origin check stops only
+browsers, so allow control only on a trusted LAN and never expose port 80 to
+the Internet.

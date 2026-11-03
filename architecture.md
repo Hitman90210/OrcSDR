@@ -34,7 +34,7 @@ Wi-Fi pause/resume orchestration; catalog operations; serial and authenticated
 device commands; SD/IQ/audio transfers; LAN console command dispatch;
 documentation capture; screen transitions; and top-level touch routing.
 
-main.cpp measurement (Git-normalized): 1,116,405 bytes (~1090.2 KiB), 23,643 lines.
+main.cpp measurement (Git-normalized): 1,165,425 bytes (~1138.1 KiB), 24,536 lines.
 
 The measurement uses LF-normalized repository bytes so it is stable across
 Windows and Linux checkouts. The intended modular endpoint—roughly 500 lines of
@@ -108,6 +108,9 @@ reception.
 The optional LAN console starts an ESP-IDF HTTP server on port 80 and advertises
 `orcsdr.local`. It serves telemetry, spectrum and audio plus POST
 `/api/action` commands for tune, volume/mute, span/step, and dashboard opening.
+Those commands are refused (`403 control disabled`) unless the separate
+REMOTE CONTROL setting (`RTL_WEB CONTROL ON|OFF`, NVS `set_web_ctrl`) is on;
+it defaults to off.
 The server has no TLS or application authentication; it is a trusted-LAN
 feature, not a public-network control plane.
 

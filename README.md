@@ -119,6 +119,8 @@ The standalone [`esp-rtl-sdr`](https://github.com/hardcoreerik/esp-rtl-sdr) comp
 - [Settings and Wi-Fi](docs/user-guide/settings.md)
 - [Troubleshooting](docs/user-guide/troubleshooting.md)
 - [Developer reference](docs/user-guide/reference/developer.md)
+- [Making OrcSDR local: location, data packs, maps, P25](docs/LOCAL_SETUP.md)
+- [This fork's engineering log and what differs from upstream](docs/FORK_HANDOFF.md)
 - [GitHub Wiki](https://github.com/hardcoreerik/OrcSDR/wiki)
 
 ## For developers

@@ -1,0 +1,2203 @@
+# OrcSDR Tab5 — fork handoff
+
+Everything this fork (`Hitman90210/OrcSDR`) has changed on top of
+`hardcoreerik/OrcSDR`, why, and how it was verified. Written to be picked up
+cold: if you are new to this tree, read §1 and §2, then jump to whatever you
+are touching.
+
+Last updated: 2026-09-09. The fork now includes upstream `ff8a5ee`
+(`v0.2.0-beta.5`) plus the fork-specific integration fixes described below.
+
+---
+
+## 1. What this is and how it is verified
+
+Target: **M5Stack Tab5** — ESP32-P4 host with an ESP32-C6 Wi-Fi co-processor
+over ESP-Hosted SDIO. ESP-IDF 5.5.4. The application is
+`apps/orcsdr-tab5`, and `ui/main.cpp` is still a ~14,900-line monolith that owns the
+radio session, the streaming task, the serial CLI, and the generic radio
+screen; each dedicated dashboard (FM, P25, ADS-B, LoRa, POCSAG, home) is its
+own file.
+
+**Nothing in this fork was accepted on a clean compile alone.** The working
+loop for every change was:
+
+```bash
+# build
+apps/orcsdr-tab5/tools/build-tab5-idf.ps1
+
+# flash (COM3 on this machine)
+python -m esptool --chip esp32p4 -p COM3 -b 460800 --before default_reset \
+  --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m \
+  0x2000 bootloader/bootloader.bin 0x8000 partition_table/partition-table.bin \
+  0x10000 orcsdr_tab5.bin
+
+# verify: 22 boot self-checks must all print _OK, no panic, memory sane
+```
+
+For UI work there is a second loop: the device renders any of its 46
+documented screens on command and screenshots itself to SD, which is then
+pulled back over serial.
+
+```
+UI_DOC_SHOW <screen-id> <live|demo>    # stage a screen
+UI_CAPTURE <slug>                      # 1280x720 BMP to /orcsdr/screenshots/
+SD_GET_BEGIN / SD_GET_CHUNK            # retrieve it
+UI_DOC_EXIT                            # restore the previous screen
+```
+
+**Three traps worth knowing before you use it.** Opening a serial connection
+to COM3 *can* reset the P4 (native USB Serial/JTAG) — but `tools/help_media.py`
+sets `dtr = False; rts = False` **before** opening precisely to avoid that, and
+`copy_to_tab5_sd.ps1` does the same. So a script built on those helpers does
+**not** reboot the device, and anything cached at boot (the offline map, the
+ATC preset) will still hold pre-change state. To force a real reboot, toggle
+RTS yourself:
+
+```python
+s = serial.Serial("COM3", 115200, timeout=1)
+s.setDTR(False); s.setRTS(True); time.sleep(0.1); s.setRTS(False)
+```
+
+This cost an hour: a map uploaded to the SD card kept reading as "not loaded"
+because `offline_map::load()` only runs at boot and the device had never
+actually rebooted.
+
+And an authenticated session drops after 5 s of silence
+(`kSessionTimeoutMs`), which a long main-loop stall alone is enough to trip —
+several early "the device is broken" results were actually expired sessions.
+Sweep scripts here reconnect on failure for exactly that reason.
+
+Screen ids and their permitted modes live in `kUiDocScreens` in `main.cpp`.
+The `settings.*` screens and `fm.settings` are `demo`-only; asking for them in
+`live` returns `unknown_screen_or_mode`.
+
+---
+
+## 2. Current state
+
+- **Builds clean**, 44% of the app partition free.
+- **22/22 boot self-checks pass**, no panics.
+- Memory at `stage=ready`: ~82 KB internal free, ~42 KB DMA-capable,
+  ~26.7 MB PSRAM. Watch the first number — see §7.
+- Upstream's POCSAG pager decoder is merged and its self-check passes.
+- **ADS-B verified end to end on air (2026-09-09).** 1090 MHz, live traffic:
+  receiver at 2,047,945 sps with zero overruns, drops or IQ queue drops;
+  78,632 preambles, 11,254 DF17, 1,074 CRC-valid messages, 24 aircraft tracked.
+  Altitudes 5,775-23,850 ft and ground speeds 263-441 kts are all plausible.
+  The 34 MB FAA aircraft pack resolved **31 of 32** ICAO addresses to tail
+  numbers (A8996B to N653RW, A9F461 to N740UW, and so on), so the database
+  lookup path works, not just the decoder.
+
+  Callsigns decode correctly (`ASH6130`, `UAL21`). A first pass reported none
+  and that was a measurement error worth recording: `RTL_ADSB_FRAME` is emitted
+  only at TRACE, and identification messages are type codes 1-4, which are just
+  **2 of 211** frames -- about 1% of the mix against 156 TC 0, 25 TC 19
+  velocity and 21 TC 11 position. A short sample containing no callsign is the
+  expected outcome, not a fault. Assert on the RTL_ADSB_STATUS counters, which
+  are authoritative and available at DEBUG, and sample frames separately.
+
+- Upstream beta.5 regional LoRa plans, retained traffic scrolling, packet-log
+  export, non-blocking console writes, and deferred Wi-Fi startup are merged.
+- The exact 2026-09-09 app image passed the authenticated UI regression and
+  the paused-connect, scan, and explicit live-load Wi-Fi coexistence diagnostic
+  on COM3 with RTL-SDR 0.7.14 and zero USB, IQ, or audio drops.
+
+**The remaining high-risk area is still the shared SDIO/USB startup path
+(§3 and §3b).** Normal Wi-Fi work is protected by the radio-pause window, and
+beta.5 defers Hosted startup out of `setup()`. Battery-only boot of this exact
+merged image has not yet been rerun, so the older watchpoint workaround remains
+enabled and §3b should still be read before changing Wi-Fi bringup or FreeRTOS
+configuration. Everything else below is either fixed or documented.
+
+---
+
+## 3. The SDIO transport fault — the big one
+
+This ate the largest share of the engagement, so it gets its own section.
+
+### Symptom
+
+Data & Maps downloads ("Could not fetch catalog manifest", "Could not fetch
+catalog signature") fail, the device becomes unresponsive, and the serial log
+floods:
+
+```
+sdmmc_send_cmd returned 0x107          (ESP_ERR_TIMEOUT)
+eh_sdio: sdio_get_tx_buffer_num: err: 263
+SDIO aggr: no slave credits (32 consecutive)
+```
+
+### What was ruled out, on hardware
+
+| Hypothesis | Test | Result |
+| --- | --- | --- |
+| Wi-Fi power save | `esp_wifi_set_ps(WIFI_PS_NONE)` | **Not the cause.** Flood reproduced identically. Call kept (harmless, standard). |
+| RTL-SDR / USB bus contention | See §3a — this turned out to be **the cause**. Two earlier attempts to test it were both invalid. | **CONFIRMED CAUSE.** |
+| SDIO clock too fast | Dropped `CONFIG_ESP_HOSTED_HOST_SDIO_CLK_KHZ` 10000 → 5000 | **Not the cause.** Identical ~30 s flood. Reverted to 10 MHz. |
+| Our fork broke it | Built and flashed **unmodified upstream** in a worktree | **Reproduces identically on upstream.** `SDIO aggr: no slave credits (32-35 consecutive)` at boot, 8164 flood lines, catalog check never queued. |
+
+### Conclusion
+
+The fault is in Espressif's own `esp_hosted` SW_AGGR TX credit path: it detects
+sustained failure but never escalates to the restart recovery its sibling
+blocking path uses. `esp_hosted` 3.0.6 is already the latest release.
+`CONFIG_ESP_HOSTED_HOST_TRANSPORT_RESTART_ON_FAILURE` is deliberately **off** —
+turning it on risks a reboot loop.
+
+### What was built around it
+
+- **Bounded retry** in `catalog_sync.cpp`: 4 attempts with 1.5 s / 4 s / 8 s
+  backoff, sized against the observed ~20 s wedges. Still bounded — no infinite
+  retry, no vendor driver changes.
+- **Manual "Reset Wi-Fi Link"** in Settings → Connectivity, and
+  `RTL_WIFI_RESET_LINK` over serial. See §4 for the crash this caused first.
+- **Transport health tracking** (`g_transport_healthy`) so the UI can stop
+  poking a wedged link.
+- **The honest recovery message.** When the link is wedged badly enough that
+  the station will not even stop, the reset cannot run; the UI now says
+  *"Link wedged - restart the device to recover"* rather than
+  *"Wi-Fi link reset failed"*.
+- **Sideloading as the real answer for big data packs** — see §6.
+
+### 3a. The RTL-SDR is the trigger — confirmed by A/B
+
+The user's own observation ("I unplugged the sdr thing and it worked") was
+right, and two earlier attempts of mine to test it were both invalid: the
+first because a manual `RTL_STOP` fired before the device's own boot
+auto-start, the second because every catalog check in it returned
+`auth_required` — the 5 s session had expired during the read loop, so the
+check never ran at all. Neither measured anything.
+
+The valid experiment uses **Wi-Fi association** as the probe (~25 s per trial
+instead of 90) with a keepalive every 2 s:
+
+| Condition | Trials | Connected | SDIO errors |
+| --- | --- | --- | --- |
+| Dongle unplugged | 15 | **14** | **0** |
+| Dongle plugged back in, streaming | 15 | **0** | 19,963 |
+| Dongle plugged in, **stream stopped** | 15 | **15** | **0** |
+| Dongle streaming, **after the fix below** | 10 | **10** | **0** |
+
+The first two ran in one power-on session with no power cycle between them, so
+the only change was the dongle. 18 of 20 attempts in the plugged run failed at
+`connect_start_failed`: the connect could not even begin.
+
+The third row is the one that matters. **It is the USB DMA traffic, not the
+dongle's presence** — leaving the dongle physically attached but stopping the
+stream restores association completely. That means a safe software fix exists
+and the risky DMA-placement config change is unnecessary.
+
+**The fix:** `start_wifi_connection(bool pause_radio = true)`. The pause
+machinery (`pause_radio_for_io` / `resume_radio_after_io`) already existed and
+the catalog paths already used it; the parameter simply defaulted to `false`,
+so every Wi-Fi connect ran against a streaming dongle. It stops the stream and
+speaker, waits for the stream to actually stop (5 s deadline), and restores
+both on every exit path including the 15 s connect timeout in `poll_wifi()`.
+Cost is a ~3 s audio gap on connect.
+
+Timing shows the contention even when it works: 3076–3088 ms with the stream
+running vs 3025–3031 ms without.
+
+**Likely mechanism, not yet proven:** both DMA paths sit in PSRAM —
+`CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM` and
+`CONFIG_USB_HOST_DWC_DMA_CAP_MEMORY_IN_PSRAM` are both on (the boot log prints
+`hosted_dma_psram=1 usb_dma_psram=1`). An RTL-SDR at 2.048 MSPS is ~4 MB/s of
+USB DMA into PSRAM competing with the SDIO transport's own PSRAM DMA, which
+would explain `sdmmc_send_cmd returned 0x107` (bus timeout).
+
+Moving the hosted SDIO DMA to internal RAM
+(`CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=n`) would attack this directly and
+might let reception continue during downloads. It is **not** needed for
+correctness now that the pause is in place, and it is the exact class of change
+that boot-looped this device before — internal RAM is the scarce resource (§4).
+Only worth attempting with the DRAM budget measured first.
+
+An earlier confound worth remembering: the plugged runs were originally done
+*before* a full power cycle and the unplugged ones after, so "power cycle"
+looked like it might be the real variable. Re-plugging the dongle in the same
+session with no power cycle is what settled it.
+
+### 3b. Battery boot loop — masked, not fixed
+
+**Symptom.** The device boot-loops to a blue screen when powered from the
+battery, and runs normally the moment USB-C is plugged in. Independent of the
+RTL-SDR dongle. First observed 2026-09-08, on the first battery boot anyone had
+ever tried — so there is no evidence it ever worked, and no reason to think
+this fork introduced it.
+
+**Evidence.** Battery boots leave a coredump (`CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH`
+is on, `coredump` partition at `0x410000`). Read it back over USB-C afterwards:
+
+```powershell
+python -m esp_coredump --port COM3 --chip esp32p4 info_corefile `
+  build-native-hosted3\orcsdr_tab5.elf
+```
+
+Three dumps, all the same panic, all in different places:
+
+| Dump | Crashing frame | Allocation |
+| --- | --- | --- |
+| 1 | main task inside `eh_host_core_bringup` → `reconfigure_attempt` | — |
+| 2 | hosted **RX**: `sdio_process_rx_task` → `rx_upcall` | `malloc(8)` |
+| 3 | hosted **TX**: `tx_worker` → `eh_host_feat_rpc_ext_v2_pack` | `malloc(10)` |
+
+```
+Panic reason: assert failed: block_locate_free tlsf_control_functions.h:618
+              (block_size(block) >= *size)
+```
+
+Eight- and ten-byte allocations corrupt nothing. They are the first code to
+touch a heap that was **already** broken, which is why the victim differs every
+time. In dump 2 the frame pointer handed to `rx_upcall` (`0x4ff339d8`) was
+unreadable and sat among the FreeRTOS TCB addresses.
+
+**What was ruled out, on hardware.** Every row is a real build and a real
+battery power-on:
+
+| Build | Heap poisoning | End-of-stack watchpoint | Battery |
+| --- | --- | --- | --- |
+| Merged head (GMRS + scanner + upstream trampoline patch) | off | off | **fail** |
+| Upstream trampoline patch reverted (bisect) | off | off | **fail** |
+| C6 post-power-on delay 200 ms → 1000 ms | off | off | **fail** |
+| Light poisoning + watchpoint | light | on | boots |
+| Poisoning removed again, watchpoint kept | off | on | boots |
+
+- **Upstream's `vTaskDeleteWithCaps` fix (#66) is not the cause.** Backing it
+  out reproduced the loop with a byte-identical panic. It is merged.
+- **Not a C6 bringup timing problem.** A 5× longer delay changed nothing. The
+  delay is kept anyway — 200 ms was never a comfortable margin for a rail rise
+  plus a C6 firmware boot.
+- **Not a stack overflow.** `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK` never
+  fired, and it traps a stack overrun regardless of heap layout.
+- **Not caught by poisoning.** Light poisoning never reported a bad canary; all
+  it did was shift the heap layout, and the loop stopped.
+
+**What it looks like.** Layout-sensitive *and* timing-sensitive, with an
+asynchronous corruptor that leaves a different victim each run: an SDIO/DMA
+write landing in memory that has already been freed, inside Espressif's
+`esp_hosted` transport. Every frame in every dump is in vendor code. Note §3
+documents a separate, independently confirmed fault in that same SDIO path.
+
+**Why the tree is the way it is.** `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y`
+is the only thing both working builds share and no failing build had. It does
+not repair anything — it arms a hardware watchpoint and adds work to every
+context switch, and that timing shift moves the race out of the way. It is kept
+because the device otherwise will not boot unplugged, and because a
+stack-overflow tripwire earns its keep anyway. **Treat this as mitigation. The
+fault is still in there.**
+
+`heap_guard()` in `main.cpp` is the tripwire for the recurrence: seven boot
+checkpoints (`m5_begin`, `graphics`, `self_checks`, `pre_wifi`, `c6_power`,
+`pre_hosted_start`, `post_hosted_start`) run `heap_caps_check_integrity_all()`
+and, on failure, `esp_system_abort()` with the checkpoint's name — which lands
+in the coredump's "Panic reason". On USB-C all seven print `ORC_HEAP_OK`. If a
+battery boot loop returns, the dump names the stage instead of leaving you
+where this started.
+
+**If you pick this up again.** Un-mask it first (drop the watchpoint config),
+confirm it reproduces, then get a channel out of a battery boot — SD-card boot
+logging, or RTC `NOINIT` memory read back over USB-C — because serial is gone
+the moment the cable is. Then instrument the hosted SDIO buffer lifecycle for a
+free followed by a late DMA completion.
+
+---
+
+### 3c. The LoRa capture trigger keyed on the wrong thing
+
+Measured 2026-09-09. A 60-minute watch on the US LongFast default slot (20,
+906.875 MHz) ran **345** decode cycles and reported `preambles=0` on every one.
+No traffic -- but characterising the monitor mattered more than the silence.
+
+**The fault.** `lora_iq_offer()` armed a capture when `rtl_signal_dbfs` rose
+9 dB above a tracked noise floor. That value is *wideband* power across the
+whole 960 kHz the tuner hears, not the LoRa channel. On 915 MHz ISM the window
+is full of other traffic, so a garage remote or a tyre sensor three hundred
+kilohertz away armed a capture exactly as well as a mesh packet. Over 180 s
+that produced 24 captures, 24 decodes and **zero** preambles or header
+failures: a 100% false-trigger rate, each costing 1.8-3.1 s of decode during
+which the detector is not evaluated at all.
+
+This is the same mistake the channel scanner had before 5.7a, and it has the
+same shape of answer: ask what is on the *channel*, not what is in the window.
+
+**The fix.** `lora_channel_excess_db()` sums four consecutive IQ samples --
+a cheap decimating boxcar whose passband is roughly the LoRa channel (first
+null at 240 kHz, -3 dB near 106 kHz, against a 250 kHz channel) -- and compares
+that filtered power to the raw wideband power. Correlated in-channel energy
+survives the sum; energy spread across the window does not. A capture now needs
+both the old level rise and `kLoraChannelExcessMinDb` of concentration.
+
+The scale runs from about -6 dB (flat noise) to 0 dB (all energy in-channel),
+and *below* -6 dB when the energy is mostly outside -- which is the interferer
+case. Modelled against known inputs, and measured on air:
+
+| Case | Channel excess |
+| --- | --- |
+| Out-of-channel interferer, 300-400 kHz off, SNR 10-20 dB | -11 to -13 dB |
+| Noise only | -5.8 dB modelled, -5.5 dB measured (median of 172) |
+| In-channel LoRa chirp, SNR 3 dB | -2.9 dB |
+| In-channel LoRa chirp, SNR 20 dB | -1.2 dB |
+
+Threshold set to **-4.0 dB**: above the live noise bulk (p95 -5.3) and still
+below the weakest chirp modelled, so weak packets are not discarded.
+
+**Result, measured over 180 s each way.** The detector is evaluated on every IQ
+block, so the only blind window is while the decoder is busy:
+
+| | Decodes | Mean decode | Blind | Watching |
+| --- | --- | --- | --- | --- |
+| Before | 24 | 2348 ms | 56.4 s | 69% |
+| After | 3 | 3011 ms | 9.0 s | **95%** |
+
+False triggers fell 24 -> 6 per 180 s in one run and 24 -> 3 in another. Not
+elimination: the remainder are excursions where in-channel energy genuinely
+rose, which the metric is right to pass on. The trigger is demonstrably still
+live (`rf_events` still increments) -- worth stating because an earlier value
+of this threshold was set from a misreading of the scale, sat above the maximum
+the metric can produce, and silently disabled the trigger entirely. Zero
+captures looked like perfect selectivity and was actually a dead detector.
+
+**Two measurement traps here.** `RTL_LORA_ENERGY` is TRACE-gated, so a pass at
+NORMAL reported zero energy triggers -- the same trap the ADS-B callsign count
+fell into. And "air time captured" is *capture* time, not monitoring time:
+fewer false triggers lower it while improving coverage, so it reads backwards.
+Use decode time as the blind window instead. `RTL_LORA_TRIGGER_STATUS` reports
+level, noise, trigger, live channel excess and the threshold without needing
+TRACE.
+
+**AGC re-arm fix, measured 2026-09-09.** A clean boot on the same receiver
+learned an AGC idle floor of -23.1 dBFS. The old absolute -25 dBFS trigger
+ceiling, combined with 3 dB re-arm hysteresis, required the live level to fall
+below -28 dBFS; that is impossible with a -23 dBFS idle floor. The detector
+therefore remained disarmed indefinitely. The ceiling is now -3 dBFS, so the
+normal noise-relative threshold remains usable across the tuner's range, and
+successful gain-mode, manual-gain, or RTL-AGC changes reset the learned floor.
+Compile-time checks cover the -90 dBFS lower-bound case and the observed
+-23 dBFS AGC case.
+
+**Weak-signal gate fix, measured 2026-09-09.** At fixed 19.7 dB tuner gain,
+the same live LongFast packets measured -33 to -35.7 dBFS against a -39 dBFS
+floor and had excellent in-channel concentration (-1.7 to -2.0 dB). The old
+9 dB level rise rejected them before the concentration test could run, despite
+that test being the false-trigger safeguard. The rise is now 4 dB so the
+measured 5-6 dB packets reach the channel gate. (Raising it again was tried and
+reverted for exactly this reason -- see 8.10, which measures what the 4 dB gate
+costs in false triggers and why paying that is still the better trade.)
+
+**Capture alignment fix, measured 2026-09-09.** A retained fixed-gain capture
+triggered from the serial level rise was unclipped, but the old 250 ms pre-roll
+held only the end of one SF11 packet while the next packet began at the end of
+the four-second buffer. LoRa pre-roll is now one second (1.92 MB at 960 kS/s
+CU8), leaving three seconds after the trigger while covering the measured
+spectrum and host-control latency.
+The automatic native decoder now searches the first 1.5 seconds rather than
+750 ms; the retained bench packet's preamble began about 815 ms into the
+buffer, beyond the old hard stop.
+
+**Meshtastic 2.8 long-interleaver finding, measured 2026-09-09.** The clean
+LongFast captures contain valid explicit headers with coding-rate value 5. That
+is Semtech's on-air marker for CR 4/5 with long interleaving, enabled by
+Meshtastic 2.8 on LR11x0 and SX128x radios. It is not a damaged legacy header.
+The native status now counts these as `li_headers` instead of
+`header_failures`, and the host tool reports the unsupported layout by name.
+Payload decode still requires a long-interleaver implementation; Meshtastic
+2.7.x or a radio using legacy interleaving remains the compatibility path.
+
+**Legacy-interleaver compatibility result, reported 2026-09-09.** After the
+bench Meshtastic node was returned from nightly `2.8.1.125c451` to older
+firmware, the operator observed a NODEINFO event, one decoded text message
+(`TEST`), one populated node, and four encrypted frames on the Tab5. This is
+the first end-to-end user-visible confirmation on this bench that RF capture,
+legacy LoRa PHY decode, the Meshtastic envelope, and dashboard ingestion can
+work together. It does not validate 2.8 long-interleaved payload decoding;
+that remains a major open item.
+
+**What a quiet result means.** Even at 95% coverage this is a receive-only
+monitor on one slot; absence of traffic is evidence about this location and
+this slot, not about the mesh generally.
+
+---
+### 3d. The LoRa decoder cannot decode 500 kHz Meshtastic presets
+
+Meshtastic moved the US stock preset off **LongFast** because its 250 kHz
+bandwidth is not US-compliant: FCC 15.247 expects at least 500 kHz for a
+digitally-modulated system in the 902-928 MHz band. Two presets are 500 kHz
+wide, and this fork's native decoder can decode neither.
+
+| Preset | Bandwidth | SF | Coding rate |
+| --- | --- | --- | --- |
+| Long Fast (old US stock) | 250 kHz | 11 | 4/5 |
+| **Long Turbo** (US replacement) | **500 kHz** | 11 | 4/8 |
+| Short Turbo | **500 kHz** | 7 | 4/5 |
+
+The bench node here runs **Long Turbo**, read off the device's own LoRa config
+screen as "Long Range - Turbo". An earlier revision of this document guessed
+Short Turbo from a half-remembered menu label; the two are indistinguishable by
+frequency, so read the preset off the node rather than inferring it.
+
+Preset names are easy to confuse here -- Long Turbo and Short Turbo are both
+500 kHz and differ only in spreading factor, and the frequency alone cannot
+tell them apart. What the frequency *does* pin down is the bandwidth, which
+is the part that matters below.
+
+**The grids differ, so a slot number is meaningless without the bandwidth.**
+From `RadioInterface.cpp`:
+
+```
+freq        = freqStart + (bw / 2000) + (channel_num * bw / 1000)
+numChannels = floor((freqEnd - freqStart) / (spacing + bw / 1000))
+channel_num = (config.channel_num ? config.channel_num - 1 : hash(channelName))
+              % numChannels
+```
+
+For the US (902.0-928.0 MHz, spacing 0):
+
+| Slot shown | at 250 kHz | at 500 kHz |
+| --- | --- | --- |
+| 14 | 905.375 MHz | **908.750 MHz** |
+
+A node reporting "Frequency slot 0" is on *auto*: Meshtastic hashes the
+channel name to pick the slot. Read the frequency the node displays, never
+the slot number alone. An observed 908.750 MHz is only reachable on the
+500 kHz grid, which is how the bandwidth was identified here.
+
+**Why it cannot decode.** `lora_native_decoder.cpp`:
+
+```c
+constexpr uint32_t kDecodeRate = 500000;   // exactly 2 samples per chip at 250 kHz
+
+bool configure_chirp(uint8_t sf, uint32_t bandwidth_hz) {
+  if (sf < kMinSf || sf > kMaxSf || bandwidth_hz != 250000 || ...)
+    return false;
+```
+
+The decoder is built around two samples per chip at a fixed 250 kHz, so any
+other bandwidth is refused before a sample is examined. `decode()` returns 0
+and `preambles` stays 0 however strong the signal is.
+
+**Confirmed on air, 2026-09-09.** A Meshtastic node feet away on 908.750 MHz,
+receiver tuned to match:
+
+- At automatic gain the bursts arrived at **-2.0 to -4.4 dBFS** -- essentially
+  full scale, against -19 to -25 dBFS for the quiet band. An 8-bit ADC clips
+  there, so gain was dropped to manual 7.7 dB.
+- With sane levels the energy trigger fired repeatedly at a channel excess of
+  **-0.8 to -1.5 dB**, the top of the scale and exactly what 3c's model
+  predicts for a strong in-channel chirp. **That is the accept half of the
+  trigger proved on a real transmission**, which noise and interferer tests
+  could not establish.
+- Every decode still returned `preambles=0`, at both SF 7 and the parameters
+  above, because the bandwidth check rejects the capture outright.
+
+So the antenna, tuner, trigger and capture path all work end to end. The
+decoder alone refuses the parameters.
+
+**What supporting 500 kHz would take.** Not a one-line relaxation:
+
+1. `kDecodeRate` must become `2 x bandwidth_hz` -- 1 MHz for a 500 kHz
+   channel, not a fixed 500 kHz.
+2. The LoRa capture runs at 960 kHz, which cannot supply two samples per chip
+   at 1 MHz. The driver already sustains 2,047,945 sps for ADS-B so a faster
+   capture is available, but it doubles the IQ buffer for the same duration,
+   and internal RAM is this project's binding constraint.
+3. `configure_chirp()` and `interpolated_iq()` must take the bandwidth rather
+   than assume it, with FFT scratch sizing following.
+4. Long Turbo also uses coding rate 4/8 where the decoder has only been
+   exercised on 4/5; worth confirming that path.
+
+**Prerequisite, now done.** Every item above touches the signal path, and
+the signal path had no test. 5.7c adds one: synthesised symbols with known
+cyclic shifts, asserted back through the chirp, the resampler and the symbol
+mapping, for SF 7 and SF 11 at 250 kHz. `RTL_LORA_SELFTEST` reports it. That
+is the baseline the 500 kHz work has to keep green -- without it, breaking
+LongFast would be invisible here, because the only node on this bench
+transmits 500 kHz.
+
+**Meanwhile:** `RTL_LORA_MODEM <sf> <bw_hz>` was added, because spreading
+factor and bandwidth were touch-only and a receiver could not be matched to a
+transmitter over serial at all. 250 kHz presets still decode; 500 kHz tunes
+and triggers correctly but will not decode until the above is done.
+
+**Two populations now exist** -- nodes on old LongFast and nodes on the newer
+500 kHz stock preset -- and which one a node belongs to depends on when its
+firmware was flashed. Anyone still on LongFast is unaffected by all of this.
+
+---
+## 4. Two mistakes worth inheriting
+
+Both cost real hardware-recovery time. Do not repeat them.
+
+### `netif_add` assert → panic → reboot loop
+
+The first `reset_link()` called `esp_wifi_stop()` and then immediately
+`esp_hosted_deinit()`. `STA_STOP` never arrived, so the C6's Wi-Fi never
+actually stopped; two `STA_START` events with no intervening `STA_STOP` hit
+`assert failed: netif_add (netif already added)`.
+
+Root cause, confirmed by reading ESP-IDF's `esp_netif_lwip.c`:
+`esp_netif_start_api()` → `esp_netif_lwip_add()` calls `netif_add()`
+**unconditionally, with no already-added guard**. Only `esp_netif_stop_api()`
+removes it.
+
+The fix in `wifi_service.cpp` waits up to 3 s for a real `STA_STOP` before
+touching the transport, and **aborts safely** if it does not arrive rather than
+risking the same crash. `reset_link()` also deliberately does *not* call
+`stop()`/`start()` — those re-register RPC event handlers.
+
+Related correction: an explicit `esp_wifi_start()` in that path looked
+redundant. Reading `eh_host_core_bringup_mcu.c` first showed that transport
+bring-up does **not** restore Wi-Fi mode/state, so it is necessary. Check the
+vendor source before deleting anything that looks redundant in this area.
+
+### Internal RAM, not stack, is the scarce resource
+
+Two 16-element arrays (`wifi_ap_record_t records[16]` in `scan_results()`,
+`ScanResult scan[16]` in `poll_wifi()`) were changed from stack to `static` as
+"stack hardening". Result:
+
+```
+E main_task: Could not reserve internal/DMA pool (error 0x101)
+abort() → continuous reboot
+```
+
+Free internal RAM went 43 KB → 40 KB and `app_main` could no longer reserve its
+40 KB internal/DMA pool. **Both were reverted to stack allocations** and carry
+comments saying why. `EXT_RAM_BSS_ATTR` is available when a static really is
+needed — put it in PSRAM, not internal.
+
+Corollary: `RTL_DRAM_BUDGET` lines in the boot log are the canary. If
+`intern_free` at `stage=ready` drops toward 40 KB, something new is eating
+internal RAM.
+
+---
+
+## 5. Fixes by area
+
+### 5.1 Rendering — the shared-global-state class of bug
+
+M5GFX keeps several pieces of drawing state **globally on the display object**.
+Three separate bugs in this tree came from that, and it is the first thing to
+suspect for any "it draws wrong only sometimes" report.
+
+**Scroll rect (the worst).** `M5.Display.scroll()` scrolls whatever rect was
+last set *anywhere*. The generic radio screen in `main.cpp` only ever set it
+when the nav panel opened — so for the rest of the time it was scrolling
+against whichever dashboard had touched the rect last. FM, P25 and LoRa each
+set theirs in a *different function* from where they scroll, with the same
+hazard.
+
+Fixed by removing the dependency entirely: **`ui/waterfall_view.{hpp,cpp}`** is
+a PSRAM ring buffer pushed through `writeImage` — the path every other element
+on those screens already renders through. All four waterfalls use it. Rows are
+packed at the active width so a narrowed plot (CB and LoRa use one
+permanently) is still two contiguous blits rather than ~250 per-row calls.
+
+`rf_visualizer.cpp` and `rf_lab.cpp` scroll *sprites*, not the panel. That is
+fine and was left alone.
+
+**Font.** ADS-B and POCSAG select DejaVu fonts and the shared header inherited
+whatever was left active, rendering the "VIS" icon oversized into its
+neighbours. Both dashboards reset the font on `leave()`, and the shared header
+resets defensively. There is a regression check (`home_font_ok`) for it.
+
+**Text datum / colour.** Same class; watch for it.
+
+### 5.2 Radio behaviour
+
+- **FM SEEK did not seek.** It hopped between *saved presets*, so it only ever
+  visited the handful of frequencies a previous band scan had stored — exactly
+  the reported "goes through a limited few select lower frequencies". It now
+  sweeps the band in 800 kHz scope windows from the current dial using the
+  existing `scan::Engine`, stops on the first station past it, and wraps at the
+  band edges (`fm_seek_wrap` folds the uint32 arithmetic back into the band).
+  Early-stop is signalled out of the measure callback and acted on *after*
+  `service()` returns, so the engine is never re-entered.
+
+  **Confirmed on air**, and getting there exposed three real defects that a
+  clean compile could never have caught:
+
+  1. *The measurement was stale.* `rtl_scope_peak_level` is computed inside
+     `draw_spectrum()`, which returns early when the current tab shows no
+     spectrum. On the FM LISTEN tab every window of a sweep therefore read an
+     identical frozen value. `spectrum_measurement_wanted()` now lets the DSP
+     run while a scan or seek is active. **This affected the pre-existing FM
+     preset scan too** — it reads the same value.
+  2. *The threshold was absolute.* The former `kFmPresetMinDbfs` (-70 dBFS) cannot
+     separate a station from a noise floor that moves with gain and antenna,
+     so on a real antenna every window passed and the seek stopped on the
+     first one it looked at — including 76.8 MHz. Replaced with an in-window
+     SNR (peak minus the mean of the visible bins, `rtl_scope_peak_snr_db`)
+     and a threshold measured from a full 40-window sweep of 76.5–107.7 MHz:
+     the empty Japanese sub-band read **6.2–9.8 dB**, occupied US channels
+     **16.3–33.2 dB**. `kFmSeekMinSnrDb = 15.0f`.
+  3. *The start frequency clamped instead of wrapping*, and the first window
+     is an AGC transient. Seeking up from 107.9 started at the clamped band
+     edge and "found" 107.7 — behind where it started. `first` now wraps, and
+     window 0 is discarded (windows are 2.048 MHz wide and step 800 kHz, so
+     window 1 still covers from origin+176 kHz — no reachable station is
+     lost).
+
+  Verified across the band in both directions: 88.1↑89.3, 94.1↑95.5,
+  101.3↑102.3, 107.9↑89.3 (wraps past the empty sub-band), 98.5↓96.3,
+  88.1↓106.9. All are valid US channels.
+- **NOAA weather was pinned to 162.400.** `rtl_clamp_frequency` returned
+  `kRtlWxHz` for the whole band, STEP was a no-op, and
+  `request_hot_retune_for` refused the `wx` band outright — six of the seven
+  channels were unreachable. The band is channelized now (same shape as CB) and
+  the home dashboard's span/step strip becomes a **WX1–WX7 picker** on that
+  screen. Span, step and filter say nothing about a fixed 25 kHz NFM channel.
+- **Mute did not mute.** `apply_speaker_volume()` — the chokepoint every
+  volume path funnels through — ignored mute state, so muting only stopped
+  *new* samples being queued while the amp stayed at full volume. Enforced at
+  the chokepoint.
+
+### 5.3 Wi-Fi
+
+- **UI lag root-caused.** `wifi::rssi()` made a blocking RPC (msg id 294,
+  `Req_WifiStaGetApInfo`) from the render path at 2 Hz. Every 5 s main-loop
+  stall paired with a 294 timeout. The wedge did not freeze the UI — *this poll
+  blocking on it* did. `rssi()` now caches, refreshing every 5 s when healthy
+  and every 30 s while wedged, and uses a successful probe to clear the wedged
+  flag.
+- **Auto-reconnect never ran for hand-made connections.** It required
+  `settings_wifi_start_at_boot`, so a link the user brought up by hand simply
+  stayed down after a drop — which is what "it just disconnects" looks like
+  from outside. A hand-made connection now counts for the rest of the session
+  (`wifi_session_wants_connection`), with bounded 15→60 s backoff. An explicit
+  disconnect still suppresses it.
+- **Failures name a reason.** `last_disconnect_reason()` /
+  `disconnect_reason_text()` turn a bare "Connection failed" into
+  "Failed: wrong password" vs "Failed: beacon timeout" — very different
+  problems that were previously indistinguishable.
+
+### 5.4 Crashes fixed
+
+- **`ui_doc_render()` stack overflow.** One ~200-line function handled every
+  screen type in one if/else chain, so the compiler reserved the *union* of all
+  branches' locals — 6000 bytes — even though one branch runs per call. Split
+  into `[[gnu::noinline]]` helpers; the parent dropped to 48 bytes. Diagnosed
+  with `gcc -fstack-usage`, not trial and error. Two earlier attempts to just
+  raise the stack size (20480, then 14336) left the device not booting at all.
+- **`catalog_sync` stack overflow.** Three stacked instances of the same
+  anti-pattern — `Pack[16]` (~820 bytes each) as a *local* array against a
+  12288-byte task stack. `worker()` held all three operations' locals in one
+  15344-byte frame; `refresh_installed()` copied the whole 13248-byte global
+  onto the stack; `parse_manifest()` had its own 14976 bytes. All three moved
+  to the heap / split into noinline branches. Final frames measured, not
+  guessed: 32 B / 176 B / 1888 B / 1776 B / 256 B.
+- **SD never powered its slot.** `mount_tab5_sd()` did not drive GPIO45 before
+  mounting, unlike the splash screen's own copy of that logic, so the first
+  boot mount was guaranteed to fail. Power-gate centralised; the real
+  `esp_err_t` is surfaced instead of a generic "missing_or_fail".
+
+### 5.5 Self-checks were lying
+
+Every `self_check()` line in `setup()` printed `_OK` **unconditionally right
+after** `_FAIL`, masking real failures. Rewritten as single conditionals.
+This masked a genuine failure: `kUiDocScreens` was missing
+`settings.firmware-updates`, and the screen-id → `Section` lookup mapped **by
+array index**, so every section after `connectivity` was silently off by one
+and `Section::system` was unreachable. Fixed, with a `static_assert` so the
+drift fails to compile next time.
+
+> **Note for the next upstream merge:** upstream re-introduced this exact bug
+> in its POCSAG branch (`if (!check()) println(FAIL); println(OK);`). The merge
+> `b941f6f` deliberately keeps our ternary form. Do not take theirs.
+
+### 5.6 UI — found by a full 46-screen capture sweep
+
+The screens were swept twice, before and after changes. Highlights:
+
+| Screen | Defect |
+| --- | --- |
+| FM Station/RDS | One 260px-tall rectangle cleared all three status cards, wiping the PILOT/DECODER STATUS captions and borders every refresh — the reported "looks like it's hiding something". |
+| Home / radio family | The card at (930, 484) repeated the stepper below it verbatim: "STEP 12.5 kHz" twice on free-tuned bands, "CHANNEL CH 19" twice on CB. Now FILTER / "19 / 40"; the freed slot widens SIGNAL. |
+| Home header | Title fell back to "HOME" for any frequency in no named band (`Id::utilities` has no registry entry) — browsing 146.520 MHz showed a tuner under the word HOME. |
+| ADS-B radar | "N" drawn at y=2 and "S" at y=396 in a 390px sprite; both clipped. All four compass points moved inside the outer ring. |
+| ADS-B data card | "NO NEARBY PRESET / MANUAL START / UNAVAILABLE" never said which of three preconditions was missing. Now names the first unmet one. |
+| LoRa | The decoder state (DECODE/PHY/KEY) was drawn at x=1050 y=44/73 — *under* the header icons drawn afterwards, so it was completely invisible. Restacked to x=866. |
+| LoRa RF health | Card widths summed to 1270 and the row ended at 1334, off-screen. Rebalanced to end at 1248. |
+| Settings | CLOSE overlapped the shared mute icon (116px button in ~79px of gap); its hit-test moved too, which would otherwise have silently broken tapping. |
+| ADS-B | "SET RECEIVER LOCATION" button had **no hit-test at all** — tapping did nothing. |
+| DEMO badge | Sat at (572, 8), directly on the home header's status panel (starts at x=595), covering the Wi-Fi cell and IP in the very captures it exists to mark. Moved to a bottom strip. |
+| Header icons | Spacing and height inconsistent (58×58 @ y=8 vs 54×54 @ y=12). Unified. |
+
+Also: several redraw-only-on-full-entry bugs (mute icon, VIS icon) where
+toggling state looked stuck until you navigated away and back.
+
+### 5.7 Honesty fixes
+
+Cases where the UI stated something untrue:
+
+- **Data & Maps** queued a worker for packs the published catalog does not
+  carry, said "Data operation queued", then silently did nothing. The published
+  catalog has **only** `faa_aircraft`, `faa_aviation` and `lane_county_map`;
+  `noaa_weather` and `fcc_broadcast` are reserved ids with no artifacts. The
+  button now reads UNAVAILABLE and does not arm — but only *after* a catalog
+  check, since before one the honest state is "we have not looked yet".
+- **`atc::nearest()` was unbounded**, so with a national index a receiver in
+  Oregon would be offered a Florida tower and told it was nearby. Capped at
+  ~100 nmi, with longitude weighted by cos(latitude).
+- The ADS-B card claimed "LANE COUNTY READY" for whatever map was loaded.
+
+### 5.7a GMRS/FRS band and the channel scanner
+
+Added a 30-channel GMRS/FRS band (1–22 plus the R15–R22 repeater inputs) and
+gave all three channelised bands — CB, GMRS, weather — a SCAN button that walks
+the channel list, stops on a busy channel, and resumes ~2.5 s after it goes
+quiet. Receive-only; the channel names are identification help, not authority
+to transmit.
+
+**Deciding "busy" is the whole problem, and the obvious test is wrong.** The
+tuner hears 960 kHz at once, which on GMRS is 38 channels of spectrum. Measured
+with one NOAA transmitter on 162.550: *all seven* weather channels read 54–58 dB
+SNR, so a level- or SNR-only detector stops on every one of them. A channel is
+busy only when the strongest visible bin sits within half a channel of the dial
+(that is what separated 162.550 from its six neighbours, whose peaks were
+26–150 kHz off centre), the reading clears the squelch, and it stands
+`min_snr_db` above the mean of the visible bins.
+
+Thresholds are measured, not guessed, and the measurements are worth keeping:
+
+| Band | Noise/artefact ceiling | Floor set | Why |
+|---|---|---|---|
+| GMRS 462/467 MHz | 11.6 dB over 153 samples | 20 dB | Largest of 256 noise bins, by chance alone |
+| CB 27 MHz | 17.0 dB over 25 samples | 25 dB | LO-leakage skirts at the bottom of the R820T's range |
+| Live NOAA signal | 60 dB | — | Scale reference: real signals have room to spare |
+
+Four traps found in the process, all of which would bite anything else built on
+this scan engine:
+
+- **`Engine::service()` calls `measure()` and then `finish(completed)` in the
+  same call on the last index**, so a hit on a pass's final channel arrived as
+  "completed" and was discarded — and since a sweep starts just after the dial,
+  that is the channel the user was already listening to.
+- **The tuner's LO leakage sits permanently in the centre bin**, looking like a
+  carrier exactly on the dial on every channel; it stopped a CB scan on channels
+  18–22 alike. The DC bin is now interpolated from its neighbours. Note the
+  leakage is *wider* than one bin — after notching, CB still reads 13–17 dB with
+  the peak at ±1 bin, which is why CB's floor is raised rather than the notch
+  widened; widening it would remove the bins a real on-channel signal lives in.
+- **`rtl_scope_peak_level` is not dBFS.** `draw_spectrum` leaves it as raw
+  `10*log10` of bin power, so it reads about +55 where the squelch default is
+  −75. Comparing the two is a test that can never fail; the FM seek still does
+  this. Only its ratio to the mean (the SNR) is meaningful. Use `rtl_signal_dbfs`
+  where a real dBFS level is wanted.
+- **The spectrum refreshes 9.4–9.8 times a second**, so two windows take ~210 ms.
+  A 250 ms dwell left 40 ms of margin and really did read one channel late — it
+  stopped a NOAA sweep on 162.400 for a signal on 162.550. Dwell is 400 ms now,
+  and readings are freshness-checked against `rtl_scope_measurement_seq` rather
+  than trusted to arrive in time; `stale_skips` counts any that are not.
+
+`RTL_CHANNEL_PROBE` prints the detector's own reading for the channel on the
+dial — level, SNR, threshold, peak offset, tolerance — which is how all of the
+above was measured and how a user calibrates against their own noise floor.
+
+`Id::gmrs` is appended to the dashboard enum rather than inserted next to
+`Id::cb`, because those values are persisted to NVS; grid position comes from
+`kEntries` order instead.
+
+### 5.7b Marine VHF, channel lockout, and SAME alert decoding
+
+Three additions built on the channel-scan work.
+
+**Marine VHF** was a browse-band preset parked at 156.800 with no plan behind
+it. It is now a real channelized band carrying the 40-channel US monitoring
+set, reusing ChannelPlan, the scanner, the detector, NFM at 25 kHz and the
+squelched audio path. Its frequencies are two interleaved arithmetic series
+(channels 1-28 at 156.050 MHz + (n-1) x 50 kHz, 60-88 at 156.025 MHz +
+(n-60) x 50 kHz) whose closest pair is 25 kHz apart, which is the spacing the
+plan reports. `channel_plan_self_check()` re-derives every entry from those
+formulas rather than trusting a 40-entry table, and caught a 25 kHz step in the
+first version of the check itself.
+
+**Channel lockout** closes the hole that made the scanner unusable unattended:
+one permanently busy channel parked the sweep forever. Locked channels are
+dropped when the pass is built, so the engine never dwells on one; locking
+everything is refused rather than starting an empty sweep; and locking the
+channel a hold is parked on releases that hold instead of stranding the
+receiver there. Addressed by the name the dashboard prints ("19", "R15",
+"22A", "WX3"), which is why names moved into ChannelPlan and CB and weather
+gained name tables.
+
+**SAME/EAS decoding** (`ui/same_decoder.{hpp,cpp}`) runs automatically on the
+weather band, fed the same demodulated audio the speaker gets. 520.833 bit/s
+AFSK, mark 2083.33 Hz and space 1562.5 Hz, 8-bit ASCII LSB-first with no
+framing. Audio is decimated 48 kHz to 8 kHz, quadrature-correlated against both
+tones, and sliced at the middle of each bit.
+
+Three things worth inheriting from building it:
+
+- **Sample mid-bit, not on the boundary.** The clock is pulled so transitions
+  land on the bit boundary, which makes the boundary the worst place to decide.
+  The first version sampled there and decoded nothing at all.
+- **A burst ends only at the first non-printable byte,** which needs a full byte
+  time of carrier drop. The self-check fed 400 samples of trailing silence --
+  4.3 bit times -- and produced nothing; `Decoder::flush()` now exists for a
+  caller that knows the stream ended, and the check feeds 1200.
+- **There is no host build for this firmware,** so the algorithm was validated
+  first as a Python model with identical constants
+  (`scratchpad/same_model.py` pattern), then ported. Both bugs above were found
+  in the model or by `self_check_detail()`, which names the failing stage --
+  worth reaching for before another flash-and-guess cycle.
+
+**Measured on air, 2026-09-09.** Marine inherited GMRS's 20 dB stop threshold
+without anyone measuring 156 MHz, so it was probed: 4 reads on each of the 40
+channels, 160 in total. Noise ceiling 9.8 dB, nothing above it, zero reads
+busy. Marine is the quietest of the three bands -- no LO-leakage problem like
+CB has at 27 MHz -- so 20 dB stands with 10.2 dB of margin, more than GMRS has.
+
+| Band | Noise/artefact ceiling | Floor | Margin |
+| --- | --- | --- | --- |
+| Marine 156 MHz | 9.8 dB (160 reads) | 20 dB | +10.2 |
+| GMRS 462 MHz | 11.6 dB (153 samples) | 20 dB | +8.4 |
+| CB 27 MHz | 17.0 dB (25 reads) | 25 dB | +8.0 |
+
+**The SAME decoder does not false-alarm on speech.** Six minutes on the live
+local NWR transmitter (162.550 MHz, synthesised NOAA voice, which is broadband
+audio sitting right where the AFSK tones live) produced zero preamble locks,
+zero headers and zero rejected bursts. It never even locked, which is a
+stronger result than locking and then rejecting. A spurious tornado warning is
+far worse than a missed one, so this is the failure mode that mattered most.
+A true positive still needs a real alert or a Wednesday weekly test.
+
+The self-check synthesises bursts and streams them through a real decoder in
+256-sample blocks. It buffered the whole 48,000-sample burst at first and
+overflowed internal DRAM at link time; internal RAM really is the constraint
+this project keeps running into.
+
+### 5.7c A DSP regression vector for the LoRa decoder
+
+Prompted by 3d: supporting 500 kHz presets means changing `kDecodeRate` and
+everything that assumes it, and there was nothing to change it against.
+`self_check()` covered `decrypt_ctr`, `summarize_telemetry` and
+`parse_node_info` -- the protocol layer -- and **none of the signal path**. No
+chirp generation, no dechirp, no resampling. Breaking the 250 kHz path that
+works would have produced no error and no log line, just a mesh that had
+apparently gone quiet, and the only node on this bench transmits 500 kHz so
+nothing would have contradicted it.
+
+**The vector.** A LoRa symbol of value `s` is the base upchirp rotated by
+`s / 2^SF` of a symbol period. So synthesise CU8 symbols with known shifts and
+assert the front end recovers them, which reaches the chirp maths without
+implementing LoRa TX framing (Gray coding, Hamming FEC, interleaving,
+whitening, CRC) to get there. Four cases:
+
+| Case | Path |
+| --- | --- |
+| `sf7_raw`, `sf11_raw` | straight into `dechirp_peak()` at 500 kS/s |
+| `sf7_front`, `sf11_front` | through the real 960 kHz front end: anti-alias IIR, then the linear resampler |
+
+SF 11 is LongFast, and the other end of the size range where a scratch-sizing
+mistake would show up instead of a maths one.
+
+**Symbol 0 is the reference the rest are measured against**, exactly as the
+decoder measures payload symbols against the preamble peak. That is not
+cosmetic. The anti-alias IIR delays the capture by 9.58 samples at 960 kHz,
+which offsets *every* peak by the same amount -- the reference bin moves from
+511 to 503 -- and only a relative reading cancels it. An absolute assertion
+would fail on correct code.
+
+**Modelled before flashing**, the way the SAME mid-bit bug was caught. The
+host model mirrors `synthesize_symbols()`, `configure_chirp()`,
+`dechirp_peak()` and `peak_to_symbol()` closely enough that a wrong shift
+direction or a wrong FFT fold would be wrong there too. It also measured the
+margin: through the front end the peak lands within **1 bin** of the exact
+grid position, against the **+/- 2** that `peak_to_symbol()` tolerates. Half
+the budget, spent on resampling wobble, before any change is made.
+
+**It immediately found a race.** `g_scratch` is one shared block -- chirp
+table, FFT workspace, resample buffer -- and both the decode task and the
+self-test reconfigure it, with nothing serialising them. A self-test landing
+mid-decode dechirped against the other one's table. It presented as
+`RTL_LORA_SELFTEST` failing in 26 ms right after a boot that had LoRa
+streaming, then passing on every retry -- the shape of a race, not a bug in
+the code under test. Now behind a mutex.
+
+A 6-minute soak, self-test in a loop against a live decode task:
+
+| | |
+| --- | --- |
+| self-test runs | 317 |
+| failures | 0 |
+| decodes finished | 3 |
+| runs that waited | **3** |
+| elapsed | median 813 ms, max 2860 ms |
+
+Three waits against three decodes, the excess equal to a decode duration.
+Those three are the collisions; they now queue instead of corrupting.
+
+**A reporting bug of its own making, worth the warning.** The first version
+had `self_check_detail()` call `self_check()`, which now runs the DSP subset
+with a null detail buffer -- so the first real DSP failure came back labelled
+`failed_case=protocol` and pointed at the one part of the module that was
+already covered. A test that misnames its own failures is worse than no test.
+Split into `protocol_self_check()` and the DSP cases.
+
+**How to run it.** `RTL_LORA_SELFTEST` runs all four cases in ~812 ms and
+names the failing one (`sf11_front_sym3_got701_want700`). The band-start check
+runs the first three in 366 ms and prints `RTL_LORA_NATIVE_SELF_CHECK_OK` --
+it previously printed only on failure, so the check was invisible, which is
+the same complaint as 5.5.
+
+Both run synchronously on the main task, so `RTL_LORA_SELFTEST` freezes the
+UI for its duration and trips the loop watchdog:
+
+```
+RTL_MAIN_STALL stage=serial_dispatch elapsed_ms=814
+```
+
+That is the deliberate stall being reported as if it were an accidental one.
+Expected, and harmless, but do not go hunting for it -- and do not use
+`RTL_LORA_SELFTEST` as a keepalive inside a timing measurement.
+
+**What it does not cover.** Coding rate 4/8 (Long Turbo uses it, only 4/5 is
+exercised), noise and weak-signal acceptance, and the header/FEC/CRC layers
+above the symbol recovery. It is a regression guard for the signal path, not
+a demodulator acceptance test.
+
+---
+
+### 5.7d The serial tuner answered OK for things it did not do
+
+Ported from upstream's `codex/experimental-multi-dongle-0.8.0-rc1` (the
+driver-independent half — see §5.7e). `queue_local_rtl_listen` and
+`request_hot_retune` now return `bool` and the callers check it:
+
+- The receiver-readiness guard sat **below** the ADS-B block, so with no
+  dongle attached `RTL_TUNE ADSB` opened the dashboard, logged
+  `RTL_ADSB_CAPTURE live_rf=true ui_data=live`, and answered `RTL_TUNE_OK`
+  for a capture that never started. `RTL_TUNE` also exempted ADS-B from the
+  readiness check outright. Both fixed; ADS-B now answers
+  `RTL_TUNE_UNAVAILABLE` like every other band. The navigation cleanup
+  (AM-finder cancel, P25 automation stop) deliberately stays **above** the
+  guard — the intent to leave the previous band is real whether or not a
+  receiver answers, and every dashboard entry point draws its own screen, so
+  moving the guard up does not create a dead tap.
+- `request_hot_retune_for` refuses on a stale session token, on a clamp to
+  zero, and unconditionally on ADS-B. All three used to answer `RTL_FREQ_OK`
+  and do nothing. New reply: `RTL_FREQ_REJECTED band=... frequency_hz=...`.
+- `RTL_TUNE_INVALID` listed 8 of the 11 bands `rtl_band_from_name` parses —
+  GMRS, MARINE and POCSAG were missing from the message but tuned fine.
+
+Verified on hardware: 8/8 checks, including `RTL_FREQ` on ADS-B rejecting and
+`RTL_FREQ` on FM still succeeding.
+
+### 5.7e What we did *not* take from the multi-dongle branch
+
+That branch is built on `esp_rtl_sdr` **v0.8.0-rc2**; upstream/main and this
+fork both pin `1cd19d13` = **v0.7.15**, and our guard is
+`#if ESP_RTL_SDR_VERSION_NUMBER < 709`. So it is a driver generation ahead of
+upstream's own main, not merely unmerged. Left behind, deliberately:
+
+- **The driver bump itself** (`8cc5bbb`) and the `#error ... rc2` guard.
+- **The receiver label in the home footer** (`"RTL-SDR v4"` → the actual
+  dongle name). Needs `ESP_RTL_SDR_PROFILE_BLOG_V3`, `NOOELEC_SMART_V5` and
+  `g_rtl_profile` — **zero occurrences of any of them in our tree**; they are
+  0.8.0 concepts. Revisit when the driver lands on upstream/main.
+
+  **Superseded 2026-10-12 — see §5.7h.** It landed, and then some: upstream
+  `main` pins `esp_rtl_sdr` v0.9.3, ships it in v0.3.0 and v0.4.0, and the
+  author runs V4 and V4L on it routinely. The caution below was about an
+  unmerged experimental branch, not about the driver line as it stands now.
+- **Relaxing the AM scan regression assertion** from `Found -lt 1` (throw) to
+  `Found -gt 6` (throw). It fixes real flakiness in a quiet RF environment,
+  but a scan that finds nothing would then pass. `Step -eq Total` still guards
+  completion, so it is defensible — just not adopted silently.
+
+### 5.7f Companion ADS-B response integrity (2026-09-12)
+
+An audit of the Companion ADS-B path found three connected correctness
+problems:
+
+- Aircraft with a valid fix could be published at the radar center when the
+  receiver location had not been configured.
+- The JSON response buffer was too small for the advertised 16-target maximum
+  and could silently truncate the response.
+- The browser treated numeric zero as missing, hiding valid northbound heading,
+  sea-level altitude, stopped speed, and level-flight vertical rate.
+  Vertical-rate validity was also not carried through the complete snapshot
+  path.
+
+The implementation now uses one shared relative-position availability check
+for sorting and publication, derives JSON capacity from the 16-target limit,
+and fails closed with HTTP 500 if serialization exceeds that capacity. Explicit
+`alt_ok`, `spd_ok`, `hdg_ok`, and `vr_ok` flags are carried from the receiver
+snapshot through JSON to the browser. `tools/test_web_console_contract.py`
+protects these contracts in the quality workflow.
+
+Verification completed on 2026-09-12: the web-console contract,
+source-hygiene, UI-layout, help-documentation, LoRa serial-transfer, and
+release-metadata tests passed; `git diff --check` passed; and a full ESP-IDF
+5.5.4 build completed with `orcsdr_tab5.bin` at `0x24f300` bytes and 42%
+application-partition space free.
+
+Hardware verification, 2026-09-12, Tab5 on COM3 with a live antenna. The running
+firmware emitted the new `alt_ok`/`spd_ok`/`hdg_ok`/`vr_ok` fields, so it was
+this change set. With Wi-Fi and the Companion up and the receiver parked on
+ADS-B, 5 of 5 `/api/status` requests returned HTTP 200 with valid JSON. The 14
+targets published across them (up to 4 at once) all carried boolean `alt_ok`,
+`spd_ok`, `hdg_ok`, `vr_ok` and `pos`, and the largest body was 1480 bytes
+against the 6144-byte capacity. A target with altitude but no position fix was
+published with `pos=false`, as it should be. Two things were not covered on
+hardware: the `adsb.located=false` branch, because this receiver has a location
+configured (that half is covered only by `tools/test_web_console_contract.py`),
+and the browser's rendering, since only the JSON was checked.
+
+Testing note, because it cost a false diagnosis: an authenticated serial session
+ends `kSessionTimeoutMs` (5 s) after the last command, and `process_command()`
+sends nothing back for an unknown command, or for a gated command such as
+`RTL_TUNE` or `RTL_WEB ON` once the session has lapsed. A script that waits
+longer than 5 s between commands without sending `PING` sees what looks like the
+device dropping commands. The verbosity command is `RTL_SERIAL VERBOSITY`, with a
+space; the underscore spelling is not a command. (Both silences are gone now: see
+item 16 below and `docs/API_SERIAL_CLI.md`. Older builds still behave this way.)
+
+### 5.7g Reviewing upstream's 151 commits (2026-09-24)
+
+Upstream `main` moved from `a1c9084` (our merge base) to `4c91e68`: 151 commits
+we do not have, against 123 of ours they do not. Most of it is features built on
+the 0.8.0 driver line this fork does not carry — the Shortwave dashboard, WebUI
+audio streaming, multi-dongle, V3c gain controls, the splash rework — so the
+review was for *fixes that describe a bug we also have*.
+
+Taken, and why:
+
+- **The Companion had no cross-site protection at all.** `/api/action` accepted
+  any POST. A page open on any machine on the network could retune the receiver,
+  and a cross-site POST never needs to read the reply to have already worked.
+  Upstream validates `Origin` against `Host`; our build checked neither. The
+  policy now lives in `ui/web_origin.hpp`, free of ESP-IDF headers so
+  `tests/web_console_origin_tests.cpp` can exercise it on the host.
+- **A dongle that misses its first enumeration stayed missing.** A P4 reset does
+  not reset the USB-A rail, so a still-powered dongle can fail to enumerate; we
+  printed `BOOT_RTL_TIMEOUT no_device` and gave up until it was unplugged by
+  hand. There is now one opt-in rail power-cycle retry (`RTL_USB_RECOVERY`),
+  **off by default** because pulsing that rail with a powered dongle attached has
+  reset the P4 here — which is why `begin_boot_device_staging()` reasserts the
+  rail without cycling it. It re-uses the driver's own
+  `ESP_RTL_SDR_EVT_ENUMERATED` event; `initialize_rtl_sdr_host()` allocates
+  queues and spawns tasks and must never run twice.
+- **The detached-task wrapper is no longer handed back** to callers, matching
+  upstream's hardening.
+
+**This fork was never exposed to upstream's heap corruption (their #103), and
+§3b's masked corruption is still unexplained.** Worth recording the reasoning,
+because the code *looks* identical to theirs. Their `eh_host_port_task_create()`
+passes `&t->handle` to `xTaskCreateWithCaps`, which creates the task and only
+then stores the handle (`idf_additions.c`) — so a detached one-shot task can run,
+free its wrapper in the trampoline, and have the handle written into freed
+memory. Our task-lifecycle patch had already moved detached tasks onto plain
+`xTaskCreate`, and on this configuration (`CONFIG_FREERTOS_SMP` unset) that is an
+inline wrapper around `xTaskCreatePinnedToCore`, which calls
+`prvInitialiseNewTask` — the function that writes `*pxCreatedTask` — *before*
+`prvAddNewTaskToReadyList`. The task cannot run until the handle is stored. Our
+WithCaps path is only used by joinable tasks, whose trampoline never frees the
+wrapper. So the leak fix closed that window as a side effect.
+
+Checked and not needed: per-band frequency restore (their #104 — we already
+restore AM and FM separately), tuning FM at the displayed frequency (solved here
+by `rtl_fm_sanitize_display_hz`), and the SD write-alignment work, which belongs
+to their shortwave recording path.
+
+Left alone deliberately, each because the verdict needs the bench:
+
+- **Wi-Fi connect retry and backoff (#100).** Rewrites connect-path timing, where
+  a fix cannot be told from a regression without the hardware.
+- **Hot-replug resume (their `46b748a`).** Unplugging the dongle mid-listen and
+  plugging it back in does not resume reception here. They latch a resume when
+  the capture state was `queued` or `running` and act on it at the next
+  enumerate. Worth taking, but proving it means physically unplugging a dongle.
+- **The LoRa decoder fixes.** Not cherry-pickable, and this was measured rather
+  than assumed: a dry-run cherry-pick of all five (`cd8745d`, `95979fa`,
+  `fa63981`, `8a3dfac`, `ef69539`) conflicts, the larger three across the
+  decoder, its header and `main.cpp` at once. `lora_native_decoder.cpp` was 988
+  lines at the common base and is 1354 here against 1445 there, and both sides
+  rewrote the same core: `dechirp_peak`, `decode_mesh`, `phy_crc_matches`,
+  `decode_capture_pass`, `self_check`. What transfers is each finding — empty
+  candidate scan, truncated candidate, stack margin, weak adjacent symbols —
+  re-derived against our decoder, not the patches.
+
+Their `tools/lora_lab/` is three different things, and only one of them is
+cheap, so the earlier one-line note here was misleading:
+
+- `candidate_detector.py` and `corpus_manifest.py` are pure host Python over
+  ORCIQ files and import `decode_orciq`, which this fork already has.
+  `impair_awgn()` is the interesting part: it grades one clean capture into a
+  weak-signal ladder. `tools/lora_snr_matrix.py` here does that job.
+- `replay_lora_orciq.py` uploads a capture into Tab5 PSRAM and runs the
+  **native** decoder, so it drives real firmware rather than modelling it — but
+  it speaks `RTL_LORA_REPLAY_BEGIN/CHUNK/DATA/ACK/QUEUED/READY`, and this fork
+  has none of those (16 occurrences upstream, 0 here). Adopting it means
+  building that chunked upload-into-PSRAM path first, which the existing SD and
+  `RTL_IQ_GET_*` transfers are the pattern for.
+- `run_suite.py` is a live-air bench: Meshtastic TX to a reference RX to
+  OrcSDR, three serial ports, and it transmits.
+
+Their recorded IQ is **not** available to borrow: the manifest says the corpus
+is a "local ignored workspace artifact; not stored in Git", so only metadata and
+their results ship. Our own captures in `.local/lora-captures/` are the corpus
+to use, and that directory is gitignored for the same reason. Worth knowing when
+reading their numbers: their manifest marks the `native` result `unknown` on its
+own controlled vector, sourced from an "engineering notebook".
+
+Checked against our source and *not* applicable: their `95df41a` status-overwrite
+fix guards a "below 24 MHz unavailable" message this fork does not have.
+
+### 5.7h Upstream has outgrown the fork — measured 2026-10-12
+
+Upstream `main` is `a000b27`, released as **v0.4.0-beta.1** on 2026-10-10 with
+native FT8, FT4 and experimental JS8 reception. Against our shared merge base
+`a1c9084` it is **500 commits / 641 files / +94,743 lines** ahead; this fork is
+**129 commits / 142 files / +13,032** ahead. That gap is no longer something
+selective porting closes.
+
+**Checking his work first, because adopting it is the question.** Upstream keeps
+17 open issues, only 2 labelled `bug`, with a `needs-hardware-validation` label
+in use; the nightly firmware build, documentation-truth and user-guide CI are
+green on head; releases ship evidence tables and name what was *not* tested. The
+two open items that touch this bench are `#122` (one V4 bandwidth write rejected
+at 1.8M, rolled back to 1.0M) and `#109` (hot-plugging a **V3** can knock out
+the C6 Wi-Fi link; V4 and V4L do not). Their v0.4.0 notes record valid FT8
+decodes on a Blog V4 after switching to manual gain. The driver is pinned to
+`esp_rtl_sdr` **v0.9.3** against this fork's `1cd19d13` (the 0.7.15 line), so
+§5.7e's "do not take the 0.8.0 line" is now stale: the author tests V4 and V4L
+on it routinely.
+
+**What a merge would cost, measured rather than guessed.** A trial merge of
+`upstream/main` into our `main` conflicts in **43 files with about 180 hunks**,
+**74 of them in `main.cpp`** alone. That file was 15,413 lines at the base; it
+is 16,638 here (+2,596/-1,371) and **21,765 there** (+7,666/-1,314). 63 files
+were changed by both sides; 79 only by us; and upstream carries **160 UI source
+files this fork does not have** — a whole airband subsystem, CB dashboard and
+scanner, band profiles, clock settings, the FT8 stack.
+
+**Ingested now, after checking each against our source:**
+
+- **Speaker teardown serialisation** (`c8b309f`). A real crash, and this fork
+  had the same two unguarded sites. See item 18.
+- **`RTL_USB_RECOVERY` on by default** (`7a8cfee`). Their field evidence
+  answered the question that kept ours opt-in. See item 18.
+
+**Checked and deliberately deferred**, each because the port is multi-site and
+the verdict needs hardware this session did not have:
+
+- **Hot-replug resume** (`59db169`), the item 14 gap. It needs
+  `rtl_hotplug_resume_pending`, `rtl_boot_complete`, `radio_io_paused()` and
+  `wifi_c6_probe_radio_paused`, none of which exist here (0 references each),
+  plus a change to how ADS-B navigation persists. Worth taking; its test is
+  unplugging a dongle.
+- **Wi-Fi start-at-boot and C6 link recovery** (`d2f4554`, `5ba1a40`,
+  `91e5c40`, `41e52e2`). Connect-path timing, where a fix and a regression are
+  indistinguishable without the radio.
+- **C6 version read at boot without Wi-Fi** (`dc9133e`, their #82).
+- **The driver bump to v0.9.3**, and all 160 new UI files.
+
+**The decision this forces.** Four paths, in rising order of cost:
+
+1. **Keep porting fixes selectively.** Cheapest per step, but upstream moved 500
+   commits in five weeks, so the gap and the per-port cost both grow. This is
+   the treadmill we are on.
+2. **Staged merge into the fork.** Reconcile ~180 hunks, three quarters of them
+   in `main.cpp`, then revalidate everything on hardware. Ends with both feature
+   sets in one tree.
+3. **Re-base the fork on upstream** — adopt `a000b27` as the new base and
+   re-apply this fork's unique work against their current architecture, where
+   `band_profile` would carry GMRS and marine far more cleanly than our
+   hand-rolled channel plan does. Comparable work to (2), cleaner result, and it
+   sets each feature up to be offered as a PR instead of living only here.
+4. **Run upstream's firmware and keep the fork for deltas only.** Lowest effort,
+   and it loses GMRS, marine, the Companion extras and the LoRa work unless
+   those are upstreamed first.
+
+(3) is the recommendation. Either way it is a multi-session project with hardware
+validation at each step, and until it lands, this fork's firmware is what the
+Tab5 runs.
+
+### 5.7i The re-base, started 2026-10-12 (option 3)
+
+**Nothing on `main` moved.** It is tagged `pre-refresh-2026-10-12` (`46f3ac4`,
+pushed), and the work happens on branch **`refresh/upstream-a000b27`** in a
+separate worktree at `..\ORC SDR-refresh`, so the Tab5 keeps building from a
+known-good tree throughout.
+
+**The baseline builds.** Upstream's v0.4.0-beta.1 compiles on this machine in
+9.8 minutes, 0 errors, `orcsdr_tab5.bin` at `0x2dd200` (3.0 MB, against 2.4 MB
+here) — after two build fixes that this fork already knew about and upstream's
+script does not:
+
+- Their `build-tab5-idf.ps1` hardcodes `C:\Espressif\frameworks\esp-idf-v5.5.4`
+  and a `python_env` path. It now resolves the installer layout instead, with
+  the EIM profile preferred over `export.ps1`.
+- The legacy M5 `register_component()` macro breaks on a path containing a
+  space, which is fatal here because the repository lives in `ORC SDR`.
+  `Update-M5ComponentRegistration` is carried over, patching before configure
+  and again after, since the component manager re-resolves and restores it.
+
+**Two defects found in his work, by carrying our hygiene test over:**
+
+- `apps/orcsdr-tab5/ui/main.cpp:12775` held a **raw NUL byte inside a char
+  literal** (`*p != '<NUL>'` where `'\0'` was meant) — the same class of bug
+  their PR #148 fixed in `fm_dashboard.cpp`. Fixed on the branch.
+- `docs/API_SERIAL_CLI.md:513` carried **seven cp1252 `0x85` bytes** where
+  ellipses belong, so the file was not valid UTF-8. Repaired byte by byte.
+
+Both are worth offering upstream together with `tools/test_source_hygiene.py`,
+which is what caught them and which they do not have.
+
+**Re-triaged against upstream's current tree, correcting §5.7h's list.** Two
+things we were going to carry are already theirs, and better: the
+**cross-site guard** (`origin_allowed`/`same_origin`, covering the audio
+transport too) and the **`offline_map` loader**. What is genuinely ours:
+
+| Ours to port | Upstream | Here |
+| --- | --- | --- |
+| GMRS | 3 refs | 120 |
+| Marine VHF | 9 | 63 |
+| Channel lockout (`RTL_CHANNEL_LOCK`) | 0 | 17 |
+| Companion ADS-B radar and validity flags | **0** | radar in HTML, `alt_ok` etc. |
+| LoRa trigger/gap/SNR telemetry | 0 | 9 |
+| `CMD_ERROR`, `RTL_USB_RECOVERY` | 0 | 9 |
+| `build_orcmap.py` | 0 | present |
+| `test_source_hygiene`, `test_ui_layout`, `test_release_metadata`, `lora_snr_matrix` | absent | present |
+
+The Companion radar is the surprise: upstream's web console has **no ADS-B
+radar at all** (0 references in its C++), and theirs has been rewritten around
+audio streaming and `web_command.hpp`, so ours has to be grafted on rather than
+copied.
+
+**Stage A, done on the branch:** the two build fixes, the two hygiene fixes, the
+four test scripts, `lora_snr_matrix.py`, `build_orcmap.py`, and a `quality.yml`
+adapted to what passes there (upstream has no `quality.yml`; `test_ui_layout`
+and `test_release_metadata` pass against their tree unmodified).
+
+**Stage B, the firmware ports.** Order: serial hardening, the Companion ADS-B
+radar, GMRS/marine/lockout — which should be rebuilt on their `band_profile`
+rather than transplanted — then the LoRa decoder work and the POCSAG deltas.
+Each needs its own build, and the GMRS and LoRa ones need the radio.
+
+**Where Stage B stands (2026-10-18):** serial hardening, the Companion radar,
+and GMRS/marine are done. Channel lockout, the LoRa decoder work and the
+POCSAG deltas are not. Nothing on the branch has been on hardware yet.
+
+**Serial hardening: done** (2026-10-12), `134d948` and `07ebb5d`, both built
+with 0 errors.
+
+- Twenty handlers were written as `if (<match> && authenticated)`, so a lapsed
+  session made them skip the command in silence. Each now matches first and
+  answers `<FAMILY>_ERROR auth_required`, joining the 48 that already did. The
+  conversion was scripted with two fatal checks — one anchor match each, and no
+  command claimed by a second handler. That second check first flagged
+  `RTL_VOLUME`, `RTL_FREQ` and `RTL_POCSAG_SCAN`, which turned out to be an
+  over-broad prefix match *in the check*: `"RTL_VOLUME"` the query and
+  `"RTL_VOLUME "` the setter are different commands, as are `RTL_POCSAG_SCAN`
+  and `RTL_POCSAG_SCAN_STOP`.
+- An unrecognised line now answers `CMD_ERROR unknown_command verb=<VERB>`,
+  verb only because arguments carry key and password hex, and `{` frames are
+  left alone. A trailing reply is only safe while every branch returns, so that
+  was audited: of **166 top-level blocks**, only three did not end in a return
+  — the two `RTL_RESET` paths, which restart rather than return, and `ACK`.
+  `PING` and `ACK` now claim their command and return silently.
+- `tools/test_serial_auth_replies.py` guards both halves and is load-bearing:
+  against `a000b27` as shipped it reports all twenty offenders.
+
+**Companion ADS-B radar: done** (2026-10-12), `9484d15`, built with 0 errors.
+Grafted rather than copied: their console was rewritten around audio streaming
+and one status poll, so transplanting our 40 KB multi-view page would have
+replaced a UI that works. `fill_web_radar()` turns their existing 64-entry
+track table into at most 16 targets, nearest first, computing range and bearing
+on the device so no coordinates are published. The track table is copied under
+its mutex and nothing else happens there — no trig, no sorting, no formatting —
+so the decoder is not held off while the page is built. Each measurement still
+travels with its own validity flag, and the page branches on the flag, never on
+the number.
+
+Verified in a browser against a mocked `/api/status`, which is the part worth
+keeping: a target with every value at zero and every flag true printed `0 ft`,
+`0 kt`, `0°` and a level arrow rather than dashes; a target with `pos:false` was
+listed but never plotted; one older than 30 s drew grey; and a label of `<b>X`
+rendered literally, because rows are built from text nodes. **Not yet seen with
+a real aircraft.**
+
+**Not ported, deliberately:** our `RTL_USB_RECOVERY` switch (their rail
+power-cycle is unconditional and field-tested, so the flag has no purpose
+there) and `RTL_SERIAL VERBOSITY`, which they already have.
+
+**Also fixed on the branch:** their `install-orcsdr.ps1` called `Use-Idf`
+unconditionally, so `test-installer-dry-run.ps1` — a dry run that flashes
+nothing — demanded ESP-IDF at a hardcoded path and failed on a CI runner. That
+was the one red job after Stage A; the branch is green now.
+
+**GMRS and marine: done** (2026-10-12), `2127c16`, built with 0 errors.
+
+Rebuilt on their `band_profile` table rather than transplanted. Marine was
+already right there — channelized on the 25 kHz raster — so only GMRS needed
+work, and it had two faults:
+
+- It was `Control::free_tune`, so the dial could stop a few kHz off a 12.5 kHz
+  channel and the audio would be audibly wrong. It is now
+  `Control::channelized` on a 12.5 kHz raster anchored at 462.5500 MHz, which
+  lands on all 22 channels including the 467 MHz interstitials.
+- The default filter did not follow the channel, so channels 8-14 — the 467 MHz
+  interstitials, held to 12.5 kHz by 47 CFR 95.1773 — were received through a
+  25 kHz filter and let the neighbouring channel in. `rtl_filter_default_hz()`
+  now takes the frequency and returns 12.5 kHz inside 467.5500-467.7375.
+
+`tools/test_gmrs_marine_plan.py` checks the raster claim **by arithmetic over
+all 22 channels**, not by trusting the comment, and checks that the narrowband
+window holds exactly channels 8 to 14.
+
+**Channel lockout is not ported.** Stage B's order read
+"GMRS/marine/lockout"; only the first two landed. `RTL_CHANNEL_LOCK` has 17
+references on `main` and none on the branch, so it is still outstanding along
+with the LoRa decoder work and the POCSAG deltas.
+
+No new `band_profile::Id` was added, because `frs_gmrs` already existed.
+**Correcting the reason given in that commit message:** it said a new Id could
+not be added here because the OrcDial name table it is static_asserted against
+lives in a separate repository. It does not — `orcdial/src/band_names.hpp` is
+vendored in *this* repository and was already at `a000b27`, so an Id and its
+name are a one-repo change. The decision was right; the reason was wrong.
+
+### 5.7j Upstream moved again: merged `fba861e` (2026-10-18)
+
+Six days after the re-base started, upstream is **15 commits further on**
+(`a000b27..fba861e`): 190 files, +23,732/-272. Most of it is new ground rather
+than changed ground — **SSTV** (native dashboard, auto VIS and sync, SD
+archive, a TUNE tab, read-only web export), **FT8** touch ownership and a
+memory story (`RTL_MEM`, a reclaim registry, a NOT ENOUGH MEMORY state),
+**ACARS** (live receiver, decoder bit-phase recovery, receive-only dashboard),
+the **OrcDial bridge started on demand** (about 26 KB of DMA RAM back on a unit
+with no Dial), and a run of LoRa fixes.
+
+**It merged with one conflict**, and the conflict was the cp1252 bytes: their
+ellipses against our repaired ones in `docs/API_SERIAL_CLI.md`. Taken ours.
+Their new documentation then arrived carrying **one fresh cp1252 byte** (`0x97`
+where an em dash belongs, in the new ACARS table), which `test_source_hygiene`
+caught. Repaired — one byte, and only that byte: a first pass that replaced
+every `0x97` in the file corrupted a legitimate UTF-8 continuation byte, so the
+repair now rewrites only the bytes on lines that do not decode.
+
+**What the overlap actually was:** `main.cpp` (+1149/-111), `web_console.cpp`
+(+37/-1), `build-tab5-idf.ps1` (+5/-2, a `-WifiRxDiag` switch), and that doc.
+Everything else they touched, we had not.
+
+**Vetted before taking it**, by running our tests against their tree at
+`fba861e`:
+
+- `test_ui_layout` and `test_release_metadata` pass against it unmodified.
+- The two defects we found at `a000b27` are **still there** — the raw NUL byte
+  in `main.cpp` (now line 13162) and the cp1252 bytes in the serial doc. They
+  still do not have `test_source_hygiene`, which is still worth offering.
+- **No silent-auth regression.** Their 1149 new lines of `main.cpp` added no
+  `if (<match> && authenticated)` handler; the new ACARS and UI handlers use
+  the match-then-reply shape, and a scan of every `.cpp` in `ui/` finds none.
+  Their new command families answer when the session has lapsed.
+- Nothing they changed touches the status JSON, so the radar's 6144-byte
+  PSRAM buffer and its 16 aircraft slots are unaffected. Their two new SSTV
+  routes take the web console to 11 registered handlers against a limit of 12.
+- Spot-read the four highest-risk commits. The LoRa CSV export now escapes
+  `= + - @` tab and CR in untrusted RF text, with a host test over each prefix.
+  The SD self-check stopped opening a file it already holds open for writing,
+  which FAT locking refuses. The SSTV archive attaches a cache-aligned 32 KiB
+  PSRAM stdio buffer and keeps it in a four-slot table so it outlives the
+  stream, with the failure path freeing it. All three are careful work.
+
+**One gap closed while merging.** `tests/band_profile_tests.cpp` existed but
+**nothing ever ran it** — no workflow, no script, no reference anywhere — so
+the channel plan's only check was `self_check()` on a booted device, and our
+GMRS edit landed with nothing but a grep-level test over it. `self_check()` is
+what enforces that a channelized profile sits on its raster and that no named
+band overlaps another, which is exactly the GMRS claim. `tools/test-band-profile.sh`
+now compiles and runs it on the host, with upstream's own flags from
+`test-tab5-cadence-history.sh` (`-Werror`, ASan and UBSan), and `quality.yml`
+runs it. It also exercises the `static_assert` that ties `orc::band_name_count`
+to `kProfileCount`, which is checkable here because `orcdial/src` is vendored.
+
+### 5.7k An audit of our own work (2026-10-21)
+
+A sweep for errors and waste across both trees. Everything mechanical passes
+on both: all ten python and PowerShell checks, and **all eleven host test
+suites**, which can now be run here (see "A local host toolchain" below).
+What the sweep found was in our own ports, not upstream's code.
+
+**The GMRS filter narrowed seven channels it should not have.** The port in
+`2127c16` asked only whether a frequency was inside 467.5500-467.7125 MHz.
+That span is not uniform: the 467 MHz segment interleaves the **interstitials**
+(channels 8-14, 12.5 kHz, 47 CFR 95.1773) with the eight **467 MHz main
+channels**, the repeater inputs for channels 15-22, which stay at 20 kHz. They
+alternate 12.5 kHz apart -- 467.5500 wide, 467.5625 narrow, 467.5750 wide -- so
+a plain low/high window narrows every repeater input inside it: RPT15 through
+RPT21, seven channels, each receiving a 20 kHz signal through a 12.5 kHz
+filter.
+
+The fork's own `main` had this right all along, and said so in a comment: 20 kHz
+on the 462 mains, the 462 interstitials *and* the 467 mains, 12.5 kHz only on
+the 467 interstitials, "so 23 of our 30 GMRS channels are wideband and 7 are
+not, and calling the whole band NFM was wrong for most of it". The port lost
+that distinction. The predicate now matches main's: first, last, and a 25 kHz
+modulus that picks out the frequencies sitting 12.5 kHz above each 467 main
+channel.
+
+**The same window also overhung the top of the band.** It ran to 467.7375 MHz,
+a step past channel 14, while the band ends at 467.726. `rtl_filter_default_hz()`
+tests the frequency *before* it looks at the band -- this tree has no
+`RtlBand::gmrs` to gate on, where main does -- so the overhang handed a 12.5 kHz
+filter to frequencies that are not GMRS at all.
+
+**The test that should have caught it failed twice, in two different ways.**
+Worth recording, because both are easy to repeat:
+
+1. It asserted `assertIn("462550000", entry)` to check the raster origin. The
+   profile's `low_hz` is also 462550000, so the assertion was satisfied by the
+   wrong field: moving `raster_origin_hz` off the channel grid left the test
+   green. Found by mutation testing. It now parses the `Profile` fields
+   positionally and does the arithmetic against the origin and step read out of
+   the source.
+2. After that was fixed it still missed the repeater-input bug, for a deeper
+   reason: it read the predicate's *constants* out of the C++ and re-applied
+   the modulus in Python. That tests the Python, not the predicate. Removing
+   the modulus from the C++ left the Python test passing, because the Python
+   still had one.
+
+**So the plan moved somewhere a compiler can see it.** `gmrs_channels.hpp` now
+holds the constants, the predicate and an exhaustive set of `static_assert`s --
+all seven interstitials, all eight repeater inputs, the ends of the 462 segment
+and both sides of the band edge. `tests/gmrs_channels_tests.cpp` walks every
+12.5 kHz point across the 467 segment and checks the alternation. Both
+mutations now fail in about a second, where before they would only have failed
+a 25-minute firmware build (and the static_asserts did catch them there: that
+was verified by extracting the predicate and compiling it both ways). The
+python test's job is now coverage -- that an assertion exists for every
+channel, and that something actually runs the host test -- not arithmetic.
+
+**Three JSON append loops could read past their item buffer.**
+`web_console.cpp` builds the recent, spectrum and aircraft arrays with
+`snprintf` into a small `item` buffer and then `memcpy`s `n` bytes. `n` is what
+`snprintf` *would* have written, so a truncated item makes the copy read past
+the buffer and splice adjacent stack bytes into the JSON. The aircraft path
+cannot truncate -- 202 bytes worst case against 224, and the comment's 201 is
+right -- but the recent path can: a dashboard id of 15 escaped characters and a
+title of 23 reach 59 against `item[56]`. Latent, because ids and titles are
+internal constants that never need escaping. All three now check the item
+buffer as well as the destination. The spectrum loop cannot overflow either way
+(a `uint8_t` is at most `,255`), and it is guarded for uniformity.
+
+**Eleven test scripts were run by nothing.** No workflow referenced them, or
+their workflow triggers only on `pull_request` and this fork pushes branches
+without one. Running them found one real failure: `test_wifi_reconnect_policy`
+could not compile on any current runner, because glibc 2.38 declares `strlcpy`
+in `<string.h>` and the harness defines a `static` shim of the same name, which
+is an error rather than a shadow. Nine of the eleven are now in
+`.github/workflows/host-tests.yml` -- ours, not upstream's, so it costs nothing
+at the next merge -- with a closing step that fails the job if a test left the
+tree dirty. The first run of that workflow failed and was right to:
+`test-hosted-sdio-dma.py` and `test_sdio_credit_deadline.py` read
+`managed_components/espressif__esp_hosted`, which the component manager fetches
+and git does not track, so they passed here only because this tree had been
+built. Every remaining step was then re-verified against a clean worktree with
+no `managed_components` and no build tree.
+
+`tools/sstv_host_tests.sh` writes about 50 logs and decoded frames into the
+repository root; `.gitignore` now covers them.
+
+**A local host toolchain.** `g++` and `cmake` are installed in WSL
+(Ubuntu-24.04), so every host suite runs here over `/mnt/c` rather than only on
+a runner: band-profile 1s, gmrs-channels 1s, radio-scan 25s, p25-core 20s,
+pocsag-core 5s, pocsag-store 1s, web-audio 2s, cadence-history 4s, acars-smoke
+1s, acars-ui 56s, sstv 53s, ft8 244s. About seven minutes for the lot. Two
+gotchas: WSL has no `node` (the two `.test.cjs` suites run under Windows node),
+and Git Bash eats `$variables` in a `wsl -- bash -lc '...'` argument, so
+anything with a loop belongs in a script file passed by path.
+
+**ccache.** Measured rather than assumed, with the same file compiled from two
+tree paths: the default config gave one miss and one preprocessed hit, while
+`base_dir=C:\Users\Tinker\Documents\ChatGPT` with `hash_dir=false` made both
+*direct* hits. Set accordingly; it converts preprocessed hits into direct ones
+across the two worktrees rather than creating hits that were not there (the
+cache was already at 54% with 77% of hits in preprocessed mode). Undo with
+`ccache --set-config base_dir= --set-config hash_dir=true`.
+
+**Disk.** 3.3 GB across the two trees: `ORC SDR` 2.5 GB (`apps` 1.3 GB
+including a 601 MB build tree, `artifacts` 558 MB of bench captures and
+screenshots, `.local` 569 MB for the Python 3.11 LoRa venv, `.git` 36 MB) and
+`ORC SDR-refresh` 825 MB (610 MB build tree, 185 MB components). All of it
+either ignored or reproducible; `artifacts/` is bench evidence, so it is the
+operator's call.
+
+**`fix/rf-analysis-raw-capture-fft`, reconsidered.** 364 commits behind, one
+commit of its own, and **upstream's current code is not buggy**: its
+`fit_iq_fft_size()` clamps the transform to `kMaxIqPoints` (1024), so nothing
+reads past `iq_i`/`iq_q`. Our commit removes that clamp and reads from the raw
+capture instead, which makes transforms up to 8192 points possible with DC
+removed per sample. That is an enhancement, not the over-read fix the commit
+message implies, and it is one self-contained file. Keep it as a port
+candidate, not as a pending bug fix.
+
+### 5.7l Upstream shipped v0.5.0-beta.1: merged `b714a127` (2026-10-29)
+
+Eight days after `fba861e`, upstream is **314 commits** further on and has
+tagged **v0.5.0-beta.1** (27 Oct): 554 files, +43,368/-857, split almost evenly
+between code (21.9k lines) and release-evidence documentation (22.3k).
+**OrcMaps** (signed catalog, download, placement, map screen), a **Dead Air**
+dashboard, bounded framebuffer cache flushes, transactional LoRa logging, FT8
+clock work, and an SD storage host suite.
+
+**It merged with no conflicts at all**, because the overlap stayed narrow
+despite the scale: `main.cpp` (+1142/-169), `build-tab5-idf.ps1` (+14/-2) and
+`docs/API_SERIAL_CLI.md` (+4). The radar, `band_profile.cpp`,
+`gmrs_channels.hpp` and `web_console.*` they did not touch at all.
+
+A clean merge is exactly where a silent one-sided resolution hides, so our work
+was checked by marker afterwards rather than assumed: **0** silently-gated
+handlers, **78** `auth_required` replies (up from 75 — their three new
+handlers), the `CMD_ERROR` fallback, the GMRS header and its delegation,
+`fill_web_radar`, and both build-script fixes. Upstream's own `main.cpp` has a
+single GMRS reference (a band-guide row), so there is no second filter path to
+reconcile.
+
+**What vetting their tree found:**
+
+- **They have removed the raw NUL byte** from `main.cpp` — the one our hygiene
+  test found at `a000b27`, still present at `fba861e`. Worth knowing because it
+  is also why `grep` treated the old file as binary, which cost one wrong
+  handler count before it was spotted.
+- **No new silently-gated handlers.** The set of 22 `&& authenticated` matches
+  is *identical* to `fba861e`: 314 commits added none and fixed none. Our
+  port's repair carries forward untouched.
+- **Their three new serial commands are gated correctly.** `RTL_DEAD_AIR FLOOD`
+  matches first and answers `auth_required`; `RTL_DEAD_AIR STATUS` and
+  `RTL_MAP_STATUS` are read-only.
+- **The map download path is sound, and inert as shipped.** The catalog is
+  ECDSA/SHA-256 signed; the verifying key is a **compile-time constant** that
+  can never arrive from the download; both algorithm and curve are pinned
+  (`MBEDTLS_PK_ECDSA` and `SECP256R1`) against key-type confusion; sizes are
+  bounded throughout and JSON nesting is depth-scanned before cJSON sees it.
+  `map_catalog_source.hpp` leaves `base_url` and `public_key` empty unless an
+  optional `map_catalog_configuration.hpp` is supplied, which the repository
+  does not carry — so a stock build answers "Downloads not configured" and
+  installs nothing.
+- Spot-read two of the release fixes. The framebuffer writeback hook chunks
+  `esp_cache_msync` to 4 KiB so IDF's cache mutex is not held for a whole
+  image, with counters and a host test behind stubs. The LoRa log recovery is
+  checkpointed with begin/end bounds on both journal and CSV, rolls back only
+  this writer's uncommitted suffix, and checks its size arithmetic for
+  overflow. Careful work in both.
+
+**Two repairs taken on the merge:**
+
+- `docs/evidence/maps/2026-10-17-placement-acceptance.md` carried a cp1252
+  `0x97` where an em dash belongs, so the tree was not valid UTF-8. **That is
+  one fresh instance per merge now** — three merges, three bytes — which is the
+  argument for offering `test_source_hygiene.py` upstream rather than carrying
+  it alone.
+- `tools/test-sd-storage.sh`, new upstream, writes 11 logs into the repository
+  root exactly as the SSTV suite does. `.gitignore` now covers them. This is
+  what the dirty-tree step added to `host-tests.yml` last week exists to catch,
+  and it would have.
+
+**`test-sd-storage.sh` is now in our workflow.** Its own one fires on pushes to
+`main` and on `pull_request`, so it is dark for this branch, and its path
+filter includes `main.cpp`, which this branch changes. It reads nothing from
+`managed_components`, so unlike the two dropped in `5bdf806` it runs on a bare
+checkout. The only scripts left in no workflow are
+`tools/benchmark-ft8-ldpc.sh` and `tools/diagnose-ft8-wav.sh`, a benchmark and
+a diagnostic rather than pass/fail tests.
+
+**All green.** Eleven python checks, and twelve host suites: band-profile 3s,
+radio-scan 66s, p25-core 49s, pocsag-core 15s, pocsag-store 5s, web-audio 8s,
+sd-storage 42s, cadence-history 41s, acars-smoke 4s, acars-ui 149s, sstv 111s,
+ft8 547s — slower than last week because the firmware build was running
+alongside. Firmware builds with 0 errors: `0x3fe000` (4.2 MB against 3.5 MB
+before the merge), **33% of the app partition free, down from 44%**. Worth
+watching: upstream's own release notes record 5,303,024 bytes with 988,432
+bytes of headroom for a full build, and ours is smaller only because it is
+built `-WithoutC6`. The warning count goes 78 to 225, but 202 are ESP-IDF's own
+`periph_ctrl.h` and `gpio_ll.h` pulled into more translation units; the
+project's own warnings are the same handful of unused symbols, none in files we
+wrote.
+
+Still not on hardware.
+
+### 5.7m Merged upstream `cdc8181` into the refresh branch (2026-11-03)
+
+`refresh/upstream-a000b27` is now `b05c9ed`: merge `f2d129c` plus one fix, and
+**0 commits behind** upstream `main`. Upstream moved **95 commits** past
+`b714a127` (26 Oct -> 2 Nov): 244 files, +16,678/-255, almost all new
+subsystems -- a native **VDL Mode 2** receiver (D8PSK, RS FEC, AVLC) feeding the
+ACARS dashboard on 136.725-136.975 MHz, an **ACARS interpreter** (ARINC 622,
+D-ATIS, label 17/32/33 positions, 2000-block PSRAM archive), **Dead Air**
+environment work (ENV III on Port A, trend charts, runic display, VEIL-26), FT8
+and SSTV previews over the OrcDial link, and **driver v0.9.4** (E4000 gain,
+Nooelec Smart v5 identity, hardware offset tuning default ON).
+
+**It merged with no conflicts**; `main.cpp` auto-merged to 24,101 lines. Checked
+by marker afterwards, as every merge here is: **0** silently-gated handlers
+(upstream still has 22), **79** `auth_required` replies (their new
+`RTL_DEAD_AIR VEIL`, gated correctly by them; `RTL_DEAD_AIR ENV` and
+`RTL_DRIVER STATUS` are read-only), the `CMD_ERROR` fallback, `fill_web_radar`
+and the GMRS references all intact. Encoding: **0** invalid UTF-8, NUL or BOM
+-- the first of four merges with no cp1252 byte to repair.
+
+**One fix on top:** `RTL_PRESET_TUNE` compared 17 bytes of its 16-byte prefix
+(upstream's bug, fixed on `main-hoi278` in `45a436e`). `b05c9ed` fixes the same
+line on the refresh branch. **Nothing else from §5.9 is on the refresh branch**:
+those fixes touch code the re-base will restructure, so they get re-applied
+there rather than carried twice.
+
+**§5.9 carried over afterwards** (`238ef34`, re-applied by hand: a cherry-pick
+conflicts in every file against upstream's restructured tree). Upstream had
+already fixed four of them its own way, and those are kept: SD free/used space
+(`sd_space`), `tune=`/`open=` validation (`web_command.hpp`), the FM Listen
+RadioText overflow (wrapped in the centre column), and C6 version gating (it
+now attempts any version). Everything else is ported: the ADS-B position
+filter, the Wi-Fi disconnect reason in "Failed: ..." / "Lost: ... -
+reconnecting", strongest-AP join and security floor, the password check,
+the Settings row clipping, the catalog's live free space, failure names and full
+removal, the Companion JSON/backoff/open guards, the RDS stop bound and the LoRa
+wrap.
+
+**Two gaps on the refresh branch, found while porting:**
+
+- **FM SEEK still hops between saved presets** there -- the original "SEEK does
+  not seek" defect (§5.2). The band-sweep seek (`fm_seek_wrap`,
+  `rtl_scope_peak_snr_db`, `spectrum_measurement_wanted()`, the 15 dB SNR gate)
+  was never carried across. It is a feature port across the scan driver and the
+  DSP measurement, not a sweep fix, so it is the next re-base item; STOP SEEK
+  waits for it.
+- **Dashboard ids renumber.** The refresh registry has no `gmrs` and puts `am`
+  at 16, where `main-hoi278` stores GMRS=16 and AM=17 in NVS `dash_recent`. The
+  refresh branch persists only that recents list, so an upgrade shows a GMRS
+  entry as AM and AM as FT8 until a few dashboards are reopened -- cosmetic and
+  self-correcting, but decide on purpose before release whether to migrate.
+
+Its 3 s fast retry after a drop is not ported either: upstream's own
+`schedule_wifi_reconnect` owns that timing there.
+
+**Not verified here:** no ESP-IDF in this session, so no build, and upstream's
+own test scripts were not run. **The gate is the binary size**: 17 new `.cpp`
+files are registered unconditionally in `main/CMakeLists.txt`, +6,973 lines in
+`ui/` alone, against **33%** app-partition headroom after the last merge.
+Upstream's own `DRIVER_094_INTEGRATION.md` also lists physical
+reception/flicker acceptance of 0.9.4 as still open, and the offset-tuning
+default changes behaviour for every dongle, not only E4000s.
+
+## 5.8 Dead code and build
+
+- 705 lines of `RTL_USE_LEGACY_USB` blocks removed. The resulting binary was
+  **byte-identical in size**, confirming pure dead-code removal.
+- CI: `actions/checkout` → v7.0.1 (Node 20 deprecation); ESP-IDF environment
+  sourced before `idf.py`; component-hash mismatch under CRLF checkout fixed.
+
+## 5.9 Whole-project sweep (2026-11-03)
+
+Two passes over the firmware sources, done in a cloud session with no ESP-IDF:
+**build-verified by nobody**. Python checks and source hygiene pass. Found by
+pattern sweeps (prefix lengths, wrap-unsafe time compares, buffer sizes) and by
+reading the Wi-Fi, Companion, catalog, storage, ADS-B and FM paths.
+
+**Bugs that were silently wrong:**
+
+- `RTL_PRESET_TUNE` compared 17 bytes of the 16-byte `"RTL_PRESET_TUNE "`, so
+  the NUL had to match too and the documented command never ran. Upstream has
+  the same bug.
+- `storage::used_bytes()` was a stub returning 0, so Settings -> Storage "free"
+  and the catalog's space check both used the card's raw capacity. Now
+  `esp_vfs_fat_info`, cached 60 s, refreshed before every download; the UI
+  reads only the cache while the catalog worker owns the card.
+- Removing a data pack left its `.bak` rollback copies and `.ver` marker behind.
+- The C6 version check hard-coded `3.0.6` beside the CMake-provided
+  `ORCSDR_HOSTED_C6_VERSION`; bumping the release JSON alone would have
+  disabled Wi-Fi.
+- Disconnect reason 8 (our own leave) was labelled "deauth by AP"; 203 is
+  association, not the handshake.
+
+**Behaviour changes worth a bench check:**
+
+- **Wi-Fi joins the strongest AP of the SSID** (`WIFI_ALL_CHANNEL_SCAN` +
+  `WIFI_CONNECT_AP_BY_SIGNAL`, about 1 s slower to connect), with an explicit
+  security floor: WPA for 8+ character passwords (ESP-IDF otherwise assumes
+  WPA2 and cannot join WPA-only routers), WEP for shorter, open for none.
+- **A dropped link** shows "Disconnected: <reason>", logs
+  `RTL_WIFI_DISCONNECTED reason=N`, and retries after 3 s instead of 15 s -- not
+  while the SDIO transport is wedged.
+- **ADS-B position filter.** A decode beyond 400 NM of a configured receiver,
+  or a move faster than ~1300 kt (+2 NM slack) since the last fix, is dropped
+  (`RTL_ADSB_POSITION_REJECTED` at TRACE). Three rejects in a row accept the
+  next fix, on the grounds that the old one was the bad one.
+- Settings Wi-Fi panel text no longer overlaps; 1-7 character passwords
+  (except 5, WEP) are refused at the keyboard; FM Listen RadioText is clipped;
+  SEEK reads STOP SEEK while sweeping.
+- Companion: non-finite floats cannot break the status JSON, `tune=` must be a
+  plain decimal in 100 kHz-2 GHz, failed `httpd_start` backs off, `open=`
+  knows GMRS/POCSAG/Wi-Fi analysis.
+- Catalog download failures name their cause; RDS capture stop waits at most
+  500 ms for the writer.
+
+**Left alone deliberately:** `RTL_RDS_CAPTURE_*`/`RTL_RDS_REPLAY` stay
+unauthenticated as `API_SERIAL_CLI.md` documents; two unused upstream-shared
+wrappers (`home::browser_active`, `orcsdr_run_boot_splash`) stay to keep the
+re-base diff small. The stray root `bbox.txt` (a map bounding box committed by
+accident in `b2b70c2`) is removed.
+
+---
+
+## 6. Making the device local to the user
+
+The device's location-dependent features all assumed the upstream author's
+county. Full instructions are in **`docs/LOCAL_SETUP.md`**; the short version:
+
+- **Offline maps** — `offline_map` now loads `/orcsdr/data/local_map.idx` in
+  preference to the packaged Lane County pack.
+  **`apps/orcsdr-tab5/tools/build_orcmap.py`** builds that file for any
+  bounding box straight from the Overpass API, with per-class segment budgets
+  (roads / water / airports) so a coastal map keeps its coastline instead of
+  spending all 640 segments on roads. Verified live for Seattle:
+  437 road / 200 water / 3 airport / 4 labels.
+- **P25** — already supported user profiles via SD import; it was just
+  undiscoverable and undocumented. The empty state now explains it, and
+  `LOCAL_SETUP.md` carries a worked example **checked line-by-line against
+  `p25_config.cpp`'s parser**: decimal only (RadioReference prints hex),
+  `control_channel_hz` in **Hz** not MHz, `talkgroup = id, alias` with the
+  comma required.
+- **Data packs** — direct download links, exact destination filenames (they
+  differ from the download names, which is easy to get wrong), and the SD-card
+  route, which is far more reliable than a 34 MB download over the C6 link.
+  Surfaced on the Data & Maps screen itself and in the README.
+
+---
+
+## 7. Gotchas
+
+- **Internal RAM budget** — §4. Watch `RTL_DRAM_BUDGET intern_free`.
+- **Shared display state** — §5.1. Scroll rect, font, text datum, clip rect.
+- **`active_scan` is streaming-task-only.** Do not read it from touch or
+  serial handlers; use an atomic mirror (`fm_seek_active`,
+  `rtl_fm_preset_scan_active`, `p25_survey_active`).
+- **Serial resets the device.** Every connection. Budget ~12 s before the
+  device is ready.
+- **Patch files must stay LF on Windows.** `build-tab5-idf.ps1` applies fixes to
+  `managed_components/` from `tools/patches/*.patch` at build time. Git for
+  Windows defaults to `core.autocrlf=true`, which rewrites those files to CRLF
+  on checkout; the empty context line in a hunk becomes a lone CR that
+  `git apply` cannot classify, and the build dies with `corrupt patch at
+  ...:29` before compiling anything — so upstream's ESP-Hosted battery-boot fix
+  silently was not in any Windows build. This fork pins `*.patch`/`*.diff` to
+  LF in `.gitattributes`; **upstream does not carry that entry**, so a plain
+  `hardcoreerik/OrcSDR` clone still hits it on Windows. Deliberately kept local
+  rather than sent upstream as a PR.
+- **Settings' `text()` floors size at 2** (`kSettingsMinTextSize`), so a size-1
+  request still renders at 12 px per character. A footer written for size 1
+  overflowed the screen by ~240 px because of this.
+- **Default font advances 6 × size px per character.** `adsb_dashboard` and
+  `pocsag_dashboard` override to proportional DejaVu, so character-count width
+  maths does not apply there.
+- **Demo mode has a real geometry mismatch.** `draw_documentation_spectrum()`
+  paints at `main.cpp`'s radio geometry (x 65, y 316, 1150×250) with a
+  deliberate per-row shear, but `*.radio` screens in demo mode stage the *home*
+  layout (plot at x 330, waterfall y 298..456). The result looks like a badly
+  corrupted waterfall smeared across the sidebar. **It is staged artwork drawn
+  at the wrong coordinates, not a rendering fault**, and it does not affect
+  live screens. Not yet fixed.
+
+---
+
+## 7a. Local data: what the published packs cannot give you
+
+Two features depend on data the signed catalog does not carry, and both now
+have a builder that fills the gap from a public-domain source. Both write a
+`local_*.idx` the firmware loads in preference to the packaged file, so the
+signed packs are never mutated.
+
+| Feature | Gap in the published pack | Builder |
+| --- | --- | --- |
+| Offline map | only `lane_county_map` exists | `apps/orcsdr-tab5/tools/build_orcmap.py` (OpenStreetMap / Overpass) |
+| Listen to ATC | `faa_aviation` has 40,937 frequency records but **no coordinates**, and none of the optional `ATC` preset lines | `tools/build_atc_presets.py` (OurAirports) |
+
+`docs/LOCAL_SETUP.md` has the commands. Both were verified end to end on
+hardware for Woodbridge, VA: the LoRa map view reads "OFFLINE LOCAL MAP" and
+the ADS-B card reads "KDAA TWR 126.300 / TAP TO LISTEN / READY".
+
+## 7b. Meshtastic frequency slots
+
+The US band is **104 slots of 250 kHz from 902.125 MHz**, so the firmware's
+old fixed 906.875 MHz is slot 20 (LongFast default). The LoRa dashboard's
+CHANNELS button opens a picker (step, quick slots, LONGFAST marker); the same
+is available over serial as `RTL_UI ACTION LORA SLOT <1-104> | SLOT_PREV |
+SLOT_NEXT`. Before this the monitor could only ever watch one slot.
+
+Note for anyone touching that overlay: the LoRa spectrum and waterfall repaint
+on their own timer and will draw straight through a panel unless
+`spectrum_active()` is false while it is up.
+
+## 8. Still open
+
+1. **SDIO transport wedge** — root cause found (§3a): USB DMA from a streaming
+   RTL-SDR contending with the Wi-Fi transport's PSRAM DMA. Worked around by
+   pausing reception around Wi-Fi work, verified 10/10. Still worth knowing
+   that a wedged link needs a restart, and that a **full power cycle** clears
+   states a P4 reset does not.
+2. **Reception cannot run during a download.** Removing that limitation means
+   `CONFIG_EH_HOST_PORT_DMA_PREFER_SPIRAM=n` and a careful internal-RAM
+   budget — see §3a.
+3. **`noaa_weather` / `fcc_broadcast` packs** cannot be published from this
+   fork — the catalog is signed with the upstream author's P-256 key and the
+   firmware embeds only the matching public key.
+4. **Resolved: every SD transfer operation requires `PAIR`/`AUTH`.** Listing,
+   reading, writing, and deleting are all inside the authenticated boundary
+   because `/orcsdr/` can contain recordings, location data, network settings,
+   and decoder logs. All supported transfer tools perform the HMAC handshake
+   from the untracked pairing-key file.
+5. **No channelized band has met a real transmission yet.** The detector is
+   proved to reject noise on all four -- CB, GMRS, weather and marine were each
+   measured against their own noise floor -- and proved to accept a real signal
+   on weather only, where a live NOAA transmitter held and resumed correctly.
+   The SAME decoder is separately proved not to false-alarm on live weather
+   voice (six minutes, zero locks) but has never seen a real alert header.
+   What is untested everywhere else is the *accept* half: whether the floor
+   lets a genuine handheld a few streets away through. If a scan walks past
+   traffic you can hear, that number is the one to lower -- read it with
+   `RTL_CHANNEL_PROBE` while the signal is up, and see 5.7a/5.7b.
+
+   The original GMRS wording follows, still accurate:
+
+   5. **The channel scanner's GMRS threshold has not met a real GMRS signal.**
+   Both halves were verified, but on different bands: "stops on a real signal"
+   was proved on weather (a live NOAA transmitter, 60 dB, held and resumed
+   correctly), and "does not stop on noise" was proved on GMRS and CB (93 and
+   104 samples, zero false stops). Nothing was transmitting on GMRS or CB while
+   this was built, so the 20 dB GMRS floor is known to reject noise but has
+   never been confirmed to *accept* a handheld a few streets away. If a scan
+   walks past traffic you can hear, that number is the one to lower — check it
+   with `RTL_CHANNEL_PROBE` while the signal is up, and see §5.7a for what the
+   three tests mean.
+6. **Resolved: FM preset scan and seek now use in-window SNR.** The old
+   `rtl_scope_peak_level`/dBFS comparison could never fail because the spectrum
+   value is raw bin power. Both paths now gate on `rtl_scope_peak_snr_db` and
+   retain raw level only for ranking and diagnostics — see §5.7a.
+7. **The battery boot loop is masked, not fixed** — §3b. A timing-sensitive
+   heap corruption in the hosted SDIO path, held off by
+   `CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=y`. Changing FreeRTOS or heap
+   config, or anything about Wi-Fi bringup timing, can bring it back; the
+   `heap_guard()` checkpoints exist to name the stage when it does.
+8. **Resolved in the fork: the Hosted task workaround no longer leaks.**
+   Detached one-shot tasks use ordinary `xTaskCreate` and let the idle task
+   reap them. Joinable WithCaps tasks signal completion, suspend, and are
+   deleted from the owner task by `vTaskDeleteWithCaps`, which frees their
+   static TCB and SPIRAM stack without using IDF 5.5.4's unsafe self-delete
+   path. The battery race in §3b remains a separate, masked issue.
+
+Audited clean: buffer handling (every `memcpy`/`strcat` bounds-checked, no
+`strcpy`/`sprintf`/`gets`), path traversal (`..` rejected on both the SD and
+catalog paths), the catalog chain (signature verified *before* the manifest is
+parsed, SHA-256 before activation, `https://` enforced, destinations pinned
+under `/orcsdr/data/`), the `AUTH` proof comparison (constant-time XOR
+accumulate, no early exit), and no secrets on the serial console.
+
+---
+
+9. **Meshtastic 2.8 long interleaving is the largest functional gap.**
+   Headers with coding-rate 5-7 are detected and counted as `li_headers`
+   rather than misreported as RF failures, but the payloads need a
+   long-interleaver this fork does not have. LR11x0 and SX128x radios on 2.8
+   use it, so whether a neighbour decodes is decided by their firmware
+   version, not by signal. The DSP vector (5.7c) is the harness to build it
+   against; scope the interleaver before promising a timeline, because it is
+   thinly documented publicly.
+
+   **Surveyed the field (2026-09-12) — nobody has a software long-interleaver.**
+   Checked the two projects that work in our layer and the library everyone
+   cites:
+
+   - [`alphafox02/meshtastic-sniffer`](https://github.com/alphafox02/meshtastic-sniffer)
+     — passive Meshtastic receive from raw IQ, in C, RTL-SDR supported, with
+     LongFast/LongTurbo/ShortTurbo presets. Its bit path (`hard-decode Hamming,
+     deinterleave, gray, dewhiten, preamble-mode-vote`) is ported from
+     **gr-lora_sdr** (EPFL) and stated verified bit-exact. No mention of long
+     interleaving, Meshtastic 2.8, LR11x0 or SX128x.
+   - [SDRangel `demodmeshtastic`](https://github.com/f4exb/sdrangel/blob/master/plugins/channelrx/demodmeshtastic/readme.md)
+     — CSS from IQ, SF7–12, decrypts Meshtastic frames. Maps only CR 4/5–4/8 to
+     FEC 1–4; **5/6 and 5/7 are absent**, i.e. the same wall.
+   - [RadioLib](https://github.com/jgromes/RadioLib) `setCodingRate(cr,
+     longInterleave)` — MIT, and the licence would suit us, but it is a *chip
+     driver*: the flag sets a register and the SX126x/LR11x0 silicon does the
+     interleaving. There is no software algorithm there to port. Semtech does
+     not publish one either — the RadioLib maintainer notes the manuals now
+     "refer to their drivers for the calculation", and could not find it for
+     SX126x ([discussion #1584](https://github.com/jgromes/RadioLib/discussions/1584)).
+
+   So this is original reverse-engineering, not a port. Two consequences:
+
+   - **Licence.** Both SDR-layer projects are GPL-3.0-or-later. This project is
+     AGPL-3.0-only **with commercial licensing offered** (LICENSING.md), so
+     copying their code would poison that option. Read them and test against
+     them; do not lift source. gr-lora_sdr's **test vectors** are the clean
+     thing to harvest — data, not code, and they drop straight into the 5.7c
+     harness.
+   - **Verify the diagnosis before spending on it.** We infer LI from the
+     header CR, and the counter already exists. Park on a busy channel and read
+     `RTL_LORA_NATIVE_DONE`: if `li_headers` climbs, the diagnosis holds and
+     this is a research project. If `li_headers` stays 0 while
+     `header_failures` climbs, the blocker is ours — deinterleaver or CFO — and
+     gr-lora_sdr's vectors settle it in an afternoon. That test costs minutes
+     and decides between an afternoon and a month.
+
+   Not in our layer, nothing to learn from for the PHY (all consume packets a
+   Meshtastic node already decoded): `Yeraze/meshmonitor` (TCP/serial/BLE/MQTT
+   → web dashboard), `filipsPL/meshmqttmonitor` (MQTT → terminal),
+   `smittix/intercept` (aggregates rtl_433/dump1090/etc.; its Meshtastic
+   integration is not demodulation).
+
+   **Confirmed on our own recordings, off air and with no device in the loop
+   (2026-09-24).** `tools/lora_snr_matrix.py --baseline-only` put the nine
+   captures in `.local/lora-captures/` through the host reference decoder
+   (`lora_phy` 0.2, the same path `tools/decode_orciq.py` uses). **None
+   decoded.** Five were rejected with *"LoRa long interleaver CR 4/5 detected;
+   payload decoding is not supported by lora-phy 0.2"*, and that includes both
+   strong captures: 24.4 dB with 43% of windows active, and 22.2 dB with 7.7%.
+   The remaining four found no preamble at all — one is an empty channel
+   (-8.7 dB), and three are the `_conj`, `_swap` and `_swap_invert` orientation
+   experiments on a capture whose `_invert` variant still reaches the
+   long-interleaver rejection.
+
+   Two things follow, and both sharpen this item rather than restate it. First,
+   the preamble, sync, CFO and **header** path works on real traffic at 22-24 dB
+   — the header is what reports CR 4/5 — so what fails is payload
+   de-interleaving alone, and it is not a sensitivity problem. Second, the
+   neighbours here really are transmitting long-interleaved 2.8 frames, so "we
+   cannot decode the neighbours" is now measured on a second, independent
+   decoder rather than inferred from our own.
+
+   It also blocks the sensitivity ladder that tool was built for: grading a
+   capture that never decodes measures nothing. That work needs a capture that
+   decodes end to end first — a node on older firmware, or a coding rate without
+   the long interleaver.
+
+10. **Measured: what the 4 dB LoRa trigger margin costs. It stays at 4 dB.**
+    `748dc1f` lowered `kLoraTriggerMarginDb` from 9 dB to 4 dB without measuring
+    the cost. Adding `snr_db` to `RTL_LORA_NATIVE_DONE` made it a direct
+    readout. Raising it to 8 dB was then tried and reverted; both numbers are
+    wrong in different ways, and the entry below is the evidence for picking the
+    one that fails safe.
+
+    **The cost of 4 dB, measured over 15 minutes.** 900 s of quiet channel:
+    **16 triggers, 17 decodes, zero real packets**, at **~7.1 s of blind decode
+    each**. That is **13.4% of the window spent decoding nothing**, deaf to real
+    traffic throughout — about **1.1 false triggers per minute**.
+
+    A 190 s sample taken first said 8 in 190 s and **31%** blind. That number is
+    superseded: it was an unusually busy stretch, and the 15-minute figure is
+    2.3× lower. **Do not size this from a three-minute window** — the emitter
+    population on 915 ISM is bursty enough that short samples mislead by more
+    than a factor of two, in whichever direction they happen to land.
+
+    The `snr_db` distribution matters more than the count. Over 900 s at a 4 dB
+    gate against a ~-28.4 dBFS floor, every false trigger came in at **8.4 dB or
+    above** — 8.4, 8.5, 8.5, 8.7, 8.7, 9.6, 9.6, 10.9, 11.1, 11.4, 14.1, 15.3,
+    15.6, 23.1, 23.3, 26.1, 26.7. Nothing fired between 4 and 8.4 dB in *that*
+    window, even though the gate allowed it — but do not read that as a floor:
+    a later spot check caught one at **6.3 dB**, and the first short sample was
+    full of them at 4.1-5.3 dB. What the long run establishes is the *mix*: on a
+    quiet band most false triggers are well clear of the gate, so raising the
+    margin to 8 dB would have removed a minority of them while cutting into real
+    packets. That is independent confirmation that the margin was the wrong
+    lever, without claiming the low group does not exist.
+
+    **Why 8 dB did not fix it.** A quiet 200 s run at 8 dB looked convincing --
+    2 captures, both false. Then a busy 70 s window
+    produced 9 false triggers including four at **8.7, 8.8, 8.9 and 9.6 dB**,
+    sitting 0.7-1.6 dB above the new gate. The noise-brushing group was not
+    removed; it **moved**. The level metric's upper tail follows whatever
+    threshold is set, so no fixed margin escapes it. (Do not read 2-per-200 s
+    against 9-per-70 s as a regression -- quiet and busy windows are not
+    comparable.)
+
+    **Why 8 dB was actively unsafe.** 3c measured real LongFast packets at
+    -33 to -35.7 dBFS against a -39 dBFS floor -- **3.3 to 6 dB** -- and a 9 dB
+    gate rejecting exactly those is why this constant went to 4 in the first
+    place. An 8 dB gate reinstates most of that fault. The measurements do not
+    conflict: 3c's were at a **fixed 19.7 dB tuner gain**, the recent ones at
+    **automatic**, which is why the recent floor sat at -28 dBFS and every
+    decode cleared 11.7 dB. Reception itself was fine at 8 dB -- two texts sent,
+    two decoded -- but that only proves strong local traffic still works.
+
+    So the trade is **~13% of the window lost to blind decodes** against
+    **every packet under the gate lost outright**, and which is worse depends on
+    how much weak traffic is really out there, which nobody has measured on this
+    fork. 4 dB keeps the receiver sensitive and pays in wasted decodes, which is
+    the safer way to be wrong.
+
+    **Neither number is the answer.** The concentration gate cannot separate the
+    second group either: a real decode read `excess_db=-3.2` while false
+    triggers read -1.4 to -3.8, so it straddles them. No level or concentration
+    threshold distinguishes in-channel non-LoRa from LoRa. What would is a
+    **chirp-specific screen** -- a CSS test over a short prefix, cheap enough to
+    run before committing 7 s. Make a false trigger cost milliseconds and the
+    gate can stay wide open, at which point sensitivity is free. That is the
+    work worth doing here, and it is a project rather than a constant.
+
+    **Confirmed, and rarer than feared: one trigger can produce two decodes.**
+    The timestamps added for this caught it in the 900 s run — two
+    `RTL_LORA_NATIVE_DONE` lines sharing `trigger_ms=231725 gap_ms=2218` and
+    differing only in `elapsed_ms` (6596 and 7258). One trigger, two decode
+    jobs, 13.9 s of blind time for a single event. **17 decodes for 16 triggers
+    over 15 minutes**, so roughly 6% — real, worth fixing, but not the main
+    cost. Note the latch is global and read at print time, so both lines report
+    the same trigger; that is a limit of the instrument, not a second trigger.
+
+    **Nothing was transmitting.** Fifteen minutes on the LongFast slot with the
+    bench node idle produced **zero preambles** — not one mesh frame from any
+    neighbour. Worth keeping in view when reading 8.9: "we cannot decode the
+    neighbours" and "the neighbours are not transmitting" look identical from
+    here, and on this bench, at this hour, it was the second. Any claim about
+    long interleaving in the field needs a window that contains real traffic
+    before it means anything.
+
+11. **The dashboard `Id` numbering has permanently diverged from upstream.**
+    This fork shipped `gmrs = 16` before upstream added `am`, and those values
+    are in NVS on real devices, so `am` is 17 here and 16 there. Two
+    `static_assert`s in `dashboard_registry.hpp` fail the build if a future
+    merge quietly adopts upstream's order. Do not "fix" them to match.
+
+12. **`VIEW RAW` in the LoRa traffic view is a button for a feature that does
+    not exist.** It is drawn at (386, 592, 202, 42) and has no touch handler,
+    while the three beside it — SAVE LOG, FILTER TYPE, CLEAR EVENTS — all work.
+    There is no `view_raw` in `ActionKind` and no raw view in `View`, so this is
+    not a wiring mistake: either build the view or remove the button. Found by
+    comparing every `button(...)` rectangle against every `hit(...)` rectangle;
+    it was the only unexplained one in the tree.
+
+13. **The false-trigger cost is in the preamble search, not the gate.** §8.10
+    settles that no level or concentration threshold separates in-channel
+    non-LoRa from LoRa. What would is a chirp-specific screen — a CSS test over
+    a short prefix, cheap enough to run before committing the ~7 s a full
+    decode takes. Make a false trigger cost milliseconds and the gate can stay
+    wide open, at which point sensitivity is free. This is the highest-value
+    LoRa work left and it is a project, not a constant.
+
+14. **Reception claims that are still only bench-verified.** The modulation and
+    filter work of 2026-09-12 was verified by reading back mode and filter
+    across every band, which proves the *decisions*, not the *audio*. Nothing
+    below has met a real transmitter:
+    - airband AM against a live aircraft or tower;
+    - the GMRS 12.5 kHz filter against a handheld on channels 8-14;
+    - amateur FM on 2 m or 70 cm against a repeater.
+    See also item 5, which covers the channel scanner's accept half.
+
+15. **Upstream issues this fork cannot act on.** `#77` (Nooelec RTL-SDR v5)
+    needs the profile support that only exists on the 0.8.0 driver line, which
+    upstream has not merged to `main` and this fork does not carry. `#82` (C6
+    firmware update on beta5/6) has no reproduction here. Both are theirs to
+    resolve first. See §5.7e for why the 0.8.0 line is not simply taken.
+
+16. **Unauthenticated and unknown serial commands used to get no reply (fixed
+    2026-09-12).** Sessions lapse `kSessionTimeoutMs` (5 s) after the last
+    command. A handler written as `... == 0 && authenticated` then did nothing,
+    and so did a typo, which produced a false "commands dropped on the ADS-B
+    screen" diagnosis (§5.7f). Now:
+    - Every gated handler checks the session inside its own branch and answers
+      `<FAMILY>_ERROR auth_required`. 29 handlers that used to be silent now do
+      this; the full table is in `docs/API_SERIAL_CLI.md`. `AUTH` before `PAIR` answers
+      `AUTH_ERROR not_paired`, and `RTL_ADSB_STOP` off the ADS-B band answers
+      `RTL_ADSB_STOP_ERROR not_adsb` instead of falling through.
+    - The function ends in a fallback, `CMD_ERROR unknown_command verb=<VERB>`.
+      It echoes the verb only, since arguments can hold key hex. Lines starting
+      with `{` stay unanswered.
+    - The fallback is safe only because every top-level branch returns. Two did
+      not: the `ACK` branch and the `UI_DOC_*` block, whose unknown subcommands
+      now answer `UI_DOC_ERROR unknown_command`. A brace-aware audit of all 153
+      top-level branches found no remaining fall-through.
+    - `PING` and `ACK` stay silent with or without a session.
+      `run-tab5-ui-regression.ps1` sends `PING` every second while it waits.
+    - Host parsers checked: `help_media.py`, `screenshot_tab5.py`,
+      `capture_visualizers.py`, `capture_landing_dashboards.py`,
+      `lora_rf_test_suite.py`, `decode_orciq.py`, `tab5_serial_auth.ps1` and the
+      UI, P25, POCSAG and web-audio validation scripts. All of them anchor on a
+      command-specific prefix, and none can take a new line for success.
+      `lora_rf_test_suite.py` logs any `RTL_STOP*` line as a fault, but it never
+      sends `RTL_STOP`. The OrcLink host (`orclinkd`) lives in another repo and
+      was not checked.
+    - Hardware, COM3. Before flashing, the build already on the device (it
+      reports `v0.2.0`, as does every build) printed nothing for unauthenticated
+      `RTL_TUNE LORA 906875000`, `RTL_WEB ON`, `TEST_PRESSURE` or an unknown
+      command.
+    - After flashing, the new build answered `RTL_TUNE_ERROR auth_required` and
+      the other new replies, and the band did not move. It still answered
+      `RTL_TUNE_OK` with a session and kept `PING`/`ACK` silent in both states
+      (23/23). It also passed `RTL_UI_REGRESSION CHECK` and the `-SelfCheck`
+      host test. Band, screen and `TRACE` verbosity were restored afterwards.
+    - Not changed: `RTL_P25_SCAN` with a session prints no reply of its own; its
+      survey start line is the only sign it ran.
+
+17. **Fixes offered to upstream — one left, one retired (2026-10-12).**
+    - `fix/rf-analysis-raw-capture-fft` (`f06b187`): the FFT is windowed from
+      the raw capture, which removes upstream's 1024-point cap. **Still wanted**
+      — `fit_iq_fft_size` is still in upstream's `rf_analysis.cpp` — and newly
+      relevant while their PR #155 rebuilds the visualizer's rendering. It is
+      now **349 commits behind** upstream `main`, so it needs another anchor
+      pass before it is offered. No pull request is open.
+    - `fix/72-airband-am` — **retired and deleted** (local and origin) on
+      2026-10-12. Upstream closed issue #72 on 2026-10-03 and solved it their
+      own way: a dedicated `RtlBand::airband` with its own screen, mode `"AM"`,
+      filter width and default frequency, plus a whole airband subsystem
+      (`airband_dashboard`, `airband_scanner`, `airband_catalog`,
+      `airband_audio_filter`, `airband_runtime`). Our approach made BROWSE's
+      demodulator depend on its frequency, which theirs makes unnecessary. The
+      fork's own airband handling still works and stays until the merge
+      question in §5.7h is settled.
+
+    Regenerating an offer is scripted rather than rebased, so a move of upstream
+    costs another anchor pass, not a conflict resolution.
+
+    Opening the pull request is the owner's decision. The compare page is at
+    `https://github.com/hardcoreerik/OrcSDR/compare/main...Hitman90210:OrcSDR:<branch>`.
+
+    The #87 catalog guard was **not** offered. Upstream's own PR #88 makes the
+    same change and has passed the maintainer's hardware regression.
+
+    Building upstream on this machine needs this fork's ESP-IDF environment
+    setup. Upstream's `build-tab5-idf.ps1` hardcodes
+    `C:\Espressif\frameworks\esp-idf-v5.5.4` and a `python_env` path, and
+    neither exists here.
+
+18. **The 2026-09-24 upstream-review fixes still need a bench (§5.7g).** Both
+    were written while the operator was away, so both are build-verified only.
+    - **Cross-site guard.** Never exercised against a real browser. Worth
+      confirming the Companion page still works normally, and that a POST to
+      `/api/action` carrying a foreign `Origin` gets `403`. The host tests cover
+      the policy; what is unproven is the header plumbing on the device.
+    - **`RTL_USB_RECOVERY`.** **Now on by default** (2026-10-12) and still not
+      run on hardware here. It was opt-in because a rail pulse at restart time
+      had reset the P4 on this bench; upstream's `7a8cfee` then shipped the same
+      recovery unconditionally — same stage, same 1 s off, one attempt — through
+      v0.3.0 and v0.4.0 on V4 and V4L, and only on the enumeration-timeout path.
+      Still worth watching once: reset from the PC with the dongle attached and
+      look for `BOOT_RTL_RECOVERY power_cycle attempt=1` followed by
+      enumeration, and that the P4 survives the pulse. `RTL_USB_RECOVERY OFF`
+      turns it off if not.
+    - **Speaker teardown serialisation** (2026-10-12, from upstream `c8b309f`).
+      `end_rtl_speaker()` now holds the same mutex as `begin()`. Two sites here
+      called `M5.Speaker.end()` unguarded — the codec-prime path in
+      `ensure_speaker_running()` and the exclusive-I/O pause path — which is how
+      upstream deleted the same I2S channel twice and hit a "block already
+      marked as free" assert on a V4 unplug. Build-verified only: the test is
+      unplugging the dongle while audio is playing, repeatedly, and seeing no
+      heap assert.
+
+## 9. Map of the interesting files
+
+| File | What lives there |
+| --- | --- |
+| `ui/main.cpp` | Radio session, streaming task, serial CLI, generic radio screen, scan drivers, snapshot builders. Everything not in a dashboard. |
+| `ui/orc_console.*` | Buffered USB Serial/JTAG transport extracted from `main.cpp`; serial command routing remains in the monolith. |
+| `ui/ui_theme.hpp` | Shared RGB565, radius, and minimum-touch-size tokens for product chrome. |
+| `ui/waterfall_view.{hpp,cpp}` | Ring-buffer waterfall. Added by this fork. |
+| `ui/wifi_service.{hpp,cpp}` | Station lifecycle, `reset_link()`, transport health, disconnect reasons. |
+| `ui/catalog_sync.{hpp,cpp}` | Signed data catalog: fetch, verify, install, remove. |
+| `ui/home_dashboard.cpp` | Home *and* every band without a dedicated dashboard (CB, weather, shortwave, browse). |
+| `ui/p25_config.{hpp,cpp}` | P25 profile parse/validate/store. Strict parser — read it before writing a profile. |
+| `ui/scan_engine.{hpp,cpp}` | Generic non-blocking retune/measure sweep with a host self-check. |
+| `ui/offline_map.{hpp,cpp}` | ORCMAP1 loader. User map wins over the packaged one. |
+| `apps/orcsdr-tab5/tools/build_orcmap.py` | Build a map for your area. Added by this fork. |
+| `docs/LOCAL_SETUP.md` | User-facing: data packs, maps, P25, location. Added by this fork. |

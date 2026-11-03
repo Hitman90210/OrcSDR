@@ -5,10 +5,22 @@ param(
     [Parameter(Position = 1)]
     [string]$Destination,
 
-    [string]$Port = 'COM17'
+    [string]$Port = 'COM17',
+
+    [string]$PairingKeyPath = (Join-Path $PSScriptRoot '..\.orclink\ui-doc.key')
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'tab5_serial_auth.ps1')
+
+# [Convert]::ToHexString is .NET 5+, so this script threw
+# "does not contain a method named 'ToHexString'" on stock Windows PowerShell
+# 5.1 (.NET Framework), which is what ships with Windows. Same output, but it
+# runs on both 5.1 and 7.
+function ConvertTo-HexString([byte[]]$Bytes) {
+    ($Bytes | ForEach-Object { $_.ToString('x2') }) -join ''
+}
+
 $source = (Resolve-Path -LiteralPath $Path).Path
 if (-not $Destination) {
     $Destination = '/orcsdr/' + [IO.Path]::GetFileName($source)
@@ -23,7 +35,7 @@ if ($file.Length -le 0 -or $file.Length -gt 64MB) {
     throw 'File must be between 1 byte and 64 MiB.'
 }
 $sha = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
-$pathHex = [Convert]::ToHexString([Text.Encoding]::ASCII.GetBytes($Destination)).ToLowerInvariant()
+$pathHex = ConvertTo-HexString ([Text.Encoding]::ASCII.GetBytes($Destination))
 
 $serial = [IO.Ports.SerialPort]::new($Port, 115200, 'None', 8, 'One')
 $serial.DtrEnable = $false
@@ -48,6 +60,8 @@ function Wait-Tab5Line([string[]]$Prefixes, [int]$TimeoutSeconds = 10) {
 try {
     $serial.Open()
     $serial.DiscardInBuffer()
+    $waitLine = { param($Prefixes, $TimeoutSeconds) Wait-Tab5Line $Prefixes $TimeoutSeconds }
+    Connect-Tab5AuthenticatedSerial -Serial $serial -PairingKeyPath $PairingKeyPath -WaitLine $waitLine
     $serial.WriteLine("SD_PUT_BEGIN $($file.Length) $sha $pathHex")
     $ready = Wait-Tab5Line @('SD_PUT_READY', 'SD_PUT_ERROR') 15
     if ($ready.StartsWith('SD_PUT_ERROR')) { throw $ready }
