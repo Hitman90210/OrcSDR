@@ -1620,6 +1620,40 @@ wrote.
 
 Still not on hardware.
 
+### 5.7m Merged upstream `cdc8181` into the refresh branch (2026-11-03)
+
+`refresh/upstream-a000b27` is now `b05c9ed`: merge `f2d129c` plus one fix, and
+**0 commits behind** upstream `main`. Upstream moved **95 commits** past
+`b714a127` (26 Oct -> 2 Nov): 244 files, +16,678/-255, almost all new
+subsystems -- a native **VDL Mode 2** receiver (D8PSK, RS FEC, AVLC) feeding the
+ACARS dashboard on 136.725-136.975 MHz, an **ACARS interpreter** (ARINC 622,
+D-ATIS, label 17/32/33 positions, 2000-block PSRAM archive), **Dead Air**
+environment work (ENV III on Port A, trend charts, runic display, VEIL-26), FT8
+and SSTV previews over the OrcDial link, and **driver v0.9.4** (E4000 gain,
+Nooelec Smart v5 identity, hardware offset tuning default ON).
+
+**It merged with no conflicts**; `main.cpp` auto-merged to 24,101 lines. Checked
+by marker afterwards, as every merge here is: **0** silently-gated handlers
+(upstream still has 22), **79** `auth_required` replies (their new
+`RTL_DEAD_AIR VEIL`, gated correctly by them; `RTL_DEAD_AIR ENV` and
+`RTL_DRIVER STATUS` are read-only), the `CMD_ERROR` fallback, `fill_web_radar`
+and the GMRS references all intact. Encoding: **0** invalid UTF-8, NUL or BOM
+-- the first of four merges with no cp1252 byte to repair.
+
+**One fix on top:** `RTL_PRESET_TUNE` compared 17 bytes of its 16-byte prefix
+(upstream's bug, fixed on `main-hoi278` in `45a436e`). `b05c9ed` fixes the same
+line on the refresh branch. **Nothing else from §5.9 is on the refresh branch**:
+those fixes touch code the re-base will restructure, so they get re-applied
+there rather than carried twice.
+
+**Not verified here:** no ESP-IDF in this session, so no build, and upstream's
+own test scripts were not run. **The gate is the binary size**: 17 new `.cpp`
+files are registered unconditionally in `main/CMakeLists.txt`, +6,973 lines in
+`ui/` alone, against **33%** app-partition headroom after the last merge.
+Upstream's own `DRIVER_094_INTEGRATION.md` also lists physical
+reception/flicker acceptance of 0.9.4 as still open, and the offset-tuning
+default changes behaviour for every dongle, not only E4000s.
+
 ## 5.8 Dead code and build
 
 - 705 lines of `RTL_USE_LEGACY_USB` blocks removed. The resulting binary was
