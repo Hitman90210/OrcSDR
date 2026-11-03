@@ -52,6 +52,7 @@
 #endif
 
 #include "orcsdr_splash.hpp"
+#include "same_decoder.hpp"
 #include "orcsdr_restart.hpp"
 #include "orcsdr_storage.hpp"
 #include "am_dashboard.hpp"
@@ -8323,8 +8324,38 @@ int16_t shape_audio_sample(float demodulated, float base_scale) {
   return static_cast<int16_t>(constrain(sample, -15000, 15000));
 }
 
+// SAME/EAS alert decoding (NOAA weather radio) runs on the weather band's own
+// demodulated audio. The decoder is touched only by the DSP task that calls
+// queue_audio_samples(); serial and UI read results through the mux below.
+EXT_RAM_BSS_ATTR orcsdr::same::Decoder g_same_decoder;
+EXT_RAM_BSS_ATTR orcsdr::same::Message g_same_latest;
+portMUX_TYPE g_same_mux = portMUX_INITIALIZER_UNLOCKED;
+std::atomic<bool> g_same_have_latest{false};
+std::atomic<uint32_t> g_same_header_count{0};
+std::atomic<bool> g_same_locked{false};
+
 void queue_audio_samples(int16_t* audio, size_t audio_count) {
   if (audio_count == 0) return;
+  // Only the weather band carries SAME; running the correlators on every band
+  // would spend DSP time on audio that cannot contain a header. The audio here
+  // is 48 kHz mono int16, which is what the decoder expects.
+  if (g_stream_band == RtlBand::wx) {
+    g_same_decoder.process(audio, audio_count);
+    g_same_locked.store(g_same_decoder.locked(), std::memory_order_relaxed);
+    orcsdr::same::Message decoded{};
+    if (g_same_decoder.take(&decoded)) {
+      portENTER_CRITICAL(&g_same_mux);
+      g_same_latest = decoded;
+      portEXIT_CRITICAL(&g_same_mux);
+      g_same_have_latest.store(true, std::memory_order_release);
+      if (!decoded.end_of_message)
+        g_same_header_count.fetch_add(1, std::memory_order_relaxed);
+      Serial.printf("RTL_SAME %s org=%s event=%s areas=%u purge=%s issued=%s station=%s\n",
+                    decoded.end_of_message ? "end" : "alert", decoded.originator,
+                    decoded.event, static_cast<unsigned>(decoded.area_count),
+                    decoded.purge, decoded.issued, decoded.station);
+    }
+  }
 #if ORCSDR_DSP_AB
   if (dsp_ab_take_audio(audio, audio_count)) {
     rtl_audio.buffer = (rtl_audio.buffer + 1) % std::size(rtl_audio_buffers);
@@ -20397,6 +20428,43 @@ void process_command(char* command) {
     return;
   }
 
+  if (strncmp(command, "UI_SNAPSHOT ", 12) == 0) {
+    // Unlike UI_CAPTURE, this needs no prior UI_DOC_SHOW staging: it grabs
+    // whatever is actually on screen right now, live reception included.
+    // save_bmp() only reads M5.Display's current framebuffer, so it has no
+    // dependency on documentation-mode state.
+    if (!authenticated) {
+      Serial.println("UI_SNAPSHOT_ERROR auth_required");
+      return;
+    }
+    last_ping_ms = millis();
+    const char* slug = command + 12;
+    if (!orcsdr::ui_capture::valid_slug(slug)) {
+      Serial.println("UI_SNAPSHOT_ERROR invalid_slug");
+      return;
+    }
+    if (!ensure_tab5_sd() || g_sd_fs == nullptr) {
+      Serial.println("UI_SNAPSHOT_ERROR sd_unavailable");
+      return;
+    }
+    const auto result = orcsdr::ui_capture::save_bmp(M5.Display, *g_sd_fs, slug);
+    if (!result.ok) {
+      Serial.printf("UI_SNAPSHOT_ERROR %s\n", result.error ? result.error : "capture_failed");
+      return;
+    }
+    // Pause only now, after the live frame is already on SD: sd_transfer_radio_busy()
+    // refuses the SD_GET retrieval that follows while reception is running, and the
+    // capture itself doesn't need reception paused, so don't pay that cost any earlier.
+    ui_doc_pause_reception();
+    const esp_app_desc_t* app = esp_app_get_description();
+    Serial.printf("UI_SNAPSHOT_DONE slug=%s path=\"/orcsdr/screenshots/%s.bmp\" "
+                  "bytes=%u width=%u height=%u firmware=\"%s\" sha256=",
+                  slug, slug, static_cast<unsigned>(result.bytes), result.width,
+                  result.height, app->version);
+    print_hex(result.sha256, sizeof(result.sha256));
+    Serial.println();
+    return;
+  }
   if (strncmp(command, "UI_DOC_", 7) == 0 || strncmp(command, "UI_CAPTURE ", 11) == 0) {
     if (!authenticated) {
       Serial.println("UI_DOC_ERROR auth_required");
@@ -21067,6 +21135,107 @@ void process_command(char* command) {
                                      : "RTL_WIFI_DISCONNECT_ERROR radio_pause_failed");
     return;
   }
+  // Meshtastic presets differ in both spreading factor and bandwidth, and a
+  // receiver on the wrong pair hears nothing at all. These were touch-only
+  // (cycle) controls, which left no way to match a node over serial.
+  if (strncmp(command, "RTL_LORA_MODEM ", 15) == 0) {
+    if (!authenticated) { Serial.println("RTL_LORA_MODEM_ERROR auth_required"); return; }
+    unsigned sf = 0, bandwidth = 0;
+    if (sscanf(command + 15, "%u %u", &sf, &bandwidth) != 2) {
+      Serial.println("RTL_LORA_MODEM_INVALID usage: RTL_LORA_MODEM <sf 7-12> <bw 125000|250000|500000>");
+      return;
+    }
+    if (sf < 7 || sf > 12) {
+      Serial.println("RTL_LORA_MODEM_INVALID spreading factor must be 7-12");
+      return;
+    }
+    if (bandwidth != 125000u && bandwidth != 250000u && bandwidth != 500000u) {
+      Serial.println("RTL_LORA_MODEM_INVALID bandwidth must be 125000, 250000 or 500000");
+      return;
+    }
+    lora_sf.store(static_cast<uint8_t>(sf), std::memory_order_relaxed);
+    lora_bandwidth_hz.store(bandwidth, std::memory_order_relaxed);
+    rtl_filter_bandwidth_hz.store(bandwidth, std::memory_order_relaxed);
+    reset_spectrum_renderer();
+    Serial.printf("RTL_LORA_MODEM_OK sf=%u bandwidth_hz=%u\n", sf, bandwidth);
+    return;
+  }
+  if (strcmp(command, "RTL_LORA_MODEM") == 0) {
+    Serial.printf("RTL_LORA_MODEM_STATUS sf=%u bandwidth_hz=%lu frequency_hz=%lu\n",
+                  static_cast<unsigned>(lora_sf.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long>(lora_bandwidth_hz.load(std::memory_order_relaxed)),
+                  static_cast<unsigned long>(rtl_ui_frequency_hz));
+    return;
+  }
+  if (strcmp(command, "RTL_LORA_SELFTEST") == 0) {
+    const uint32_t started = millis();
+    const bool ok = orcsdr::lora_native::self_check();
+    Serial.printf("RTL_LORA_SELFTEST %s elapsed_ms=%lu\n", ok ? "ok" : "fail",
+                  static_cast<unsigned long>(millis() - started));
+    return;
+  }
+  // The CB squelch was touch-only; this exposes the same setting, in the same
+  // range and with the same persistence as the CB dashboard's +/- controls.
+  if (strncmp(command, "RTL_SQUELCH ", 12) == 0) {
+    if (!authenticated) { Serial.println("RTL_SQUELCH_ERROR auth_required"); return; }
+    char* end = nullptr;
+    const long value = strtol(command + 12, &end, 10);
+    if (end == command + 12 || *end != '\0' || value < kCbSquelchOpenDbfs ||
+        value > kCbSquelchMaxDbfs) {
+      Serial.printf("RTL_SQUELCH_INVALID range %ld..%ld dBFS (%ld = open)\n",
+                    static_cast<long>(kCbSquelchOpenDbfs), static_cast<long>(kCbSquelchMaxDbfs),
+                    static_cast<long>(kCbSquelchOpenDbfs));
+      return;
+    }
+    cb_squelch_dbfs.store(static_cast<int32_t>(value), std::memory_order_relaxed);
+    persist_cb_settings();
+    Serial.printf("RTL_SQUELCH_OK dbfs=%ld\n", value);
+    return;
+  }
+  if (strcmp(command, "RTL_SQUELCH") == 0) {
+    Serial.printf("RTL_SQUELCH_STATUS dbfs=%ld open=%d\n",
+                  static_cast<long>(cb_squelch_dbfs.load(std::memory_order_relaxed)),
+                  cb_squelch_open.load(std::memory_order_relaxed) ? 1 : 0);
+    return;
+  }
+  if (strcmp(command, "RTL_SAME_SELFTEST") == 0) {
+    char detail[64]{};
+    const bool ok = orcsdr::same::Decoder::self_check_detail(detail, sizeof(detail));
+    Serial.printf("RTL_SAME_SELFTEST %s failed_step=%s\n", ok ? "ok" : "fail",
+                  detail[0] ? detail : "none");
+    return;
+  }
+  if (strcmp(command, "RTL_SAME_STATUS") == 0) {
+    const orcsdr::same::Stats stats = g_same_decoder.stats();
+    Serial.printf("RTL_SAME_STATUS band=%s listening=%d locked=%d headers=%lu "
+                  "end_markers=%lu preambles=%lu rejected=%lu\n",
+                  rtl_band_name(rtl_ui_band), rtl_ui_band == RtlBand::wx ? 1 : 0,
+                  g_same_locked.load(std::memory_order_relaxed) ? 1 : 0,
+                  static_cast<unsigned long>(stats.headers),
+                  static_cast<unsigned long>(stats.end_markers),
+                  static_cast<unsigned long>(stats.preambles),
+                  static_cast<unsigned long>(stats.rejected));
+    return;
+  }
+  if (strcmp(command, "RTL_SAME_LAST") == 0) {
+    if (!g_same_have_latest.load(std::memory_order_acquire)) {
+      Serial.println("RTL_SAME_LAST_NONE");
+      return;
+    }
+    orcsdr::same::Message message{};
+    portENTER_CRITICAL(&g_same_mux);
+    message = g_same_latest;
+    portEXIT_CRITICAL(&g_same_mux);
+    Serial.printf("RTL_SAME_LAST kind=%s org=%s event=%s purge=%s issued=%s station=%s areas=%u\n",
+                  message.end_of_message ? "end" : "alert", message.originator,
+                  message.event, message.purge, message.issued, message.station,
+                  static_cast<unsigned>(message.area_count));
+    for (uint8_t i = 0; i < message.area_count; ++i)
+      Serial.printf("RTL_SAME_AREA index=%u fips=%06lu\n", static_cast<unsigned>(i),
+                    static_cast<unsigned long>(message.areas[i]));
+    Serial.printf("RTL_SAME_RAW %s\n", message.raw);
+    return;
+  }
   if (strcmp(command, "RTL_WIFI_RESET_LINK") == 0) {
     if (!authenticated) {
       Serial.println("RTL_WIFI_RESET_LINK_ERROR auth_required");
@@ -21450,7 +21619,7 @@ void process_command(char* command) {
   }
   if (strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
       strcmp(command, "RTL_LORA_AUTO OFF") == 0) {
-    // Matched first, then gated: "&& authenticated" in the condition made a
+    // Matched first, then gated: testing the session inside the condition made a
     // lapsed session drop this command with no reply at all.
     if (!authenticated) { Serial.println("RTL_LORA_AUTO_ERROR auth_required"); return; }
     const bool enabled = command[14] == 'O' && command[15] == 'N';
@@ -22249,6 +22418,15 @@ void process_command(char* command) {
     Serial.println("RTL_WEB ON|OFF                 - enable LAN console (auth)");
     Serial.println("RTL_WEB CONTROL ON|OFF         - allow LAN clients to control the radio (auth)");
     Serial.println("RTL_WEB_STATUS                 - enabled/listening/url");
+    Serial.println("RTL_LORA_MODEM                 - query LoRa spreading factor and bandwidth");
+    Serial.println("RTL_LORA_MODEM <sf> <bw_hz>    - match a transmitter's preset (auth)");
+    Serial.println("RTL_LORA_SELFTEST              - run the LoRa DSP regression cases");
+    Serial.println("RTL_SQUELCH                    - query CB squelch");
+    Serial.println("RTL_SQUELCH <-90..-35>         - set CB squelch dBFS, -90 opens it (auth)");
+    Serial.println("RTL_SAME_STATUS                - NOAA SAME/EAS decoder state and counts");
+    Serial.println("RTL_SAME_LAST                  - last decoded SAME alert, areas and raw header");
+    Serial.println("RTL_SAME_SELFTEST              - run every SAME decoder case");
+    Serial.println("RTL_WIFI_RESET_LINK            - power-cycle the C6 and rebuild the Wi-Fi link (auth)");
     Serial.println("RTL_WEB_AUDIO_STATUS           - sample-count diagnostics for WebUI audio");
     Serial.println("RTL_CATALOG_STATUS|LIST        - signed catalog and pack state");
     Serial.println("RTL_CATALOG_FETCH              - fetch+verify signed catalog (Wi-Fi required)");
@@ -23560,14 +23738,14 @@ void setup() {
     Serial.println("RTL_POCSAG_SELF_CHECK_FAIL");
   }
   Serial.println("RTL_POCSAG_SELF_CHECK_OK");
-  if (!orcsdr::fm::self_check()) {
-    Serial.println("RTL_FM_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_FM_DASHBOARD_SELF_CHECK_OK");
-  if (!orcsdr::am::self_check()) {
-    Serial.println("RTL_AM_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_AM_DASHBOARD_SELF_CHECK_OK");
+  Serial.println(orcsdr::same::Decoder::self_check() ? "ORC_SAME_SELF_CHECK_OK"
+                                                     : "ORC_SAME_SELF_CHECK_FAIL");
+  // One line per check: these used to print _FAIL and then _OK regardless, so
+  // a failing check still read as passing in every boot log (main-hoi278 §5.5).
+  Serial.println(orcsdr::fm::self_check() ? "RTL_FM_DASHBOARD_SELF_CHECK_OK"
+                                  : "RTL_FM_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::am::self_check() ? "RTL_AM_DASHBOARD_SELF_CHECK_OK"
+                                  : "RTL_AM_DASHBOARD_SELF_CHECK_FAIL");
   if (!orcsdr::shortwave::model_self_check()) {
     Serial.println("RTL_SHORTWAVE_MODEL_SELF_CHECK_FAIL");
     return;
@@ -23605,79 +23783,45 @@ void setup() {
     return;
   }
   Serial.println("RTL_RECEIVER_CONTROLS_SELF_CHECK_OK");
-  if (!orcsdr::am_finder::self_check()) {
-    Serial.println("RTL_AM_FINDER_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_AM_FINDER_SELF_CHECK_OK");
-  if (!orcsdr::fmconfig::self_check()) {
-    Serial.println("RTL_FM_CONFIG_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_FM_CONFIG_SELF_CHECK_OK");
-  if (!orcsdr::p25::self_check()) {
-    Serial.println("RTL_P25_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_P25_DASHBOARD_SELF_CHECK_OK");
-  if (!orcsdr::p25decoder::self_check()) {
-    Serial.println("RTL_P25_DECODER_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_P25_DECODER_SELF_CHECK_OK");
-  if (!orcsdr::p25voice::Decoder::self_check()) {
-    Serial.println("RTL_P25_VOICE_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_P25_VOICE_SELF_CHECK_OK");
-  if (!orcsdr::settings::self_check()) {
-    Serial.println("ORC_SETTINGS_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_SETTINGS_SELF_CHECK_OK");
-  if (!orcsdr::time_service::self_check()) {
-    Serial.println("ORC_TIME_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_TIME_SELF_CHECK_OK");
-  if (!orcsdr::location_estimate::self_check()) {
-    Serial.println("ORC_LOCATION_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_LOCATION_SELF_CHECK_OK");
-  if (!orcsdr::receiver_location::self_check()) {
-    Serial.println("ORC_RECEIVER_LOCATION_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_RECEIVER_LOCATION_SELF_CHECK_OK");
-  if (!orcsdr::screens::self_check()) {
-    Serial.println("ORC_SCREEN_CONTROLLER_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_SCREEN_CONTROLLER_SELF_CHECK_OK");
-  if (!orcsdr::radio_ui::self_check()) {
-    Serial.println("ORC_RADIO_UI_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_RADIO_UI_SELF_CHECK_OK");
+  Serial.println(orcsdr::am_finder::self_check() ? "RTL_AM_FINDER_SELF_CHECK_OK"
+                                  : "RTL_AM_FINDER_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::fmconfig::self_check() ? "RTL_FM_CONFIG_SELF_CHECK_OK"
+                                  : "RTL_FM_CONFIG_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::p25::self_check() ? "RTL_P25_DASHBOARD_SELF_CHECK_OK"
+                                  : "RTL_P25_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::p25decoder::self_check() ? "RTL_P25_DECODER_SELF_CHECK_OK"
+                                  : "RTL_P25_DECODER_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::p25voice::Decoder::self_check() ? "RTL_P25_VOICE_SELF_CHECK_OK"
+                                  : "RTL_P25_VOICE_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::settings::self_check() ? "ORC_SETTINGS_SELF_CHECK_OK"
+                                  : "ORC_SETTINGS_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::time_service::self_check() ? "ORC_TIME_SELF_CHECK_OK"
+                                  : "ORC_TIME_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::location_estimate::self_check() ? "ORC_LOCATION_SELF_CHECK_OK"
+                                  : "ORC_LOCATION_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::receiver_location::self_check() ? "ORC_RECEIVER_LOCATION_SELF_CHECK_OK"
+                                  : "ORC_RECEIVER_LOCATION_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::screens::self_check() ? "ORC_SCREEN_CONTROLLER_SELF_CHECK_OK"
+                                  : "ORC_SCREEN_CONTROLLER_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::radio_ui::self_check() ? "ORC_RADIO_UI_SELF_CHECK_OK"
+                                  : "ORC_RADIO_UI_SELF_CHECK_FAIL");
   const bool radio_session_ok = orcsdr::radio::Session::self_check();
   const bool scan_engine_ok = orcsdr::scan::Engine::self_check();
   Serial.println(radio_session_ok && scan_engine_ok ? "ORC_RADIO_SCAN_SELF_CHECK_OK"
                                                    : "ORC_RADIO_SCAN_SELF_CHECK_FAIL");
-  if (!orcsdr::device_status::self_check()) {
-    Serial.println("ORC_DEVICE_STATUS_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_DEVICE_STATUS_SELF_CHECK_OK");
-  if (!orcsdr::home::self_check()) {
-    Serial.println("ORC_HOME_SELF_CHECK_FAIL");
-  }
-  Serial.println("ORC_HOME_SELF_CHECK_OK");
-  if (!orcsdr::web_console::self_check()) {
-    Serial.println("RTL_WEB_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_WEB_SELF_CHECK_OK");
-  if (!orcsdr::lora::self_check() || !orcsdr::lora_log::self_check()) {
-    Serial.println("RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RTL_LORA_DASHBOARD_SELF_CHECK_OK");
-  if (!orcsdr::rf24::self_check()) {
-    Serial.println("RF24_DASHBOARD_SELF_CHECK_FAIL");
-  }
-  Serial.println("RF24_DASHBOARD_SELF_CHECK_OK");
+  Serial.println(orcsdr::device_status::self_check() ? "ORC_DEVICE_STATUS_SELF_CHECK_OK"
+                                  : "ORC_DEVICE_STATUS_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::home::self_check() ? "ORC_HOME_SELF_CHECK_OK"
+                                  : "ORC_HOME_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::web_console::self_check() ? "RTL_WEB_SELF_CHECK_OK"
+                                  : "RTL_WEB_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::lora::self_check() || !orcsdr::lora_log::self_check() ? "RTL_LORA_DASHBOARD_SELF_CHECK_OK"
+                                  : "RTL_LORA_DASHBOARD_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::rf24::self_check() ? "RF24_DASHBOARD_SELF_CHECK_OK"
+                                  : "RF24_DASHBOARD_SELF_CHECK_FAIL");
   Serial.println(orcsdr::ft8::dashboard_self_check() ? "FT8_DASHBOARD_SELF_CHECK_OK" : "FT8_DASHBOARD_SELF_CHECK_FAIL");
-  if (!ui_doc_self_check()) {
-    Serial.println("UI_DOC_SELF_CHECK_FAIL");
-  }
-  Serial.println("UI_DOC_SELF_CHECK_OK");
+  Serial.println(ui_doc_self_check() ? "UI_DOC_SELF_CHECK_OK"
+                                  : "UI_DOC_SELF_CHECK_FAIL");
 
 #if ORC_LORA_TEST_BUILD
   g_suppress_home_paint = true;
