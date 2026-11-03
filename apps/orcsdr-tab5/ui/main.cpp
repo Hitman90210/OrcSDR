@@ -1863,6 +1863,7 @@ uint16_t settings_screen_timeout_sec = 0;
 bool settings_sound_default = true;
 bool settings_auto_start_reception = true;
 bool settings_graphics_default = true;
+constexpr char kWifiExternalAntennaKey[] = "wifi_ext_ant";  // NVS: 15 chars max
 bool settings_web_console_enabled = false;
 bool settings_web_control_enabled = false;
 bool web_console_deferred = false;
@@ -15496,7 +15497,10 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
 #endif
     case orcsdr::settings::ActionKind::wifi_antenna_changed:
       settings_wifi_external_antenna = action.value != 0;
-      preferences.putBool("set_wifi_ext_ant", settings_wifi_external_antenna);
+      // NVS keys are at most 15 characters. The old key, "set_wifi_ext_ant", was
+      // 16, so every save failed and the antenna fell back to internal on each
+      // boot. Nothing was ever stored under it, so there is nothing to migrate.
+      preferences.putBool(kWifiExternalAntennaKey, settings_wifi_external_antenna);
       apply_wifi_antenna();
       strlcpy(wifi_status_message,
               settings_wifi_external_antenna ? "External MMCX antenna selected"
@@ -16171,7 +16175,7 @@ void load_state() {
   settings_screen_timeout_sec = preferences.getUShort("set_timeout", 0);
   settings_wifi_power_enabled = preferences.getBool("set_wifi_power", true);
   settings_wifi_start_at_boot = preferences.getBool("set_wifi_boot", false);
-  settings_wifi_external_antenna = preferences.getBool("set_wifi_ext_ant", false);
+  settings_wifi_external_antenna = preferences.getBool(kWifiExternalAntennaKey, false);
   settings_sound_default = preferences.getBool("set_sound", true);
   rtl_audio_user_enabled.store(settings_sound_default, std::memory_order_release);
   rtl_audio_enabled.store(settings_sound_default && rtl_band_has_audio(rtl_ui_band),
@@ -23903,7 +23907,7 @@ void setup() {
     orcsdr::NvsStore wifi_prefs;
     if (wifi_prefs.begin("orclink", true)) {
       settings_wifi_power_enabled = wifi_prefs.getBool("set_wifi_power", true);
-      settings_wifi_external_antenna = wifi_prefs.getBool("set_wifi_ext_ant", false);
+      settings_wifi_external_antenna = wifi_prefs.getBool(kWifiExternalAntennaKey, false);
       wifi_prefs.end();
     }
   }
