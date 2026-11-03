@@ -5,8 +5,63 @@ Everything this fork (`Hitman90210/OrcSDR`) has changed on top of
 cold: if you are new to this tree, read §1 and §2, then jump to whatever you
 are touching.
 
-Last updated: 2026-09-09. The fork now includes upstream `ff8a5ee`
-(`v0.2.0-beta.5`) plus the fork-specific integration fixes described below.
+Last updated: 2026-11-03. **Read §0 first**: the fork was consolidated onto
+upstream that day, so `main` is now upstream `cdc8181` (v0.5.0-beta.1 plus 95
+commits) with this fork's work re-applied on top. Sections 1-9 are the history
+of the old line and still explain why each change exists; where they describe
+code by file and line, they describe the pre-consolidation tree.
+
+## 0. Consolidation onto upstream (2026-11-03)
+
+**Branch layout now:** `main` is the release line; `main-hoi278` is the
+working branch, merged into `main` once a build has been checked on the bench.
+`refresh/upstream-a000b27` and `fix/rf-analysis-raw-capture-fft` are gone.
+Nothing was force-pushed: the consolidation commit records both old lines --
+the pre-consolidation fork (`a7e2db6`, which contains everything back to
+`a1c9084`) and the FFT branch (`f06b187`) -- as merge parents with this tree's
+contents, so `git log`/`git show` still reach every old commit. Tags could
+not be pushed from the cloud session (the proxy refuses them with 403), which
+is why the history is kept that way rather than under `archive/` tags.
+
+**What the tree is:** upstream's architecture throughout (band_profile,
+OrcMaps PMTiles, airband/ACARS/VDL2, Dead Air, FT8/SSTV, driver 0.9.4), plus:
+
+| Ours, on this tree | Commit |
+| --- | --- |
+| Serial hardening: every gated command answers `auth_required`, `CMD_ERROR` fallback (§5.7i) and two more multi-line silent handlers (`RTL_LORA_AUTO`, `RTL_WEB`) | earlier + `300d947` |
+| Companion ADS-B radar; GMRS 12.5 kHz on 8-14 only (§5.7k) | earlier |
+| Companion **REMOTE CONTROL** switch, off by default (`403 control disabled`) | `300d947` |
+| Band-sweep FM **SEEK** with STOP SEEK, and the SNR station test for the preset scan | `62c8b58` |
+| Wi-Fi **RESET LINK** (Settings and `RTL_WIFI_RESET_LINK`), driving upstream's C6 recovery | `7b846f0` |
+| **SAME/EAS** alert decoding, `RTL_LORA_MODEM`, `RTL_LORA_SELFTEST`, `RTL_SQUELCH`, `UI_SNAPSHOT`; 19 boot self-checks that printed `_FAIL` then `_OK` | `3a1b6bb` |
+| §5.9 sweep fixes where upstream had not fixed them itself (ADS-B position filter, disconnect reasons, strongest-AP join and security floor, catalog free space and full removal, Settings clipping, password check, Companion JSON/backoff, RDS stop bound, LoRa wrap, `RTL_PRESET_TUNE`) | `238ef34`, `b05c9ed` |
+| Working SD transfer scripts on PowerShell 5.1, with authentication; `screenshot_tab5.py`; `LOCAL_SETUP.md` adapted | `4a09791` |
+
+**Open, in priority order -- none of it has been built or run on hardware:**
+
+1. **Build it and read the app-partition headroom.** Upstream's 95 commits
+   added 17 always-compiled `.cpp` files on top of a tree that had 33% free.
+   Every commit since the last bench build is compile-unverified.
+2. **Bench the behaviour changes:** SEEK across the band in both directions,
+   RESET LINK on a live link, the strongest-AP join and WPA floor on your
+   router, the REMOTE CONTROL switch from a browser, a SAME header off a real
+   weekly test, and driver 0.9.4's offset tuning (default ON) on the V4.
+3. **GMRS/marine channel scanner and lockout.** The fork's scanner is keyed on
+   `RtlBand::gmrs`/`marine`, which do not exist here (both are band_profile
+   entries), so it has to be rebuilt on band_profile with thresholds set on
+   the radio. CB has upstream's own scanner and lockout.
+4. **Local ATC presets.** The fork's `local_atc.idx` (built from OurAirports)
+   is not read; airband goes through upstream's Airband catalog. The nearest-
+   airfield lookup needs re-homing there.
+5. **Dashboard ids.** This registry has no `gmrs` and numbers `am` 16, where
+   the old line stored GMRS=16, AM=17 in NVS `dash_recent`. Only the recents
+   list is affected (an upgraded device shows GMRS as AM and AM as FT8 until a
+   few dashboards are reopened); decide before a release whether to migrate.
+6. **The FFT enhancement** (`f06b187`, windowing RF-analysis FFTs from the raw
+   capture) is preserved in history only; it is one file if wanted.
+7. LoRa: the channel-excess trigger telemetry (`RTL_LORA_TRIGGER_STATUS`) was
+   not carried -- upstream's `RTL_LORA_DETECTOR STATUS` covers the same
+   ground -- and 500 kHz decode is still open (`docs/LORA_500K_WORK.md`).
 
 ---
 
