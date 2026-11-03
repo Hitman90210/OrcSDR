@@ -557,6 +557,13 @@ cannot forge serial records. Passwords are never returned.
 | `RTL_WIFI_CONNECT_SAVED` | no | Compatibility shortcut for saved profile 0. Indexed connection uses `RTL_UI ACTION SETTINGS CONNECT_SAVED <index>`. |
 | `RTL_WIFI_DISCONNECT` | yes | Disconnects Wi-Fi and restores the paused radio/audio path. |
 | `RTL_WIFI_RESET_LINK` | yes | `RTL_WIFI_RESET_LINK queued source=serial`, then `RTL_WIFI_LINK_RECOVERY attempt=… result=ok\|failed`. Power-cycles the C6 and rebuilds the Hosted link; for a link that wedged while still reporting connected. `RTL_WIFI_RESET_LINK_ERROR busy_or_off` if Wi-Fi is off or a recovery is already queued. |
+| `RTL_CHANNEL_SCAN` / `RTL_CHANNEL_SCAN_STOP` | yes | `RTL_CHANNEL_SCAN_QUEUED` then `RTL_CHANNEL_SCAN start band=GMRS\|MARINE channels=… locked=… dwell_ms=400`; `hold frequency_hz=…`, `resume after_hz=… reason=quiet\|locked_out`, `stop reason=…`. Needs the dial on a GMRS or marine frequency with the receiver running, else `RTL_CHANNEL_SCAN_UNAVAILABLE`. Same as the Home SCAN button. |
+| `RTL_CHANNEL_SCAN_STATUS` | no | `RTL_CHANNEL_SCAN_STATUS band=… active=… holding=… hits=… stale_skips=… min_snr_db=… squelch_dbfs=… locked=… frequency_hz=…` |
+| `RTL_CHANNEL_PROBE` | no | What the stop test reads for the channel on the dial: `level_dbfs`, `snr_db`, `offset_hz`, `tolerance_hz`, thresholds and `busy=0\|1`. Use it to calibrate. |
+| `RTL_CHANNEL_MIN_SNR [<dB>]` | set only | Query, or set 0-60 dB (persisted, NVS `ch_snr_x10`). Default 20 dB is a **placeholder** to calibrate on air. |
+| `RTL_CHANNEL_SQUELCH [<dBFS>]` | set only | Query, or set -90..0 dBFS, -90 = open (persisted, NVS `ch_sql`). Default -75. |
+| `RTL_CHANNEL_LOCK <name>` / `RTL_CHANNEL_UNLOCK <name>` | yes | Skip a channel during scans, by its printed name (`15`, `R15`, `16`, `22A`; case-insensitive). Persisted under the old keys `lock_gmrs` / `lock_marine`. |
+| `RTL_CHANNEL_LOCK_LIST` / `RTL_CHANNEL_LOCK_CLEAR` | clear only | List, or clear, the lockouts for the band on the dial. |
 | `SET_WIFI <ssid_hex> <pass_hex> <hmac>` | yes + signed payload | Provisions slot 0 and attempts connection without echoing credentials. |
 
 Power, auto-connect, antenna selection, scan, indexed connection, forget, and

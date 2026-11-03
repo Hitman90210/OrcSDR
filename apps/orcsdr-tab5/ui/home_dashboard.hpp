@@ -21,6 +21,13 @@ struct Snapshot {
   uint32_t span_hz = 960000;
   uint32_t step_hz = 12500;
   bool step_adjustable = true;  // false on channelized or fixed bands: the STEP SIZE control shows FIXED
+  // GMRS and marine: the STEP SIZE slot (which only says FIXED there) becomes
+  // the channel scanner's SCAN button. channel_name is the channel on the dial
+  // ("15", "R15", "16"), empty when the dial is between channels.
+  bool channel_scan_available = false;
+  bool channel_scanning = false;   // sweeping
+  bool channel_holding = false;    // parked on a busy channel, resumes when it falls quiet
+  char channel_name[8]{};
   uint32_t filter_bandwidth_hz = 0;
   filter_standards::Kind filter_kind = filter_standards::Kind::fixed;
   uint32_t effective_sps = 0;
@@ -97,6 +104,7 @@ enum class ActionKind : uint8_t {
   mode_close,
   mode_set,          // value = 0 AUTO, 1 NFM, 2 AM, 3 WFM, 4 USB, 5 LSB
   keypad_open,       // tap on the frequency readout
+  channel_scan_toggle,  // the SCAN button on GMRS/marine: start, or stop a running scan
 };
 
 struct Action {

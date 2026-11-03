@@ -172,11 +172,18 @@ see `docs/DATA_SOURCE_LEDGER.md`.
   (12.5 kHz filter on 8-14), which is not authority to transmit — GMRS needs
   an FCC licence.
 
-**CB** has a channel scanner with lockout (CB dashboard). GMRS and marine
-tune on their channel rasters but have **no scanner** on this build yet --
-that is an open item in `docs/FORK_HANDOFF.md`. The CB squelch is the dial to
-turn if the scanner stops too eagerly or not eagerly enough: SQL+/SQL- on the
-CB panel, or `RTL_SQUELCH <dBFS>` over serial.
+**CB** has a channel scanner with lockout on the CB dashboard. **GMRS and
+marine** have one on Home: tune into either band and the STEP SIZE box (which
+only says FIXED there) becomes **SCAN**. It walks the channel list, stops on a
+busy channel, and picks up again about 2.5 s after it falls quiet; tap it again
+to stop, or tune by hand. Lock out a channel that is always busy with
+`RTL_CHANNEL_LOCK <name>` (for example `RTL_CHANNEL_LOCK R15`).
+
+The scanner's thresholds are **placeholders until you set them on air**. Tune
+an idle channel and run `RTL_CHANNEL_PROBE` a few times to see the noise
+reading, then a channel with someone talking; set `RTL_CHANNEL_MIN_SNR`
+between the two and, if needed, `RTL_CHANNEL_SQUELCH`. Both are saved. The CB
+squelch is separate: SQL+/SQL- on the CB panel, or `RTL_SQUELCH <dBFS>`.
 > **Check your Meshtastic modem preset before blaming the receiver.**
 > Meshtastic moved the US stock preset off **LongFast** (250 kHz, SF 11)
 > because its bandwidth is not US-compliant -- FCC 15.247 expects at least

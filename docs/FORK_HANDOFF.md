@@ -60,10 +60,14 @@ fixes.
    RESET LINK on a live link, the strongest-AP join and WPA floor on your
    router, the REMOTE CONTROL switch from a browser, a SAME header off a real
    weekly test, and driver 0.9.4's offset tuning (default ON) on the V4.
-3. **GMRS/marine channel scanner and lockout.** The fork's scanner is keyed on
-   `RtlBand::gmrs`/`marine`, which do not exist here (both are band_profile
-   entries), so it has to be rebuilt on band_profile with thresholds set on
-   the radio. CB has upstream's own scanner and lockout.
+3. **Calibrate the GMRS/marine channel scanner.** It is ported (`channel_scan_plan`,
+   Home's SCAN button in the STEP SIZE slot, `RTL_CHANNEL_*`), keyed on
+   band_profile instead of the old `RtlBand::gmrs`/`marine`, with the old
+   tables and lockout keys. Its two thresholds are placeholders -- min SNR 20 dB
+   (the old line's value on its own DSP chain) and squelch -75 dBFS -- to be set
+   on air with `RTL_CHANNEL_PROBE`, `RTL_CHANNEL_MIN_SNR`, `RTL_CHANNEL_SQUELCH`.
+   The 400 ms dwell was also measured on the old chain: if
+   `RTL_CHANNEL_SCAN_STATUS` shows `stale_skips` climbing, raise it.
 4. **Local ATC presets.** The fork's `local_atc.idx` (built from OurAirports)
    is not read; airband goes through upstream's Airband catalog. The nearest-
    airfield lookup needs re-homing there.

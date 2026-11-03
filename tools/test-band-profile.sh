@@ -23,3 +23,4 @@ run() {
 }
 run band_profile tests/band_profile_tests.cpp "$ui/band_profile.cpp"
 run gmrs_channels tests/gmrs_channels_tests.cpp
+run channel_scan_plan tests/channel_scan_plan_tests.cpp "$ui/channel_scan_plan.cpp" "$ui/band_profile.cpp"

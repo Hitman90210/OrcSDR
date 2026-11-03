@@ -429,7 +429,29 @@ void draw_tuning_controls() {
   draw_step_size_controls();
 }
 
+// GMRS/marine only. Full-width rather than a stepper: there is nothing to step
+// on a channelized band, and a scan toggle wants the biggest target the slot
+// allows. Fills its own interior, because draw_step_size_controls() is also
+// called on its own (audio_changed) without the row being cleared first.
+void draw_channel_scan_button() {
+  const uint16_t edge = current.channel_holding ? TFT_ORANGE
+                        : current.channel_scanning ? kGreen
+                                                   : kCyan;
+  M5.Display.fillRoundRect(kStepperSize, kControlY, kStepperW, kControlH, 9, TFT_BLACK);
+  frame(kStepperSize, kControlY, kStepperW, kControlH, edge, 9);
+  char top[20];
+  snprintf(top, sizeof(top), "CH %s", current.channel_name[0] ? current.channel_name : "--");
+  text(top, kStepperSize + kStepperW / 2, kControlY + 15, kCyan, 2, middle_center);
+  text(current.channel_holding ? "HOLD - STOP" : current.channel_scanning ? "SCANNING - STOP"
+                                                                          : "SCAN",
+       kStepperSize + kStepperW / 2, kControlY + 43, edge, 2, middle_center);
+}
+
 void draw_step_size_controls() {
+  if (current.channel_scan_available) {
+    draw_channel_scan_button();
+    return;
+  }
   char value[24];
   snprintf(value, sizeof(value), "%.1f kHz", current.step_hz / 1000.0);
   draw_stepper(kStepperSize, "STEP SIZE", current.step_adjustable ? value : "FIXED");
@@ -958,6 +980,11 @@ Action tap_action(int32_t x, int32_t y) {
     return {ActionKind::tune_frequency, dashboards::Id::count,
             requested > 0 ? static_cast<uint32_t>(requested) : 0};
   }
+  // Whole slot, not the arrows: on GMRS/marine the STEP SIZE box is the SCAN
+  // button (see draw_channel_scan_button). Elsewhere the stepper is unchanged.
+  if (current.channel_scan_available &&
+      inside(x, y, kStepperSize, kControlY, kStepperW, kControlH))
+    return {ActionKind::channel_scan_toggle};
   const struct { int x; ActionKind down, up; } steppers[] = {
       {kStepperSpan, ActionKind::span_down, ActionKind::span_up},
       {kStepperTune, ActionKind::step_down, ActionKind::step_up},
@@ -1029,7 +1056,11 @@ void update(const Snapshot& snapshot) {
       snapshot.filter_bandwidth_hz != current.filter_bandwidth_hz;
   const bool tuning_controls_changed = snapshot.span_hz != current.span_hz ||
                                        snapshot.step_hz != current.step_hz ||
-                                       snapshot.step_adjustable != current.step_adjustable;
+                                       snapshot.step_adjustable != current.step_adjustable ||
+                                       snapshot.channel_scan_available != current.channel_scan_available ||
+                                       snapshot.channel_scanning != current.channel_scanning ||
+                                       snapshot.channel_holding != current.channel_holding ||
+                                       strcmp(snapshot.channel_name, current.channel_name) != 0;
   const bool level_changed = static_cast<int>(std::lround(snapshot.relative_dbfs)) !=
                              static_cast<int>(std::lround(current.relative_dbfs));
   const bool gain_state_changed = gain_changed(snapshot, current);

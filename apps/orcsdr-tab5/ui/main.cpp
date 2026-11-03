@@ -53,6 +53,7 @@
 
 #include "orcsdr_splash.hpp"
 #include "same_decoder.hpp"
+#include "channel_scan_plan.hpp"
 #include "orcsdr_restart.hpp"
 #include "orcsdr_storage.hpp"
 #include "am_dashboard.hpp"
@@ -675,6 +676,19 @@ constexpr uint32_t kRtlFmAutoSettleMs = 500;
 // on a real antenna every window passed. Measured over a 40-window sweep of
 // 76.5-107.7 MHz: empty channels 6.2-9.8 dB, occupied 16.3-33.2 dB.
 constexpr float kFmSeekMinSnrDb = 15.0f;
+// GMRS/marine channel scanner (channel_scan_plan). The dwell covers the hot
+// retune plus the two fresh spectrum windows scan_measure insists on; 400 ms
+// was measured on the pre-consolidation line, where the spectrum refreshed
+// ~9.5 times a second. Resume waits out the gaps between overs.
+constexpr uint32_t kChannelScanDwellMs = 400;
+constexpr uint32_t kChannelScanResumeMs = 2500;
+// PLACEHOLDER thresholds -- calibrate on air with RTL_CHANNEL_PROBE and set
+// with RTL_CHANNEL_MIN_SNR / RTL_CHANNEL_SQUELCH (both persisted). 20 dB is
+// the old line's GMRS value, measured against a noise ceiling of 5.4-11.6 dB
+// with its own DSP chain; this tree's spectrum chain differs, so it is a
+// starting point, not a measurement.
+constexpr float kChannelScanDefaultMinSnrDb = 20.0f;
+constexpr int32_t kChannelScanDefaultSquelchDbfs = -75;
 /** LO quantize for hot retune — finer than this thrashes USB/audio. */
 constexpr uint32_t kRtlHotRetuneQuantHz = 5000;
 /** Min time between LO applies (each apply drains bulk + EP0). */
@@ -1294,6 +1308,7 @@ enum class ActiveScan : uint8_t {
   p25_survey,
   pocsag_discovery,
   fm_seek,
+  channel_scan,
 };
 orcsdr::radio::Session radio_session;
 orcsdr::scan::Engine scan_engine;
@@ -1313,6 +1328,22 @@ int8_t fm_seek_direction = 0;               // Streaming task only.
 uint32_t fm_seek_origin_hz = 0;             // Streaming task only.
 uint32_t fm_seek_hit_hz = 0;                // Streaming task only.
 bool fm_seek_stop_pending = false;          // Streaming task only.
+// Channel scanner for GMRS and marine. Touch and serial raise the requests;
+// everything else is owned by the streaming task, like the FM seek. A run
+// stays "active" while parked on a busy channel (holding) and between passes.
+std::atomic<bool> channel_scan_requested{false};  // toggle: start, or stop a running scan
+std::atomic<bool> channel_scan_cancel{false};
+std::atomic<bool> channel_scan_active{false};
+std::atomic<bool> channel_scan_holding{false};
+std::atomic<uint32_t> channel_scan_hits{0};
+std::atomic<uint32_t> channel_scan_stale_skips{0};
+std::atomic<float> channel_scan_min_snr_db{kChannelScanDefaultMinSnrDb};
+std::atomic<int32_t> channel_squelch_dbfs{kChannelScanDefaultSquelchDbfs};
+const orcsdr::channel_scan_plan::Plan* channel_scan_plan_ptr = nullptr;  // Streaming task only.
+uint32_t channel_scan_hit_hz = 0;            // Streaming task only.
+uint32_t channel_scan_quiet_since_ms = 0;    // Streaming task only.
+uint32_t channel_scan_seq_at_retune = 0;     // Streaming task only.
+bool channel_scan_stop_pending = false;      // Streaming task only.
 std::atomic<bool> p25_survey_requested{false};
 std::atomic<bool> p25_survey_cancel_requested{false};
 
@@ -1526,6 +1557,11 @@ static std::atomic<float> rtl_scope_peak_level{-120.0f};
 // comparable across gain, antenna and band. rtl_scope_peak_level is raw
 // 10*log10 of bin power, not dBFS.
 static std::atomic<float> rtl_scope_peak_snr_db{0.0f};
+// Bumped once per completed spectrum measurement, last and with release
+// order, so a reader that sees a new value also sees the measurements it
+// describes. The channel scanner uses it to insist on windows built after a
+// hop rather than from IQ captured while the tuner was still moving.
+static std::atomic<uint32_t> rtl_scope_measurement_seq{0};
 static std::atomic<bool> rtl_auto_fm_requested{false};
 static std::atomic<bool> rtl_auto_fm_active{false};
 static float rtl_signal_dbfs_smooth = -80.0f;
@@ -7899,7 +7935,10 @@ void draw_band_edges() {
 // the screen on top of it does not show a spectrum.
 bool spectrum_measurement_wanted() {
   return fm_seek_active.load(std::memory_order_acquire) ||
-         rtl_fm_preset_scan_active.load(std::memory_order_acquire);
+         rtl_fm_preset_scan_active.load(std::memory_order_acquire) ||
+         // Both halves of a channel scan read the spectrum: the sweep to decide
+         // whether to stop, and the hold to decide when to resume.
+         channel_scan_active.load(std::memory_order_acquire);
 }
 
 void draw_spectrum(const uint8_t* iq, size_t bytes) {
@@ -8081,6 +8120,7 @@ void draw_spectrum(const uint8_t* iq, size_t bytes) {
   rtl_scope_peak_snr_db.store(
       level_count ? strongest - level_sum / static_cast<float>(level_count) : 0.0f,
       std::memory_order_relaxed);
+  rtl_scope_measurement_seq.fetch_add(1, std::memory_order_release);
   const float floor = maximum - 48.0f;
   if (orcsdr::web_console::enabled())
     orcsdr::web_console::update_spectrum(rtl_spectrum_levels, kRtlSpectrumBins);
@@ -12538,6 +12578,24 @@ void handle_lora_dashboard_action(const orcsdr::lora::Action& action) {
   refresh_active_screen();
 }
 
+// Is the channel on the dial occupied right now? rtl_signal_dbfs is genuine
+// dBFS, which is what the squelch is expressed in; rtl_scope_peak_level is raw
+// bin power and only its ratio to the mean (the SNR) means anything. The
+// offset test is what tells a signal on this channel from a stronger one on a
+// neighbour inside the same window.
+bool channel_scan_busy(const orcsdr::channel_scan_plan::Plan& plan, float* out_level,
+                       float* out_snr, int32_t* out_offset) {
+  const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
+  const float snr_db = rtl_scope_peak_snr_db.load(std::memory_order_relaxed);
+  const int32_t offset_hz = rtl_scope_peak_offset_hz.load(std::memory_order_relaxed);
+  if (out_level) *out_level = level;
+  if (out_snr) *out_snr = snr_db;
+  if (out_offset) *out_offset = offset_hz;
+  return orcsdr::channel_scan_plan::is_busy(
+      plan, offset_hz, snr_db, level, channel_scan_min_snr_db.load(std::memory_order_relaxed),
+      static_cast<float>(channel_squelch_dbfs.load(std::memory_order_relaxed)));
+}
+
 // scan::Engine walks start_hz + index * step_hz in uint32 arithmetic, so a
 // downward seek runs off the bottom of the band and wraps to a huge value.
 // Fold the target back into the FM band so a seek started near the bottom
@@ -12553,8 +12611,15 @@ uint32_t fm_seek_wrap(uint32_t frequency_hz) {
 
 bool scan_retune(uint32_t frequency_hz, void*) {
   if (active_scan == ActiveScan::fm_presets || active_scan == ActiveScan::am_presets ||
-      active_scan == ActiveScan::shortwave_hunt || active_scan == ActiveScan::fm_seek)
+      active_scan == ActiveScan::shortwave_hunt || active_scan == ActiveScan::fm_seek ||
+      active_scan == ActiveScan::channel_scan)
     reset_spectrum_renderer();
+  // A channel scan is short and stays inside one band, so the dial follows it
+  // the way a scanner's display does (an FM seek deliberately does not).
+  if (active_scan == ActiveScan::channel_scan) {
+    rtl_ui_frequency_hz = frequency_hz;
+    channel_scan_seq_at_retune = rtl_scope_measurement_seq.load(std::memory_order_acquire);
+  }
   // The dial deliberately does not follow a seek: sweeping 32 MHz in 800 kHz
   // steps would only make the readout thrash.
   if (active_scan == ActiveScan::fm_seek) frequency_hz = fm_seek_wrap(frequency_hz);
@@ -12640,6 +12705,29 @@ void scan_measure(size_t index, uint32_t frequency_hz, void*) {
                     static_cast<unsigned long>(snapped_hz), static_cast<double>(level));
     return;
   }
+  if (active_scan == ActiveScan::channel_scan && channel_scan_plan_ptr != nullptr) {
+    float level = 0.0f, snr_db = 0.0f;
+    int32_t offset_hz = 0;
+    // Two windows, not one: the first to complete after a hop can still be
+    // built from IQ captured while the tuner was moving, so only the second is
+    // certainly this channel's. Under-dwelling shows up as stale_skips rather
+    // than as a stop on the wrong channel.
+    const uint32_t fresh =
+        rtl_scope_measurement_seq.load(std::memory_order_acquire) - channel_scan_seq_at_retune;
+    const bool busy =
+        fresh >= 2 && channel_scan_busy(*channel_scan_plan_ptr, &level, &snr_db, &offset_hz);
+    if (fresh < 2) channel_scan_stale_skips.fetch_add(1, std::memory_order_relaxed);
+    if (serial_verbosity_at(SerialVerbosity::trace))
+      Serial.printf("RTL_CHANNEL_SCAN_SAMPLE index=%u frequency_hz=%lu level=%.1f snr_db=%.1f "
+                    "offset_hz=%ld windows=%lu busy=%d\n",
+                    static_cast<unsigned>(index), static_cast<unsigned long>(frequency_hz),
+                    static_cast<double>(level), static_cast<double>(snr_db),
+                    static_cast<long>(offset_hz), static_cast<unsigned long>(fresh), busy ? 1 : 0);
+    if (!busy) return;
+    channel_scan_hit_hz = frequency_hz;
+    channel_scan_stop_pending = true;  // acted on after service() returns
+    return;
+  }
   if (active_scan == ActiveScan::p25_survey) {
     const float level = rtl_signal_dbfs.load(std::memory_order_relaxed);
     const auto decoded = orcsdr::p25decoder::snapshot();
@@ -12683,6 +12771,37 @@ void scan_finished(orcsdr::scan::Finish reason, void*) {
                               ? "done"
                               : reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed";
     Serial.printf("RTL_PRESET_SCAN %s found=%d\n", outcome, fm_preset_count);
+    return;
+  }
+  if (finished == ActiveScan::channel_scan) {
+    // A pass ends one of three ways. A hit parks the receiver there and the run
+    // stays active so the service loop resumes when the channel falls quiet.
+    // No hit means go round again. A cancel with no hit, or a retune failure,
+    // ends the run. The hit test does not care whether the pass was cancelled
+    // or completed: the engine measures the final channel and finishes in the
+    // same service() call, so a hit there arrives as "completed".
+    channel_scan_stop_pending = false;
+    if (channel_scan_hit_hz != 0 && reason != orcsdr::scan::Finish::retune_failed) {
+      (void)request_hot_retune_for(scan_radio_token, channel_scan_hit_hz);
+      rtl_ui_frequency_hz = channel_scan_hit_hz;
+      channel_scan_holding.store(true, std::memory_order_release);
+      channel_scan_quiet_since_ms = 0;
+      channel_scan_hits.fetch_add(1, std::memory_order_relaxed);
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_CHANNEL_SCAN hold frequency_hz=%lu\n",
+                    static_cast<unsigned long>(channel_scan_hit_hz));
+      return;
+    }
+    if (reason == orcsdr::scan::Finish::completed &&
+        channel_scan_active.load(std::memory_order_acquire))
+      return;  // service_channel_scan starts the next pass
+    channel_scan_active.store(false, std::memory_order_release);
+    channel_scan_holding.store(false, std::memory_order_release);
+    channel_scan_hit_hz = 0;
+    rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+    Serial.printf("RTL_CHANNEL_SCAN stop reason=%s frequency_hz=%lu\n",
+                  reason == orcsdr::scan::Finish::cancelled ? "cancelled" : "failed",
+                  static_cast<unsigned long>(rtl_ui_frequency_hz));
     return;
   }
   if (finished == ActiveScan::fm_seek) {
@@ -12844,8 +12963,141 @@ void finish_am_finder(bool completed, const char* outcome) {
   queue_local_rtl_listen(RtlBand::am, am_finder_restore_hz, false);
 }
 
+// One pass over the unlocked channels, starting after `after_hz`. Locked-out
+// channels are dropped from the list rather than skipped during the sweep, so
+// the engine never dwells on one.
+bool start_channel_scan_pass(uint32_t now, uint32_t after_hz) {
+  if (channel_scan_plan_ptr == nullptr) return false;
+  static uint32_t pass[orcsdr::channel_scan_plan::kMaxChannels];
+  const size_t count = orcsdr::channel_scan_plan::build_pass(*channel_scan_plan_ptr, after_hz,
+                                                             pass, std::size(pass));
+  if (count == 0) {
+    Serial.printf("RTL_CHANNEL_SCAN_UNAVAILABLE band=%s reason=all_locked\n",
+                  channel_scan_plan_ptr->label);
+    return false;
+  }
+  const auto session = radio_session.snapshot();
+  scan_radio_token = {session.owner, session.generation};
+  const orcsdr::scan::Plan plan{orcsdr::scan::Mode::channel_list, pass, count, 0, 0,
+                                kChannelScanDwellMs, false};
+  if (!scan_engine.start(plan, rtl_ui_frequency_hz, now)) return false;
+  active_scan = ActiveScan::channel_scan;
+  channel_scan_hit_hz = 0;
+  channel_scan_stop_pending = false;
+  channel_scan_holding.store(false, std::memory_order_release);
+  return true;
+}
+
+void stop_channel_scan_run(const char* reason) {
+  channel_scan_active.store(false, std::memory_order_release);
+  channel_scan_holding.store(false, std::memory_order_release);
+  channel_scan_hit_hz = 0;
+  rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+  Serial.printf("RTL_CHANNEL_SCAN stop reason=%s frequency_hz=%lu\n", reason,
+                static_cast<unsigned long>(rtl_ui_frequency_hz));
+}
+
+void service_channel_scan(uint32_t now, const orcsdr::scan::Callbacks& callbacks) {
+  const bool running = channel_scan_active.load(std::memory_order_acquire);
+  if (channel_scan_cancel.exchange(false, std::memory_order_acq_rel) && running) {
+    if (active_scan == ActiveScan::channel_scan) {
+      channel_scan_hit_hz = 0;  // so scan_finished ends the run instead of holding
+      channel_scan_active.store(false, std::memory_order_release);
+      scan_engine.cancel(false, callbacks);
+    } else {
+      stop_channel_scan_run("cancelled");
+    }
+    return;
+  }
+  // Stop from outside the measure callback so the engine is not re-entered.
+  if (active_scan == ActiveScan::channel_scan && channel_scan_stop_pending) {
+    channel_scan_stop_pending = false;
+    scan_engine.cancel(false, callbacks);
+    return;
+  }
+  if (channel_scan_requested.exchange(false, std::memory_order_acq_rel)) {
+    if (running) {
+      channel_scan_cancel.store(true, std::memory_order_release);
+      return;
+    }
+    // Every hop is a hot retune of a live stream, so a stopped receiver would
+    // fail the first one; say so up front instead.
+    const auto* plan = orcsdr::channel_scan_plan::for_frequency(rtl_ui_frequency_hz);
+    const bool streaming =
+        rtl_capture_state.load(std::memory_order_acquire) == RtlCaptureState::running;
+    if (plan == nullptr || scan_engine.active() || g_stream_band != RtlBand::browse || !streaming) {
+      Serial.printf("RTL_CHANNEL_SCAN_UNAVAILABLE band=%s busy=%d streaming=%d\n",
+                    plan ? plan->label : "none", scan_engine.active() ? 1 : 0, streaming ? 1 : 0);
+      return;
+    }
+    channel_scan_plan_ptr = plan;
+    channel_scan_hits.store(0, std::memory_order_relaxed);
+    channel_scan_stale_skips.store(0, std::memory_order_relaxed);
+    // Start from the channel nearest the dial so "after the dial" means
+    // something even when the dial sits between channels.
+    const size_t near = orcsdr::channel_scan_plan::nearest(*plan, rtl_ui_frequency_hz);
+    const uint32_t after_hz = near == SIZE_MAX ? 0 : plan->channels_hz[near];
+    if (start_channel_scan_pass(now, after_hz)) {
+      channel_scan_active.store(true, std::memory_order_release);
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_CHANNEL_SCAN start band=%s channels=%u locked=%u dwell_ms=%lu\n",
+                    plan->label, static_cast<unsigned>(plan->count),
+                    static_cast<unsigned>(orcsdr::channel_scan_plan::locked_count(*plan)),
+                    static_cast<unsigned long>(kChannelScanDwellMs));
+    }
+    return;
+  }
+  if (!running) return;
+  // Leaving the band by any route (a dashboard tile, the keypad, the serial
+  // CLI) ends the run, or the next pass would sweep GMRS while the receiver
+  // is somewhere else entirely.
+  if (g_stream_band != RtlBand::browse ||
+      orcsdr::channel_scan_plan::for_frequency(rtl_ui_frequency_hz) != channel_scan_plan_ptr) {
+    if (active_scan == ActiveScan::channel_scan) {
+      channel_scan_hit_hz = 0;
+      channel_scan_active.store(false, std::memory_order_release);
+      scan_engine.cancel(false, callbacks);
+    } else {
+      stop_channel_scan_run("left_band");
+    }
+    return;
+  }
+  if (channel_scan_holding.load(std::memory_order_acquire)) {
+    // Locked out while parked on it: move on now rather than wait it out.
+    const size_t here = orcsdr::channel_scan_plan::index_of(*channel_scan_plan_ptr, channel_scan_hit_hz);
+    const bool now_locked = orcsdr::channel_scan_plan::locked(*channel_scan_plan_ptr, here);
+    if (!now_locked) {
+      if (channel_scan_busy(*channel_scan_plan_ptr, nullptr, nullptr, nullptr)) {
+        channel_scan_quiet_since_ms = 0;
+        return;
+      }
+      if (channel_scan_quiet_since_ms == 0) {
+        channel_scan_quiet_since_ms = now;
+        if (channel_scan_quiet_since_ms == 0) channel_scan_quiet_since_ms = 1;
+        return;
+      }
+      if (now - channel_scan_quiet_since_ms < kChannelScanResumeMs) return;
+    }
+    const uint32_t from_hz = channel_scan_hit_hz;
+    channel_scan_quiet_since_ms = 0;
+    if (start_channel_scan_pass(now, from_hz)) {
+      rtl_stream_ui_refresh_pending.store(true, std::memory_order_release);
+      Serial.printf("RTL_CHANNEL_SCAN resume after_hz=%lu reason=%s\n",
+                    static_cast<unsigned long>(from_hz), now_locked ? "locked_out" : "quiet");
+    } else {
+      stop_channel_scan_run("all_locked");
+    }
+    return;
+  }
+  // A completed pass found nothing; go round again.
+  if (active_scan == ActiveScan::none && !scan_engine.active() &&
+      !start_channel_scan_pass(now, rtl_ui_frequency_hz))
+    stop_channel_scan_run("all_locked");
+}
+
 void service_shared_scan(uint32_t now) {
   const auto callbacks = scan_callbacks();
+  service_channel_scan(now, callbacks);
   if (rtl_am_scan_active.load(std::memory_order_acquire) &&
       !orcsdr::am_finder::active() &&
       rtl_active_sample_rate_sps.load(std::memory_order_acquire) ==
@@ -13504,6 +13756,15 @@ orcsdr::home::Snapshot home_dashboard_snapshot(bool demo) {
   strlcpy(snapshot.band, step_profile.name, sizeof(snapshot.band));
   snapshot.step_adjustable = home_full_range() ? orcsdr::band_profile::has_step_control(step_profile)
                                                : rtl_ui_band == RtlBand::am || rtl_ui_band == RtlBand::shortwave;
+  if (const auto* scan_plan = orcsdr::channel_scan_plan::for_frequency(snapshot.frequency_hz);
+      scan_plan != nullptr && !demo && rtl_ui_band == RtlBand::browse) {
+    snapshot.channel_scan_available = true;
+    snapshot.channel_scanning = channel_scan_active.load(std::memory_order_acquire);
+    snapshot.channel_holding = channel_scan_holding.load(std::memory_order_acquire);
+    const size_t index = orcsdr::channel_scan_plan::index_of(*scan_plan, snapshot.frequency_hz);
+    if (index != SIZE_MAX)
+      strlcpy(snapshot.channel_name, scan_plan->names[index], sizeof(snapshot.channel_name));
+  }
   strlcpy(snapshot.mode,
           home_full_range() ? home_demod_name(effective_demod(rtl_ui_band)) : rtl_mode_name(rtl_ui_band),
           sizeof(snapshot.mode));
@@ -15337,7 +15598,16 @@ void print_rtl_gain_status() {
 
 void handle_home_action(const orcsdr::home::Action& action) {
   using orcsdr::home::ActionKind;
+  // Tuning by hand ends a channel scan, or the next pass would take the dial
+  // straight back.
+  if (channel_scan_active.load(std::memory_order_acquire) &&
+      (action.kind == ActionKind::tune_frequency || action.kind == ActionKind::step_down ||
+       action.kind == ActionKind::step_up))
+    channel_scan_cancel.store(true, std::memory_order_release);
   switch (action.kind) {
+    case ActionKind::channel_scan_toggle:
+      channel_scan_requested.store(true, std::memory_order_release);
+      return;
     case ActionKind::open_dashboard: open_dashboard(action.dashboard); return;
     case ActionKind::open_device_settings:
       open_global_settings(orcsdr::settings::Section::connectivity);
@@ -16098,8 +16368,32 @@ void persist_workflow() {
   preferences.putBytes("workflow", &workflow, sizeof(workflow));
 }
 
+void persist_channel_scan_lockout(const orcsdr::channel_scan_plan::Plan& plan) {
+  const orcsdr::channel_scan_plan::LockMask value = orcsdr::channel_scan_plan::mask(plan);
+  preferences.putBytes(plan.lock_key, &value, sizeof(value));
+}
+
+void load_channel_scan_settings() {
+  // 8-byte blobs under the pre-consolidation keys (lock_gmrs, lock_marine),
+  // written by that line's put_bytes, so an upgraded device keeps its lockouts.
+  for (size_t i = 0; i < orcsdr::channel_scan_plan::plan_count(); ++i) {
+    const auto& plan = orcsdr::channel_scan_plan::plan_at(i);
+    orcsdr::channel_scan_plan::LockMask value = 0;
+    if (preferences.getBytesLength(plan.lock_key) == sizeof(value) &&
+        preferences.getBytes(plan.lock_key, &value, sizeof(value)) == sizeof(value))
+      orcsdr::channel_scan_plan::set_mask(plan, value);
+  }
+  const int32_t snr_tenths = preferences.getInt(
+      "ch_snr_x10", static_cast<int32_t>(lroundf(kChannelScanDefaultMinSnrDb * 10.0f)));
+  channel_scan_min_snr_db.store(std::clamp<int32_t>(snr_tenths, 0, 600) / 10.0f, std::memory_order_relaxed);
+  channel_squelch_dbfs.store(
+      std::clamp<int32_t>(preferences.getInt("ch_sql", kChannelScanDefaultSquelchDbfs), -90, 0),
+      std::memory_order_relaxed);
+}
+
 void load_state() {
   preferences.begin("orclink", false);
+  load_channel_scan_settings();
   orcsdr::map_screen::load(preferences);
   orcsdr::time_service::initialize(preferences.getBool("rtc_est", false));
   orcsdr::time_service::load_config(preferences);
@@ -21202,6 +21496,139 @@ void process_command(char* command) {
                   cb_squelch_open.load(std::memory_order_relaxed) ? 1 : 0);
     return;
   }
+  if (strncmp(command, "RTL_CHANNEL_", 12) == 0) {
+    using namespace orcsdr::channel_scan_plan;
+    const Plan* plan = for_frequency(rtl_ui_frequency_hz);
+    if (strcmp(command, "RTL_CHANNEL_SCAN_STATUS") == 0) {
+      Serial.printf("RTL_CHANNEL_SCAN_STATUS band=%s active=%d holding=%d hits=%lu stale_skips=%lu "
+                    "min_snr_db=%.1f squelch_dbfs=%ld locked=%u frequency_hz=%lu\n",
+                    plan ? plan->label : "none",
+                    channel_scan_active.load(std::memory_order_acquire) ? 1 : 0,
+                    channel_scan_holding.load(std::memory_order_acquire) ? 1 : 0,
+                    static_cast<unsigned long>(channel_scan_hits.load(std::memory_order_relaxed)),
+                    static_cast<unsigned long>(channel_scan_stale_skips.load(std::memory_order_relaxed)),
+                    static_cast<double>(channel_scan_min_snr_db.load(std::memory_order_relaxed)),
+                    static_cast<long>(channel_squelch_dbfs.load(std::memory_order_relaxed)),
+                    plan ? static_cast<unsigned>(locked_count(*plan)) : 0u,
+                    static_cast<unsigned long>(rtl_ui_frequency_hz));
+      return;
+    }
+    if (strcmp(command, "RTL_CHANNEL_PROBE") == 0) {
+      // Exactly what the scanner's stop test sees for the channel on the dial
+      // right now, so the thresholds can be set against a real band.
+      if (plan == nullptr) { Serial.println("RTL_CHANNEL_PROBE_ERROR not_gmrs_or_marine"); return; }
+      float level = 0.0f, snr_db = 0.0f;
+      int32_t offset_hz = 0;
+      const bool busy = channel_scan_busy(*plan, &level, &snr_db, &offset_hz);
+      const size_t index = index_of(*plan, rtl_ui_frequency_hz);
+      Serial.printf("RTL_CHANNEL_PROBE band=%s channel=%s frequency_hz=%lu level_dbfs=%.1f snr_db=%.1f "
+                    "offset_hz=%ld tolerance_hz=%lu min_snr_db=%.1f squelch_dbfs=%ld busy=%d\n",
+                    plan->label, index == SIZE_MAX ? "--" : plan->names[index],
+                    static_cast<unsigned long>(rtl_ui_frequency_hz), static_cast<double>(level),
+                    static_cast<double>(snr_db), static_cast<long>(offset_hz),
+                    static_cast<unsigned long>(plan->spacing_hz / 2),
+                    static_cast<double>(channel_scan_min_snr_db.load(std::memory_order_relaxed)),
+                    static_cast<long>(channel_squelch_dbfs.load(std::memory_order_relaxed)),
+                    busy ? 1 : 0);
+      return;
+    }
+    if (strcmp(command, "RTL_CHANNEL_LOCK_LIST") == 0) {
+      if (plan == nullptr) { Serial.println("RTL_CHANNEL_LOCK_ERROR not_gmrs_or_marine"); return; }
+      Serial.printf("RTL_CHANNEL_LOCK_LIST band=%s locked=%u", plan->label,
+                    static_cast<unsigned>(locked_count(*plan)));
+      for (size_t i = 0; i < plan->count; ++i)
+        if (locked(*plan, i)) Serial.printf(" %s", plan->names[i]);
+      Serial.println();
+      return;
+    }
+    if (!authenticated) {
+      // Everything below changes state. Named per family so a host parser can
+      // anchor on the command it sent.
+      const char* family = strncmp(command, "RTL_CHANNEL_SCAN", 16) == 0 ? "RTL_CHANNEL_SCAN"
+                           : strncmp(command, "RTL_CHANNEL_MIN_SNR", 19) == 0 ? "RTL_CHANNEL_MIN_SNR"
+                           : strncmp(command, "RTL_CHANNEL_SQUELCH", 19) == 0 ? "RTL_CHANNEL_SQUELCH"
+                                                                              : "RTL_CHANNEL_LOCK";
+      if (strcmp(command, "RTL_CHANNEL_MIN_SNR") == 0 || strcmp(command, "RTL_CHANNEL_SQUELCH") == 0) {
+        // Queries are read-only and allowed.
+      } else {
+        Serial.printf("%s_ERROR auth_required\n", family);
+        return;
+      }
+    }
+    if (strcmp(command, "RTL_CHANNEL_SCAN") == 0) {
+      if (channel_scan_active.load(std::memory_order_acquire)) {
+        Serial.println("RTL_CHANNEL_SCAN_OK already_running");
+        return;
+      }
+      channel_scan_requested.store(true, std::memory_order_release);
+      Serial.println("RTL_CHANNEL_SCAN_QUEUED");
+      return;
+    }
+    if (strcmp(command, "RTL_CHANNEL_SCAN_STOP") == 0) {
+      channel_scan_cancel.store(true, std::memory_order_release);
+      Serial.println("RTL_CHANNEL_SCAN_STOP_QUEUED");
+      return;
+    }
+    if (strcmp(command, "RTL_CHANNEL_MIN_SNR") == 0) {
+      Serial.printf("RTL_CHANNEL_MIN_SNR_STATUS db=%.1f\n",
+                    static_cast<double>(channel_scan_min_snr_db.load(std::memory_order_relaxed)));
+      return;
+    }
+    if (strncmp(command, "RTL_CHANNEL_MIN_SNR ", 20) == 0) {
+      char* end = nullptr;
+      const float value = strtof(command + 20, &end);
+      if (end == command + 20 || *end != '\0' || !(value >= 0.0f && value <= 60.0f)) {
+        Serial.println("RTL_CHANNEL_MIN_SNR_INVALID range 0..60 dB");
+        return;
+      }
+      channel_scan_min_snr_db.store(value, std::memory_order_relaxed);
+      preferences.putInt("ch_snr_x10", static_cast<int32_t>(lroundf(value * 10.0f)));
+      Serial.printf("RTL_CHANNEL_MIN_SNR_OK db=%.1f\n", static_cast<double>(value));
+      return;
+    }
+    if (strcmp(command, "RTL_CHANNEL_SQUELCH") == 0) {
+      Serial.printf("RTL_CHANNEL_SQUELCH_STATUS dbfs=%ld\n",
+                    static_cast<long>(channel_squelch_dbfs.load(std::memory_order_relaxed)));
+      return;
+    }
+    if (strncmp(command, "RTL_CHANNEL_SQUELCH ", 20) == 0) {
+      char* end = nullptr;
+      const long value = strtol(command + 20, &end, 10);
+      if (end == command + 20 || *end != '\0' || value < -90 || value > 0) {
+        Serial.println("RTL_CHANNEL_SQUELCH_INVALID range -90..0 dBFS (-90 = open)");
+        return;
+      }
+      channel_squelch_dbfs.store(static_cast<int32_t>(value), std::memory_order_relaxed);
+      preferences.putInt("ch_sql", static_cast<int32_t>(value));
+      Serial.printf("RTL_CHANNEL_SQUELCH_OK dbfs=%ld\n", value);
+      return;
+    }
+    if (strcmp(command, "RTL_CHANNEL_LOCK_CLEAR") == 0) {
+      if (plan == nullptr) { Serial.println("RTL_CHANNEL_LOCK_ERROR not_gmrs_or_marine"); return; }
+      set_mask(*plan, 0);
+      persist_channel_scan_lockout(*plan);
+      Serial.printf("RTL_CHANNEL_LOCK_CLEAR_OK band=%s\n", plan->label);
+      return;
+    }
+    const bool lock = strncmp(command, "RTL_CHANNEL_LOCK ", 17) == 0;
+    const bool unlock = strncmp(command, "RTL_CHANNEL_UNLOCK ", 19) == 0;
+    if (lock || unlock) {
+      if (plan == nullptr) { Serial.println("RTL_CHANNEL_LOCK_ERROR not_gmrs_or_marine"); return; }
+      const char* name = command + (lock ? 17 : 19);
+      const size_t index = find_name(*plan, name);
+      if (index == SIZE_MAX) {
+        Serial.printf("RTL_CHANNEL_LOCK_INVALID band=%s unknown_channel=%s\n", plan->label, name);
+        return;
+      }
+      (void)set_locked(*plan, index, lock);
+      persist_channel_scan_lockout(*plan);
+      Serial.printf("RTL_CHANNEL_%s_OK band=%s channel=%s locked=%u\n", lock ? "LOCK" : "UNLOCK",
+                    plan->label, plan->names[index], static_cast<unsigned>(locked_count(*plan)));
+      return;
+    }
+    Serial.println("RTL_CHANNEL_ERROR unknown_command");
+    return;
+  }
   if (strcmp(command, "RTL_SAME_SELFTEST") == 0) {
     char detail[64]{};
     const bool ok = orcsdr::same::Decoder::self_check_detail(detail, sizeof(detail));
@@ -22427,6 +22854,13 @@ void process_command(char* command) {
     Serial.println("RTL_LORA_SELFTEST              - run the LoRa DSP regression cases");
     Serial.println("RTL_SQUELCH                    - query CB squelch");
     Serial.println("RTL_SQUELCH <-90..-35>         - set CB squelch dBFS, -90 opens it (auth)");
+    Serial.println("RTL_CHANNEL_SCAN / _STOP       - GMRS/marine channel scan on the dial's band (auth)");
+    Serial.println("RTL_CHANNEL_SCAN_STATUS        - scan state, hits, thresholds, lockout count");
+    Serial.println("RTL_CHANNEL_PROBE              - the stop test's reading for the channel on the dial");
+    Serial.println("RTL_CHANNEL_MIN_SNR [<dB>]     - query/set the scan's SNR threshold (set auth)");
+    Serial.println("RTL_CHANNEL_SQUELCH [<dBFS>]   - query/set the scan's level threshold (set auth)");
+    Serial.println("RTL_CHANNEL_LOCK|UNLOCK <name> - skip a channel during scans (auth)");
+    Serial.println("RTL_CHANNEL_LOCK_LIST/_CLEAR   - list, or clear (auth), this band's lockouts");
     Serial.println("RTL_SAME_STATUS                - NOAA SAME/EAS decoder state and counts");
     Serial.println("RTL_SAME_LAST                  - last decoded SAME alert, areas and raw header");
     Serial.println("RTL_SAME_SELFTEST              - run every SAME decoder case");
@@ -23748,6 +24182,8 @@ void setup() {
   }
   Serial.println(orcsdr::same::Decoder::self_check() ? "ORC_SAME_SELF_CHECK_OK"
                                                      : "ORC_SAME_SELF_CHECK_FAIL");
+  Serial.println(orcsdr::channel_scan_plan::self_check() ? "ORC_CHANNEL_SCAN_SELF_CHECK_OK"
+                                                         : "ORC_CHANNEL_SCAN_SELF_CHECK_FAIL");
   // One line per check: these used to print _FAIL and then _OK regardless, so
   // a failing check still read as passing in every boot log (main-hoi278 §5.5).
   Serial.println(orcsdr::fm::self_check() ? "RTL_FM_DASHBOARD_SELF_CHECK_OK"

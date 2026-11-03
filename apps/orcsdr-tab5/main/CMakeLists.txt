@@ -166,6 +166,7 @@ idf_component_register(
         "../ui/acars_demo_data.cpp"
         "../ui/acars_interpret.cpp"
         "../ui/same_decoder.cpp"
+        "../ui/channel_scan_plan.cpp"
         "../ui/vdl2_burst.cpp"
         "../ui/vdl2_channel.cpp"
         "../ui/vdl2_frames.cpp"
