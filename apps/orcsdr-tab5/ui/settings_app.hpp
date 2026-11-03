@@ -113,6 +113,7 @@ struct State {
   CatalogPackView catalog_packs[kCatalogViewCapacity]{};
   bool companion_supported = false;
   bool web_console_enabled = false;
+  bool web_control_enabled = false;
   bool web_console_listening = false;
   char web_console_url[48]{};
   uint8_t paired_phone_count = 0;
@@ -164,6 +165,7 @@ enum class ActionKind : uint8_t {
   ,catalog_install
   ,catalog_remove
   ,web_console_changed
+  ,web_control_changed
   ,rtl_usb_safe_mode_reset
   ,clock_set_utc          // utc = UTC seconds, value = UTC offset in minutes: write the RTC and store the offset
   ,clock_offset_changed   // value = UTC offset in minutes: store it (the time itself was already right)

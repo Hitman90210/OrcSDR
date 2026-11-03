@@ -426,7 +426,12 @@ void draw_companion() {
   value_row("LOCAL DISCOVERY",
             g_state.web_console_listening ? "orcsdr.local" : "NOT ENABLED", 275,
             g_state.web_console_listening ? kGreen : kMuted);
-  text("LAN console is read-only; no passwords, location, or device control.",330,315,kMuted,2);
+  // This used to promise "no device control" while /api/action accepted
+  // tune and volume from any LAN client. Control is now an explicit switch.
+  value_row("REMOTE CONTROL", g_state.web_control_enabled ? "ALLOWED" : "VIEW ONLY", 315,
+            g_state.web_control_enabled ? TFT_ORANGE : kGreen);
+  button(g_state.web_control_enabled ? "BLOCK" : "ALLOW", 960, 290, 170, 48,
+         g_state.web_control_enabled ? TFT_MAROON : TFT_DARKCYAN);
   value_row("BLUETOOTH", g_state.companion_supported ? "AVAILABLE" : "FEASIBILITY PENDING",
             375, kMuted);
 #if ORCSDR_ORCDIAL
@@ -935,6 +940,7 @@ void update(const State& state_value) {
        strcmp(g_state.ip_location_message, state_value.ip_location_message) != 0);
   const bool companion_changed = g_section == Section::companion &&
       (g_state.web_console_enabled != state_value.web_console_enabled ||
+       g_state.web_control_enabled != state_value.web_control_enabled ||
        g_state.web_console_listening != state_value.web_console_listening ||
        strcmp(g_state.web_console_url, state_value.web_console_url) != 0 ||
        g_state.orcdial_pairing != state_value.orcdial_pairing ||
@@ -1187,6 +1193,8 @@ Action handle_touch(int32_t x, int32_t y) {
   } else if (g_section == Section::companion) {
     if (hit(x, y, 960, 150, 170, 48))
       return {ActionKind::web_console_changed, g_state.web_console_enabled ? 0 : 1};
+    if (hit(x, y, 960, 290, 170, 48))
+      return {ActionKind::web_control_changed, g_state.web_control_enabled ? 0 : 1};
   }
   if (g_section == Section::firmware_updates) {
     if ((strcmp(g_state.wifi_c6_update_state, "ready") == 0 ||

@@ -109,6 +109,9 @@ struct Command {
 
 void set_enabled(bool enabled);
 bool enabled();
+// Whether /api/action accepts commands (403 "control disabled" otherwise).
+void set_control_enabled(bool enabled);
+bool control_enabled();
 bool listening();
 bool origin_allowed(const char* origin, const char* host);
 bool spectrum_demanded();

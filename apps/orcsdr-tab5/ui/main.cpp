@@ -1840,6 +1840,7 @@ bool settings_sound_default = true;
 bool settings_auto_start_reception = true;
 bool settings_graphics_default = true;
 bool settings_web_console_enabled = false;
+bool settings_web_control_enabled = false;
 bool web_console_deferred = false;
 char settings_location_label[40]{};
 EXT_RAM_BSS_ATTR char settings_map_pack[256]{};
@@ -13226,6 +13227,7 @@ const orcsdr::settings::State& global_settings_state() {
   }
   state.companion_supported = false;
   state.web_console_enabled = settings_web_console_enabled;
+  state.web_control_enabled = settings_web_control_enabled;
   state.web_console_listening = orcsdr::web_console::listening();
   if (state.web_console_listening && device.wifi_connected)
     orcsdr::web_console::format_url(state.web_console_url, sizeof(state.web_console_url),
@@ -15495,6 +15497,14 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
                     orcsdr::web_console::listening() ? 1 : 0);
       update_global_settings();
       break;
+    case orcsdr::settings::ActionKind::web_control_changed:
+      settings_web_control_enabled = action.value != 0;
+      // Same key main-hoi278 used, so an upgraded device keeps its choice.
+      preferences.putBool("set_web_ctrl", settings_web_control_enabled);
+      orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
+      Serial.printf("RTL_WEB_CONTROL_OK control=%d\n", settings_web_control_enabled ? 1 : 0);
+      update_global_settings();
+      break;
     case orcsdr::settings::ActionKind::catalog_check:
       if (orcsdr::catalog::state().busy) {
         Serial.println("ORC_CATALOG_CHECK_REJECTED");
@@ -15975,6 +15985,8 @@ void load_state() {
   settings_graphics_default = preferences.getBool("set_gfx", true);
   settings_web_console_enabled = preferences.getBool("set_web_console", false);
   orcsdr::web_console::set_enabled(settings_web_console_enabled);
+  settings_web_control_enabled = preferences.getBool("set_web_ctrl", false);
+  orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
   const std::string location_label = preferences.isKey("loc_label")
                                          ? preferences.getString("loc_label", "") : std::string();
   const std::string map_pack = preferences.isKey("map_pack")
@@ -21262,9 +21274,11 @@ void process_command(char* command) {
                     static_cast<unsigned>(orcsdr::lora_channel::default_slot(i)));
     return;
   }
-  if ((strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
-       strcmp(command, "RTL_LORA_AUTO OFF") == 0) &&
-      authenticated) {
+  if (strcmp(command, "RTL_LORA_AUTO ON") == 0 ||
+      strcmp(command, "RTL_LORA_AUTO OFF") == 0) {
+    // Matched first, then gated: "&& authenticated" in the condition made a
+    // lapsed session drop this command with no reply at all.
+    if (!authenticated) { Serial.println("RTL_LORA_AUTO_ERROR auth_required"); return; }
     const bool enabled = command[14] == 'O' && command[15] == 'N';
     lora_detector_enabled.store(enabled, std::memory_order_release);
     Serial.printf("RTL_LORA_AUTO %s\n", enabled ? "ON" : "OFF");
@@ -22058,7 +22072,8 @@ void process_command(char* command) {
     Serial.println("RTL_CAPTURE|RTL_LISTEN [FM|AM|WX|LORA] - one-shot/continuous band capture (auth)");
     Serial.println("RTL_STOP                       - stop active capture (auth)");
     Serial.println("RTL_WEB                        - query LAN web console");
-    Serial.println("RTL_WEB ON|OFF                 - enable LAN read-only console (auth)");
+    Serial.println("RTL_WEB ON|OFF                 - enable LAN console (auth)");
+    Serial.println("RTL_WEB CONTROL ON|OFF         - allow LAN clients to control the radio (auth)");
     Serial.println("RTL_WEB_STATUS                 - enabled/listening/url");
     Serial.println("RTL_WEB_AUDIO_STATUS           - sample-count diagnostics for WebUI audio");
     Serial.println("RTL_CATALOG_STATUS|LIST        - signed catalog and pack state");
@@ -22591,18 +22606,29 @@ void process_command(char* command) {
     if (orcsdr::web_console::listening() && wifi_connected) {
       orcsdr::web_console::format_url(url, sizeof(url), orcsdr::wifi::ip());
     }
-    Serial.printf("RTL_WEB_STATUS enabled=%d listening=%d url=%s\n",
+    Serial.printf("RTL_WEB_STATUS enabled=%d listening=%d url=%s control=%d\n",
                   orcsdr::web_console::enabled() ? 1 : 0,
                   orcsdr::web_console::listening() ? 1 : 0,
-                  url[0] ? url : "offline");
+                  url[0] ? url : "offline",
+                  orcsdr::web_console::control_enabled() ? 1 : 0);
     return;
   }
   if (strcmp(command, "RTL_WEB_AUDIO_STATUS") == 0) {
     web_audio_diag_emit_status();
     return;
   }
-  if ((strcmp(command, "RTL_WEB ON") == 0 || strcmp(command, "RTL_WEB OFF") == 0) &&
-      authenticated) {
+  if (strcmp(command, "RTL_WEB CONTROL ON") == 0 ||
+      strcmp(command, "RTL_WEB CONTROL OFF") == 0) {
+    if (!authenticated) { Serial.println("RTL_WEB_CONTROL_ERROR auth_required"); return; }
+    settings_web_control_enabled = strcmp(command + 16, "ON") == 0;
+    preferences.putBool("set_web_ctrl", settings_web_control_enabled);
+    orcsdr::web_console::set_control_enabled(settings_web_control_enabled);
+    Serial.printf("RTL_WEB_CONTROL_OK control=%d\n", settings_web_control_enabled ? 1 : 0);
+    if (orcsdr::settings::active()) update_global_settings();
+    return;
+  }
+  if (strcmp(command, "RTL_WEB ON") == 0 || strcmp(command, "RTL_WEB OFF") == 0) {
+    if (!authenticated) { Serial.println("RTL_WEB_ERROR auth_required"); return; }
     settings_web_console_enabled = command[8] == 'O' && command[9] == 'N';
     preferences.putBool("set_web_console", settings_web_console_enabled);
     orcsdr::web_console::set_enabled(settings_web_console_enabled);

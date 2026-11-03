@@ -202,6 +202,7 @@ tune, change volume, or return passwords or coordinates.
 |---|---|---|
 | `RTL_WEB` / `RTL_WEB_STATUS` | no | `RTL_WEB_STATUS enabled=0\|1 listening=0\|1 url=http://…/\|offline` |
 | `RTL_WEB ON\|OFF` | yes | `RTL_WEB_OK enabled=… listening=… url=…` |
+| `RTL_WEB CONTROL ON\|OFF` | yes | `RTL_WEB_CONTROL_OK control=…`. Off by default: `/api/action` answers `403 control disabled` until it is on. `RTL_WEB_STATUS` reports `control=`. |
 
 ## Telemetry
 

@@ -26,6 +26,10 @@ namespace {
 constexpr char kLogTag[] = "OrcSDR";
 
 std::atomic<bool> g_enabled{false};
+// Device control over /api/action. Off by default: the endpoint has no
+// authentication, and the Origin check only stops browsers -- any LAN client
+// that omits the header (curl, a script) could otherwise tune the radio.
+std::atomic<bool> g_control{false};
 bool g_listening = false;
 bool g_mdns_started = false;
 httpd_handle_t g_server = nullptr;
@@ -185,7 +189,7 @@ esp_err_t handle_status(httpd_req_t* req) {
   }
   memcpy(air + used, "]", 2);
 
-  snprintf(g_status_json, sizeof(g_status_json),
+  const int status_bytes = snprintf(g_status_json, sizeof(g_status_json),
            "{\"wifi_ip\":\"%s\",\"wifi_connected\":%s,\"usb_connected\":%s,"
            "\"rtl_ready\":%s,\"receiving\":%s,\"sound_enabled\":%s,\"stereo\":%s,"
            "\"rds_carrier\":%s,\"rds_locked\":%s,\"program_service\":\"%s\","
@@ -197,7 +201,7 @@ esp_err_t handle_status(httpd_req_t* req) {
            "\"recent\":%s,\"spectrum\":%s,"
            "\"adsb\":{\"active\":%s,\"messages\":%lu,\"rate\":%.1f,\"range_nm\":%u,"
            "\"tracked\":%u,\"located\":%s,\"targets\":%s},"
-           "\"web\":{\"enabled\":%s}}",
+           "\"web\":{\"enabled\":%s,\"control\":%s}}",
            ip, snap.wifi_connected ? "true" : "false",
            snap.usb_connected ? "true" : "false", snap.rtl_ready ? "true" : "false",
            snap.receiving ? "true" : "false", snap.sound_enabled ? "true" : "false",
@@ -218,7 +222,14 @@ esp_err_t handle_status(httpd_req_t* req) {
            static_cast<unsigned long>(snap.adsb_messages),
            json_number(snap.adsb_message_rate), snap.radar_range_nm,
            snap.aircraft_tracked, snap.location_configured ? "true" : "false", air,
-           snap.enabled ? "true" : "false");
+           snap.enabled ? "true" : "false",
+           g_control.load(std::memory_order_acquire) ? "true" : "false");
+  // A truncated document is not JSON: the page would fail to parse it and go
+  // blank, so say so instead of sending half an object.
+  if (status_bytes < 0 || static_cast<size_t>(status_bytes) >= sizeof(g_status_json)) {
+    ESP_LOGE(kLogTag, "Companion status JSON capacity exhausted");
+    return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "status overflow");
+  }
 
   httpd_resp_set_type(req, "application/json");
   httpd_resp_set_hdr(req, "Cache-Control", "no-store");
@@ -320,6 +331,10 @@ esp_err_t handle_action(httpd_req_t* req) {
       return reject_unread("403 Forbidden", "origin rejected");
     }
   }
+  // Refused at the door, not hidden in the page: a client that never loaded
+  // our HTML can still POST here, so an absent button is not a permission.
+  if (!g_control.load(std::memory_order_acquire))
+    return reject_unread("403 Forbidden", "control disabled");
   char body[48]{};
   if (!req->content_len || req->content_len >= sizeof(body)) {
     return reject_unread("400 Bad Request", "invalid length");
@@ -470,6 +485,8 @@ bool start_server() {
 }  // namespace
 
 void set_enabled(bool enabled) { g_enabled.store(enabled, std::memory_order_release); }
+void set_control_enabled(bool enabled) { g_control.store(enabled, std::memory_order_release); }
+bool control_enabled() { return g_control.load(std::memory_order_acquire); }
 
 bool enabled() { return g_enabled.load(std::memory_order_acquire); }
 
