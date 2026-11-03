@@ -36,6 +36,20 @@ OrcMaps PMTiles, airband/ACARS/VDL2, Dead Air, FT8/SSTV, driver 0.9.4), plus:
 | **SAME/EAS** alert decoding, `RTL_LORA_MODEM`, `RTL_LORA_SELFTEST`, `RTL_SQUELCH`, `UI_SNAPSHOT`; 19 boot self-checks that printed `_FAIL` then `_OK` | `3a1b6bb` |
 | §5.9 sweep fixes where upstream had not fixed them itself (ADS-B position filter, disconnect reasons, strongest-AP join and security floor, catalog free space and full removal, Settings clipping, password check, Companion JSON/backoff, RDS stop bound, LoRa wrap, `RTL_PRESET_TUNE`) | `238ef34`, `b05c9ed` |
 | Working SD transfer scripts on PowerShell 5.1, with authentication; `screenshot_tab5.py`; `LOCAL_SETUP.md` adapted | `4a09791` |
+| Seven boot self-checks (shortwave x4, CB, airband, receiver controls) returned from `setup()` on failure, skipping SD, Wi-Fi and RTL bring-up; four more printed `_FAIL` then `_OK` | `c3e5492` |
+| Wi-Fi external-antenna setting never persisted: NVS key `set_wifi_ext_ant` is 16 characters, one over the limit (now `wifi_ext_ant`) | `febf959` |
+
+**Checked and clean on this tree** (2026-11-03, second pass): every
+`strncmp` prefix length and argument offset; silently-gated serial handlers in
+every file (0); `snprintf` lengths reused as copy lengths (all guarded); every
+NVS key and namespace length; every help-listed command has a handler; every
+CMake-listed source and embedded asset exists; all 115 Python files parse;
+brace/paren balance of every file this consolidation edited; documentation
+file references (0 missing across the 30 docs the truth check covers).
+Deadline compares written as `now < until` were left alone on purpose: those
+deadlines start at 0 and can go stale, and the usual signed-difference rewrite
+misfires once uptime passes 24.8 days, which is likelier than the rollover it
+fixes.
 
 **Open, in priority order -- none of it has been built or run on hardware:**
 
