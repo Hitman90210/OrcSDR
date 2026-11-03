@@ -1646,6 +1646,35 @@ line on the refresh branch. **Nothing else from §5.9 is on the refresh branch**
 those fixes touch code the re-base will restructure, so they get re-applied
 there rather than carried twice.
 
+**§5.9 carried over afterwards** (`238ef34`, re-applied by hand: a cherry-pick
+conflicts in every file against upstream's restructured tree). Upstream had
+already fixed four of them its own way, and those are kept: SD free/used space
+(`sd_space`), `tune=`/`open=` validation (`web_command.hpp`), the FM Listen
+RadioText overflow (wrapped in the centre column), and C6 version gating (it
+now attempts any version). Everything else is ported: the ADS-B position
+filter, the Wi-Fi disconnect reason in "Failed: ..." / "Lost: ... -
+reconnecting", strongest-AP join and security floor, the password check,
+the Settings row clipping, the catalog's live free space, failure names and full
+removal, the Companion JSON/backoff/open guards, the RDS stop bound and the LoRa
+wrap.
+
+**Two gaps on the refresh branch, found while porting:**
+
+- **FM SEEK still hops between saved presets** there -- the original "SEEK does
+  not seek" defect (§5.2). The band-sweep seek (`fm_seek_wrap`,
+  `rtl_scope_peak_snr_db`, `spectrum_measurement_wanted()`, the 15 dB SNR gate)
+  was never carried across. It is a feature port across the scan driver and the
+  DSP measurement, not a sweep fix, so it is the next re-base item; STOP SEEK
+  waits for it.
+- **Dashboard ids renumber.** The refresh registry has no `gmrs` and puts `am`
+  at 16, where `main-hoi278` stores GMRS=16 and AM=17 in NVS `dash_recent`. The
+  refresh branch persists only that recents list, so an upgrade shows a GMRS
+  entry as AM and AM as FT8 until a few dashboards are reopened -- cosmetic and
+  self-correcting, but decide on purpose before release whether to migrate.
+
+Its 3 s fast retry after a drop is not ported either: upstream's own
+`schedule_wifi_reconnect` owns that timing there.
+
 **Not verified here:** no ESP-IDF in this session, so no build, and upstream's
 own test scripts were not run. **The gate is the binary size**: 17 new `.cpp`
 files are registered unconditionally in `main/CMakeLists.txt`, +6,973 lines in
