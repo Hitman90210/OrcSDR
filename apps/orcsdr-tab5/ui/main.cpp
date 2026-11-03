@@ -23719,25 +23719,29 @@ void setup() {
   if (!visualizer_initialized || !orcsdr::visualizer::self_check()) {
     Serial.println(visualizer_initialized ? "RTL_VIS_SELF_CHECK_FAIL"
                                           : "RTL_VIS_INIT_FAIL");
+  } else {
+    Serial.println("RTL_VIS_SELF_CHECK_OK");
   }
-  Serial.println("RTL_VIS_SELF_CHECK_OK");
   const bool rf_lab_initialized = orcsdr::rf_lab::initialize(nullptr);
   if (!rf_lab_initialized || !orcsdr::rf_lab::self_check()) {
     Serial.println(rf_lab_initialized ? "RTL_LAB_SELF_CHECK_FAIL"
                                       : "RTL_LAB_INIT_FAIL");
+  } else {
+    Serial.println("RTL_LAB_SELF_CHECK_OK");
   }
-  Serial.println("RTL_LAB_SELF_CHECK_OK");
   configure_navigation_service();
   if (!orcsdr::adsb::self_check() || !orcsdr::adsb_rx::Decoder::self_check() ||
       !orcsdr::atc::self_check()) {
     Serial.println("RTL_ADSB_SELF_CHECK_FAIL");
+  } else {
+    Serial.println("RTL_ADSB_SELF_CHECK_OK");
   }
-  Serial.println("RTL_ADSB_SELF_CHECK_OK");
   if (!orcsdr::pocsag::self_check() || !orcsdr::pocsag::Decoder::self_check() ||
       !orcsdr::pocsag_store::Table::self_check()) {
     Serial.println("RTL_POCSAG_SELF_CHECK_FAIL");
+  } else {
+    Serial.println("RTL_POCSAG_SELF_CHECK_OK");
   }
-  Serial.println("RTL_POCSAG_SELF_CHECK_OK");
   Serial.println(orcsdr::same::Decoder::self_check() ? "ORC_SAME_SELF_CHECK_OK"
                                                      : "ORC_SAME_SELF_CHECK_FAIL");
   // One line per check: these used to print _FAIL and then _OK regardless, so
@@ -23746,43 +23750,47 @@ void setup() {
                                   : "RTL_FM_DASHBOARD_SELF_CHECK_FAIL");
   Serial.println(orcsdr::am::self_check() ? "RTL_AM_DASHBOARD_SELF_CHECK_OK"
                                   : "RTL_AM_DASHBOARD_SELF_CHECK_FAIL");
+  // These seven used to `return` from setup() on failure, which skipped
+  // load_state(), SD, data packs, maps, Wi-Fi and RTL bring-up: one failing
+  // dashboard layout check left the device half-booted with no radio. A
+  // self-check reports; it does not stop the receiver from starting.
   if (!orcsdr::shortwave::model_self_check()) {
     Serial.println("RTL_SHORTWAVE_MODEL_SELF_CHECK_FAIL");
-    return;
+  } else {
+    Serial.println("RTL_SHORTWAVE_MODEL_SELF_CHECK_OK");
   }
-  Serial.println("RTL_SHORTWAVE_MODEL_SELF_CHECK_OK");
   if (!orcsdr::shortwave::library_self_check()) {
     Serial.println("RTL_SHORTWAVE_LIBRARY_SELF_CHECK_FAIL");
-    return;
+  } else {
+    Serial.println("RTL_SHORTWAVE_LIBRARY_SELF_CHECK_OK");
   }
-  Serial.println("RTL_SHORTWAVE_LIBRARY_SELF_CHECK_OK");
   if (!orcsdr::shortwave::hunt_self_check()) {
     Serial.println("RTL_SHORTWAVE_HUNT_SELF_CHECK_FAIL");
-    return;
+  } else {
+    Serial.println("RTL_SHORTWAVE_HUNT_SELF_CHECK_OK");
   }
-  Serial.println("RTL_SHORTWAVE_HUNT_SELF_CHECK_OK");
   if (!orcsdr::shortwave::dashboard_self_check()) {
     Serial.println("RTL_SHORTWAVE_DASHBOARD_SELF_CHECK_FAIL");
-    return;
+  } else {
+    Serial.println("RTL_SHORTWAVE_DASHBOARD_SELF_CHECK_OK");
   }
-  Serial.println("RTL_SHORTWAVE_DASHBOARD_SELF_CHECK_OK");
   if (!orcsdr::cb::dashboard_self_check()) {
     Serial.println("RTL_CB_DASHBOARD_SELF_CHECK_FAIL");
-    return;
+  } else {
+    Serial.println("RTL_CB_DASHBOARD_SELF_CHECK_OK");
   }
-  Serial.println("RTL_CB_DASHBOARD_SELF_CHECK_OK");
   if (!orcsdr::airband::Scanner::self_check() ||
       !orcsdr::airband::Catalog::self_check() ||
       !orcsdr::airband::dashboard_self_check()) {
     Serial.println("RTL_AIRBAND_SELF_CHECK_FAIL");
-    return;
+  } else {
+    Serial.println("RTL_AIRBAND_SELF_CHECK_OK");
   }
-  Serial.println("RTL_AIRBAND_SELF_CHECK_OK");
   if (!orcsdr::receiver_controls::self_check()) {
     Serial.println("RTL_RECEIVER_CONTROLS_SELF_CHECK_FAIL");
-    return;
+  } else {
+    Serial.println("RTL_RECEIVER_CONTROLS_SELF_CHECK_OK");
   }
-  Serial.println("RTL_RECEIVER_CONTROLS_SELF_CHECK_OK");
   Serial.println(orcsdr::am_finder::self_check() ? "RTL_AM_FINDER_SELF_CHECK_OK"
                                   : "RTL_AM_FINDER_SELF_CHECK_FAIL");
   Serial.println(orcsdr::fmconfig::self_check() ? "RTL_FM_CONFIG_SELF_CHECK_OK"
