@@ -556,6 +556,7 @@ cannot forge serial records. Passwords are never returned.
 | `RTL_WIFI_PROFILES` | no | Priority-ordered SSID-only profile list; never returns passwords. |
 | `RTL_WIFI_CONNECT_SAVED` | no | Compatibility shortcut for saved profile 0. Indexed connection uses `RTL_UI ACTION SETTINGS CONNECT_SAVED <index>`. |
 | `RTL_WIFI_DISCONNECT` | yes | Disconnects Wi-Fi and restores the paused radio/audio path. |
+| `RTL_WIFI_RESET_LINK` | yes | `RTL_WIFI_RESET_LINK queued source=serial`, then `RTL_WIFI_LINK_RECOVERY attempt=… result=ok\|failed`. Power-cycles the C6 and rebuilds the Hosted link; for a link that wedged while still reporting connected. `RTL_WIFI_RESET_LINK_ERROR busy_or_off` if Wi-Fi is off or a recovery is already queued. |
 | `SET_WIFI <ssid_hex> <pass_hex> <hmac>` | yes + signed payload | Provisions slot 0 and attempts connection without echoing credentials. |
 
 Power, auto-connect, antenna selection, scan, indexed connection, forget, and

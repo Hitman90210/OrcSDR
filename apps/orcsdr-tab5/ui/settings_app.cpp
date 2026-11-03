@@ -166,6 +166,13 @@ void draw_connectivity() {
   button(g_state.wifi_power_enabled ? "POWER OFF" : "POWER ON", 938, 198, 280, 48,
          g_state.wifi_power_enabled ? TFT_MAROON : TFT_DARKGREEN);
   text("CONNECT ON BOOT", 330, 286, kMuted, 3);
+  // Manual recovery for a C6 link that wedges while still reporting
+  // "connected" -- upstream's automatic recovery only starts on a transport
+  // failure event, which that state never raises. Runs the same path: C6
+  // power cycle and a fresh Hosted bring-up, then reconnects.
+  if (g_state.wifi_power_enabled)
+    button(g_state.wifi_resetting_link ? "RESETTING..." : "RESET LINK", 634, 262, 280, 48,
+           g_state.wifi_resetting_link ? TFT_DARKGREY : TFT_DARKCYAN);
   button(g_state.wifi_start_at_boot ? "ON" : "OFF", 930, 262, 288, 48,
          g_state.wifi_start_at_boot ? TFT_DARKGREEN : TFT_DARKGREY);
   text("WI-FI ANTENNA", 330, 350, kMuted, 3);
@@ -884,6 +891,7 @@ void update(const State& state_value) {
                              g_state.wifi_external_antenna != state_value.wifi_external_antenna ||
                              g_state.wifi_scanning != state_value.wifi_scanning ||
                              g_state.wifi_connecting != state_value.wifi_connecting ||
+                             g_state.wifi_resetting_link != state_value.wifi_resetting_link ||
                              g_state.wifi_hosted_update_required != state_value.wifi_hosted_update_required ||
                              g_state.network_count != state_value.network_count ||
                              g_state.saved_network_count != state_value.saved_network_count ||
@@ -1062,6 +1070,8 @@ Action handle_touch(int32_t x, int32_t y) {
     if (!g_state.wifi_power_enabled) return {};
     if (hit(x, y, 330, 198, 280, 48) && !g_state.wifi_scanning)
       return {ActionKind::scan_wifi, 0};
+    if (hit(x, y, 634, 262, 280, 48) && !g_state.wifi_resetting_link)
+      return {ActionKind::wifi_reset_link, 0};
     if (hit(x, y, 634, 198, 280, 48)) {
       begin_wifi_edit(WifiEdit::ssid);
       draw_wifi_keyboard();

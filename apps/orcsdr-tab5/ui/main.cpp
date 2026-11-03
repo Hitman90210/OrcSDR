@@ -10908,6 +10908,21 @@ void recover_wifi_link() {
   draw_wifi_state();
 }
 
+// Manual RESET LINK (Settings button and RTL_WIFI_RESET_LINK). Queues the
+// same recovery the transport-failure path uses, for a link that wedged
+// without raising that event. A manual request gets a fresh retry budget.
+bool request_wifi_link_reset(const char* source) {
+  if (!settings_wifi_power_enabled) return false;
+  if (wifi_link_recovery_due_ms != 0) return false;  // one already queued
+  wifi_link_recoveries = 0;
+  wifi_link_recovery_due_ms = millis() + 1;
+  if (wifi_link_recovery_due_ms == 0) wifi_link_recovery_due_ms = 1;
+  strlcpy(wifi_status_message, "Resetting Wi-Fi link", sizeof(wifi_status_message));
+  Serial.printf("RTL_WIFI_RESET_LINK queued source=%s\n", source);
+  draw_wifi_state();
+  return true;
+}
+
 void poll_wifi() {
   static bool link_failure_handled = false;
   if (!settings_wifi_power_enabled) {
@@ -13274,6 +13289,7 @@ const orcsdr::settings::State& global_settings_state() {
   state.wifi_scanning = wifi_scan_running;
   state.wifi_connected = device.wifi_connected;
   state.wifi_connecting = wifi_connecting;
+  state.wifi_resetting_link = wifi_link_recovery_due_ms != 0;
   strlcpy(state.wifi_ssid, device.wifi_ssid, sizeof(state.wifi_ssid));
   strlcpy(state.wifi_ip, device.wifi_ip, sizeof(state.wifi_ip));
   strlcpy(state.wifi_message, wifi_status_message, sizeof(state.wifi_message));
@@ -15406,6 +15422,11 @@ void handle_global_settings_action(const orcsdr::settings::Action& action) {
   switch (action.kind) {
     case orcsdr::settings::ActionKind::close:
       close_global_settings();
+      break;
+    case orcsdr::settings::ActionKind::wifi_reset_link:
+      if (!request_wifi_link_reset("settings"))
+        Serial.println("RTL_WIFI_RESET_LINK_ERROR busy_or_off");
+      update_global_settings();
       break;
     case orcsdr::settings::ActionKind::wifi_power_changed:
       settings_wifi_power_enabled = action.value != 0;
@@ -21044,6 +21065,16 @@ void process_command(char* command) {
     }
     Serial.println(disconnect_wifi() ? "RTL_WIFI_DISCONNECT_OK"
                                      : "RTL_WIFI_DISCONNECT_ERROR radio_pause_failed");
+    return;
+  }
+  if (strcmp(command, "RTL_WIFI_RESET_LINK") == 0) {
+    if (!authenticated) {
+      Serial.println("RTL_WIFI_RESET_LINK_ERROR auth_required");
+      return;
+    }
+    // The outcome arrives later as RTL_WIFI_LINK_RECOVERY result=ok|failed.
+    if (!request_wifi_link_reset("serial"))
+      Serial.println("RTL_WIFI_RESET_LINK_ERROR busy_or_off");
     return;
   }
 #if ORCSDR_C6_FAULT_TEST

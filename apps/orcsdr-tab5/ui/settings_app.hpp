@@ -53,6 +53,7 @@ struct State {
   bool wifi_scanning = false;
   bool wifi_connected = false;
   bool wifi_connecting = false;
+  bool wifi_resetting_link = false;
   bool wifi_hosted_update_required = false;
   bool wifi_hosted_transport_ready = false;
   bool orcdial_bridge_ready = false;
@@ -144,6 +145,7 @@ enum class ActionKind : uint8_t {
   orcdial_pair,
   orcdial_cancel,orcdial_confirm,orcdial_connect,orcdial_disconnect,orcdial_forget,orcdial_boot,
   scan_wifi,
+  wifi_reset_link,
   connect_wifi,
   connect_saved_wifi,
   forget_wifi,
