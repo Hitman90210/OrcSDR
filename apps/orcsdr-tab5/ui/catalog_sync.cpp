@@ -15,6 +15,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <initializer_list>
 
 namespace orcsdr::catalog {
 namespace {
@@ -395,6 +396,10 @@ bool hash_matches(const uint8_t digest[32], const char* expected) {
 bool download_artifact(const Artifact& artifact, uint8_t pack_index,
                        uint8_t progress_base, uint8_t progress_span) {
   if (g_fs == nullptr || artifact.url[0] == '\0') return false;
+  // g_free_bytes was a single figure taken at begin(), so every pack
+  // installed since made it more optimistic. Ask the card now.
+  if (uint64_t free_now = 0; orcsdr::storage::query_free_bytes(&free_now))
+    g_free_bytes = free_now;
   if (g_free_bytes < artifact.bytes + kChunkBytes) { set_message("Not enough SD space"); return false; }
   ESP_LOGI(kTag, "download stage=start pack=%u kind=%s bytes=%u", pack_index,
            artifact.archive ? "archive" : "runtime", static_cast<unsigned>(artifact.bytes));
@@ -418,6 +423,12 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
   int status = -1;
   bool ok = client && open_get(client, &declared, &status, &open_result);
   if (!ok || (declared > 0 && declared != artifact.bytes) || status != 200) ok = false;
+  // "Download hash or network failure" used to cover every case, so a full
+  // SD card, a server 404 and a corrupted transfer all read the same.
+  const char* failure = ok ? nullptr
+                        : status > 0 && status != 200 ? "Server refused download"
+                        : declared > 0 && declared != artifact.bytes ? "Server file size changed"
+                                                                     : "Network failure";
   ESP_LOGI(kTag, "download stage=http_open ok=%d status=%d declared=%lld", ok ? 1 : 0,
            status, static_cast<long long>(declared));
   uint8_t* write_batch = static_cast<uint8_t*>(
@@ -442,7 +453,7 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
         client, reinterpret_cast<char*>(target),
         std::min<size_t>(room, static_cast<size_t>(artifact.bytes - total)));
     network_us += static_cast<uint64_t>(esp_timer_get_time() - read_started_us);
-    if (got <= 0) { ESP_LOGE(kTag, "download stage=http_read_failed got=%d", got); ok = false; break; }
+    if (got <= 0) { ESP_LOGE(kTag, "download stage=http_read_failed got=%d", got); failure = "Network dropped mid-download"; ok = false; break; }
     batch_used += static_cast<size_t>(got);
     const size_t header_take = std::min(sizeof(header) - header_size, static_cast<size_t>(got));
     if (header_take) {
@@ -455,7 +466,7 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
       const int64_t write_started_us = esp_timer_get_time();
       const size_t wrote = file.write(write_batch, batch_used);
       sd_write_us += static_cast<uint64_t>(esp_timer_get_time() - write_started_us);
-      if (wrote != batch_used) { ESP_LOGE(kTag, "download stage=sd_write_failed wrote=%u expected=%u", static_cast<unsigned>(wrote), static_cast<unsigned>(batch_used)); ok = false; break; }
+      if (wrote != batch_used) { ESP_LOGE(kTag, "download stage=sd_write_failed wrote=%u expected=%u", static_cast<unsigned>(wrote), static_cast<unsigned>(batch_used)); failure = "SD card write failed"; ok = false; break; }
       batch_used = 0;
     }
     const uint8_t progress = progress_base + static_cast<uint8_t>(
@@ -484,12 +495,15 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
   }
   uint8_t digest[32]{};
   if (ok && (total != artifact.bytes || mbedtls_sha256_finish(&sha, digest) != 0 ||
-             !hash_matches(digest, artifact.sha256))) ok = false;
+             !hash_matches(digest, artifact.sha256))) {
+    failure = "Downloaded file failed verification";
+    ok = false;
+  }
   mbedtls_sha256_free(&sha);
   if (write_batch) heap_caps_free(write_batch);
   if (client) { esp_http_client_close(client); esp_http_client_cleanup(client); }
   file.close();
-  if (!ok) { g_fs->remove(temporary); set_message("Download hash or network failure"); return false; }
+  if (!ok) { g_fs->remove(temporary); set_message(failure ? failure : "Download failed"); return false; }
 
   bool schema_ok = artifact.archive
       ? (memcmp(header, "PK\003\004", 4) == 0 || memcmp(header, "PK\005\006", 4) == 0)
@@ -617,6 +631,8 @@ void worker(void*) {
   } else if (operation == Operation::install && pack_index < kPackCount && g_packs[pack_index].available) {
     const auto& pack = g_packs[pack_index];
     const uint64_t required = static_cast<uint64_t>(pack.runtime.bytes) + pack.archive.bytes + 2 * kChunkBytes;
+    if (uint64_t free_now = 0; orcsdr::storage::query_free_bytes(&free_now))
+      g_free_bytes = free_now;
     if (g_free_bytes < required) {
       set_message("Not enough SD space for pack");
     } else {
@@ -685,10 +701,23 @@ void worker(void*) {
         ok &= orcsdr::p25config::delete_profile(
             *g_fs, g_state.packs[pack_index].id, &profiles, error, sizeof(error));
       if (catalog_owned && g_fs->exists(version_path)) ok &= g_fs->remove(version_path);
-    } else if (g_fs && g_fs->exists(pack.runtime.destination)) {
-      ok &= g_fs->remove(pack.runtime.destination);
+    } else if (g_fs) {
+      if (g_fs->exists(pack.runtime.destination)) ok &= g_fs->remove(pack.runtime.destination);
+      // The .ver marker and both .bak rollback copies belong to the pack too.
+      // Leaving them meant "remove" freed only half the space -- for the FAA
+      // aircraft pack, tens of MB stayed on the card as an invisible backup.
+      char extra[112]{};
+      for (const char* suffix : {".ver", ".bak"}) {
+        snprintf(extra, sizeof(extra), "%s%s", pack.runtime.destination, suffix);
+        if (g_fs->exists(extra)) ok &= g_fs->remove(extra);
+      }
     }
     if (g_fs && g_fs->exists(pack.archive.destination)) ok &= g_fs->remove(pack.archive.destination);
+    if (g_fs) {
+      char archive_backup[112]{};
+      snprintf(archive_backup, sizeof(archive_backup), "%s.bak", pack.archive.destination);
+      if (g_fs->exists(archive_backup)) ok &= g_fs->remove(archive_backup);
+    }
     set_message(ok ? "Pack removed" : "Could not remove pack");
     refresh_installed();
   }

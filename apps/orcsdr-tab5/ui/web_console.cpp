@@ -10,6 +10,7 @@
 #include <mdns.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -55,6 +56,12 @@ std::atomic<int> g_audio_clients{0};
 std::atomic<uint32_t> g_spectrum_requested_ms{0};
 uint8_t g_spec[kSpectrumBins]{};
 uint8_t g_spec_count = 0;
+
+// printf renders NaN/inf as "nan"/"inf", which is not JSON: one bad meter
+// reading would make JSON.parse throw and blank the whole Companion page.
+double json_number(float value) {
+  return std::isfinite(value) ? static_cast<double>(value) : 0.0;
+}
 
 void json_escape(char* out, size_t out_size, const char* in) {
   if (out_size == 0) return;
@@ -204,12 +211,12 @@ esp_err_t handle_status(httpd_req_t* req) {
            static_cast<unsigned long>(snap.filter_bandwidth_hz),
            static_cast<unsigned long>(snap.effective_sps),
            static_cast<long>(snap.battery_percent),
-           static_cast<double>(snap.signal_dbfs),
-           static_cast<double>(snap.left_dbfs),
-           static_cast<double>(snap.right_dbfs), snap.volume, clock, date, recent,
+           json_number(snap.signal_dbfs),
+           json_number(snap.left_dbfs),
+           json_number(snap.right_dbfs), snap.volume, clock, date, recent,
            spec, snap.adsb_active ? "true" : "false",
            static_cast<unsigned long>(snap.adsb_messages),
-           static_cast<double>(snap.adsb_message_rate), snap.radar_range_nm,
+           json_number(snap.adsb_message_rate), snap.radar_range_nm,
            snap.aircraft_tracked, snap.location_configured ? "true" : "false", air,
            snap.enabled ? "true" : "false");
 
@@ -491,7 +498,12 @@ void poll(bool wifi_connected) {
   if (g_wifi_up_ms == 0) g_wifi_up_ms = millis();
   if (g_listening) return;
   if (millis() - g_wifi_up_ms < 2500) return;
-  start_server();
+  // A failed httpd_start (usually internal/DMA heap) used to be retried on
+  // every poll, logging each time. Wait the settle period again.
+  if (!start_server()) {
+    g_wifi_up_ms = millis();
+    if (g_wifi_up_ms == 0) g_wifi_up_ms = 1;
+  }
 }
 
 void update(const Snapshot& snapshot) {

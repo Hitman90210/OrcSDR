@@ -178,7 +178,11 @@ void draw_connectivity() {
     const int y = 410 + i * 44;
     snprintf(value, sizeof(value), "%u  %.24s%s", i + 1, g_state.profiles[i].ssid,
              g_state.profiles[i].connected ? "  CONNECTED" : "");
+    // Clipped to end before CONNECT (x=674): "%.24s" plus "  CONNECTED" is
+    // 456 px from x=340 at size 2 and ran under the button.
+    M5.Display.setClipRect(330, y, 334, 40);
     text(value, 340, y + 20, g_state.profiles[i].connected ? kGreen : TFT_WHITE, 2);
+    M5.Display.clearClipRect();
     button("CONNECT", 674, y, 144, 36, TFT_DARKCYAN);
     button("UP", 830, y, 88, 36, i ? TFT_NAVY : TFT_DARKGREY);
     button("DOWN", 930, y, 106, 36,
@@ -193,7 +197,8 @@ void draw_connectivity() {
   for (uint8_t i = 0; i < shown; ++i) {
     const int x = 330 + (i % 2) * 428;
     const int y = 624 + (i / 2) * 30;
-    snprintf(value, sizeof(value), "%.18s  %d%s%s", g_state.networks[i].ssid,
+    // 418 px holds 34 size-2 characters; 18 + "  -67  LOCK  SAVED" was 36.
+    snprintf(value, sizeof(value), "%.16s  %d%s%s", g_state.networks[i].ssid,
              g_state.networks[i].rssi, g_state.networks[i].secure ? "  LOCK" : "  OPEN",
              g_state.networks[i].saved ? "  SAVED" : "");
     button(value, x, y, 418, 28,
@@ -723,6 +728,17 @@ Action handle_wifi_keyboard(int x, int y) {
       if (!g_wifi_edit_ssid[0]) return {};
       g_wifi_edit = WifiEdit::password;
       text_editor::begin("WI-FI PASSWORD", g_wifi_edit_password,
+                         sizeof(g_wifi_edit_password) - 1, true, "CONNECT");
+      draw_wifi_keyboard();
+      return {};
+    }
+    // WPA/WPA2/WPA3 passphrases are 8-63 characters, so a shorter one can
+    // only fail -- after a 15 s connect attempt, reported as a handshake
+    // timeout. Say so now and keep what was typed. 5 stays allowed for WEP
+    // (13 already passes); empty is an open network.
+    const size_t length = strlen(g_wifi_edit_password);
+    if (length > 0 && length < 8 && length != 5) {
+      text_editor::begin("PASSWORD: 8+ CHARACTERS", g_wifi_edit_password,
                          sizeof(g_wifi_edit_password) - 1, true, "CONNECT");
       draw_wifi_keyboard();
       return {};

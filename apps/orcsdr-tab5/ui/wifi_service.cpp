@@ -139,10 +139,17 @@ void format_phy(const wifi_ap_record_t& record, char* out, size_t size) {
   if (cursor == out) strlcpy(out, "unknown", size);
 }
 
+std::atomic<uint8_t> g_disconnect_reason{0};
+
 void on_wifi_event(void*, esp_event_base_t base, int32_t id, void* data) {
   if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
     const auto* event = static_cast<const wifi_event_sta_disconnected_t*>(data);
-    ESP_LOGW("orcsdr_wifi", "station disconnected reason=%u", event ? event->reason : 0u);
+    const uint8_t reason = event ? event->reason : 0u;
+    ESP_LOGW("orcsdr_wifi", "station disconnected reason=%u", reason);
+    // Kept so the UI can say *why*: reason 15 (bad key) and 200/201 (beacon
+    // lost / AP not found) are very different problems that read the same.
+    g_disconnect_reason.store(reason, std::memory_order_release);
+    g_ip_addr.store(0, std::memory_order_release);
     g_connected.store(false, std::memory_order_release);
     g_failed.store(true, std::memory_order_release);
   }
@@ -291,6 +298,23 @@ bool connect(const char* network, const char* password) {
   wifi_config_t config{};
   strlcpy(reinterpret_cast<char*>(config.sta.ssid), network, sizeof(config.sta.ssid));
   strlcpy(reinterpret_cast<char*>(config.sta.password), password ? password : "", sizeof(config.sta.password));
+  // The default (fast scan, first match) joins whichever AP with this SSID
+  // answers first -- on a mesh or multi-AP network often a distant one, a
+  // steady source of beacon-timeout drops. Scan every channel and take the
+  // strongest; it costs about a second on connect.
+  config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+  config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+  config.sta.pmf_cfg.capable = true;
+  config.sta.pmf_cfg.required = false;
+  // Weakest security accepted. Left unset, ESP-IDF treats any 8+ character
+  // password as "WPA2 or better", so a WPA-only router could never be
+  // joined; an explicit floor keeps WPA working while still refusing an open
+  // AP that merely copies the SSID of a secured network.
+  const size_t password_length = password ? strlen(password) : 0;
+  config.sta.threshold.authmode = password_length >= 8   ? WIFI_AUTH_WPA_PSK
+                                  : password_length > 0 ? WIFI_AUTH_WEP
+                                                        : WIFI_AUTH_OPEN;
+  g_disconnect_reason.store(0, std::memory_order_release);
   g_failed.store(false, std::memory_order_release);
   g_connected.store(false, std::memory_order_release);
   strlcpy(g_ssid, network, sizeof(g_ssid));
@@ -304,6 +328,38 @@ bool connect(const char* network, const char* password) {
     ESP_LOGE("orcsdr_wifi", "connect request failed: 0x%x", static_cast<unsigned>(connect));
   return connect == ESP_OK;
 }
+uint8_t last_disconnect_reason() {
+  return g_disconnect_reason.load(std::memory_order_acquire);
+}
+
+const char* disconnect_reason_text(uint8_t reason) {
+  // ESP-IDF wifi_err_reason_t. 8 (ASSOC_LEAVE) is what our own
+  // esp_wifi_disconnect() produces, so it must not blame the AP.
+  switch (reason) {
+    case 1: return "unspecified";
+    case 2: return "auth expired";
+    case 3: return "deauth by AP";
+    case 4: return "inactivity timeout";
+    case 5: return "AP is full";
+    case 8: return "left network";
+    case 15: return "wrong password";
+    case 39: return "timeout";
+    case 200: return "beacon timeout";
+    case 201: return "network not found";
+    case 202: return "auth failed";
+    case 203: return "association failed";
+    case 204: return "handshake timeout";
+    case 205: return "connection lost";
+    case 206: return "AP clock reset";
+    case 207: return "roaming";
+    case 209: return "SA query timeout";
+    case 210: return "security not supported";
+    case 211: return "security too weak";
+    case 212: return "signal too weak";
+    default: return "";
+  }
+}
+
 void disconnect() { esp_wifi_disconnect(); g_connected.store(false, std::memory_order_release); }
 bool connected() { return g_connected.load(std::memory_order_acquire); }
 bool connect_failed() { return g_failed.load(std::memory_order_acquire); }

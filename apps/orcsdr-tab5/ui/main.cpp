@@ -2021,6 +2021,8 @@ struct AdsbTrack {
   orcsdr::adsb_rx::Frame odd_cpr{};
   uint32_t even_cpr_ms = 0;
   uint32_t odd_cpr_ms = 0;
+  uint32_t position_ms = 0;
+  uint8_t position_rejects = 0;
   uint32_t last_seen_ms = 0;
   uint16_t signal = 0;
   bool metadata_pending = false;
@@ -2470,12 +2472,55 @@ void publish_pocsag_snapshot(uint32_t now) {
   orcsdr::pocsag::set_live_snapshot(snapshot);
 }
 
+// A CRC-valid even/odd pair can still decode to the wrong place: a pair
+// straddling a latitude-zone change, or a frame whose corruption the CRC
+// happened to miss. One such fix made an aircraft jump across the radar.
+// Reject positions beyond radio range of the receiver, and moves no aircraft
+// could make since the last accepted fix (~1300 kt plus 2 NM of slack).
+// Three rejections in a row mean the *old* fix was the bad one, so the next
+// decode is taken as the new truth instead of locking the track.
+constexpr double kAdsbMaxRangeNm = 400.0;
+constexpr double kAdsbMaxNmPerSecond = 0.36;
+constexpr uint8_t kAdsbRejectsBeforeReset = 3;
+
+double adsb_distance_nm(double lat1, double lon1, double lat2, double lon2) {
+  constexpr double kRad = 3.14159265358979323846 / 180.0;
+  const double dlat = (lat2 - lat1) * kRad, dlon = (lon2 - lon1) * kRad;
+  const double a = std::sin(dlat / 2) * std::sin(dlat / 2) +
+                   std::cos(lat1 * kRad) * std::cos(lat2 * kRad) *
+                       std::sin(dlon / 2) * std::sin(dlon / 2);
+  const double bounded = std::clamp(a, 0.0, 1.0);
+  return 3440.065 * 2 * std::atan2(std::sqrt(bounded), std::sqrt(1 - bounded));
+}
+
+bool adsb_position_plausible(double latitude, double longitude, bool had_position,
+                             double previous_latitude, double previous_longitude,
+                             uint32_t elapsed_ms, uint8_t previous_rejects) {
+  if (!std::isfinite(latitude) || !std::isfinite(longitude) || latitude < -90.0 ||
+      latitude > 90.0 || longitude < -180.0 || longitude > 180.0)
+    return false;
+  if (adsb_settings.location_configured &&
+      adsb_distance_nm(adsb_settings.latitude_e7 / 1e7, adsb_settings.longitude_e7 / 1e7,
+                       latitude, longitude) > kAdsbMaxRangeNm)
+    return false;
+  if (!had_position || previous_rejects >= kAdsbRejectsBeforeReset ||
+      elapsed_ms > 120000u)
+    return true;
+  const double allowed_nm = 2.0 + kAdsbMaxNmPerSecond * (elapsed_ms / 1000.0);
+  return adsb_distance_nm(previous_latitude, previous_longitude, latitude, longitude) <=
+         allowed_nm;
+}
+
 void on_adsb_frame(const orcsdr::adsb_rx::Frame& frame, void*) {
   const uint32_t now = millis();
   bool added = false;
   bool decode_position = false;
   orcsdr::adsb_rx::Frame even_cpr{}, odd_cpr{};
   bool use_odd = false;
+  bool had_position = false;
+  double previous_latitude = 0, previous_longitude = 0;
+  uint32_t previous_position_ms = 0;
+  uint8_t previous_rejects = 0;
   portENTER_CRITICAL(&adsb_tracks_mux);
   AdsbTrack* track = nullptr;
   AdsbTrack* oldest = &adsb_tracks[0];
@@ -2533,6 +2578,11 @@ void on_adsb_frame(const orcsdr::adsb_rx::Frame& frame, void*) {
       odd_cpr = track->odd_cpr;
       use_odd = track->odd_cpr_ms > track->even_cpr_ms;
       decode_position = true;
+      had_position = track->has_position;
+      previous_latitude = track->latitude;
+      previous_longitude = track->longitude;
+      previous_position_ms = track->position_ms;
+      previous_rejects = track->position_rejects;
     }
   }
   portEXIT_CRITICAL(&adsb_tracks_mux);
@@ -2540,13 +2590,25 @@ void on_adsb_frame(const orcsdr::adsb_rx::Frame& frame, void*) {
     double latitude = 0, longitude = 0;
     if (orcsdr::adsb_rx::decode_global_cpr(even_cpr, odd_cpr, use_odd,
                                            &latitude, &longitude)) {
+      const bool accept = adsb_position_plausible(
+          latitude, longitude, had_position, previous_latitude, previous_longitude,
+          now - previous_position_ms, previous_rejects);
       portENTER_CRITICAL(&adsb_tracks_mux);
       if (track->used && track->icao == frame.icao) {
-        track->latitude = latitude;
-        track->longitude = longitude;
-        track->has_position = true;
+        if (accept) {
+          track->latitude = latitude;
+          track->longitude = longitude;
+          track->has_position = true;
+          track->position_ms = now;
+          track->position_rejects = 0;
+        } else if (track->position_rejects < 255) {
+          ++track->position_rejects;
+        }
       }
       portEXIT_CRITICAL(&adsb_tracks_mux);
+      if (!accept && serial_verbosity_at(SerialVerbosity::trace))
+        Serial.printf("RTL_ADSB_POSITION_REJECTED icao=%06lX lat=%.4f lon=%.4f\n",
+                      static_cast<unsigned long>(frame.icao), latitude, longitude);
     }
   }
   if (added) adsb_aircraft_count.fetch_add(1, std::memory_order_relaxed);
@@ -5790,7 +5852,15 @@ bool rds_capture_write_files(size_t samples) {
 
 bool rds_capture_stop_and_export() {
   g_rds_capture_active.store(false, std::memory_order_release);
-  while (g_rds_capture_writing.load(std::memory_order_acquire)) delay(1);
+  // The writer clears this within one audio block; bound the wait so a
+  // stalled audio task cannot hang the serial/UI loop here forever.
+  for (uint16_t waited = 0;
+       g_rds_capture_writing.load(std::memory_order_acquire) && waited < 500; ++waited)
+    delay(1);
+  if (g_rds_capture_writing.load(std::memory_order_acquire)) {
+    Serial.println("RTL_RDS_CAPTURE_ERROR writer_busy");
+    return false;
+  }
   const size_t samples = g_rds_capture_write.load(std::memory_order_acquire);
   if (samples == 0) {
     Serial.println("RTL_RDS_CAPTURE_STOP empty");
@@ -10947,7 +11017,19 @@ void poll_wifi() {
         memset(wifi_password, 0, sizeof(wifi_password));
       }
     }
-    strlcpy(wifi_status_message, "Connection failed", sizeof(wifi_status_message));
+    // Name the reason where the driver gives one; "Connection failed" alone
+    // cannot tell a wrong password from an AP that went out of range.
+    {
+      const uint8_t reason = orcsdr::wifi::last_disconnect_reason();
+      const char* why = orcsdr::wifi::disconnect_reason_text(reason);
+      if (why[0])
+        snprintf(wifi_status_message, sizeof(wifi_status_message), "Failed: %s", why);
+      else if (reason)
+        snprintf(wifi_status_message, sizeof(wifi_status_message), "Failed (reason %u)",
+                 static_cast<unsigned>(reason));
+      else
+        strlcpy(wifi_status_message, "Connection failed", sizeof(wifi_status_message));
+    }
     log_wifi_coexistence("connect_failed", millis() - wifi_connect_started_ms);
     schedule_wifi_reconnect("connect_failed");
     resume_radio_after_io(wifi_connect_radio_paused);
@@ -10955,7 +11037,14 @@ void poll_wifi() {
   }
   if (connected != wifi_connected) {
     if (wifi_connected && !connected && !wifi_connecting && wifi_auto_reconnect_armed) {
-      strlcpy(wifi_status_message, "Wi-Fi lost - reconnecting", sizeof(wifi_status_message));
+      const uint8_t reason = orcsdr::wifi::last_disconnect_reason();
+      const char* why = orcsdr::wifi::disconnect_reason_text(reason);
+      if (why[0])
+        snprintf(wifi_status_message, sizeof(wifi_status_message), "Lost: %s - reconnecting",
+                 why);
+      else
+        strlcpy(wifi_status_message, "Wi-Fi lost - reconnecting", sizeof(wifi_status_message));
+      Serial.printf("RTL_WIFI_DISCONNECTED reason=%u\n", static_cast<unsigned>(reason));
       schedule_wifi_reconnect("link_lost");
     }
     wifi_connected = connected;
@@ -23760,7 +23849,8 @@ void loop() {
           if (strcmp(command.id, "home") == 0) {
             orcsdr::navigation::show_home();
           } else {
-            action.kind = AK::open_dashboard;
+            // Only arm the action on a match: a name the parser accepts but
+            // no tile maps to would otherwise open Id::count.
             for (size_t i = 0; i < orcsdr::dashboards::count(); ++i) {
               const auto* entry = orcsdr::dashboards::descriptor(i);
               if (entry == nullptr) continue;
@@ -23778,7 +23868,8 @@ void loop() {
                                  : entry->id == orcsdr::dashboards::Id::rf_lab ? "rf_lab"
                                  : entry->id == orcsdr::dashboards::Id::settings ? "settings"
                                                                                : "";
-              if (strcmp(command.id, name) == 0) {
+              if (name[0] != '\0' && strcmp(command.id, name) == 0) {
+                action.kind = AK::open_dashboard;
                 action.dashboard = entry->id;
                 break;
               }

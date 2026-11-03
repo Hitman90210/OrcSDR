@@ -43,6 +43,10 @@ void note_start_failure();
 bool begin_link_recovery();
 void end_link_recovery();
 bool connect_failed();
+// Reason code of the most recent station disconnect (0 = none since the last
+// connect()), and a short label for it ("" when the code has none).
+uint8_t last_disconnect_reason();
+const char* disconnect_reason_text(uint8_t reason);
 const char* ssid();
 const char* ip();
 int16_t rssi();
