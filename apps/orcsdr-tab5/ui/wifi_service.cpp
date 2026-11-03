@@ -165,6 +165,7 @@ void on_wifi_event(void*, esp_event_base_t base, int32_t id, void* data) {
     // a very different problem for reason 15 (bad key) than for 200/201
     // (beacon timeout / no AP found), and the user cannot tell them apart.
     g_disconnect_reason.store(reason, std::memory_order_release);
+    g_ip_addr.store(0, std::memory_order_release);
     g_connected.store(false, std::memory_order_release);
     g_failed.store(true, std::memory_order_release);
   }
@@ -239,8 +240,12 @@ bool start() {
              static_cast<unsigned long>(cp.patch1));
   else
     strlcpy(g_c6_version, "unavailable", sizeof(g_c6_version));
+  // Compared against the version the build embeds (from
+  // tools/release/hosted-c6-release.json via CMake) rather than a second
+  // hard-coded 3.0.6: bumping the JSON alone used to leave this check
+  // demanding the old version, so Wi-Fi refused to start after an update.
   g_versions_match = version == ESP_OK &&
-                     cp.major1 == 3 && cp.minor1 == 0 && cp.patch1 == 6;
+                     strcmp(g_c6_version, ORCSDR_HOSTED_C6_VERSION) == 0;
   if (!g_versions_match) {
     g_failure_stage = "version"; g_failure_code = version;
     set_update_status(version == ESP_OK && ORCSDR_HAS_EMBEDDED_C6_FIRMWARE
@@ -378,19 +383,30 @@ uint8_t last_disconnect_reason() {
 
 const char* disconnect_reason_text(uint8_t reason) {
   switch (reason) {
+    // Numbers are ESP-IDF's wifi_err_reason_t. 8 (ASSOC_LEAVE) is what our
+    // own esp_wifi_disconnect() produces, so it must not blame the AP, and
+    // 203 is ASSOC_FAIL -- association, not the 4-way handshake (that is 15
+    // or 204).
     case 1: return "unspecified";
     case 2: return "auth expired";
+    case 3: return "deauth by AP";
     case 4: return "inactivity timeout";
     case 5: return "AP is full";
-    case 8: return "deauth by AP";
+    case 8: return "left network";
     case 15: return "wrong password";
     case 39: return "timeout";
     case 200: return "beacon timeout";
     case 201: return "network not found";
     case 202: return "auth failed";
-    case 203: return "handshake failed";
+    case 203: return "association failed";
     case 204: return "handshake timeout";
     case 205: return "connection lost";
+    case 206: return "AP clock reset";
+    case 207: return "roaming";
+    case 209: return "SA query timeout";
+    case 210: return "security not supported";
+    case 211: return "security too weak";
+    case 212: return "signal too weak";
     default: return "";
   }
 }
@@ -436,6 +452,14 @@ bool connect(const char* network, const char* password) {
   wifi_config_t config{};
   strlcpy(reinterpret_cast<char*>(config.sta.ssid), network, sizeof(config.sta.ssid));
   strlcpy(reinterpret_cast<char*>(config.sta.password), password ? password : "", sizeof(config.sta.password));
+  // The default (fast scan, first match) joins whichever AP with this SSID
+  // answers first -- on a mesh or multi-AP network often a distant one, which
+  // is a steady source of beacon-timeout drops. Scan every channel and take
+  // the strongest; it costs about a second on connect.
+  config.sta.scan_method = WIFI_ALL_CHANNEL_SCAN;
+  config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+  config.sta.pmf_cfg.capable = true;
+  config.sta.pmf_cfg.required = false;
   g_failed.store(false, std::memory_order_release);
   g_connected.store(false, std::memory_order_release);
   strlcpy(g_ssid, network, sizeof(g_ssid));

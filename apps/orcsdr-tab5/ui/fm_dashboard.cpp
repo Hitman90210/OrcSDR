@@ -166,6 +166,18 @@ int relative_percent() {
                                              (100.0f / 90.0f))), 0, 100);
 }
 
+// The two SEEK buttons sit at the ends of the 485 row (x 24 and 1004, 220
+// wide). Pressing either while a seek runs already stopped it, but the label
+// never changed, so a sweep looked like nothing was happening.
+void draw_seek_buttons(bool seeking) {
+  button(24, 485, 220, 120, seeking ? "STOP SEEK" : "<<  SEEK -", seeking ? kYellow : kGrid,
+         seeking);
+  button(1004, 485, 220, 120, seeking ? "STOP SEEK" : "SEEK +  >>",
+         seeking ? kYellow : kGrid, seeking);
+}
+
+bool g_seek_drawn = false;
+
 void draw_listen_static() {
   card(24, 160, 300, 140);
   label("PRESET", 44, 177);
@@ -180,9 +192,15 @@ void draw_listen_static() {
     button(x, 485, widths[i], 120, names[i], i == 2 ? kCyan : kGrid, i == 2);
     x += widths[i] + 10;
   }
+  g_seek_drawn = g_snapshot.seeking;
+  if (g_seek_drawn) draw_seek_buttons(true);
 }
 
 void draw_listen_dynamic() {
+  if (g_snapshot.seeking != g_seek_drawn) {
+    draw_seek_buttons(g_snapshot.seeking);
+    g_seek_drawn = g_snapshot.seeking;
+  }
   M5.Display.fillRect(42, 211, 264, 73, kPanel);
   char value[32];
   snprintf(value, sizeof(value), "%02u", g_snapshot.preset_index);
@@ -203,7 +221,15 @@ void draw_listen_dynamic() {
   const char* ps = g_snapshot.program_service[0] ? g_snapshot.program_service : "—";
   text(ps, 630, 335, TFT_WHITE, 4);
   const char* rt = g_snapshot.radio_text[0] ? g_snapshot.radio_text : "RDS text unavailable";
-  text(rt, 630, 382, TFT_WHITE, 2);
+  // RadioText runs to 64 characters (768 px at size 2), centred at 630 it
+  // spilled past the cleared 340..920 area into the STEREO VU card and was
+  // never erased. Clip like the Station tab does; once it overflows, left-
+  // align so only the tail is lost rather than both ends.
+  M5.Display.setTextSize(2);
+  M5.Display.setClipRect(340, 364, 580, 36);
+  if (M5.Display.textWidth(rt) > 570) text(rt, 345, 382, TFT_WHITE, 2, middle_left);
+  else text(rt, 630, 382, TFT_WHITE, 2);
+  M5.Display.clearClipRect();
   button(455, 415, 175, 44, g_snapshot.running ? "RUNNING" : "STOPPED",
          g_snapshot.running ? kGreen : TFT_RED, true);
   button(680, 415, 160, 44, g_snapshot.stereo ? "STEREO" : "MONO",

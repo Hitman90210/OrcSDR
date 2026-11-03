@@ -181,7 +181,7 @@ uint32_t cancel_survey() {
 }
 
 SurveyStep service_survey(uint32_t now_ms, bool receiver_is_lora) {
-  if (!scanning || !receiver_is_lora || now_ms < survey_next_ms) return {};
+  if (!scanning || !receiver_is_lora || static_cast<int32_t>(now_ms - survey_next_ms) < 0) return {};
   const uint8_t spans = survey_span_count();
   if (survey_span >= spans) {
     scanning = false;

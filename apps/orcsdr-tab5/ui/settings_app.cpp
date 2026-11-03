@@ -240,8 +240,16 @@ void draw_connectivity() {
   snprintf(value, sizeof(value), "%s  %s  %s", status,
            g_state.wifi_ssid[0] ? g_state.wifi_ssid : "--",
            g_state.wifi_connected ? g_state.wifi_ip : "");
-  text(value, 330, 155, status_color, 2);
-  if (g_state.wifi_message[0]) text(g_state.wifi_message, 1218, 155, kMuted, 1, middle_right);
+  // The status line and the right-aligned message share one row. A long SSID
+  // ran the two into each other, so the status gets whatever the message
+  // leaves (text() draws both at size 2 -- kSettingsMinTextSize).
+  int message_width = 0;
+  if (g_state.wifi_message[0]) {
+    M5.Display.setTextSize(2);
+    message_width = M5.Display.textWidth(g_state.wifi_message) + 24;
+  }
+  text_clipped(value, 330, 155, std::max(200, 1218 - 330 - message_width), status_color);
+  if (g_state.wifi_message[0]) text(g_state.wifi_message, 1218, 155, kMuted, 2, middle_right);
   button(g_state.wifi_scanning ? "SCANNING..." : "SCAN", 330, 180, 170, 46,
          g_state.wifi_scanning ? TFT_DARKGREY : TFT_DARKCYAN);
   button("ADD HIDDEN", 520, 180, 210, 46, TFT_NAVY);
@@ -265,9 +273,12 @@ void draw_connectivity() {
   text("SAVED NETWORKS (PRIORITY ORDER)", 330, 350, kBlue, 2);
   for (uint8_t i = 0; i < g_state.saved_network_count && i < 4; ++i) {
     const int y = 378 + i * 48;
-    snprintf(value, sizeof(value), "%u  %.24s%s", i + 1, g_state.profiles[i].ssid,
+    snprintf(value, sizeof(value), "%u  %s%s", i + 1, g_state.profiles[i].ssid,
              g_state.profiles[i].connected ? "  CONNECTED" : "");
-    text(value, 340, y + 23, g_state.profiles[i].connected ? kGreen : TFT_WHITE, 2);
+    // Clipped to end before USE (x=720): "%.24s" plus "  CONNECTED" was 456 px
+    // from x=340 and ran under the button.
+    text_clipped(value, 340, y + 23, 370,
+                 g_state.profiles[i].connected ? kGreen : TFT_WHITE);
     button("USE", 720, y, 90, 44, TFT_DARKCYAN);
     button("UP", 820, y, 76, 44, i ? TFT_NAVY : TFT_DARKGREY);
     button("DOWN", 906, y, 90, 44,
@@ -285,7 +296,8 @@ void draw_connectivity() {
   for (uint8_t i = 0; i < shown; ++i) {
     const int x = 330 + (i % 2) * 428;
     const int y = 606 + (i / 2) * 36;
-    snprintf(value, sizeof(value), "%.18s  %d%s%s", g_state.networks[i].ssid,
+    // 418 px holds 34 size-2 characters; 18 + "  -67  LOCK  SAVED" was 36.
+    snprintf(value, sizeof(value), "%.16s  %d%s%s", g_state.networks[i].ssid,
              g_state.networks[i].rssi, g_state.networks[i].secure ? "  LOCK" : "  OPEN",
              g_state.networks[i].saved ? "  SAVED" : "");
     button(value, x, y, 418, 36,
@@ -654,6 +666,17 @@ Action handle_wifi_keyboard(int x, int y) {
       if (!g_wifi_edit_ssid[0]) return {};
       g_wifi_edit = WifiEdit::password;
       text_editor::begin("WI-FI PASSWORD", g_wifi_edit_password,
+                         sizeof(g_wifi_edit_password) - 1, true, "CONNECT");
+      draw_wifi_keyboard();
+      return {};
+    }
+    // WPA/WPA2/WPA3 passphrases are 8-63 characters, so a shorter one can
+    // only fail -- after a 15 s connect attempt, reported as a handshake
+    // timeout. Say so now and keep what was typed. 5 stays allowed for WEP
+    // (13 already passes); empty is an open network.
+    const size_t length = strlen(g_wifi_edit_password);
+    if (length > 0 && length < 8 && length != 5) {
+      text_editor::begin("PASSWORD: 8+ CHARACTERS", g_wifi_edit_password,
                          sizeof(g_wifi_edit_password) - 1, true, "CONNECT");
       draw_wifi_keyboard();
       return {};

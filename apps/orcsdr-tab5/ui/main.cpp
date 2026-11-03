@@ -8586,6 +8586,29 @@ void poll_wifi() {
     state_changed = true;
   }
   if (connected != wifi_connected) {
+    // An established link dropping used to change only the icon, so "it just
+    // disconnects" came with no reason on screen. Say why, and retry soon:
+    // the first scheduled retry is otherwise 15 s away, which is long for a
+    // momentary beacon loss on a link that was working a moment ago.
+    if (wifi_connected && !connected && !wifi_connecting &&
+        !wifi_auto_reconnect_suppressed) {
+      const uint8_t reason = orcsdr::wifi::last_disconnect_reason();
+      const char* why = orcsdr::wifi::disconnect_reason_text(reason);
+      if (why[0])
+        snprintf(wifi_status_message, sizeof(wifi_status_message), "Disconnected: %s", why);
+      else
+        snprintf(wifi_status_message, sizeof(wifi_status_message),
+                 "Disconnected (reason %u)", static_cast<unsigned>(reason));
+      Serial.printf("RTL_WIFI_DISCONNECTED reason=%u\n", static_cast<unsigned>(reason));
+      // Not while the SDIO transport is wedged: each attempt then costs a
+      // ~5 s main-loop stall, and service_wifi_auto_reconnect() already
+      // backs off to 120 s for exactly that case.
+      if (orcsdr::wifi::transport_healthy()) {
+        wifi_retry_backoff_s = 0;
+        wifi_retry_at_ms = now_ms + 3000u;
+        if (wifi_retry_at_ms == 0) wifi_retry_at_ms = 1;
+      }
+    }
     wifi_connected = connected;
     state_changed = true;
   }
@@ -8627,6 +8650,7 @@ orcsdr::fm::Snapshot fm_dashboard_snapshot() {
   snapshot.recording = g_audio_rec_active.load(std::memory_order_relaxed);
   snapshot.preset_scanning =
       rtl_fm_preset_scan_active.load(std::memory_order_relaxed);
+  snapshot.seeking = fm_seek_active.load(std::memory_order_acquire);
   snapshot.volume = rtl_ui_volume;
   snapshot.preset_count = static_cast<uint8_t>(fm_preset_count);
   snapshot.battery_percent = M5.Power.getBatteryLevel();
@@ -15398,9 +15422,9 @@ void process_command(char* command) {
     Serial.println("RTL_PRESET_LIST_END");
     return;
   }
-  if (strncmp(command, "RTL_PRESET_TUNE ", 17) == 0) {
+  if (strncmp(command, "RTL_PRESET_TUNE ", 16) == 0) {
     if (!authenticated) { Serial.println("RTL_PRESET_TUNE_ERROR auth_required"); return; }
-    const int index = atoi(command + 17) - 1;
+    const int index = atoi(command + 16) - 1;
     if (index < 0 || index >= fm_preset_count) {
       Serial.println("RTL_PRESET_TUNE_INVALID index out of range");
       return;
@@ -16256,7 +16280,8 @@ void loop() {
           if (strcmp(command.id, "home") == 0) {
             orcsdr::navigation::show_home();
           } else {
-            action.kind = AK::open_dashboard;
+            // Only arm the action on a match: an unknown id used to open
+            // Id::count, which closed Settings and then did nothing.
             for (size_t i = 0; i < orcsdr::dashboards::count(); ++i) {
               const auto* entry = orcsdr::dashboards::descriptor(i);
               if (entry == nullptr) continue;
@@ -16267,6 +16292,9 @@ void loop() {
                                  : entry->id == orcsdr::dashboards::Id::shortwave ? "shortwave"
                                  : entry->id == orcsdr::dashboards::Id::weather ? "weather"
                                  : entry->id == orcsdr::dashboards::Id::cb ? "cb"
+                                 : entry->id == orcsdr::dashboards::Id::gmrs ? "gmrs"
+                                 : entry->id == orcsdr::dashboards::Id::pocsag ? "pocsag"
+                                 : entry->id == orcsdr::dashboards::Id::wifi_analysis ? "wifi_analysis"
                                  : entry->id == orcsdr::dashboards::Id::lora ? "lora"
                                  : entry->id == orcsdr::dashboards::Id::airband ? "airband"
                                  : entry->id == orcsdr::dashboards::Id::marine ? "marine"
@@ -16274,7 +16302,8 @@ void loop() {
                                  : entry->id == orcsdr::dashboards::Id::rf_lab ? "rf_lab"
                                  : entry->id == orcsdr::dashboards::Id::settings ? "settings"
                                                                                : "";
-              if (strcmp(command.id, name) == 0) {
+              if (name[0] != '\0' && strcmp(command.id, name) == 0) {
+                action.kind = AK::open_dashboard;
                 action.dashboard = entry->id;
                 break;
               }

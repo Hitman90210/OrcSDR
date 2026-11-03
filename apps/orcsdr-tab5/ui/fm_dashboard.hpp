@@ -33,6 +33,7 @@ struct Snapshot {
   bool graphics_enabled = true;
   bool recording = false;
   bool preset_scanning = false;
+  bool seeking = false;
   uint8_t volume = 0;
   uint8_t preset_index = 0;
   uint8_t preset_count = 0;

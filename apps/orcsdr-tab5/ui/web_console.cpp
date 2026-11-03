@@ -8,6 +8,7 @@
 #include <esp_log.h>
 #include <mdns.h>
 
+#include <cmath>
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -60,6 +61,12 @@ std::atomic<uint32_t> g_audio_last_request_ms{0};
 uint8_t g_spec[kSpectrumBins]{};
 uint8_t g_spec_count = 0;
 uint32_t g_last_action_ms = 0;
+
+// printf renders NaN/inf as "nan"/"inf", which is not JSON: one bad meter
+// reading would make JSON.parse throw and blank the whole Companion page.
+double json_number(float value) {
+  return std::isfinite(value) ? static_cast<double>(value) : 0.0;
+}
 
 void json_escape(char* out, size_t out_size, const char* in) {
   if (out_size == 0) return;
@@ -197,16 +204,16 @@ esp_err_t handle_status(httpd_req_t* req) {
            static_cast<unsigned long>(snap.filter_bandwidth_hz),
            static_cast<unsigned long>(snap.effective_sps),
            static_cast<long>(snap.battery_percent),
-           static_cast<double>(snap.signal_dbfs),
-           static_cast<double>(snap.left_dbfs),
-           static_cast<double>(snap.right_dbfs), clock,
+           json_number(snap.signal_dbfs),
+           json_number(snap.left_dbfs),
+           json_number(snap.right_dbfs), clock,
            snap.volume_percent, spec,
            snap.channel_active ? "true" : "false", chan,
            static_cast<unsigned>(snap.channel_index),
            static_cast<unsigned>(snap.channel_count),
            snap.adsb_active ? "true" : "false",
            static_cast<unsigned long>(snap.adsb_messages),
-           static_cast<double>(snap.adsb_message_rate),
+           json_number(snap.adsb_message_rate),
            static_cast<unsigned>(snap.radar_range_nm),
            static_cast<unsigned>(snap.aircraft_tracked),
            snap.location_configured ? "true" : "false", air,
@@ -466,7 +473,12 @@ void poll(bool wifi_connected) {
   if (g_wifi_up_ms == 0) g_wifi_up_ms = millis();
   if (g_listening.load(std::memory_order_acquire)) return;
   if (millis() - g_wifi_up_ms < 2500) return;
-  start_server();
+  // A failed httpd_start (usually internal/DMA heap) used to be retried on
+  // every 400 ms poll, logging each time. Wait the settle period again.
+  if (!start_server()) {
+    g_wifi_up_ms = millis();
+    if (g_wifi_up_ms == 0) g_wifi_up_ms = 1;
+  }
 }
 
 void update(const Snapshot& snapshot) {

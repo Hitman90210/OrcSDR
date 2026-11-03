@@ -452,6 +452,12 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
   int status = -1;
   bool ok = client && open_get(client, &declared, &status, &open_result);
   if (!ok || (declared > 0 && declared != artifact.bytes) || status != 200) ok = false;
+  // "Download hash or network failure" used to cover every case, so a full
+  // SD card, a server 404 and a corrupted transfer all read the same.
+  const char* failure = ok ? nullptr
+                        : status > 0 && status != 200 ? "Server refused download"
+                        : declared > 0 && declared != artifact.bytes ? "Server file size changed"
+                                                                     : "Network failure";
   ESP_LOGI(kTag, "download stage=http_open ok=%d status=%d declared=%lld", ok ? 1 : 0,
            status, static_cast<long long>(declared));
   uint8_t* write_batch = static_cast<uint8_t*>(heap_caps_malloc(kWriteBatchBytes, MALLOC_CAP_SPIRAM));
@@ -469,7 +475,7 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
     const int got = esp_http_client_read(
         client, reinterpret_cast<char*>(target),
         std::min<size_t>(room, static_cast<size_t>(artifact.bytes - total)));
-    if (got <= 0) { ESP_LOGE(kTag, "download stage=http_read_failed got=%d", got); ok = false; break; }
+    if (got <= 0) { ESP_LOGE(kTag, "download stage=http_read_failed got=%d", got); failure = "Network dropped mid-download"; ok = false; break; }
     batch_used += static_cast<size_t>(got);
     const size_t header_take = std::min(sizeof(header) - header_size, static_cast<size_t>(got));
     if (header_take) {
@@ -480,7 +486,7 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
     total += static_cast<uint32_t>(got);
     if (batch_used == kWriteBatchBytes || total == artifact.bytes) {
       const size_t wrote = file.write(write_batch, batch_used);
-      if (wrote != batch_used) { ESP_LOGE(kTag, "download stage=sd_write_failed wrote=%u expected=%u", static_cast<unsigned>(wrote), static_cast<unsigned>(batch_used)); ok = false; break; }
+      if (wrote != batch_used) { ESP_LOGE(kTag, "download stage=sd_write_failed wrote=%u expected=%u", static_cast<unsigned>(wrote), static_cast<unsigned>(batch_used)); failure = "SD card write failed"; ok = false; break; }
       batch_used = 0;
     }
     if (total == static_cast<uint32_t>(got) || total == artifact.bytes) {
@@ -494,12 +500,15 @@ bool download_artifact(const Artifact& artifact, uint8_t pack_index,
   }
   uint8_t digest[32]{};
   if (ok && (total != artifact.bytes || mbedtls_sha256_finish(&sha, digest) != 0 ||
-             !hash_matches(digest, artifact.sha256))) ok = false;
+             !hash_matches(digest, artifact.sha256))) {
+    failure = "Downloaded file failed verification";
+    ok = false;
+  }
   mbedtls_sha256_free(&sha);
   if (write_batch) heap_caps_free(write_batch);
   if (client) { esp_http_client_close(client); esp_http_client_cleanup(client); }
   file.close();
-  if (!ok) { g_fs->remove(temporary); set_message("Download hash or network failure"); return false; }
+  if (!ok) { g_fs->remove(temporary); set_message(failure ? failure : "Download failed"); return false; }
 
   bool schema_ok = artifact.archive
       ? (memcmp(header, "PK\003\004", 4) == 0 || memcmp(header, "PK\005\006", 4) == 0)
