@@ -33,6 +33,7 @@ struct Snapshot {
   bool graphics_enabled = true;
   bool recording = false;
   bool preset_scanning = false;
+  bool seeking = false;
   bool gain_auto = true;
   bool gain_auto_selecting = false;
   float clipping_percent = 0.0f;

@@ -342,10 +342,10 @@ void draw_gain_control(bool compact) {
 // Listen page widgets repaint only when their inputs change (see redraw_guard.hpp).
 struct ListenGuards {
   ui::RedrawGuard preset, level, percent, gain, frequency, station, radio_text, running,
-      stereo;
+      stereo, seek;
   void invalidate_all() {
     for (ui::RedrawGuard* g : {&preset, &level, &percent, &gain, &frequency, &station,
-                               &radio_text, &running, &stereo})
+                               &radio_text, &running, &stereo, &seek})
       g->invalidate();
   }
 } g_listen;
@@ -373,6 +373,16 @@ void draw_listen_static() {
 void draw_listen_dynamic() {
   using ui::Signature;
   char value[32];
+  // The SEEK buttons sit at the ends of the 485 row (x 24 and 1004, 220 wide).
+  // Pressing either while a seek sweeps already stops it; say so, or a sweep
+  // of up to a few seconds looks like nothing happened.
+  if (g_listen.seek.changed(Signature().add(g_snapshot.seeking))) {
+    const bool seeking = g_snapshot.seeking;
+    button(24, 485, 220, 120, seeking ? "STOP SEEK" : "<<  SEEK -",
+           seeking ? kYellow : kGrid, seeking);
+    button(1004, 485, 220, 120, seeking ? "STOP SEEK" : "SEEK +  >>",
+           seeking ? kYellow : kGrid, seeking);
+  }
   if (g_listen.preset.changed(Signature().add(g_snapshot.preset_index)
                                   .add(g_snapshot.preset_count != 0))) {
     M5.Display.fillRect(42, 211, 264, 73, kPanel);
