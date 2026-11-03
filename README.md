@@ -36,26 +36,30 @@ Read the [RTL-SDR Blog feature](https://www.rtl-sdr.com/orcsdr-running-rtl-sdr-d
 
 Current release images include the matching ESP-Hosted C6 firmware used by the Tab5. Installation, updating, and recovery instructions are in the [Getting Started guide](docs/user-guide/getting-started.md) and [troubleshooting guide](docs/user-guide/troubleshooting.md).
 
-## What OrcSDR does
+## Dashboards
 
-- **Home:** a full-range VFO. Tune anywhere the receiver reaches with a step that follows the band (FM broadcast, airband, 2 m and 70 cm amateur, marine, CB and more are named in plain words above the spectrum), pick the demodulation (AUTO, NFM, AM, WFM, USB, LSB) from a mode popup with a short explanation of each, type a frequency on a keypad, and watch the live spectrum, waterfall, signal level, receiver status, and recently used dashboards. An optional OrcDial controls the same Home, including span and filter.
-- **FM Radio:** receive broadcast FM with stereo audio, RDS station information, presets, and station tuning tools.
-- **AM Radio:** receive broadcast AM with region-aware channel steps, presets, automatic tuning, and a full-band station scan.
-- **Shortwave:** enter the generic Browse/NFM workspace for experimental HF exploration; calibrated HF and complete AM/SSB modes are not yet available.
-- **Weather:** quickly tune the standard NOAA weather-radio channels.
-- **Airband:** dedicated receive-only 118–136.975 MHz AM aviation dashboard with 25/8.33 kHz tuning, scan/hold/skip controls, 121.500 guard access, activity history, and offline airport/channel data support. Hardware/RF acceptance remains experimental.
-- **Marine:** listen across the standard VHF marine channel plan.
-- **CB Radio:** scan all 40 Citizens Band channels at once and stop on whoever is talking, with priority channel, lockouts, activity log, full-band spectrum, and AM/USB/LSB listening.
-- **P25 Radio:** monitor trunked P25 control channels and follow supported voice traffic.
-- **ADS-B:** receive 1090 MHz aircraft broadcasts and show decoded aircraft, position, altitude, and flight details.
-- **LoRa:** passively monitor LoRa and Meshtastic traffic with spectrum, packet, node, traffic, map, and RF-health views.
-- **POCSAG:** receive pager traffic and inspect bounded RAM-only CAPCODE/message state. A persistent searchable archive is not implemented.
-- **Satellite:** opens generic Browse near 137.5 MHz; no dedicated satellite decoder or dashboard is implemented.
-- **RF Lab:** make live RF measurements, inspect receiver behavior, record IQ data, and open full-screen visualization tools.
-- **2.4 GHz Wi-Fi:** survey nearby access points, channels, signal strength, and advertised network security using the Tab5 wireless co-processor.
-- **Settings:** manage audio, display, Wi-Fi, storage, data packs, firmware information, and device updates.
+OrcSDR is receive-only. Dashboard availability and testing status vary by firmware version; see the [feature status](docs/user-guide/feature-status.md) and [User Guide](docs/user-guide/index.md) for details.
 
-Feature behavior and current limits are maintained in the [feature status](docs/user-guide/feature-status.md) and [dashboard guides](docs/user-guide/dashboards/fm.md).
+- **Home:** Tune across the attached receiver’s frequency range with direct frequency entry, selectable demodulation, and live signal monitoring. Optional OrcDial control provides hands-on tuning.
+- **FM Radio:** Listen to broadcast FM with stereo audio, RDS station information, presets, and station-seeking controls.
+- **AM Radio:** Listen to broadcast AM with region-aware channel spacing, presets, automatic tuning, and a full-band station scan.
+- **Shortwave:** Explore HF broadcasts and amateur bands with AM, USB, and LSB listening, band-aware tuning, and station memories. HF coverage depends on the receiver and antenna.
+- **Weather:** Quickly tune the standard NOAA weather-radio channels for local forecasts and weather broadcasts.
+- **CB Radio:** Monitor the 40 Citizens Band channels with AM, USB, and LSB listening. The band-wide scanner includes a priority channel, lockouts, and an activity log.
+- **P25 Radio:** Monitor P25 trunking control channels and follow supported clear voice traffic. Encrypted audio and Phase II voice decoding are not supported.
+- **ADS-B:** Track aircraft from 1090 MHz Mode-S and ADS-B broadcasts, with aircraft lists, mapped positions, altitude, and flight details.
+- **LoRa / Mesh:** Passively monitor LoRa and Meshtastic traffic, inspect received packets and nodes, and explore traffic and map views.
+- **POCSAG:** Receive pager transmissions and inspect decoded messages and CAPCODE identifiers.
+- **FT8 RX:** Receive and decode FT8 amateur-radio signals, browse decode history, and hunt for activity across FT8 bands.
+- **ACARS:** Receive VHF aircraft datalink messages and browse decoded traffic and message history.
+- **Airband:** Listen to AM aviation communications with 25/8.33 kHz tuning, scan/hold/skip controls, activity history, and offline airport/channel data support.
+- **Marine:** Access VHF marine listening through the general receiver workspace. A dedicated marine dashboard is not yet implemented.
+- **Satellite:** Open a general receiver workspace near 137.5 MHz for satellite-band exploration. A dedicated satellite decoder is not yet implemented.
+- **SSTV:** Receive slow-scan television images, watch pictures build live, and browse the picture gallery. Received images can be saved to microSD.
+- **Dead Air:** Investigate RF anomalies with live measurements, event tracking, and session logging. Optional environmental sensor readings add context to observations.
+- **RF Lab:** Use the receiver as a portable RF test bench with live measurements, receiver controls, measurement sessions, and IQ recording.
+- **2.4 GHz Wi-Fi:** Survey nearby Wi-Fi access points, channel usage, signal strength, and advertised network security using the onboard wireless co-processor.
+- **Settings:** Manage audio, display, Wi-Fi, storage, data packs, companion devices, and firmware information.
 
 ## OrcSDR on the Tab5
 
@@ -63,52 +67,11 @@ Feature behavior and current limits are maintained in the [feature status](docs/
 
 *OrcSDR running a live FM spectrum and waterfall on the M5Stack Tab5.*
 
-### RF Lab dashboard
-
-![OrcSDR RF Lab dashboard showing a live spectrum, waterfall, and receiver measurements](docs/images/orcsdr-rf-lab-dashboard.jpg)
-
-RF Lab turns the receiver into a portable test bench with four focused tabs:
-
-- **Live:** shows the spectrum and waterfall beside continuously updated peak frequency, peak power, noise floor, SNR, channel power, 99% occupied bandwidth, frequency error, clipping, DC offset, and I/Q balance.
-- **Controls:** provides capability-aware frequency stepping, sample-rate selection, PPM correction, automatic or manual tuner gain, RTL digital AGC, and Bias-T control. Settings can either be kept or restored when leaving RF Lab.
-- **Measurements:** takes individual snapshots or timed measurement runs, adds markers, compares readings with an optional reference source and path-loss value, and exposes guided measurement recipes.
-- **Records:** shows whether SD storage is available, lists recent measurement sessions and results, and identifies the saved session folders that can be exported through OrcSDR's SD tools.
-
-### FM dashboard
-
-![OrcSDR FM dashboard tuned to 96.1 MHz and displaying live RDS station information](docs/images/orcsdr-fm-dashboard.jpg)
-
-The FM dashboard organizes listening, station information, and diagnostics into five tabs:
-
-- **Listen:** presents the tuned frequency, preset number, relative signal level, station name and radio text, running and stereo state, left/right audio meters, RF gain, seek buttons, frequency steps, and direct frequency entry.
-- **Spectrum:** shows a live spectrum and waterfall with center frequency, DSP filter bandwidth, audio/IQ activity, RF gain, adjustable span, step controls, and tap-to-tune interaction.
-- **Station / RDS:** expands the currently playing station and decoded RDS fields, including Program Service name, RadioText, PI code, and PTY, alongside stereo, pilot-carrier, and decoder-lock status.
-- **RF Health:** reports effective versus requested sample rate, USB overruns, IQ consumer drops, audio underruns, DSP load, audio-buffer pressure, Wi-Fi state, driver state, and the most recent radio error.
-- **Settings:** controls sound, volume, tuning step, filter bandwidth, automatic or manual RF gain, spectrum graphics, and recording; it also provides preset scanning/rebuilding, device settings (including **System > SET CLOCK**, which sets the date, time and UTC offset on the device, with an optional network sync), and a return to Home while FM continues playing.
-
-### ADS-B dashboard
-
-![OrcSDR ADS-B dashboard showing its aircraft radar, receiver status, statistics, and aircraft list](docs/images/orcsdr-adsb-dashboard.jpg)
-
-The ADS-B dashboard receives Mode-S and ADS-B broadcasts on 1090 MHz and divides aircraft tracking into five tabs:
-
-- **Radar:** shows receiver and map status, aircraft and message totals, message rate, selected range, dropped samples, plotted aircraft positions, a compact aircraft list, signal level, positions per minute, and altitude distribution.
-- **List:** provides a browsable set of received aircraft with callsign or registration, ICAO address, aircraft type and operator when known, altitude, speed, range, bearing, vertical rate, and last-seen state.
-- **Target:** expands one selected aircraft with identity and registration data, altitude, speed, heading, climb or descent rate, range, bearing, latitude, longitude, last-seen status, and signal level. Installed aviation data can also provide a nearby ATC listening shortcut.
-- **Stats:** charts signal strength, message rate, and Mode-S activity; summarizes aircraft, message, sample-rate, and USB/DSP-drop counters; and reports the availability of FAA aircraft data, aviation frequencies, the offline map, and ATC audio.
-- **Settings:** sets the receiver location and radar range, shows the active RF-gain state, and manages FAA aircraft data, airport and frequency data, the offline map pack, and manual ATC listening.
-
-## Visualization modes
-
-![Six OrcSDR visualization modes: spectrum and FFT, phosphor persistence, 3D spectrum history, polar and phase, channel occupancy, and channelized tiles](docs/images/orcsdr-visualization-modes.jpg)
-
-*A selection of OrcSDR's full-screen RF visualization modes.*
-
 ## Community hardware
 
 See [Community Hardware](hardware/community/README.md) for community-designed 3D-printable cases, keyboard enclosures, mounts, and accessories for OrcSDR.
 
-- **[Axeman72's OrcSDR handheld case](hardware/community/Axeman72/README.md):** shared in [GitHub Discussion #202](https://github.com/hardcoreerik/OrcSDR/discussions/202). Design files have been offered, but are not yet hosted here.
+- **[Axeman72's OrcSDR handheld case](hardware/community/Axeman72/README.md):** featured from [GitHub Discussion #202](https://github.com/hardcoreerik/OrcSDR/discussions/202); V1 STL files and assembly notes were submitted in [PR #212](https://github.com/hardcoreerik/OrcSDR/pull/212). The proposed Community Hardware mirror is under review pending license confirmation.
 - **[Tab5 Keyboard Clamshell Cyberdeck](hardware/community/pixeltwisters-tab5-clamshell/README.md):** shared by Reddit user u/pixeltwisters, with [STL/3MF downloads and build instructions on MakerWorld](https://makerworld.com/en/models/3405309-tab5-keyboard-clamshell-cyberdeck). The design is externally hosted under its own noncommercial license.
 
 Want to share your own case or accessory? [Start a Discussion](https://github.com/hardcoreerik/OrcSDR/discussions). You do not need repository collaborator access to submit a build. OrcSDR maintainers review and add selected entries with credit to the original designers.
@@ -188,3 +151,9 @@ OrcSDR is licensed under [GNU AGPL-3.0-only](LICENSE), with separate commercial 
 <p align="center">
   OrcSDR is made by Oregon Radio Company LLC · <a href="https://theorc.dev">theorc.dev</a> · <a href="mailto:erik@theorc.dev">erik@theorc.dev</a>
 </p>
+
+## Support development
+
+If this project is useful to you, consider supporting its development. Across ORC projects, support helps fund development time, hardware testing, receiver compatibility, and decoder work.
+
+[GitHub Sponsors](https://github.com/sponsors/hardcoreerik) · [Ko-fi](https://ko-fi.com/hardcoreerik) · [PayPal](https://paypal.me/hardcoreerik)

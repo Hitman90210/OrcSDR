@@ -116,7 +116,23 @@ Connected to real data:
   stack in PSRAM) -> `SdJournalSink`/`EventJournal`. Health (state, session, saved, lost, dropped) is shown
   on Overview and Review. The worker closes and syncs the file when the screen is left.
 
-Still NOT connected: demodulated-audio level/envelope (Audio tab shows unavailable), ENV III sensor
-(Environment tab shows unavailable), audio/IQ clip recording and replay, device-motion reading, waterfall.
+Since this section was written (see `CHANGELOG.md` for the details): the Spectrum waterfall, the Audio tab's
+level meter and detector, receiver and microphone clips with hash check and replay, and the sweep controls are
+connected. The Overview shows a one-minute RF strip, the orb and a session card; the Events tab is tappable (detail with
+band-plan context, paging, VIEW CLIP, SCRUB, CONTROL RUN, CHIME); sweeps fill a band map; the Spectrum tab has a peak
+readout and tap-to-tune. Per-event traces, the control run and the session counters live in the app glue
+(`dead_air_app.cpp`) and are handed to the dashboard through `Snapshot`.
+
+ENV III (SHT30 + QMP6988 on Port A) is read by `dead_air_env` (pure logic, host-tested) through `dead_air_env_m5`
+(M5Unified `Ex_I2C`, which also switches the Port A 5 V rail on). Temperature, humidity and pressure appear on the
+Environment tab and the Overview card; `RTL_DEAD_AIR ENV` reports it. Not verified on a Tab5 yet.
+
+Environment events (`dead_air_envevents`, host-tested, fed once per sensor sample from `tick()`) log a temperature, humidity or
+pressure departure from the channel's own baseline. They do not yet trigger an RF measurement, scan or clip, and are not counted
+on the session card.
+
+Still NOT connected: device-motion reading (`motion_g` is never
+filled), continuous audio/IQ recording, session export. `ActionKind::start_recording`, `stop_recording`,
+`save_clip` and `export_session` exist but have no buttons.
 
 Serial: `RTL_UI_OPEN DEAD_AIR`, `RTL_DEAD_AIR STATUS`.
