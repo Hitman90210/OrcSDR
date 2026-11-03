@@ -1627,6 +1627,57 @@ Still not on hardware.
 - CI: `actions/checkout` → v7.0.1 (Node 20 deprecation); ESP-IDF environment
   sourced before `idf.py`; component-hash mismatch under CRLF checkout fixed.
 
+## 5.9 Whole-project sweep (2026-11-03)
+
+Two passes over the firmware sources, done in a cloud session with no ESP-IDF:
+**build-verified by nobody**. Python checks and source hygiene pass. Found by
+pattern sweeps (prefix lengths, wrap-unsafe time compares, buffer sizes) and by
+reading the Wi-Fi, Companion, catalog, storage, ADS-B and FM paths.
+
+**Bugs that were silently wrong:**
+
+- `RTL_PRESET_TUNE` compared 17 bytes of the 16-byte `"RTL_PRESET_TUNE "`, so
+  the NUL had to match too and the documented command never ran. Upstream has
+  the same bug.
+- `storage::used_bytes()` was a stub returning 0, so Settings -> Storage "free"
+  and the catalog's space check both used the card's raw capacity. Now
+  `esp_vfs_fat_info`, cached 60 s, refreshed before every download; the UI
+  reads only the cache while the catalog worker owns the card.
+- Removing a data pack left its `.bak` rollback copies and `.ver` marker behind.
+- The C6 version check hard-coded `3.0.6` beside the CMake-provided
+  `ORCSDR_HOSTED_C6_VERSION`; bumping the release JSON alone would have
+  disabled Wi-Fi.
+- Disconnect reason 8 (our own leave) was labelled "deauth by AP"; 203 is
+  association, not the handshake.
+
+**Behaviour changes worth a bench check:**
+
+- **Wi-Fi joins the strongest AP of the SSID** (`WIFI_ALL_CHANNEL_SCAN` +
+  `WIFI_CONNECT_AP_BY_SIGNAL`, about 1 s slower to connect), with an explicit
+  security floor: WPA for 8+ character passwords (ESP-IDF otherwise assumes
+  WPA2 and cannot join WPA-only routers), WEP for shorter, open for none.
+- **A dropped link** shows "Disconnected: <reason>", logs
+  `RTL_WIFI_DISCONNECTED reason=N`, and retries after 3 s instead of 15 s -- not
+  while the SDIO transport is wedged.
+- **ADS-B position filter.** A decode beyond 400 NM of a configured receiver,
+  or a move faster than ~1300 kt (+2 NM slack) since the last fix, is dropped
+  (`RTL_ADSB_POSITION_REJECTED` at TRACE). Three rejects in a row accept the
+  next fix, on the grounds that the old one was the bad one.
+- Settings Wi-Fi panel text no longer overlaps; 1-7 character passwords
+  (except 5, WEP) are refused at the keyboard; FM Listen RadioText is clipped;
+  SEEK reads STOP SEEK while sweeping.
+- Companion: non-finite floats cannot break the status JSON, `tune=` must be a
+  plain decimal in 100 kHz-2 GHz, failed `httpd_start` backs off, `open=`
+  knows GMRS/POCSAG/Wi-Fi analysis.
+- Catalog download failures name their cause; RDS capture stop waits at most
+  500 ms for the writer.
+
+**Left alone deliberately:** `RTL_RDS_CAPTURE_*`/`RTL_RDS_REPLAY` stay
+unauthenticated as `API_SERIAL_CLI.md` documents; two unused upstream-shared
+wrappers (`home::browser_active`, `orcsdr_run_boot_splash`) stay to keep the
+re-base diff small. The stray root `bbox.txt` (a map bounding box committed by
+accident in `b2b70c2`) is removed.
+
 ---
 
 ## 6. Making the device local to the user

@@ -14,6 +14,7 @@
 
 #include <cstring>
 #include <algorithm>
+#include <initializer_list>
 
 namespace orcsdr::catalog {
 namespace {
@@ -430,6 +431,10 @@ bool hash_matches(const uint8_t digest[32], const char* expected) {
 bool download_artifact(const Artifact& artifact, uint8_t pack_index,
                        uint8_t progress_base, uint8_t progress_span) {
   if (g_fs == nullptr || artifact.url[0] == '\0') return false;
+  // g_free_bytes was a single figure taken at begin(), so every pack
+  // installed since made it more optimistic. Ask the card now.
+  if (const uint64_t free_now = orcsdr::storage::free_bytes(true); free_now > 0)
+    g_free_bytes = free_now;
   if (g_free_bytes < artifact.bytes + kChunkBytes) { set_message("Not enough SD space"); return false; }
   ESP_LOGI(kTag, "download stage=start pack=%u kind=%s bytes=%u", pack_index,
            artifact.archive ? "archive" : "runtime", static_cast<unsigned>(artifact.bytes));
@@ -726,10 +731,23 @@ bool activate_pack(const Pack& pack) {
       ok &= orcsdr::p25config::delete_profile(
           *g_fs, g_state.packs[pack_index].id, &profiles, error, sizeof(error));
     if (catalog_owned && g_fs->exists(version_path)) ok &= g_fs->remove(version_path);
-  } else if (g_fs && g_fs->exists(pack.runtime.destination)) {
-    ok &= g_fs->remove(pack.runtime.destination);
+  } else if (g_fs) {
+    if (g_fs->exists(pack.runtime.destination)) ok &= g_fs->remove(pack.runtime.destination);
+    // The .ver marker and both .bak rollback copies belong to the pack too.
+    // Leaving them meant "remove" freed only half the space -- for the FAA
+    // aircraft pack, tens of MB stayed on the card as an invisible backup.
+    char extra[112]{};
+    for (const char* suffix : {".ver", ".bak"}) {
+      snprintf(extra, sizeof(extra), "%s%s", pack.runtime.destination, suffix);
+      if (g_fs->exists(extra)) ok &= g_fs->remove(extra);
+    }
   }
   if (g_fs && g_fs->exists(pack.archive.destination)) ok &= g_fs->remove(pack.archive.destination);
+  if (g_fs) {
+    char archive_backup[112]{};
+    snprintf(archive_backup, sizeof(archive_backup), "%s.bak", pack.archive.destination);
+    if (g_fs->exists(archive_backup)) ok &= g_fs->remove(archive_backup);
+  }
   set_message(ok ? "Pack removed" : "Could not remove pack");
   refresh_installed();
   return ok;

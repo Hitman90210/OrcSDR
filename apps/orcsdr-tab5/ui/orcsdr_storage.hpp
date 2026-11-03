@@ -60,6 +60,13 @@ const char* last_mount_error();
 bool mounted();
 FileSystem& filesystem();
 uint64_t total_bytes();
+// Free space as FATFS reports it. Cached for 60 s because a query on a large
+// card can walk the FAT for a second or more; pass refresh=true right before
+// a write that must fit (the catalog download does). 0 when unmounted or
+// unknown. cached_free_bytes() never touches the card -- use it from the UI
+// while another task may be writing.
+uint64_t free_bytes(bool refresh = false);
+uint64_t cached_free_bytes();
 uint64_t used_bytes();
 
 }  // namespace orcsdr::storage

@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <esp_timer.h>
 #include <esp_vfs_fat.h>
 #include <sdmmc_cmd.h>
 #include <sd_pwr_ctrl_by_on_chip_ldo.h>
@@ -184,6 +185,49 @@ const char* last_mount_error() { return g_last_mount_error; }
 bool mounted() { return g_mounted; }
 FileSystem& filesystem() { return g_filesystem; }
 uint64_t total_bytes() { return g_card ? static_cast<uint64_t>(g_card->csd.capacity) * g_card->csd.sector_size : 0; }
-uint64_t used_bytes() { return 0; }
+// used_bytes() used to return 0 unconditionally, so every "free" figure in
+// the app (Settings -> Storage, and the catalog's "Not enough SD space"
+// check) was really the card's raw capacity.
+namespace {
+portMUX_TYPE g_free_lock = portMUX_INITIALIZER_UNLOCKED;
+uint64_t g_free_cached = 0;
+uint32_t g_free_cached_at_ms = 0;
+bool g_free_have = false;
+}  // namespace
+
+uint64_t cached_free_bytes() {
+  portENTER_CRITICAL(&g_free_lock);
+  const uint64_t value = g_free_have ? g_free_cached : 0;
+  portEXIT_CRITICAL(&g_free_lock);
+  return g_mounted ? value : 0;
+}
+
+uint64_t free_bytes(bool refresh) {
+  auto& lock = g_free_lock;
+  auto& cached = g_free_cached;
+  auto& cached_at_ms = g_free_cached_at_ms;
+  auto& have = g_free_have;
+  if (!g_mounted) return 0;
+  const uint32_t now = static_cast<uint32_t>(esp_timer_get_time() / 1000);
+  portENTER_CRITICAL(&lock);
+  const bool fresh = have && !refresh && now - cached_at_ms < 60000u;
+  const uint64_t value = cached;
+  portEXIT_CRITICAL(&lock);
+  if (fresh) return value;
+  uint64_t total = 0, free = 0;
+  if (esp_vfs_fat_info("/sd", &total, &free) != ESP_OK) return have ? value : 0;
+  portENTER_CRITICAL(&lock);
+  cached = free;
+  cached_at_ms = now;
+  have = true;
+  portEXIT_CRITICAL(&lock);
+  return free;
+}
+
+uint64_t used_bytes() {
+  const uint64_t total = total_bytes();
+  const uint64_t free = free_bytes();
+  return free && free <= total ? total - free : 0;
+}
 
 }  // namespace orcsdr::storage

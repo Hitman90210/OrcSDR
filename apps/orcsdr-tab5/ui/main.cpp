@@ -1874,6 +1874,8 @@ struct AdsbTrack {
   orcsdr::adsb_rx::Frame odd_cpr{};
   uint32_t even_cpr_ms = 0;
   uint32_t odd_cpr_ms = 0;
+  uint32_t position_ms = 0;
+  uint8_t position_rejects = 0;
   uint32_t last_seen_ms = 0;
   uint16_t signal = 0;
   bool metadata_pending = false;
@@ -2200,12 +2202,50 @@ void publish_pocsag_snapshot(uint32_t now) {
   orcsdr::pocsag::set_live_snapshot(snapshot);
 }
 
+// A CRC-valid even/odd pair can still decode to the wrong place: a pair
+// straddling a latitude-zone change, or a frame whose corruption the CRC
+// happened to miss. One such fix used to make an aircraft jump across the
+// radar. Reject positions beyond radio range of the receiver, and moves no
+// aircraft could make since the last accepted fix (~1300 kt plus 2 NM of
+// slack). Three rejections in a row mean the *old* fix was the bad one, so
+// the next decode is taken as the new truth instead of locking the track.
+constexpr float kAdsbMaxRangeNm = 400.0f;
+constexpr float kAdsbMaxNmPerSecond = 0.36f;
+constexpr uint8_t kAdsbRejectsBeforeReset = 3;
+
+bool adsb_position_plausible(double latitude, double longitude, bool had_position,
+                             double previous_latitude, double previous_longitude,
+                             uint32_t elapsed_ms, uint8_t previous_rejects) {
+  if (!std::isfinite(latitude) || !std::isfinite(longitude) || latitude < -90.0 ||
+      latitude > 90.0 || longitude < -180.0 || longitude > 180.0)
+    return false;
+  float range_nm = 0.0f;
+  int bearing_deg = 0;
+  if (adsb_settings.location_configured) {
+    orcsdr::adsb::relative_position(adsb_settings.latitude_e7, adsb_settings.longitude_e7,
+                                    latitude, longitude, &range_nm, &bearing_deg);
+    if (range_nm > kAdsbMaxRangeNm) return false;
+  }
+  if (!had_position || previous_rejects >= kAdsbRejectsBeforeReset ||
+      elapsed_ms > 120000u)
+    return true;
+  orcsdr::adsb::relative_position(static_cast<int32_t>(lround(previous_latitude * 1e7)),
+                                  static_cast<int32_t>(lround(previous_longitude * 1e7)),
+                                  latitude, longitude, &range_nm, &bearing_deg);
+  const float allowed_nm = 2.0f + kAdsbMaxNmPerSecond * (elapsed_ms / 1000.0f);
+  return range_nm <= allowed_nm;
+}
+
 void on_adsb_frame(const orcsdr::adsb_rx::Frame& frame, void*) {
   const uint32_t now = millis();
   bool added = false;
   bool decode_position = false;
   orcsdr::adsb_rx::Frame even_cpr{}, odd_cpr{};
   bool use_odd = false;
+  bool had_position = false;
+  double previous_latitude = 0, previous_longitude = 0;
+  uint32_t previous_position_ms = 0;
+  uint8_t previous_rejects = 0;
   portENTER_CRITICAL(&adsb_tracks_mux);
   AdsbTrack* track = nullptr;
   AdsbTrack* oldest = &adsb_tracks[0];
@@ -2263,6 +2303,11 @@ void on_adsb_frame(const orcsdr::adsb_rx::Frame& frame, void*) {
       odd_cpr = track->odd_cpr;
       use_odd = track->odd_cpr_ms > track->even_cpr_ms;
       decode_position = true;
+      had_position = track->has_position;
+      previous_latitude = track->latitude;
+      previous_longitude = track->longitude;
+      previous_position_ms = track->position_ms;
+      previous_rejects = track->position_rejects;
     }
   }
   portEXIT_CRITICAL(&adsb_tracks_mux);
@@ -2270,13 +2315,25 @@ void on_adsb_frame(const orcsdr::adsb_rx::Frame& frame, void*) {
     double latitude = 0, longitude = 0;
     if (orcsdr::adsb_rx::decode_global_cpr(even_cpr, odd_cpr, use_odd,
                                            &latitude, &longitude)) {
+      const bool accept = adsb_position_plausible(
+          latitude, longitude, had_position, previous_latitude, previous_longitude,
+          now - previous_position_ms, previous_rejects);
       portENTER_CRITICAL(&adsb_tracks_mux);
       if (track->used && track->icao == frame.icao) {
-        track->latitude = latitude;
-        track->longitude = longitude;
-        track->has_position = true;
+        if (accept) {
+          track->latitude = latitude;
+          track->longitude = longitude;
+          track->has_position = true;
+          track->position_ms = now;
+          track->position_rejects = 0;
+        } else if (track->position_rejects < 255) {
+          ++track->position_rejects;
+        }
       }
       portEXIT_CRITICAL(&adsb_tracks_mux);
+      if (!accept && serial_verbosity_at(SerialVerbosity::trace))
+        Serial.printf("RTL_ADSB_POSITION_REJECTED icao=%06lX lat=%.4f lon=%.4f\n",
+                      static_cast<unsigned long>(frame.icao), latitude, longitude);
     }
   }
   if (added) adsb_aircraft_count.fetch_add(1, std::memory_order_relaxed);
@@ -4615,7 +4672,15 @@ bool rds_capture_write_files(size_t samples) {
 
 bool rds_capture_stop_and_export() {
   g_rds_capture_active.store(false, std::memory_order_release);
-  while (g_rds_capture_writing.load(std::memory_order_acquire)) delay(1);
+  // The writer clears this within one audio block; bound the wait so a
+  // stalled audio task cannot hang the serial/UI loop here forever.
+  for (uint16_t waited = 0;
+       g_rds_capture_writing.load(std::memory_order_acquire) && waited < 500; ++waited)
+    delay(1);
+  if (g_rds_capture_writing.load(std::memory_order_acquire)) {
+    Serial.println("RTL_RDS_CAPTURE_ERROR writer_busy");
+    return false;
+  }
   const size_t samples = g_rds_capture_write.load(std::memory_order_acquire);
   if (samples == 0) {
     Serial.println("RTL_RDS_CAPTURE_STOP empty");
@@ -10465,9 +10530,13 @@ const orcsdr::settings::State& global_settings_state() {
   state.fm_frequency_hz = rtl_saved_fm_hz;
   state.sd_ready = g_sd_ready;
   state.sd_total_bytes = sd_total_bytes();
-  state.sd_free_bytes = g_sd_ready && g_sd_fs ? state.sd_total_bytes -
-      orcsdr::storage::used_bytes() : 0;
   const auto catalog_state = orcsdr::catalog::state();
+  // Real free space now (used_bytes() was a stub returning 0). Read from the
+  // cache while the catalog worker owns the card, so the UI never queries
+  // FATFS underneath a download.
+  state.sd_free_bytes = !(g_sd_ready && g_sd_fs) ? 0
+                        : catalog_state.busy     ? orcsdr::storage::cached_free_bytes()
+                                                 : orcsdr::storage::free_bytes();
   state.catalog_ready = catalog_state.ready;
   state.catalog_busy = catalog_state.busy;
   state.catalog_progress_percent = catalog_state.progress_percent;

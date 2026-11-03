@@ -11,6 +11,7 @@
 #include <cmath>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 extern const uint8_t web_console_html_start[] asm("_binary_web_console_html_start");
@@ -325,7 +326,19 @@ esp_err_t handle_action(httpd_req_t* req) {
   }
   Command command{};
   command.kind = parse_kind(body);
-  if (command.kind == CommandKind::tune) command.value = static_cast<uint32_t>(atoi(body + 5));
+  if (command.kind == CommandKind::tune) {
+    // atoi turned "tune=abc" into 0 Hz and "tune=-1" into 4.29 GHz. Take a
+    // plain decimal in the RTL-SDR's range or refuse it here.
+    char* end = nullptr;
+    const unsigned long hz = strtoul(body + 5, &end, 10);
+    while (end && (*end == '\r' || *end == '\n' || *end == ' ')) ++end;
+    if (end == body + 5 || (end && *end != '\0') || body[5] == '-' || hz < 100000UL ||
+        hz > 2000000000UL) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      return httpd_resp_send(req, "bad frequency", 13);
+    }
+    command.value = static_cast<uint32_t>(hz);
+  }
   if (command.kind == CommandKind::open) strlcpy(command.id, body + 5, sizeof(command.id));
   if (command.kind == CommandKind::none) {
     httpd_resp_set_status(req, "400 Bad Request");

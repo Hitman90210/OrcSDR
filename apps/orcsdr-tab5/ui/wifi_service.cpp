@@ -460,6 +460,14 @@ bool connect(const char* network, const char* password) {
   config.sta.sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
   config.sta.pmf_cfg.capable = true;
   config.sta.pmf_cfg.required = false;
+  // Weakest security accepted. Left unset, ESP-IDF treats any 8+ character
+  // password as "WPA2 or better", so an older WPA-only router could never be
+  // joined; an explicit floor keeps WPA working while still refusing an open
+  // AP that merely copies the SSID of a secured network.
+  const size_t password_length = password ? strlen(password) : 0;
+  config.sta.threshold.authmode = password_length >= 8   ? WIFI_AUTH_WPA_PSK
+                                  : password_length > 0 ? WIFI_AUTH_WEP
+                                                        : WIFI_AUTH_OPEN;
   g_failed.store(false, std::memory_order_release);
   g_connected.store(false, std::memory_order_release);
   strlcpy(g_ssid, network, sizeof(g_ssid));
