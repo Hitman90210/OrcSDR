@@ -22662,9 +22662,9 @@ void process_command(char* command) {
     Serial.println("RTL_PRESET_LIST_END");
     return;
   }
-  if (strncmp(command, "RTL_PRESET_TUNE ", 17) == 0) {
+  if (strncmp(command, "RTL_PRESET_TUNE ", 16) == 0) {
     if (!authenticated) { Serial.println("RTL_PRESET_TUNE_ERROR auth_required"); return; }
-    const int index = atoi(command + 17) - 1;
+    const int index = atoi(command + 16) - 1;
     if (index < 0 || index >= fm_preset_count) {
       Serial.println("RTL_PRESET_TUNE_INVALID index out of range");
       return;
