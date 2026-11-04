@@ -1,6 +1,10 @@
 # ESP-IDF / PlatformIO
 build/
 build-native-hosted3/
+# A second app build tree, for the stack-usage checks. Only "build/" is matched
+# by the bare pattern above; a named sibling has to be listed, or half a
+# gigabyte of build output is one `git add -A` away from the history.
+build-stackcheck/
 .pio/
 sdkconfig
 sdkconfig.old
