@@ -1425,9 +1425,13 @@ bool self_check() {
          tap_action(kStepperSpan + 5, kControlY + 8).kind == ActionKind::span_down &&
          tap_action(kStepperTune + kStepperW - 5, kControlY + 8).kind == ActionKind::step_up &&
          tap_action(kStepperSize + 5, kControlY + 8).kind == ActionKind::step_size_down &&
-         tap_action(1223, 13).kind == ActionKind::open_device_settings &&
+         // Aim at the middle of each header button, not a pixel just inside its edge. These were 1223
+         // and 1100, which sat 2 px and 1 px inside the settings and mute buttons: when the header row
+         // was respaced so every gap was 5 px, x=1100 fell into the gap and this check failed. The
+         // widths are audio_header's own, so the centres are the only points that stay inside.
+         tap_action(1246, 39).kind == ActionKind::open_device_settings &&
          tap_action(kHeaderStatusX+kHeaderStatusW-20,kHeaderStatusY+20).kind == ActionKind::open_clock &&
-         tap_action(1100, 13).kind == ActionKind::sound_toggle &&
+         tap_action(1130, 39).kind == ActionKind::sound_toggle &&
          std::abs(home_spectrum_floor(levels, std::size(levels), 10.0f) - 62.0f) < 0.01f;
 }
 
