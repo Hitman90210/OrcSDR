@@ -1,1 +1,11 @@
 *.sh text eol=lf
+
+# reportlab writes PDFs with no NUL bytes anywhere, so git's "is this binary?"
+# heuristic calls them text. With core.autocrlf=true that means checkout rewrites
+# every LF as CRLF: the bench test plan came back from a fresh checkout 495 bytes
+# larger with 162 CRLFs inserted, which moves every byte offset in the xref table.
+# The commit is fine, the working copy is what gets mangled, so it survives a
+# round trip on the machine that generated it and breaks for everyone who clones.
+# -text turns the conversion off. Image formats are unaffected: PNG and BMP carry
+# NUL bytes, so the heuristic already classifies them correctly.
+*.pdf -text
