@@ -6689,7 +6689,7 @@ void draw_capture_tool_panel() {
   M5.Display.setTextDatum(top_left);
   M5.Display.setTextSize(3);
   M5.Display.setTextColor(TFT_ORANGE, TFT_BLACK);
-  M5.Display.drawString("CAPTURE tool — post-demod audio (48 kHz mono PCM)",
+  M5.Display.drawString("CAPTURE tool - post-demod audio (48 kHz mono PCM)",
                         kSpectrumX + 16, panel_y + 12);
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -6708,11 +6708,11 @@ void draw_capture_tool_panel() {
   M5.Display.drawString(line, kSpectrumX + 16, panel_y + 120);
   snprintf(line, sizeof(line),
            "SD: %s   |  REC button or RTL_REC_START/STOP   |  WAV for Audacity/etc",
-           g_sd_ready ? "ready" : (g_sd_tried ? "missing — PCM held in PSRAM" : "will try on export"));
+           g_sd_ready ? "ready" : (g_sd_tried ? "missing - PCM held in PSRAM" : "will try on export"));
   M5.Display.drawString(line, kSpectrumX + 16, panel_y + 144);
   M5.Display.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
   M5.Display.drawString(
-      "Future: IQ dump, gain lab, band scan — same tool shell, separate tabs.",
+      "Future: IQ dump, gain lab, band scan - same tool shell, separate tabs.",
       kSpectrumX + 16, panel_y + 176);
 }
 
@@ -14815,9 +14815,23 @@ void ft8_auto_clock_sync() {
   if (g_ft8_clock_test_hold) return;
   orcsdr::clock_sync::DueInput due;
   due.status = status;
-  due.decoder_running = true;
+  due.clock_wanted = true;
   due.ms_since_last_attempt = orcsdr::ntp_sync::ms_since_last_attempt();
   if (orcsdr::clock_sync::auto_sync_due(due) && orcsdr::ntp_sync::start(true)) Serial.println("ORC_FT8_NTP auto sync requested");
+}
+
+// The clock is shown on Home and in Settings, so it is kept right whenever Wi-Fi is up, not only while the FT8 decoder runs. Same policy
+// (clock_sync::auto_sync_due): one sync when the clock is unsynced or has gone stale, then every two hours, with the usual retry delays.
+// Nothing is contacted while Wi-Fi is off, and the hand-set RTC is never overwritten by anything but a sync that verified.
+void device_auto_clock_sync() {
+  if (orcsdr::ft8_runtime::active()) return;   // the decoder's own path above already owns the clock while it runs
+  if (g_ft8_clock_test_hold) return;
+  orcsdr::clock_sync::DueInput due;
+  due.status = ft8_clock_sync_input();
+  due.clock_wanted = true;
+  due.ms_since_last_attempt = orcsdr::ntp_sync::ms_since_last_attempt();
+  if (orcsdr::clock_sync::auto_sync_due(due) && orcsdr::ntp_sync::start(true))
+    Serial.println("ORC_NTP auto sync requested");
 }
 
 void ft8_dashboard_fill_snapshot(orcsdr::ft8::Snapshot& snapshot) {
@@ -16137,6 +16151,7 @@ void service_clock() {
     (void)orcsdr::ntp_sync::start(orcsdr::wifi::connected());
   orcsdr::ntp_sync::poll();
   ft8_auto_clock_sync();
+  device_auto_clock_sync();
   bool ok = false;
   if (!orcsdr::ntp_sync::take_result(&ok)) return;
   if (ok && !preferences.putBool("rtc_est", true)) ok = false;
@@ -24061,7 +24076,7 @@ void boot_wifi_on_splash() {
   wifi_save_after_connect = false;
   wifi_connect_requested.store(true, std::memory_order_release);
   char status[80];
-  snprintf(status, sizeof(status), "Connecting to Wi-Fi \"%s\"…", wifi_ssid);
+  snprintf(status, sizeof(status), "Connecting to Wi-Fi \"%s\"...", wifi_ssid);
   orcsdr_splash_set_status(status);
   Serial.println("RTL_WIFI_BOOT_CONNECT_QUEUED splash");
   const uint32_t started_ms = millis();
@@ -24075,7 +24090,7 @@ void boot_wifi_on_splash() {
       break;
     if (wifi_reconnect_attempts != shown_attempt) {
       shown_attempt = wifi_reconnect_attempts;
-      snprintf(status, sizeof(status), "Wi-Fi \"%s\": retrying (attempt %u)…", wifi_ssid,
+      snprintf(status, sizeof(status), "Wi-Fi \"%s\": retrying (attempt %u)...", wifi_ssid,
                static_cast<unsigned>(shown_attempt + 1));
       orcsdr_splash_set_status(status);
     }
@@ -24332,7 +24347,7 @@ void setup() {
    * names each step as it runs. It also powers and mounts the microSD card,
    * which ensure_tab5_sd() adopts below. */
   (void)orcsdr_splash_begin();
-  orcsdr_splash_set_status("Loading settings…");
+  orcsdr_splash_set_status("Loading settings...");
   uint8_t mac[6];
   esp_read_mac(mac, ESP_MAC_BASE);
   snprintf(node_id, sizeof(node_id), "m5tab5_%02x%02x%02x%02x%02x%02x",
@@ -24369,9 +24384,9 @@ void setup() {
   }
   apply_wifi_antenna();
   if (!settings_wifi_power_enabled) stop_wifi();
-  orcsdr_splash_set_status("Checking SD card…");
+  orcsdr_splash_set_status("Checking SD card...");
   if (ensure_tab5_sd()) {
-    orcsdr_splash_set_status("Loading data packs and maps…");
+    orcsdr_splash_set_status("Loading data packs and maps...");
     (void)orcsdr::rf_lab::initialize(g_sd_fs);
     load_pocsag_scan_list();
     orcsdr::catalog::begin(g_sd_fs, orcsdr::storage::free_bytes());
@@ -24391,12 +24406,12 @@ void setup() {
     if (boot_init_stage != shown_stage) {
       shown_stage = boot_init_stage;
       orcsdr_splash_set_status(
-          shown_stage == BootInitStage::usb_power_settle ? "Powering RTL-SDR USB port…"
+          shown_stage == BootInitStage::usb_power_settle ? "Powering RTL-SDR USB port..."
           : shown_stage == BootInitStage::rtl_enumerating
-              ? (boot_rtl_power_recovered ? "Retrying RTL-SDR detection…" : "Detecting RTL-SDR…")
-          : shown_stage == BootInitStage::rtl_power_recover ? "Power-cycling RTL-SDR…"
-          : shown_stage == BootInitStage::speaker_settle ? "Starting audio…"
-                                                          : "Starting…");
+              ? (boot_rtl_power_recovered ? "Retrying RTL-SDR detection..." : "Detecting RTL-SDR...")
+          : shown_stage == BootInitStage::rtl_power_recover ? "Power-cycling RTL-SDR..."
+          : shown_stage == BootInitStage::speaker_settle ? "Starting audio..."
+                                                          : "Starting...");
     }
     service_boot_device_staging();
     orcsdr_splash_poll_serial();

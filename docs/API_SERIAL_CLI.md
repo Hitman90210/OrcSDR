@@ -147,8 +147,12 @@ a manual offset change.
 
 **On the device:** Settings > System > **SET CLOCK** edits the local date and time with the touchscreen
 and the UTC offset in 15-minute steps, then writes UTC to the RTC and saves the offset. When Wi-Fi is
-already connected, **SYNC NTP** can set the clock from `pool.ntp.org` instead; nothing contacts the
-network unless that button is pressed, and the clock never requires Internet access.
+already connected, **SYNC NTP** can set the clock from `pool.ntp.org` instead. The clock is also kept
+right on its own whenever Wi-Fi is connected: one sync once it is unsynced or has gone stale, then every
+two hours. Nothing is contacted while Wi-Fi is off, and the clock never requires Internet access —
+setting it by hand, or from a computer as below, works entirely offline. Note that Wi-Fi does not come up
+by itself unless **CONNECT ON BOOT** is on, so on a device that never joins a network the clock only
+changes when you set it.
 
 **From a computer:** the offline helper authenticates and copies UTC from the connected computer; it
 does not use an internet or AI service. Add `--utc-offset-minutes` to store the zone in the same run:

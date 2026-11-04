@@ -148,12 +148,12 @@ void test_display_key() {
 void test_auto_sync() {
   DueInput due;
   due.status = base();
-  due.decoder_running = true;
+  due.clock_wanted = true;
   CHECK(auto_sync_due(due));   // never synced, never tried: ask at once
 
-  due.decoder_running = false;
-  CHECK(!auto_sync_due(due));  // nothing is contacted unless the decoder needs the clock
-  due.decoder_running = true;
+  due.clock_wanted = false;
+  CHECK(!auto_sync_due(due));  // nothing is contacted unless something wants the clock
+  due.clock_wanted = true;
 
   due.status.wifi_connected = false;
   CHECK(!auto_sync_due(due));

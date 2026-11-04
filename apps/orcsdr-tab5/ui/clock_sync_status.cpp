@@ -94,7 +94,7 @@ uint32_t display_key(Level level, uint32_t age) {
 }
 
 bool auto_sync_due(const DueInput& in) {
-  if (!in.decoder_running || !in.status.wifi_connected || in.status.syncing) return false;
+  if (!in.clock_wanted || !in.status.wifi_connected || in.status.syncing) return false;
   const bool have_sync = in.status.last_sync_utc != 0 && in.status.clock_valid && in.status.now_utc >= in.status.last_sync_utc;
   if (have_sync && in.status.now_utc - in.status.last_sync_utc < kResyncAfterSeconds) return false;
   const uint32_t wait = in.status.last_attempt_failed ? kRetryAfterFailureMs : kRetryAfterAttemptMs;

@@ -46,14 +46,17 @@ def main() -> None:
     parser.add_argument("--pairing-key", type=Path, default=Path(".orclink/ui-doc.key"))
     args = parser.parse_args()
 
-    # Build both commands first so a bad offset cannot leave the clock half-set.
-    rtc_command = rtc_set_command(int(time.time()))
+    # Range-check both commands first so a bad offset cannot leave the clock half-set.
+    rtc_set_command(int(time.time()))
     tz_command = tz_set_command(args.utc_offset_minutes) if args.utc_offset_minutes is not None else None
 
     tab5 = Tab5(args.port, args.pairing_key)
     try:
         tab5.authenticate()
-        tab5.send(rtc_command)
+        # Sample the clock here, not above: the PAIR/AUTH handshake takes seconds, and an epoch captured before it
+        # lands that far behind (13 s on one measured run). Round rather than truncate, because the RTC holds whole
+        # seconds, so truncating would give away up to another second.
+        tab5.send(rtc_set_command(round(time.time())))
         reply = tab5.wait(("ORC_RTC_SET_OK", "ORC_RTC_SET_ERROR"))
         if not reply.startswith("ORC_RTC_SET_OK"):
             raise RuntimeError(reply)

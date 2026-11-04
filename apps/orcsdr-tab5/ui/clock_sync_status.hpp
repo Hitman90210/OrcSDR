@@ -53,10 +53,12 @@ uint32_t display_key(Level level, uint32_t age_seconds);
 
 struct DueInput {
   Input status{};
-  bool decoder_running = false;    // only a running decoder needs the clock; nothing is contacted otherwise
+  // Something wants a right clock. The FT8 decoder sets it while it runs; the device also sets it whenever Wi-Fi is up, because the
+  // clock is shown on Home and in Settings and the RTC drifts about 0.9 s a day. Nothing is contacted while it is false.
+  bool clock_wanted = false;
   uint32_t ms_since_last_attempt = 0xFFFFFFFFu;   // since an attempt started; max = never attempted this boot
 };
-// True when a sync should start now: the decoder is running, Wi-Fi is connected, none is in progress, the last sync is missing or
+// True when a sync should start now: the clock is wanted, Wi-Fi is connected, none is in progress, the last sync is missing or
 // older than kResyncAfterSeconds, and the retry delay since the previous attempt has passed.
 bool auto_sync_due(const DueInput& in);
 
