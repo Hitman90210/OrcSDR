@@ -46,13 +46,13 @@ Thumbs.db
 tmp/
 .local/
 site/
-artifacts/help-media/
-artifacts/data-source-cache/
-artifacts/data-catalog-v1*/
-artifacts/radio-scan-soak/
-artifacts/pocsag-validation/
-artifacts/lora_validation/
-artifacts/release-readiness/
+# Everything under artifacts/ is bench output, written by the tools in tools/ and by the
+# screenshot capture. Seven subdirectories used to be listed here one by one, which left
+# artifacts/hardware-validation/ and artifacts/screenshots/ tracked by omission - and those
+# two hold the Wi-Fi coexistence logs (which record the SSID) and panel captures (which show
+# the device's IP in the Home header). This repository is public, so the whole tree is
+# ignored rather than named a directory at a time. Nothing here has ever been committed.
+artifacts/
 docs/user-guide/assets/screenshots/raw/
 
 # Host test run artefacts. tools/sstv_host_tests.sh writes its build and run
