@@ -298,12 +298,12 @@ void draw_tabs() {
 }
 
 void format_id(char* out, size_t size, uint32_t id) {
-  if (id == 0) strlcpy(out, "—", size);
+  if (id == 0) strlcpy(out, "-", size);
   else snprintf(out, size, "!%08lX", static_cast<unsigned long>(id));
 }
 
 void format_coord(char* out, size_t size, int32_t value) {
-  if (value == INT32_MAX) strlcpy(out, "—", size);
+  if (value == INT32_MAX) strlcpy(out, "-", size);
   else snprintf(out, size, "%.5f", value / 10000000.0);
 }
 
@@ -498,8 +498,8 @@ void format_event_time(char* output, size_t output_size, const Event& event,
 
 void format_event_details(char* output, size_t output_size, const Event& event) {
   char destination[12]{};
-  char signal[12] = "—";
-  char snr[12] = "—";
+  char signal[12] = "-";
+  char snr[12] = "-";
   format_id(destination, sizeof(destination), event.destination);
   if (event.signal_tenths != INT16_MAX)
     snprintf(signal, sizeof(signal), "%.1f", event.signal_tenths / 10.0);
@@ -602,10 +602,10 @@ void draw_nodes_dynamic() {
     if (node.favorite) draw_star(63, y + 23, kYellow);
     text(value, node.favorite ? 82 : 62, y + 23, selected ? kGreen : TFT_WHITE, 2,
          middle_left);
-    snprintf(value, sizeof(value), "%s", node.hops == UINT8_MAX ? "—" : "HOPS");
+    snprintf(value, sizeof(value), "%s", node.hops == UINT8_MAX ? "-" : "HOPS");
     if (node.hops != UINT8_MAX) snprintf(value, sizeof(value), "%u", node.hops);
     text(value, 356, y + 23, TFT_WHITE, 2, middle_left);
-    if (node.battery_percent == UINT8_MAX) strlcpy(value, "—", sizeof(value));
+    if (node.battery_percent == UINT8_MAX) strlcpy(value, "-", sizeof(value));
     else snprintf(value, sizeof(value), "%u%%", node.battery_percent);
     text(value, 450, y + 23, node.battery_percent == UINT8_MAX ? kMuted : kGreen, 2,
          middle_left);
@@ -613,7 +613,7 @@ void draw_nodes_dynamic() {
         node.id == 0 ? 0 : (millis() - node.seen_ms) / 1000u));
     if (node.seen_ms == 0) strlcpy(value, "SAVED", sizeof(value));
     text(value, 568, y + 23, kMuted, 2, middle_left);
-    if (node.signal_tenths == INT16_MAX) strlcpy(value, "—", sizeof(value));
+    if (node.signal_tenths == INT16_MAX) strlcpy(value, "-", sizeof(value));
     else if (node.snr_tenths == INT16_MAX)
       snprintf(value, sizeof(value), "%d", static_cast<int>(node.signal_tenths / 10));
     else
@@ -629,7 +629,7 @@ void draw_nodes_dynamic() {
       std::min<size_t>(g_snapshot.selected_node, g_snapshot.node_count - 1)] : nullptr;
   char value[64];
   if (node) node_name(*node, value, node->favorite ? 29 : 31);
-  else strlcpy(value, "—", sizeof(value));
+  else strlcpy(value, "-", sizeof(value));
   if (node && node->favorite) draw_star(856, 236, kYellow);
   text(value, node && node->favorite ? 876 : 854, 236, node ? kGreen : kMuted, 2,
        middle_left);
@@ -646,21 +646,21 @@ void draw_nodes_dynamic() {
       format_coord(value, sizeof(value), node->longitude_e7);
       text(value, 854, 366, TFT_WHITE, 2, middle_left);
       if (node->signal_tenths == INT16_MAX && node->snr_tenths == INT16_MAX)
-        strlcpy(value, "RSSI —   SNR —", sizeof(value));
+        strlcpy(value, "RSSI -   SNR -", sizeof(value));
       else if (node->signal_tenths == INT16_MAX)
-        snprintf(value, sizeof(value), "RSSI —   SNR %.1f", node->snr_tenths / 10.0);
+        snprintf(value, sizeof(value), "RSSI -   SNR %.1f", node->snr_tenths / 10.0);
       else if (node->snr_tenths == INT16_MAX)
-        snprintf(value, sizeof(value), "RSSI %d   SNR —", node->signal_tenths / 10);
+        snprintf(value, sizeof(value), "RSSI %d   SNR -", node->signal_tenths / 10);
       else
         snprintf(value, sizeof(value), "RSSI %d   SNR %.1f", node->signal_tenths / 10,
                  node->snr_tenths / 10.0);
       text(value, 854, 398, kCyan, 2, middle_left);
       if (node->battery_percent == UINT8_MAX && node->hops == UINT8_MAX)
-        strlcpy(value, "BAT —   HOPS —", sizeof(value));
+        strlcpy(value, "BAT -   HOPS -", sizeof(value));
       else if (node->battery_percent == UINT8_MAX)
-        snprintf(value, sizeof(value), "BAT —   HOPS %u", node->hops);
+        snprintf(value, sizeof(value), "BAT -   HOPS %u", node->hops);
       else if (node->hops == UINT8_MAX)
-        snprintf(value, sizeof(value), "BAT %u%%   HOPS —", node->battery_percent);
+        snprintf(value, sizeof(value), "BAT %u%%   HOPS -", node->battery_percent);
       else
         snprintf(value, sizeof(value), "BAT %u%%   HOPS %u", node->battery_percent,
                  node->hops);

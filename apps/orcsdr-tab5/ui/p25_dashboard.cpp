@@ -213,10 +213,10 @@ void draw_monitor_dynamic() {
   M5.Display.fillRect(42, 330, 764, 135, kPanel);
   const auto& grant = g_snapshot.decoded.current_grant;
   if (grant.valid) {
-    text(g_snapshot.probing_phase2 ? "PHASE II CALL DETECTED — CHECKING TRAFFIC" :
+    text(g_snapshot.probing_phase2 ? "PHASE II CALL DETECTED - CHECKING TRAFFIC" :
          g_snapshot.voice_encrypted ? "ENCRYPTED PHASE I VOICE MUTED" :
          g_snapshot.following_voice ? "FOLLOWING CLEAR PHASE I VOICE" :
-         grant_live(grant) ? "LIVE CONTROL-CHANNEL GRANT" : "LAST GRANT — STALE",
+         grant_live(grant) ? "LIVE CONTROL-CHANNEL GRANT" : "LAST GRANT - STALE",
          424, 362, g_snapshot.voice_encrypted ? kRed :
              (g_snapshot.following_voice || grant_live(grant)) ? kGreen : kYellow, 2);
     snprintf(value, sizeof(value), "TGID  %u     %s     SOURCE  %lu", grant.talkgroup,
@@ -242,15 +242,15 @@ void draw_monitor_dynamic() {
                         : g_snapshot.decoded.frame_sync ? "P25 CONTROL CHANNEL LOCKED"
                                                         : "ACQUIRING CONFIGURED CONTROL CHANNEL";
     text(state, 424, 362, g_snapshot.decoded.frame_sync ? kGreen : kYellow, 2);
-    text("TGID  —     ALIAS  —     SOURCE  —", 58, 410, TFT_WHITE, 2, middle_left);
-    text("VOICE FREQUENCY  —     MODE  —", 58, 447, kMuted, 2, middle_left);
+    text("TGID  -     ALIAS  -     SOURCE  -", 58, 410, TFT_WHITE, 2, middle_left);
+    text("VOICE FREQUENCY  -     MODE  -", 58, 447, kMuted, 2, middle_left);
   }
 
   M5.Display.fillRect(856, 330, 382, 135, kPanel);
   draw_meter(872, 350, 345, g_snapshot.relative_dbfs, 16);
   snprintf(value, sizeof(value), "RELATIVE  %.1f dBFS", static_cast<double>(g_snapshot.relative_dbfs));
   text(value, 872, 404, TFT_WHITE, 2, middle_left);
-  snprintf(value, sizeof(value), "%s  •  %s",
+  snprintf(value, sizeof(value), "%s  -  %s",
            g_snapshot.following_voice ? "IMBE VOICE DECODING" :
            g_snapshot.survey_active ? "SURVEYING KNOWN CHANNELS" :
            g_snapshot.decoded.frame_sync ? "P25 FRAME SYNC" : "NO P25 FRAME SYNC",
@@ -275,7 +275,7 @@ void draw_spectrum_static() {
   M5.Display.drawRect(kSpectrumX, kWaterfallY, kSpectrumW, kWaterfallH, kCyan);
   M5.Display.setScrollRect(kSpectrumX + 1, kWaterfallY + 1, kSpectrumW - 2,
                            kWaterfallH - 2);
-  button(390, 565, 80, 45, "—");
+  button(390, 565, 80, 45, "-");
   button(810, 565, 80, 45, "+");
   text("TAP SPECTRUM TO TUNE", 1050, 582, kCyan, 2);
 }
@@ -314,9 +314,9 @@ void draw_talkgroups_static() {
     text(id, 44, y + 14, TFT_WHITE, 2, middle_left);
     text(talkgroup.alias, 190, y + 14, TFT_WHITE, 2, middle_left);
     text("USER", 690, y + 14, kCyan, 2, middle_left);
-    text("—", 850, y + 14, kMuted, 2, middle_left);
+    text("-", 850, y + 14, kMuted, 2, middle_left);
   }
-  text("LIVE DECODED ACTIVITY  •  TAP A ROW TO HOLD / RELEASE", 640, 602, kMuted, 1);
+  text("LIVE DECODED ACTIVITY  -  TAP A ROW TO HOLD / RELEASE", 640, 602, kMuted, 1);
 }
 
 void draw_talkgroups_dynamic() {
@@ -328,7 +328,7 @@ void draw_talkgroups_dynamic() {
              talkgroup_alias(current_grant.talkgroup));
     text(current, 798, 207, current_grant.encrypted ? kYellow : kGreen, 2, middle_left);
   } else {
-    text("—", 798, 207, kMuted, 2, middle_left);
+    text("-", 798, 207, kMuted, 2, middle_left);
   }
   for (int row = 0; row < g_snapshot.config.talkgroup_count; ++row) {
     bool active = false;

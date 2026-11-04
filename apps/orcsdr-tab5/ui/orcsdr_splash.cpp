@@ -78,7 +78,7 @@ void splash_sd_begin() {
 }
 
 void draw_status_strip(const char* msg) {
-  const char* text = msg && msg[0] ? msg : "Loading…";
+  const char* text = msg && msg[0] ? msg : "Loading...";
   M5.Display.fillRect(0, kStatusY, M5.Display.width(), kStatusBarH, TFT_BLACK);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(2);
@@ -125,7 +125,7 @@ bool orcsdr_splash_begin(void) {
   g_active.store(true, std::memory_order_release);
   splash_sd_begin();
   draw_splash_image();
-  orcsdr_splash_set_status("Starting…");
+  orcsdr_splash_set_status("Starting...");
   splash_log("SPLASH_MODE embedded");
   return true;
 }
@@ -136,7 +136,7 @@ void orcsdr_splash_set_status(const char* message) {
 }
 
 void orcsdr_splash_set_ready(bool ready) {
-  orcsdr_splash_set_status(ready ? "Ready" : "Loading…");
+  orcsdr_splash_set_status(ready ? "Ready" : "Loading...");
   if (ready && g_active.load(std::memory_order_acquire)) draw_ready_button();
   splash_log("SPLASH_READY %d", ready ? 1 : 0);
 }
@@ -158,7 +158,7 @@ bool orcsdr_splash_wait_start(uint32_t auto_enter_ms) {
     if (pressed && !was_pressed &&
         touch.x >= kReadyButtonX && touch.x < kReadyButtonX + kReadyButtonW &&
         touch.y >= kReadyButtonY && touch.y < kReadyButtonY + kReadyButtonH) {
-      orcsdr_splash_set_status("Opening OrcSDR…");
+      orcsdr_splash_set_status("Opening OrcSDR...");
       splash_log("SPLASH_START x=%ld y=%ld", static_cast<long>(touch.x),
                  static_cast<long>(touch.y));
       return true;

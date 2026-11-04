@@ -154,7 +154,7 @@ void draw_overview(const Snapshot& snapshot) {
 
 void draw_channels(const Snapshot& snapshot) {
   panel(20, 100, 1240, 524); text("CHANNEL LANDSCAPE", 40, 126, kCyan, 1);
-  text("Observed AP channel footprints from scan beacons — not RF power, airtime, or occupancy.",
+  text("Observed AP channel footprints from scan beacons - not RF power, airtime, or occupancy.",
        40, 154, kMuted, 1);
   constexpr int kPlotLeft = 220, kPlotRight = 1230, kPlotTop = 190, kPlotBottom = 510;
   constexpr int kSpacing = (kPlotRight - kPlotLeft) / 13;
