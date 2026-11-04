@@ -29,11 +29,39 @@ constexpr int kRailY = 106;
 constexpr int kRailRowH = 64;
 constexpr uint8_t kSettingsMinTextSize = 2;
 constexpr uint16_t kTimeouts[] = {0, 30, 60, 120, 300};
-constexpr const char* kLabels[] = {
-    "CONNECTIVITY", "FIRMWARE & UPDATES", "RECEIVER LOCATION", "DATA & MAPS", "DISPLAY & AUDIO",
-    "RADIO DEFAULTS", "STORAGE", "ACCESSORIES & COMPANION", "SYSTEM"};
+// Rail labels. A name too wide for one line carries its own second line rather than being wrapped at
+// draw time: the rail is nine fixed entries, and choosing the break here reads better than a word-wrap
+// guessing where to split "ACCESSORIES & COMPANION".
+struct RailLabel {
+  const char* line1;
+  const char* line2;   // nullptr for the labels that fit on one line
+};
+constexpr RailLabel kLabels[] = {
+    {"CONNECTIVITY", nullptr},     {"FIRMWARE & UPDATES", nullptr}, {"RECEIVER LOCATION", nullptr},
+    {"DATA & MAPS", nullptr},      {"DISPLAY & AUDIO", nullptr},    {"RADIO DEFAULTS", nullptr},
+    {"STORAGE", nullptr},          {"ACCESSORIES", "& COMPANION"},  {"SYSTEM", nullptr}};
 
 static_assert(static_cast<uint8_t>(Section::count) == std::size(kLabels));
+
+// The rail button runs from x=12 to x=kRailW-12 and the label starts at x=30, so a label has
+// kRailW-42 px, i.e. (kRailW-42)/12 characters at size 2. "ACCESSORIES & COMPANION" is 23 characters
+// (276 px against 244): on one line it ran past the button's right edge and, because the label is drawn
+// with an opaque background, painted over the border as it went. It is split over two lines instead,
+// which fit: the button is kRailRowH-8 = 56 px tall and two size-2 lines need 32.
+constexpr size_t kRailLabelMaxChars = (kRailW - 42) / 12;
+constexpr size_t literal_length(const char* text) {
+  size_t length = 0;
+  while (text[length] != '\0') ++length;
+  return length;
+}
+constexpr bool rail_labels_fit() {
+  for (const RailLabel& label : kLabels) {
+    if (literal_length(label.line1) > kRailLabelMaxChars) return false;
+    if (label.line2 && literal_length(label.line2) > kRailLabelMaxChars) return false;
+  }
+  return true;
+}
+static_assert(rail_labels_fit(), "a Settings rail label is wider than its button");
 
 enum class EditField : uint8_t { none, latitude, longitude };
 enum class WifiEdit : uint8_t { none, ssid, password };
@@ -95,6 +123,22 @@ void value_row(const char* label, const char* value, int y,
   M5.Display.drawFastHLine(330, y + 31, 888, 0x2945);
 }
 
+// A row that carries its own action button. value_row right-aligns the value at 1218, which is where the
+// button has to sit to line up with the rest of the column, so a value of any length was drawn on top of
+// the button: "VIEW ONLY" is 108 px and reached back to 1110, well inside a button starting at 1048. The
+// button takes the right margin and the value is right-aligned at 1028, clear of it.
+constexpr int kRowButtonX = 1048;
+constexpr int kRowButtonW = 170;
+constexpr int kRowButtonH = 48;
+constexpr int kRowValueRight = kRowButtonX - 20;
+void value_row_with_button(const char* label, const char* value, int y, uint16_t color,
+                           const char* button_label, uint16_t button_fill) {
+  text(label, 330, y, kMuted, 2);
+  text(value, kRowValueRight, y, color, 2, middle_right);
+  M5.Display.drawFastHLine(330, y + 31, 888, 0x2945);
+  button(button_label, kRowButtonX, y - 25, kRowButtonW, kRowButtonH, button_fill);
+}
+
 void draw_header() {
   M5.Display.fillRect(0, 0, 1280, kHeaderH, TFT_BLACK);
   audio_header::draw_brand("SETTINGS");
@@ -124,7 +168,14 @@ void draw_rail() {
     M5.Display.setTextDatum(middle_left);
     M5.Display.setTextSize(2);
     M5.Display.setTextColor(selected ? TFT_WHITE : kMuted, fill);
-    M5.Display.drawString(kLabels[i], 30, y + (kRailRowH - 8) / 2);
+    const int middle = y + (kRailRowH - 8) / 2;
+    if (kLabels[i].line2) {
+      // Two size-2 lines are 16 px each; +-9 from the middle leaves 11 px clear above and below.
+      M5.Display.drawString(kLabels[i].line1, 30, middle - 9);
+      M5.Display.drawString(kLabels[i].line2, 30, middle + 9);
+    } else {
+      M5.Display.drawString(kLabels[i].line1, 30, middle);
+    }
   }
 }
 
@@ -240,7 +291,8 @@ void draw_firmware_updates() {
          330, 545, kMuted, 1);
   } else if (strcmp(g_state.wifi_c6_update_state, "optional") == 0) {
     text("No update is needed. Updating to 3.0.6 is optional.", 330, 385, kGreen, 2);
-    text("M5 Launcher's Wi-Fi and OTA need a 2.x C6. Update only if you do not use Launcher.", 330, 412, TFT_ORANGE, 2);
+    // Kept inside the 888 px text column (x 330..1218): the longer wording was 984 px and ran 34 px off the 1280 px panel.
+    text("M5 Launcher's Wi-Fi and OTA need a 2.x C6. Do not update if you use it.", 330, 412, TFT_ORANGE, 2);
     button("UPDATE C6 TO 3.0.6 (OPTIONAL)", 330, 445, 440, 58, TFT_DARKGREEN);
     text("This sends the embedded image over the internal SDIO link and restarts OrcSDR.",
          330, 545, kMuted, 1);
@@ -376,7 +428,10 @@ void draw_display_audio() {
   button(g_state.sound_default ? "ON" : "OFF", 930, 444, 288, 52,
          g_state.sound_default ? TFT_DARKGREEN : TFT_DARKGREY);
   M5.Display.drawFastHLine(330, 510, 888, 0x2945);
-  text("SCREEN ORIENTATION", 330, 570, kMuted, 3);
+  // The value column on this page is right-aligned at 880 and the longest value here is "LANDSCAPE 180",
+  // which at size 3 is 234 px and so starts at 646. "SCREEN ORIENTATION" is 18 characters = 324 px from
+  // x=330, ending at 654: the two ran into each other. "SCREEN ROTATION" is 270 px, ending at 600.
+  text("SCREEN ROTATION", 330, 570, kMuted, 3);
   text(g_state.rotation == 3 ? "LANDSCAPE 180" : "LANDSCAPE", 880, 570,
        TFT_WHITE, 3, middle_right);
   button("ROTATE", 930, 544, 288, 52, TFT_DARKCYAN);
@@ -421,10 +476,10 @@ void draw_storage() {
 static bool accessory_forget_confirmation=false;
 void draw_companion() {
   text("ACCESSORIES & COMPANION", 330, 115, kBlue, 3);
-  value_row("WEB CONSOLE", g_state.web_console_enabled ? "ON" : "OFF", 175,
-            g_state.web_console_enabled ? kGreen : kMuted);
-  button(g_state.web_console_enabled ? "DISABLE" : "ENABLE", 960, 150, 170, 48,
-         g_state.web_console_enabled ? TFT_MAROON : TFT_DARKGREEN);
+  value_row_with_button("WEB CONSOLE", g_state.web_console_enabled ? "ON" : "OFF", 175,
+                        g_state.web_console_enabled ? kGreen : kMuted,
+                        g_state.web_console_enabled ? "DISABLE" : "ENABLE",
+                        g_state.web_console_enabled ? TFT_MAROON : TFT_DARKGREEN);
   value_row("URL",
             g_state.web_console_listening && g_state.web_console_url[0]
                 ? g_state.web_console_url
@@ -435,10 +490,12 @@ void draw_companion() {
             g_state.web_console_listening ? kGreen : kMuted);
   // This used to promise "no device control" while /api/action accepted
   // tune and volume from any LAN client. Control is now an explicit switch.
-  value_row("REMOTE CONTROL", g_state.web_control_enabled ? "ALLOWED" : "VIEW ONLY", 315,
-            g_state.web_control_enabled ? TFT_ORANGE : kGreen);
-  button(g_state.web_control_enabled ? "BLOCK" : "ALLOW", 960, 290, 170, 48,
-         g_state.web_control_enabled ? TFT_MAROON : TFT_DARKCYAN);
+  // 325, not 315: the rows on this page step by 50 (175, 225, 275, ...) and this one sat 10 px high,
+  // which left it crowding LOCAL DISCOVERY above and a wide gap below.
+  value_row_with_button("REMOTE CONTROL", g_state.web_control_enabled ? "ALLOWED" : "VIEW ONLY", 325,
+                        g_state.web_control_enabled ? TFT_ORANGE : kGreen,
+                        g_state.web_control_enabled ? "BLOCK" : "ALLOW",
+                        g_state.web_control_enabled ? TFT_MAROON : TFT_DARKCYAN);
   value_row("BLUETOOTH", g_state.companion_supported ? "AVAILABLE" : "FEASIBILITY PENDING",
             375, kMuted);
 #if ORCSDR_ORCDIAL
@@ -1201,15 +1258,19 @@ Action handle_touch(int32_t x, int32_t y) {
       return {ActionKind::graphics_changed, g_state.graphics_default};
     }
   } else if (g_section == Section::companion) {
-    if (hit(x, y, 960, 150, 170, 48))
+    // Both rows are drawn by value_row_with_button, which puts the button at kRowButtonX, row_y - 25.
+    if (hit(x, y, kRowButtonX, 175 - 25, kRowButtonW, kRowButtonH))
       return {ActionKind::web_console_changed, g_state.web_console_enabled ? 0 : 1};
-    if (hit(x, y, 960, 290, 170, 48))
+    if (hit(x, y, kRowButtonX, 325 - 25, kRowButtonW, kRowButtonH))
       return {ActionKind::web_control_changed, g_state.web_control_enabled ? 0 : 1};
   }
   if (g_section == Section::firmware_updates) {
-    if ((strcmp(g_state.wifi_c6_update_state, "ready") == 0 ||
-         strcmp(g_state.wifi_c6_update_state, "optional") == 0) &&
-        hit(x, y, 330, 445, 360, 58)) return {ActionKind::c6_update_confirm, 0};
+    // Each state draws its own button width (360 "ready", 440 "optional"); the hit area has to match the one on screen, or the
+    // right end of the wider button is drawn but does not respond.
+    if (strcmp(g_state.wifi_c6_update_state, "ready") == 0 && hit(x, y, 330, 445, 360, 58))
+      return {ActionKind::c6_update_confirm, 0};
+    if (strcmp(g_state.wifi_c6_update_state, "optional") == 0 && hit(x, y, 330, 445, 440, 58))
+      return {ActionKind::c6_update_confirm, 0};
     if (strcmp(g_state.wifi_c6_update_state, "current") == 0 &&
         g_state.wifi_c6_image_embedded && hit(x, y, 330, 445, 390, 58))
       return {ActionKind::orcdial_c6_update, 0};

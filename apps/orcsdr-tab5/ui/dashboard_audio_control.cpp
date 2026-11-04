@@ -29,18 +29,26 @@ constexpr int kHomeX = 1040;
 constexpr int kHomeY = 8;
 constexpr int kHomeW = 58;
 constexpr int kHomeH = 58;
-constexpr int kMuteX = 1099;
+// The four header buttons are one row and have to read as one: the gap between each pair is kIconGap.
+// Home ends at 1098 and Mute used to start at 1099, a single pixel, while the other two pairs had five -
+// the Home and speaker buttons looked stuck together next to VIS and the gear. Home cannot move left
+// (the battery region ends exactly at kHomeX), so the other three moved right by 4, which still leaves
+// 8 px from the gear to the right edge of the 1280 px panel.
+constexpr int kIconGap = 5;
+constexpr int kMuteX = kHomeX + kHomeW + kIconGap;   // 1103
 constexpr int kMuteY = 12;
 constexpr int kMuteW = 54;
 constexpr int kMuteH = 54;
-constexpr int kVisualizerX = 1158;
+constexpr int kVisualizerX = kMuteX + kMuteW + kIconGap;   // 1162
 constexpr int kVisualizerY = 12;
 constexpr int kVisualizerW = 54;
 constexpr int kVisualizerH = 54;
-constexpr int kSettingsX = 1217;
+constexpr int kSettingsX = kVisualizerX + kVisualizerW + kIconGap;   // 1221
 constexpr int kSettingsY = 12;
 constexpr int kSettingsW = 51;
 constexpr int kSettingsH = 54;
+static_assert(kRegionX + kRegionW <= kHomeX, "the battery region runs into the Home button");
+static_assert(kSettingsX + kSettingsW <= 1280, "the header button row runs off the right of the panel");
 constexpr int kTrayX = 900;
 constexpr int kTrayY = 72;
 constexpr int kTrayW = 280;

@@ -303,7 +303,12 @@ int relative_percent() {
 GainLayout gain_layout() {
   if (g_view == View::listen) return {44, 405, 80, 42, 145, 420, 145};
   if (g_view == View::spectrum) return {928, 561, 82, 44, 1024, 584, 190};
-  return {48, 542, 190, 58, 280, 568, 900};
+  // Settings is the only other view that draws the gain control (draw_settings_dynamic, compact=false), and it has
+  // two cards: FM AUDIO & TUNING at x 24..624 and FM OPERATIONS at x 640..1256. The slider used to be 900 wide from
+  // x=280, so it ran to 1180 - straight across the gap and deep into the right-hand card, with its value label
+  // landing inside FM OPERATIONS. 320 keeps the whole control inside the left card. handle_gain_drag() divides by
+  // slider_w, so the touch mapping follows the width on its own.
+  return {48, 542, 190, 58, 280, 568, 320};
 }
 
 void draw_gain_control(bool compact) {
@@ -421,7 +426,7 @@ void draw_listen_dynamic() {
     text(value, 615, 235, TFT_WHITE, 8);
     text("MHz", 850, 252, TFT_WHITE, 4);
   }
-  const char* ps = g_snapshot.program_service[0] ? g_snapshot.program_service : "—";
+  const char* ps = g_snapshot.program_service[0] ? g_snapshot.program_service : "-";
   if (g_listen.station.changed(Signature().add(ps))) {
     M5.Display.fillRect(340, 316, 580, 40, kBg);
     text(ps, 630, 335, TFT_WHITE, 4);
@@ -566,7 +571,7 @@ void draw_station_dynamic() {
   M5.Display.fillRect(44, 159, 1170, 86, kPanel);
   snprintf(value, sizeof(value), "%.1f MHz", g_snapshot.frequency_hz / 1000000.0);
   text(value, 55, 202, TFT_WHITE, 6, middle_left);
-  text(g_snapshot.program_service[0] ? g_snapshot.program_service : "—",
+  text(g_snapshot.program_service[0] ? g_snapshot.program_service : "-",
        575, 190, TFT_WHITE, 4, middle_left);
   text(g_snapshot.radio_text[0] ? g_snapshot.radio_text : "RDS station data unavailable",
        575, 226, TFT_WHITE, 2, middle_left);
@@ -581,10 +586,10 @@ void draw_station_dynamic() {
        164, 555, TFT_WHITE, 2);
 
   const char* values[] = {
-      g_snapshot.program_service[0] ? g_snapshot.program_service : "—",
-      g_snapshot.radio_text[0] ? g_snapshot.radio_text : "—",
-      g_snapshot.pi_code[0] ? g_snapshot.pi_code : "—",
-      g_snapshot.program_type[0] ? g_snapshot.program_type : "—"};
+      g_snapshot.program_service[0] ? g_snapshot.program_service : "-",
+      g_snapshot.radio_text[0] ? g_snapshot.radio_text : "-",
+      g_snapshot.pi_code[0] ? g_snapshot.pi_code : "-",
+      g_snapshot.program_type[0] ? g_snapshot.program_type : "-"};
   const int ys[] = {345, 415, 495, 565};
   M5.Display.fillRect(410, 315, 505, 285, kPanel);
   for (int i = 0; i < 4; ++i) text(values[i], 425, ys[i], TFT_WHITE, i == 1 ? 2 : 3, middle_left);
@@ -622,7 +627,7 @@ void draw_health_dynamic() {
   char a[48], b[48], c[48];
   snprintf(a, sizeof(a), "%.1f MHz", g_snapshot.frequency_hz / 1000000.0);
   snprintf(b, sizeof(b), "%s", g_snapshot.running ? "RUNNING" : "STOPPED");
-  snprintf(c, sizeof(c), "%s", g_snapshot.program_service[0] ? g_snapshot.program_service : "—");
+  snprintf(c, sizeof(c), "%s", g_snapshot.program_service[0] ? g_snapshot.program_service : "-");
   health_card(24, 140, 445, 135, "FREQUENCY", a, g_snapshot.running);
   health_card(481, 140, 335, 135, "STATUS", b, g_snapshot.running);
   health_card(828, 140, 428, 135, "STATION", c, g_snapshot.rds_locked);
@@ -655,7 +660,7 @@ void draw_health_dynamic() {
   }
   M5.Display.fillRect(42, 552, 1190, 44, kPanel);
   text("LAST ERROR", 50, 574, kCyan, 2, middle_left);
-  text(g_snapshot.last_error[0] ? g_snapshot.last_error : "—", 320, 574, TFT_WHITE, 2, middle_left);
+  text(g_snapshot.last_error[0] ? g_snapshot.last_error : "-", 320, 574, TFT_WHITE, 2, middle_left);
   M5.Display.fillRect(300, 552, 800, 44, kPanel);
   const char* detail = g_snapshot.last_error[0] ? g_snapshot.last_error
                        : !g_snapshot.driver_ready ? "RTL-SDR waiting"
@@ -689,14 +694,17 @@ void draw_settings_dynamic() {
   M5.Display.fillRect(240, 230, 48, 34, kPanel);
   M5.Display.fillRect(530, 400, 54, 34, kPanel);
   M5.Display.fillRect(500, 485, 88, 34, kPanel);
-  M5.Display.fillRect(1120, 230, 96, 34, kPanel);
+  // Wide enough to erase the longest value it holds: "SCANNING" is 96 px right-aligned at 1200, so it started 16 px
+  // left of the old 96 px patch and left pixels behind when it changed back to READY. The SCAN / REBUILD PRESETS
+  // label this sits inside ends at x 1080, so the patch starts at 1100 and does not eat into it.
+  M5.Display.fillRect(1100, 230, 116, 34, kPanel);
   text(g_snapshot.sound_enabled ? "ON" : "OFF", 270, 247,
        g_snapshot.sound_enabled ? kGreen : TFT_RED, 2);
   text(g_snapshot.graphics_enabled ? "ON" : "OFF", 565, 417,
        g_snapshot.graphics_enabled ? kGreen : TFT_RED, 2, middle_right);
   text(g_snapshot.recording ? "ACTIVE" : "STANDBY", 565, 502,
        g_snapshot.recording ? TFT_RED : kMuted, 2, middle_right);
-  text(g_snapshot.preset_scanning ? "SCANNING…" : "READY", 1200, 247,
+  text(g_snapshot.preset_scanning ? "SCANNING" : "READY", 1200, 247,
        g_snapshot.preset_scanning ? kYellow : kGreen, 2, middle_right);
   draw_gain_control(false);
 }

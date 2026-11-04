@@ -149,13 +149,37 @@ void card(int x, int y, int w, int h) {
   M5.Display.drawRoundRect(x, y, w, h, 10, kCyan);
 }
 
+// A label is drawn centred with a transparent background, so one too wide for its chip does not get
+// clipped - it runs out over the rounded border and onto the panel behind. Font0 is 6 px per character
+// per size step, and a chip keeps 8 px of padding each side, so a label only fits at size 2 while
+// 12 * length <= w - 16. Anything longer steps down to size 1 rather than spilling.
+uint8_t label_size(const char* label, int w) {
+  const size_t length = label ? std::strlen(label) : 0;
+  return length * 12 <= static_cast<size_t>(w - 16) ? 2 : 1;
+}
+
 void button(int x, int y, int w, int h, const char* label, bool selected = false,
             bool enabled = true) {
   orcsdr::focus_nav::note(x, y, w, h);
   const uint16_t color = enabled ? (selected ? kGreen : kCyan) : TFT_DARKGREY;
   M5.Display.fillRoundRect(x, y, w, h, 8, selected ? 0x1264 : kPanel);
   M5.Display.drawRoundRect(x, y, w, h, 8, color);
-  text(label, x + w / 2, y + h / 2, enabled ? TFT_WHITE : kMuted, 2);
+  text(label, x + w / 2, y + h / 2, enabled ? TFT_WHITE : kMuted, label_size(label, w));
+}
+
+// A chip that carries a name and a value. "FILTER 12.0 kHz" on one line is 180 px against a 150 px
+// chip and "STEP 1000 Hz" is 144 against 130, so both always ran outside their borders. Stacking the
+// name above the value is what the Home spectrum controls already do (SPAN, TUNE, STEP SIZE, FILTER,
+// GAIN), and it fits: the name takes 8 px at size 1 and the value 16 at size 2 inside a 52 px chip.
+void button_two_line(const Rect& rect, const char* name, const char* value,
+                     bool selected = false, bool enabled = true) {
+  orcsdr::focus_nav::note(rect.x, rect.y, rect.w, rect.h);
+  const uint16_t color = enabled ? (selected ? kGreen : kCyan) : TFT_DARKGREY;
+  M5.Display.fillRoundRect(rect.x, rect.y, rect.w, rect.h, 8, selected ? 0x1264 : kPanel);
+  M5.Display.drawRoundRect(rect.x, rect.y, rect.w, rect.h, 8, color);
+  const int centre = rect.x + rect.w / 2;
+  text(name, centre, rect.y + 16, enabled ? kCyan : kMuted, 1);
+  text(value, centre, rect.y + 34, enabled ? TFT_WHITE : kMuted, label_size(value, rect.w));
 }
 
 void button(const Rect& rect, const char* label, bool selected = false,
@@ -223,16 +247,14 @@ void draw_status() {
 
 void draw_quick_controls() {
   char value[40];
-  snprintf(value, sizeof(value), "STEP %lu Hz",
-           static_cast<unsigned long>(g_snapshot.step_hz));
-  button(kStep, value);
+  snprintf(value, sizeof(value), "%lu Hz", static_cast<unsigned long>(g_snapshot.step_hz));
+  button_two_line(kStep, "STEP", value);
   button(kFilterDown, "<", false, !ssb_mode());
-  snprintf(value, sizeof(value), "FILTER %.1f kHz",
+  snprintf(value, sizeof(value), "%.1f kHz",
            static_cast<double>(g_snapshot.filter_bandwidth_hz) / 1000.0);
-  button(kFilterValue, value, false, !ssb_mode());
+  button_two_line(kFilterValue, "FILTER", value, false, !ssb_mode());
   button(kFilterUp, ">", false, !ssb_mode());
-  snprintf(value, sizeof(value), g_snapshot.mode_auto ? "AUTO %s" : "%s", g_snapshot.mode);
-  button(kMode, value, ssb_mode());
+  button_two_line(kMode, g_snapshot.mode_auto ? "MODE AUTO" : "MODE", g_snapshot.mode, ssb_mode());
   const auto boost = receiver_controls::item(receiver_controls::Control::audio_boost,
                                               g_snapshot.controls);
   const bool clean = g_snapshot.filter_bandwidth_hz == 6000 &&

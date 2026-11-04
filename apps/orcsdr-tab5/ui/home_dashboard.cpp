@@ -227,22 +227,27 @@ void draw_header_status() {
   const int y = kHeaderStatusY;
   M5.Display.fillRect(kHeaderStatusX, y, kHeaderStatusW, kHeaderStatusH, TFT_BLACK);
   frame(kHeaderStatusX, y, kHeaderStatusW, kHeaderStatusH, kCyan, 9);
+  // Three slots divided at +140 and +256. The widths are set by the longest string each one can hold at its own font size
+  // (6 px per character per size step): a full IPv4 is 15 characters, so the Wi-Fi slot needs 90 px for it at size 1.
+  // The USB glyph spans its centre -13..+12, which is what sets the gap between the first divider and the model name.
   draw_wifi_icon(kHeaderStatusX + 26, y + 32, current.wifi_connected ? kCyan : kDim);
   text("Wi-Fi", kHeaderStatusX + 54, y + 17, TFT_WHITE, 2);
   text(current.wifi_connected && current.wifi_ip[0] ? current.wifi_ip : "OFFLINE",
-       kHeaderStatusX + 54, y + 38, current.wifi_connected ? kCyan : TFT_ORANGE, 1);
-  M5.Display.drawFastVLine(kHeaderStatusX + 114, y + 8, kHeaderStatusH - 16, kDim);
-  draw_usb_icon(kHeaderStatusX + 135, y + 30, current.driver_ready ? kCyan : kDim);
-  // The USB model occupies a bounded 90-pixel slot; long names use the small font.
-  text(current.receiver, kHeaderStatusX + 148, y + 17, TFT_WHITE,
+       kHeaderStatusX + 46, y + 38, current.wifi_connected ? kCyan : TFT_ORANGE, 1);
+  M5.Display.drawFastVLine(kHeaderStatusX + 140, y + 8, kHeaderStatusH - 16, kDim);
+  draw_usb_icon(kHeaderStatusX + 157, y + 30, current.driver_ready ? kCyan : kDim);
+  // The USB model occupies a bounded 84-pixel slot; long names use the small font.
+  text(current.receiver, kHeaderStatusX + 170, y + 17, TFT_WHITE,
        strlen(current.receiver) > 7 ? 1 : 2);
-  text(current.driver_ready ? "READY" : "NOT READY", kHeaderStatusX + 158, y + 38,
+  text(current.driver_ready ? "READY" : "NOT READY", kHeaderStatusX + 180, y + 38,
        current.driver_ready ? kCyan : TFT_ORANGE, 1);
-  M5.Display.drawFastVLine(kHeaderStatusX + 238, y + 8, kHeaderStatusH - 16, kDim);
+  M5.Display.drawFastVLine(kHeaderStatusX + 256, y + 8, kHeaderStatusH - 16, kDim);
   text(current.clock[0] ? current.clock : "--:--", kHeaderStatusX + kHeaderStatusW - 12, y + 17,
        TFT_WHITE, 2, middle_right);
-  text(current.date[0] ? current.date : "UPTIME", kHeaderStatusX + kHeaderStatusW - 12, y + 39,
-       kCyan, 2, middle_right);
+  // "YYYY-MM-DD UTC+5:30" is 19 characters: 228 px at size 2 would reach back past the divider, so the long forms step down.
+  const char* date = current.date[0] ? current.date : "UPTIME";
+  text(date, kHeaderStatusX + kHeaderStatusW - 12, y + 39, kCyan, strlen(date) > 14 ? 1 : 2,
+       middle_right);
 }
 
 void draw_header() {
@@ -351,7 +356,10 @@ void draw_mode_chip(const char* mode) {
   M5.Display.fillRect(kModeX, kReadoutY, kModeW, kReadoutH, TFT_BLACK);
   frame(kModeX, kReadoutY, kModeW, kReadoutH, kCyan, 8);
   text("MODE", kModeX + kModeW / 2, kReadoutY + 15, kCyan, 2, middle_center);
-  text(mode, kModeX + kModeW / 2, kReadoutY + 38, kGreen, 2, middle_center);
+  // The chip cannot grow: the SPEED chip ends 8 px to its left and the plot ends at its right edge. The long mode names
+  // ("P25 C4FM", "POCSAG1200") are 96 to 120 px at size 2 and drew straight over the border, so they step down to size 1.
+  const size_t fits = static_cast<size_t>(kModeW - 8) / (6 * 2);
+  text(mode, kModeX + kModeW / 2, kReadoutY + 38, kGreen, strlen(mode) > fits ? 1 : 2, middle_center);
 }
 
 void draw_frequency() {
