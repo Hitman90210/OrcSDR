@@ -214,6 +214,14 @@ bool mount_tab5_sd() {
       ESP_LOGE("orcsdr_storage", "SD LDO4 init failed: %s", esp_err_to_name(power_result));
       return false;
     }
+    // sd_pwr_ctrl_new_on_chip_ldo() acquires LDO_VO4 at 0 mV (hence IDF's "voltage value 0 is out of the recommended
+    // range" warning) and the rail only reaches 3.3 V inside sdmmc_card_init(), which then clocks CMD0 straight away.
+    // Bring the rail up here instead and let it settle: a card still ramping answers nothing, which looks exactly like
+    // an absent card (ACMD41 -> ESP_ERR_TIMEOUT). 3300 mV is LDO_LL_RAIL_VOLTAGE_MV, so this is the rail-bypass path.
+    const esp_err_t voltage_result = sd_pwr_ctrl_set_io_voltage(g_sd_power, 3300);
+    if (voltage_result != ESP_OK)
+      ESP_LOGW("orcsdr_storage", "SD LDO4 3.3 V failed: %s", esp_err_to_name(voltage_result));
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
   host.pwr_ctrl_handle = g_sd_power;
   sdmmc_slot_config_t slot = SDMMC_SLOT_CONFIG_DEFAULT();
@@ -227,7 +235,13 @@ bool mount_tab5_sd() {
   const esp_err_t mount_result = esp_vfs_fat_sdmmc_mount("/sd", &host, &slot, &mount, &g_card);
   g_mounted = mount_result == ESP_OK;
   if (g_mounted) sdmmc_card_print_info(stdout, g_card);
-  else ESP_LOGE("orcsdr_storage", "SDMMC Slot0 mount failed: %s", esp_err_to_name(mount_result));
+  else
+    // ESP_ERR_TIMEOUT here means the card never answered ACMD41 at all (tried as SD, then as MMC), so the slot saw no
+    // card: not seated, no contact, or a dead card. Any other code means the card did answer and the failure is later
+    // in init or in the FAT mount. Saying which saves re-deriving it from the IDF log every time.
+    ESP_LOGE("orcsdr_storage", "SDMMC Slot0 mount failed: %s (%s)", esp_err_to_name(mount_result),
+             mount_result == ESP_ERR_TIMEOUT ? "no card answered - check it is seated"
+                                             : "card answered but init or FAT mount failed");
   return g_mounted;
 }
 
