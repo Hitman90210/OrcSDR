@@ -1,0 +1,26 @@
+#!/bin/sh
+# Screen staged changes for values that must not reach a public repository.
+#
+# Enabled per clone with:   git config core.hooksPath tools/hooks
+# The values screened for live in .local/secret-patterns.txt, which is ignored,
+# so this hook carries no secret and is safe to commit.
+#
+# A python interpreter is resolved rather than relying on a shebang, because on
+# Windows the hook runs under Git Bash where `python3` may not exist.
+set -eu
+
+hook_dir=$(dirname "$0")
+
+# Each candidate is RUN, not merely located. On Windows, `python3` resolves to a
+# Microsoft Store App Execution Alias that exists on PATH, prints an advert and
+# exits non-zero without being an interpreter at all: `command -v` is satisfied by
+# it, so locating alone would hand the screening to a stub that never scans.
+for candidate in python3 python py; do
+  if "$candidate" -c "import sys; sys.exit(0)" >/dev/null 2>&1; then
+    exec "$candidate" "$hook_dir/check_secrets.py"
+  fi
+done
+
+echo "pre-commit: no python interpreter found, secret screening was skipped." >&2
+echo "            Install python or run: git config --unset core.hooksPath" >&2
+exit 0
