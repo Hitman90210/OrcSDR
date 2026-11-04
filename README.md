@@ -1,12 +1,9 @@
 # OrcSDR
 
 > [!WARNING]
-> **Untested build — not yet compiled or run on hardware.**
+> **MOSTLY TESTED.**
 > On 2026-11-03 this fork was consolidated onto the latest upstream OrcSDR
-> (`cdc8181`) and its own changes were re-applied on top. None of that work has
-> been built or flashed to a Tab5 yet, so it may not compile, and features may
-> not behave as described. Do not flash it to a device you rely on until this
-> notice is removed.
+> (`cdc8181`) and its own changes were re-applied on top.
 >
 > The release, installer and M5Burner links below are upstream's published
 > builds from hardcoreerik/OrcSDR, not builds of this fork. What changed and
