@@ -1,4 +1,5 @@
 """Generate the OrcSDR consolidation bench test plan PDF."""
+import subprocess
 import sys
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_LEFT
@@ -9,6 +10,22 @@ from reportlab.platypus import (KeepTogether, PageBreak, Paragraph, SimpleDocTem
                                 Table, TableStyle)
 
 OUT = sys.argv[1]
+
+
+def head_sha():
+    """The commit this sheet describes, read from git rather than typed in.
+
+    It was hardcoded in two places and both went stale the moment anything landed on main,
+    which matters here: a tester reading a FAIL row needs to know which build it refers to.
+    """
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
+                              text=True, check=True).stdout.strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+HEAD_SHA = head_sha()
 ss = getSampleStyleSheet()
 H1 = ParagraphStyle("H1", parent=ss["Heading1"], fontSize=17, spaceAfter=6, textColor=colors.HexColor("#0b3d5c"))
 H2 = ParagraphStyle("H2", parent=ss["Heading2"], fontSize=12.5, spaceBefore=10, spaceAfter=4,
@@ -56,7 +73,7 @@ def footer(canvas, doc):
     canvas.setFont("Helvetica", 7.5)
     canvas.setFillColor(colors.HexColor("#5b6b78"))
     canvas.drawString(0.6 * inch, 0.45 * inch,
-                      "OrcSDR Tab5 - bench test plan for the 2026-11-03 consolidation (main 5c7e5c1)")
+                      "OrcSDR Tab5 - bench test plan for the 2026-11-03 consolidation (main %s)" % HEAD_SHA)
     canvas.drawRightString(7.9 * inch, 0.45 * inch, "Page %d" % doc.page)
     canvas.restoreState()
 
@@ -66,8 +83,11 @@ story.append(Paragraph("OrcSDR Tab5 - Bench Test Plan", H1))
 story.append(Paragraph(
     "Covers everything changed on <b>2026-11-03</b>: the fork re-based onto upstream <b>cdc8181</b> "
     "(v0.5.0-beta.1 plus 95 commits, driver 0.9.4) with this fork's work re-applied. Branch "
-    "<b>main</b> / <b>main-hoi278</b> at commit <b>5c7e5c1</b>. <b>Nothing in it has been compiled or "
-    "run on hardware yet</b>, so expect the first build to need fixes.", BODY))
+    "<b>main</b> at commit <b>" + HEAD_SHA + "</b>. It <b>has</b> since been compiled, flashed and run: a "
+    "clean build gives 0 errors with about 30% of the app partition free, and the device boots with "
+    "<b>71 of 71 self-checks passing</b> and SD, Wi-Fi and the RTL-SDR V4 all up. Sections 4, 7 and much of "
+    "6, 8 and 9 have been exercised over the serial link; what remains below needs a human - a touchscreen, "
+    "a transmitter, a second network, or a particular day of the week.", BODY))
 story.append(Spacer(1, 6))
 story.append(Paragraph(
     "<b>Before flashing:</b> back up the firmware currently on the Tab5 (the flash skill's backup step, or "
@@ -148,8 +168,13 @@ story += section("5. FM broadcast", None, [
      "Finds your real local stations only - not every channel (the old -70 dBFS test passed noise)."),
     ("Long RadioText", "Station with long RDS RadioText, Listen tab.",
      "Text stays inside its area; does not spill into STEREO VU."),
-    ("RTL_PRESET_TUNE", c("RTL_PRESET_TUNE 1") + " then " + c("RTL_PRESET_TUNE 12") + " (auth, needs 12 presets).",
-     c("RTL_PRESET_TUNE_OK index=1") + " / " + c("index=12") + ". Before, it never matched."),
+    ("RTL_PRESET_TUNE", c("RTL_PRESET_LIST") + " to see how many you have, then " + c("RTL_PRESET_TUNE 1")
+     + " and " + c("RTL_PRESET_TUNE &lt;last&gt;") + " (auth).",
+     c("RTL_PRESET_TUNE_OK index=1 frequency_hz=..") + " and the same for the last index, and the dial really "
+     "moves there - check " + c("RTL_PRESET_LIST") + " against the frequency on screen. Before, it never matched. "
+     "<b>The store holds at most 10</b> (" + c("RTL_PRESET_SCAN") + " collects up to 10 stations), so an index "
+     "above that is not a failure: " + c("RTL_PRESET_TUNE 12") + " answers " + c("RTL_PRESET_TUNE_INVALID")
+     + " by design."),
 ])
 
 
@@ -161,7 +186,11 @@ story += section("6. GMRS / marine channel scanner (new - calibrate first)",
     ("SCAN button appears", "Home: tune 462.5625 MHz (FRS 1).",
      "The STEP SIZE box becomes <b>CH 1 / SCAN</b>. On other bands it is the normal stepper."),
     ("Noise reading", "On an idle channel: " + c("RTL_CHANNEL_PROBE") + " five times.",
-     "Note snr_db (noise). Expect roughly 5-15 dB, busy=0."),
+     "Note the <b>highest</b> snr_db, not the average - that is what a threshold has to clear. Measured on one "
+     "bench V4 at FRS 1: 13.6 / 14.7 / 15.7 / 16.9 / <b>23.3</b> dB, all busy=0. Note that 23.3 is above the "
+     "20 dB default, so <b>noise alone can reach the placeholder threshold</b>; busy stayed 0 only because the "
+     "peak sat 486-814 kHz off channel against a " + c("tolerance_hz=6250") + ". Expect single-digit to low-20s "
+     "dB and set the threshold from your own worst reading."),
     ("Signal reading", "Key the handheld on that channel; probe again.",
      "Note snr_db (signal), offset_hz near 0, busy=1 if above the threshold."),
     ("Set the threshold", c("RTL_CHANNEL_MIN_SNR &lt;dB&gt;") + " (auth) halfway between the two readings.",
@@ -199,8 +228,11 @@ story += section("8. Radio commands and other bands", None, [
     ("ADS-B positions", "ADS-B with your receiver location set, 15+ minutes.",
      "No aircraft jumps across the radar. At TRACE, " + c("RTL_ADSB_POSITION_REJECTED") + " is rare."),
     ("Driver 0.9.4 on your V4", c("RTL_DRIVER STATUS") + "; then listen on FM, NOAA, airband.",
-     "Reception as good as before. If anything is off-frequency or worse: " + c("RTL_DRIVER OFFSET OFF") +
-     " and compare (offset tuning is new and on by default)."),
+     c("installed=1 version=0.9.4") + " and reception as good as before. Check the " + c("RTL_OFFSET_STATUS")
+     + " line that follows: on the bench V4 it reads " + c("cap=0") + " / "
+     + c("result=ESP_RTL_SDR_ERR_UNSUPPORTED") + ", i.e. <b>offset tuning is not active on this tuner</b>, so "
+     + c("RTL_DRIVER OFFSET OFF") + " changes nothing and is not the explanation for a bad signal. Only where "
+     + c("cap=1") + " is that fallback worth comparing."),
     ("Silent commands now answer", "Without pairing: " + c("RTL_LORA_AUTO ON") + ", " + c("RTL_WEB ON") + ".",
      c("RTL_LORA_AUTO_ERROR auth_required") + ", " + c("RTL_WEB_ERROR auth_required") + "."),
     ("Live screenshot", c("python tools/screenshot_tab5.py") + " (snapshot mode) on a live screen.",
@@ -210,8 +242,11 @@ story += section("8. Radio commands and other bands", None, [
 story += section("9. SD card and data packs", None, [
     ("Free space is real", "Settings - Storage.", "SD free is <b>less than</b> the card size (it used to equal it)."),
     ("Install a pack", "Data &amp; Maps - CHECK FOR UPDATES - install FAA AVIATION.", "Installs; message names any failure."),
-    ("Remove frees space", "Remove that pack; " + c("SD_LIST /orcsdr/data") + ".",
-     "No " + c(".bak") + " or " + c(".ver") + " left behind for it."),
+    ("Remove frees space", "Remove that pack, then " + c("RTL_STOP") + " and " + c("SD_LIST") + " (auth).",
+     c("SD_LIST_DONE count=N") + ", with no " + c(".bak") + " or " + c(".ver") + " left behind for that pack. "
+     "<b>" + c("SD_LIST") + " takes no path</b> - the dispatcher matches the verb exactly, so "
+     + c("SD_LIST /orcsdr/data") + " answers " + c("unknown_command") + ". It also answers "
+     + c("SD_LIST_ERROR radio_busy") + " while reception is running, hence the " + c("RTL_STOP") + " first."),
     ("Copy scripts on PowerShell 5.1", c("powershell -File tools\\copy_to_tab5_sd.ps1 ...") + " (Windows PowerShell, not pwsh).",
      "Copies (pairs first). Before, these failed on 5.1 and never authenticated."),
     ("Maps", "Check the map list.", "Older " + c("lane_county_map.idx") + " shows UNSUPPORTED FORMAT; FILE PRESERVED (expected)."),
