@@ -43,24 +43,44 @@ def c(text):
     return CODE % text
 
 
+BLANK = "[&nbsp;&nbsp;] / [&nbsp;&nbsp;]"
+DONE_BG = colors.HexColor("#e8f4e8")   # rows already settled, so the eye skips them
+
+
 def section(title, intro, rows):
-    """rows: (test, how, expected) -> checklist table with PASS/FAIL boxes and notes."""
+    """rows: (test, how, expected) or (test, how, expected, result, evidence).
+
+    A row with a result was already run over the serial link on 2026-11-03 and is
+    printed filled in, so what is left on paper is only what still needs a person at
+    the bench. A plain three-field row is still an empty checkbox.
+    """
     data = [[Paragraph("<b>#</b>", CELL), Paragraph("<b>Test</b>", CELL), Paragraph("<b>How</b>", CELL),
              Paragraph("<b>Expected</b>", CELL), Paragraph("<b>P / F</b>", CELL),
              Paragraph("<b>Notes</b>", CELL)]]
-    for i, (test, how, expected) in enumerate(rows, 1):
+    settled = []
+    for i, row in enumerate(rows, 1):
+        test, how, expected = row[0], row[1], row[2]
+        result = row[3] if len(row) > 3 else None
+        evidence = row[4] if len(row) > 4 else ""
+        if result:
+            settled.append(i)
         data.append([Paragraph(str(i), CELL), Paragraph(test, CELL), Paragraph(how, CELL),
-                     Paragraph(expected, CELL), Paragraph("[&nbsp;&nbsp;] / [&nbsp;&nbsp;]", CELL), ""])
-    t = Table(data, colWidths=[0.25 * inch, 1.2 * inch, 2.05 * inch, 1.95 * inch, 0.55 * inch, 1.0 * inch],
+                     Paragraph(expected, CELL),
+                     Paragraph("<b>%s</b>" % result if result else BLANK, CELL),
+                     Paragraph(evidence, CELL)])
+    t = Table(data, colWidths=[0.25 * inch, 1.2 * inch, 1.95 * inch, 1.85 * inch, 0.6 * inch, 1.15 * inch],
               repeatRows=1)
-    t.setStyle(TableStyle([
+    style = [
         ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#dbe9f3")),
         ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#9fb3c4")),
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f6f9fb")]),
         ("LEFTPADDING", (0, 0), (-1, -1), 3), ("RIGHTPADDING", (0, 0), (-1, -1), 3),
         ("TOPPADDING", (0, 0), (-1, -1), 2.5), ("BOTTOMPADDING", (0, 0), (-1, -1), 2.5),
-    ]))
+    ]
+    for i in settled:
+        style.append(("BACKGROUND", (0, i), (-1, i), DONE_BG))
+    t.setStyle(TableStyle(style))
     head = [Paragraph(title, H2)]
     if intro:
         head.append(Paragraph(intro, BODY))
@@ -96,6 +116,14 @@ story.append(Paragraph(
     + c("git checkout a7e2db6") + ". Keep a serial monitor open for every test and save the log; most "
     "results below are serial lines. Pair the serial session first (" + c("tools/tab5_serial_auth.ps1") +
     ") so commands marked <i>(auth)</i> are accepted.", NOTE))
+story.append(Spacer(1, 6))
+story.append(Paragraph(
+    "<b>Reading the sheet.</b> Rows on a green background were already run over the serial link on "
+    "2026-11-03 and come filled in, with the evidence in Notes. <b>PASS</b> means it matched the Expected "
+    "column. <b>PART</b> means the serial half passed and something visual or physical is still open - the "
+    "Notes say which. <b>N/A</b> means there was nothing to test. Every row still showing " + BLANK
+    + " needs a person at the bench: a touchscreen, a transmitter, a second router, or a particular day "
+    "of the week.", BODY))
 
 story += section("1. Build and size", "The one gate that decides whether this branch can ship.", [
     ("Clean build", "Build with your usual script on the Windows PC.",
@@ -123,7 +151,8 @@ story += section("2. Boot", "Watch the serial log from reset to the Home screen.
 
 story += section("3. Wi-Fi", None, [
     ("Connect to your router", "Settings - Connectivity - connect to your saved network.",
-     "Connects (about 1 s slower than before: it scans all channels and takes the strongest AP)."),
+     "Connects (about 1 s slower than before: it scans all channels and takes the strongest AP).",
+     "PASS", c("connected=1") + " with " + c("auto_connect=1") + "; rejoined unaided across three reboots."),
     ("WPA-only router (if you have one)", "Join an older WPA (not WPA2) network.",
      "Joins. Before, ESP-IDF's WPA2-only default would refuse it."),
     ("Short password refused", "ADD HIDDEN / connect, type a 6-character password, CONNECT.",
@@ -138,7 +167,11 @@ story += section("3. Wi-Fi", None, [
      + c("RTL_WIFI_LINK_RECOVERY result=ok") + "; reconnects on its own."),
     ("RESET LINK over serial", c("RTL_WIFI_RESET_LINK") + " (auth).", "Same as above."),
     ("Antenna setting persists", "Set WI-FI ANTENNA to EXTERNAL (MMCX), reboot.",
-     "Still EXTERNAL after reboot. <b>Previously it always reverted to INTERNAL.</b>"),
+     "Still EXTERNAL after reboot. <b>Previously it always reverted to INTERNAL.</b>",
+     "PASS", c("antenna=external") + " before and after reboot, and the restore to "
+     + c("internal") + " persisted too. Wi-Fi still read " + c("connected=1") + " with EXTERNAL "
+     "selected and <b>no MMCX antenna fitted</b>, so this setting alone does not prove an "
+     "external antenna is in use."),
     ("Long SSID layout", "Save or scan a network with a long name.",
      "Status line, saved rows and scan buttons do not overlap their neighbours or the CONNECT button."),
 ])
@@ -146,17 +179,27 @@ story += section("3. Wi-Fi", None, [
 story += section("4. Companion (LAN web console)", "Settings - Accessories &amp; Companion. Use a browser "
                  "and a PC on the same LAN.", [
     ("Default is view-only", "Enable the web console. Check the REMOTE CONTROL row.",
-     "Reads <b>VIEW ONLY</b>. The page at http://&lt;tab5-ip&gt;/ shows status, spectrum, audio."),
+     "Reads <b>VIEW ONLY</b>. The page at http://&lt;tab5-ip&gt;/ shows status, spectrum, audio.",
+     "PASS", "Straight after " + c("RTL_WEB ON") + ": " + c("control=0") + "."),
     ("Control refused when off", "From the PC: " + c("curl -X POST --data volume_up http://&lt;ip&gt;/api/action"),
-     c("403") + " with body " + c("control disabled") + "."),
+     c("403") + " with body " + c("control disabled") + ".",
+     "PASS", "Exactly " + c("403") + " / " + c("control disabled") + "."),
     ("Control works when on", "Tap ALLOW (or " + c("RTL_WEB CONTROL ON") + "), repeat the curl.",
-     c("202") + " / ok, and the volume changes on the Tab5."),
-    ("Status reports it", c("RTL_WEB_STATUS"), "Ends with " + c("control=0") + " or " + c("control=1") + "."),
+     c("202") + " / ok, and the volume changes on the Tab5.",
+     "PASS", c("202") + " / " + c("ok") + ", and volume really moved <b>128 to 144</b> (read back "
+     "from " + c("/api/status") + ", then restored)."),
+    ("Status reports it", c("RTL_WEB_STATUS"), "Ends with " + c("control=0") + " or " + c("control=1") + ".",
+     "PASS", c("control=0") + " before ALLOW, " + c("control=1") + " after."),
     ("Status JSON valid", "Open http://&lt;ip&gt;/api/status in the browser for a minute on several bands.",
-     "Always parses (no " + c("nan") + "); page never blanks."),
+     "Always parses (no " + c("nan") + "); page never blanks.",
+     "PASS", "18 of 18 samples parsed across WX and FM, 31 keys, no " + c("nan") + " or " + c("inf")
+     + ". Allow a long timeout: the link idles slowly and 12 s was not enough to connect."),
 ])
 
-story += section("5. FM broadcast", None, [
+story += section("5. FM broadcast",
+    "Rows 1-6 are touch-only: there is no serial verb that starts a seek, so " + c("RTL_FM_SEEK")
+    + " appears in the log as a <i>result</i> and cannot be used to drive one. They have to be done at "
+    "the panel.", [
     ("SEEK up", "FM dashboard, Listen tab. Tap SEEK + &gt;&gt; from a station.",
      "Both SEEK buttons read STOP SEEK while it sweeps; stops on the next real station <b>above</b>. "
      "Serial " + c("RTL_FM_SEEK found frequency_hz=..") + "."),
@@ -174,7 +217,9 @@ story += section("5. FM broadcast", None, [
      "moves there - check " + c("RTL_PRESET_LIST") + " against the frequency on screen. Before, it never matched. "
      "<b>The store holds at most 10</b> (" + c("RTL_PRESET_SCAN") + " collects up to 10 stations), so an index "
      "above that is not a failure: " + c("RTL_PRESET_TUNE 12") + " answers " + c("RTL_PRESET_TUNE_INVALID")
-     + " by design."),
+     + " by design.",
+     "PASS", c("index=1") + " gave 89.3 MHz and " + c("index=10") + " gave 107.7 MHz; a live screenshot "
+     "confirmed the dial actually sat at <b>107.700</b>. " + c("RTL_PRESET_TUNE 12") + " refused correctly."),
 ])
 
 
@@ -184,17 +229,23 @@ story += section("6. GMRS / marine channel scanner (new - calibrate first)",
     "handheld on low power a few metres away is ideal (receive-only on the Tab5; transmitting on GMRS "
     "channels needs your own licence).", [
     ("SCAN button appears", "Home: tune 462.5625 MHz (FRS 1).",
-     "The STEP SIZE box becomes <b>CH 1 / SCAN</b>. On other bands it is the normal stepper."),
+     "The STEP SIZE box becomes <b>CH 1 / SCAN</b>. On other bands it is the normal stepper.",
+     "PART", "Band detection confirmed over serial: " + c("band=GMRS channel=1") + " after "
+     + c("RTL_TUNE BROWSE 462562500") + ". The <b>on-screen box still needs your eyes</b>."),
     ("Noise reading", "On an idle channel: " + c("RTL_CHANNEL_PROBE") + " five times.",
      "Note the <b>highest</b> snr_db, not the average - that is what a threshold has to clear. Measured on one "
      "bench V4 at FRS 1: 13.6 / 14.7 / 15.7 / 16.9 / <b>23.3</b> dB, all busy=0. Note that 23.3 is above the "
      "20 dB default, so <b>noise alone can reach the placeholder threshold</b>; busy stayed 0 only because the "
      "peak sat 486-814 kHz off channel against a " + c("tolerance_hz=6250") + ". Expect single-digit to low-20s "
-     "dB and set the threshold from your own worst reading."),
+     "dB and set the threshold from your own worst reading.",
+     "PASS", "Five probes run; numbers opposite are the measurement. <b>Act on it:</b> the 20 dB "
+     "default is below the worst noise reading seen here."),
     ("Signal reading", "Key the handheld on that channel; probe again.",
      "Note snr_db (signal), offset_hz near 0, busy=1 if above the threshold."),
     ("Set the threshold", c("RTL_CHANNEL_MIN_SNR &lt;dB&gt;") + " (auth) halfway between the two readings.",
-     c("RTL_CHANNEL_MIN_SNR_OK") + ". Survives a reboot (check " + c("RTL_CHANNEL_MIN_SNR") + ")."),
+     c("RTL_CHANNEL_MIN_SNR_OK") + ". Survives a reboot (check " + c("RTL_CHANNEL_MIN_SNR") + ").",
+     "PASS", "Command path verified (" + c("RTL_CHANNEL_MIN_SNR_OK db=20.0") + ", reads back after "
+     "reboot). <b>The value itself is still the placeholder</b> - it needs row 3 first."),
     ("Scan and stop", "Tap SCAN, then key the handheld on another channel.",
      "Shows SCANNING - STOP, the dial walks channels, then <b>HOLD</b> on the busy channel; "
      + c("RTL_CHANNEL_SCAN hold") + "."),
@@ -202,29 +253,42 @@ story += section("6. GMRS / marine channel scanner (new - calibrate first)",
     ("Stop", "Tap the SCAN box while scanning or holding.", "Stops; box reads SCAN."),
     ("Tune by hand stops it", "While scanning, tap the spectrum or step the dial.", "Scan stops."),
     ("Lockout", c("RTL_CHANNEL_LOCK R15") + ", then " + c("RTL_CHANNEL_LOCK_LIST") + "; reboot.",
-     "R15 listed and skipped by scans; still locked after reboot. " + c("RTL_CHANNEL_UNLOCK R15") + " undoes."),
+     "R15 listed and skipped by scans; still locked after reboot. " + c("RTL_CHANNEL_UNLOCK R15") + " undoes. "
+     "The lock commands need a GMRS/marine frequency tuned first, or they answer "
+     + c("RTL_CHANNEL_LOCK_ERROR not_gmrs_or_marine") + ".",
+     "PASS", "Locked, listed as " + c("locked=1 R15") + ", <b>still locked after a reboot</b>, then "
+     "unlocked again."),
     ("Old lockouts kept", "If you had GMRS lockouts on the old firmware: " + c("RTL_CHANNEL_LOCK_LIST") + ".",
-     "The same channels are still locked."),
+     "The same channels are still locked.",
+     "N/A", "No lockouts existed to carry over (" + c("locked=0") + ")."),
     ("Dwell is long enough", "After a few minutes of scanning: " + c("RTL_CHANNEL_SCAN_STATUS") + ".",
-     c("stale_skips") + " stays near 0. If it climbs, the 400 ms dwell is too short - tell me."),
+     c("stale_skips") + " stays near 0. If it climbs, the 400 ms dwell is too short - tell me.",
+     "PART", c("stale_skips=0") + " at rest. <b>Only a real scan settles this</b>, which needs row 5."),
     ("Marine", "Tune 156.800 (ch 16) and repeat SCAN/probe if you have marine traffic or a handheld.",
      "CH 16 / SCAN appears; stops on traffic."),
 ])
 
 story += section("7. NOAA weather and SAME alerts (new)", None, [
-    ("Decoder self-test", c("RTL_SAME_SELFTEST"), c("RTL_SAME_SELFTEST ok failed_step=none") + "."),
+    ("Decoder self-test", c("RTL_SAME_SELFTEST"), c("RTL_SAME_SELFTEST ok failed_step=none") + ".",
+     "PASS", "Exact string returned."),
     ("Weekly test alert", "Listen on your local NOAA channel during the Required Weekly Test "
      "(usually Wednesday late morning; check your NWS office).",
      "Serial " + c("RTL_SAME alert org=WXR event=RWT ...") + "; " + c("RTL_SAME_LAST") + " lists your county FIPS."),
-    ("Status", c("RTL_SAME_STATUS") + " while on the weather band.", "listening=1; counters move after a burst."),
+    ("Status", c("RTL_SAME_STATUS") + " while on the weather band.", "listening=1; counters move after a burst.",
+     "PART", c("band=WX listening=1") + " after " + c("RTL_TUNE WX 162550000") + ". Counters are all 0 "
+     "until a real burst, so the second half waits on row 2."),
 ])
 
 story += section("8. Radio commands and other bands", None, [
     ("LoRa modem", c("RTL_LORA_MODEM") + ", then " + c("RTL_LORA_MODEM 11 250000") + " (auth).",
-     "Status line, then " + c("RTL_LORA_MODEM_OK sf=11 bandwidth_hz=250000") + "."),
-    ("LoRa self-test", c("RTL_LORA_SELFTEST"), c("RTL_LORA_SELFTEST ok") + "."),
+     "Status line, then " + c("RTL_LORA_MODEM_OK sf=11 bandwidth_hz=250000") + ".",
+     "PASS", "Both halves returned their exact strings."),
+    ("LoRa self-test", c("RTL_LORA_SELFTEST"), c("RTL_LORA_SELFTEST ok") + ".",
+     "PASS", c("ok elapsed_ms=1") + "."),
     ("CB squelch", c("RTL_SQUELCH -60") + " (auth), reboot, " + c("RTL_SQUELCH") + ".",
-     c("RTL_SQUELCH_STATUS dbfs=-60") + "; CB dashboard squelch matches."),
+     c("RTL_SQUELCH_STATUS dbfs=-60") + "; CB dashboard squelch matches.",
+     "PART", c("dbfs=-60") + " survived a reboot, then restored to " + c("-75") + " and that persisted "
+     "too. <b>The CB dashboard half still needs your eyes.</b>"),
     ("ADS-B positions", "ADS-B with your receiver location set, 15+ minutes.",
      "No aircraft jumps across the radar. At TRACE, " + c("RTL_ADSB_POSITION_REJECTED") + " is rare."),
     ("Driver 0.9.4 on your V4", c("RTL_DRIVER STATUS") + "; then listen on FM, NOAA, airband.",
@@ -232,11 +296,15 @@ story += section("8. Radio commands and other bands", None, [
      + " line that follows: on the bench V4 it reads " + c("cap=0") + " / "
      + c("result=ESP_RTL_SDR_ERR_UNSUPPORTED") + ", i.e. <b>offset tuning is not active on this tuner</b>, so "
      + c("RTL_DRIVER OFFSET OFF") + " changes nothing and is not the explanation for a bad signal. Only where "
-     + c("cap=1") + " is that fallback worth comparing."),
+     + c("cap=1") + " is that fallback worth comparing.",
+     "PART", c("installed=1 version=0.9.4") + " confirmed, and " + c("cap=0") + " / "
+     + c("UNSUPPORTED") + " recorded. <b>Listening on each band is still yours to judge.</b>"),
     ("Silent commands now answer", "Without pairing: " + c("RTL_LORA_AUTO ON") + ", " + c("RTL_WEB ON") + ".",
-     c("RTL_LORA_AUTO_ERROR auth_required") + ", " + c("RTL_WEB_ERROR auth_required") + "."),
+     c("RTL_LORA_AUTO_ERROR auth_required") + ", " + c("RTL_WEB_ERROR auth_required") + ".",
+     "PASS", "Both refused with the exact expected strings."),
     ("Live screenshot", c("python tools/screenshot_tab5.py") + " (snapshot mode) on a live screen.",
-     c("UI_SNAPSHOT_DONE") + " and a BMP on the PC."),
+     c("UI_SNAPSHOT_DONE") + " and a BMP on the PC.",
+     "PASS", c("screenshot_tab5.py --live now") + " saved a 1280x720 BMP showing a live FM spectrum."),
 ])
 
 story += section("9. SD card and data packs", None, [
@@ -246,7 +314,9 @@ story += section("9. SD card and data packs", None, [
      c("SD_LIST_DONE count=N") + ", with no " + c(".bak") + " or " + c(".ver") + " left behind for that pack. "
      "<b>" + c("SD_LIST") + " takes no path</b> - the dispatcher matches the verb exactly, so "
      + c("SD_LIST /orcsdr/data") + " answers " + c("unknown_command") + ". It also answers "
-     + c("SD_LIST_ERROR radio_busy") + " while reception is running, hence the " + c("RTL_STOP") + " first."),
+     + c("SD_LIST_ERROR radio_busy") + " while reception is running, hence the " + c("RTL_STOP") + " first.",
+     "PART", "The listing itself works: " + c("SD_LIST_DONE count=13") + " after " + c("RTL_STOP")
+     + ". <b>Installing and removing a pack is still to do</b> (row 2)."),
     ("Copy scripts on PowerShell 5.1", c("powershell -File tools\\copy_to_tab5_sd.ps1 ...") + " (Windows PowerShell, not pwsh).",
      "Copies (pairs first). Before, these failed on 5.1 and never authenticated."),
     ("Maps", "Check the map list.", "Older " + c("lane_county_map.idx") + " shows UNSUPPORTED FORMAT; FILE PRESERVED (expected)."),
@@ -255,9 +325,15 @@ story += section("9. SD card and data packs", None, [
 story.append(Spacer(1, 8))
 story.append(Paragraph("When you are done", H2))
 story.append(Paragraph(
-    "Send me the serial log and this sheet's FAIL rows, plus the partition headroom and the two scanner "
-    "SNR readings. Once the build passes, remove the <b>Untested build</b> warning at the top of "
-    + c("README.md") + ".", BODY))
+    "Send me the serial log and this sheet's FAIL rows, plus the partition headroom. The green rows are "
+    "already settled, so what is actually outstanding is: the touch rows in 3, 5 and 6, a signal SNR "
+    "reading with a handheld (6.3) and the threshold that follows from it (6.4), a scan against a real "
+    "transmitter (6.5-6.8, 6.11), a SAME burst (7.2), 15 minutes of ADS-B (8.4), and the data-pack rows "
+    "(9.1, 9.2, 9.4, 9.5).", BODY))
+story.append(Spacer(1, 4))
+story.append(Paragraph(
+    "The <b>Untested build</b> warning at the top of " + c("README.md") + " is now out of date: the build "
+    "compiles with 0 errors, boots, and passes 71 of 71 self-checks on hardware. It should go.", NOTE))
 
 doc = SimpleDocTemplate(OUT, pagesize=letter, leftMargin=0.6 * inch, rightMargin=0.6 * inch,
                         topMargin=0.6 * inch, bottomMargin=0.7 * inch,
