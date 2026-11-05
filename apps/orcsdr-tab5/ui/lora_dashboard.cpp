@@ -330,13 +330,6 @@ void event_sender(const Event& event, char* out, size_t size, bool include_id) {
   }
 }
 
-void draw_metric(int x, int y, int w, const char* title, const char* value,
-                 uint16_t color = TFT_WHITE) {
-  card(x, y, w, 88);
-  text(title, x + 16, y + 20, kCyan, 1, middle_left);
-  text(value, x + 16, y + 56, color, 3, middle_left);
-}
-
 constexpr int kStyleChipY = 146, kStyleChipH = 44, kStyleChipW = 118;
 constexpr int kPaletteChipX = 760, kSpeedChipX = 888;
 
