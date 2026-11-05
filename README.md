@@ -1,16 +1,21 @@
 # OrcSDR
 
-> [!WARNING]
-> **Untested build — not yet compiled or run on hardware.**
+> [!NOTE]
 > On 2026-11-03 this fork was consolidated onto the latest upstream OrcSDR
-> (`cdc8181`) and its own changes were re-applied on top. None of that work has
-> been built or flashed to a Tab5 yet, so it may not compile, and features may
-> not behave as described. Do not flash it to a device you rely on until this
-> notice is removed.
+> (`cdc8181`) and its own changes were re-applied on top. That work has since
+> been built and run on hardware: it compiles with 0 errors and about 30% of the
+> app partition free, and a Tab5 boots it with 71 of 71 self-checks passing and
+> the SD card, Wi-Fi and an RTL-SDR V4 all up.
+>
+> Verification is not complete. The bench sheet at
+> [docs/testing/OrcSDR-bench-test-plan-2026-11-03.pdf](docs/testing/OrcSDR-bench-test-plan-2026-11-03.pdf)
+> records which checks have been run and which still need a person at the
+> bench — anything needing the touchscreen, a transmitter or a second network
+> is still open.
 >
 > The release, installer and M5Burner links below are upstream's published
-> builds from hardcoreerik/OrcSDR, not builds of this fork. What changed and
-> what still needs testing is listed in
+> builds from hardcoreerik/OrcSDR, not builds of this fork. What changed is
+> listed in
 > [docs/FORK_HANDOFF.md](docs/FORK_HANDOFF.md#0-consolidation-onto-upstream-2026-11-03).
 
 ![OrcSDR logo above a glowing radio spectrum and waterfall](docs/images/orcsdr-tab5.png)
