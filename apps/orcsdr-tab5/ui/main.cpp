@@ -19015,13 +19015,25 @@ void ui_doc_leave_surfaces() {
   M5.Display.clearScrollRect();
 }
 
+// The badge used to sit at 572,8, inside the header title slot (kTitleTextX is
+// 442), so it hid the middle of "LORA MESH" and every other centred title.
+//
+// Captures of all 40 demo screens plus their live counterparts say there is no
+// 136x42 rectangle anywhere on the panel that is empty on all of them, and the
+// only empty rectangle tall enough for a boxed badge is this one: x112..349,
+// y53..69, the gap between the "OrcSDR" wordmark and the brand subtitle. It is
+// 17px tall, hence no outline -- size-2 glyphs are 16px, so a border would
+// clip them -- and the maroon fill carries the contrast on its own.
+//
+// The roomier-looking gaps under the header buttons are not usable: Settings'
+// Connectivity panel repaints over x968..1134 while a capture settles, which
+// silently costs the badge, and CB rules a divider across y92.
 void ui_doc_badge() {
-  M5.Display.fillRoundRect(572, 8, 136, 42, 10, TFT_MAROON);
-  M5.Display.drawRoundRect(572, 8, 136, 42, 10, TFT_YELLOW);
+  M5.Display.fillRoundRect(120, 53, 96, 17, 4, TFT_MAROON);
   M5.Display.setTextDatum(middle_center);
   M5.Display.setTextSize(2);
   M5.Display.setTextColor(TFT_WHITE, TFT_MAROON);
-  M5.Display.drawString("DEMO", 640, 29);
+  M5.Display.drawString("DEMO", 168, 61);
 }
 
 orcsdr::fm::Snapshot ui_doc_fm_snapshot(bool demo) {
@@ -19093,8 +19105,15 @@ orcsdr::p25::Snapshot ui_doc_p25_snapshot(bool demo) {
   return snapshot;
 }
 
-orcsdr::settings::State ui_doc_settings_state() {
-  auto state = global_settings_state();
+// settings::State is a couple of kilobytes, and building it by value put two
+// copies on the main task's stack at once: the one `auto state = ...` takes
+// from the global reference, and the one returned into the caller's frame.
+// That left Data & Maps 40 bytes of stack headroom, so a second render of it
+// panicked. Documentation rendering only ever runs on the main task, so the
+// state lives in .bss and callers take a reference to it.
+orcsdr::settings::State& ui_doc_settings_state() {
+  static orcsdr::settings::State state;
+  state = global_settings_state();
   state.wifi_power_enabled = state.wifi_ready = state.wifi_connected = true;
   state.wifi_scanning = state.wifi_connecting = false;
   state.wifi_rssi = -48;
@@ -19174,7 +19193,7 @@ bool ui_doc_view_for_suffix(const char* suffix, orcsdr::p25::View* view) {
     for (uint8_t i = 0; i < std::size(names); ++i)
       if (strcmp(suffix, names[i]) == 0) section = static_cast<orcsdr::settings::Section>(i);
     const bool keyboard = strcmp(screen_id, "overlay.masked-keyboard") == 0;
-    auto state = ui_doc_settings_state();
+    auto& state = ui_doc_settings_state();
     if (strcmp(screen_id, "overlay.wifi-scanning") == 0) {
       state.wifi_connected = false;
       state.wifi_scanning = true;
@@ -19192,6 +19211,64 @@ bool ui_doc_view_for_suffix(const char* suffix, orcsdr::p25::View* view) {
   orcsdr::screens::finish_transition();
   strlcpy(ui_doc.current_screen, screen_id, sizeof(ui_doc.current_screen));
   ui_doc.current_demo = demo;
+  return true;
+}
+
+// Each dashboard's documentation snapshot is a large by-value temporary --
+// p25::Snapshot alone carries a p25config::Config and a 16-entry StoreState.
+// Returned straight into ui_doc_render they all share its frame, which then
+// costs the sum of every branch on every branch, including the deepest one:
+// show_home(). That overflowed the 16 KB main task stack (a stack protection
+// fault, caught on "UI_DOC_SHOW home demo"). Give each snapshot its own frame,
+// the way ui_doc_render_settings already does for the Settings state.
+[[gnu::noinline]] bool ui_doc_render_fm(const char* screen_id, bool demo) {
+  orcsdr::fm::View view = orcsdr::fm::View::listen;
+  if (strncmp(screen_id, "fm.", 3) == 0 &&
+      !ui_doc_view_for_suffix(screen_id + 3, &view)) return false;
+  orcsdr::fm::show_documentation_view(view, ui_doc_fm_snapshot(demo),
+                                      strcmp(screen_id, "overlay.volume") == 0);
+  return true;
+}
+
+[[gnu::noinline]] bool ui_doc_render_p25(const char* screen_id, bool demo) {
+  orcsdr::p25::View view;
+  if (!ui_doc_view_for_suffix(screen_id + 4, &view)) return false;
+  orcsdr::p25::show_documentation_view(view, ui_doc_p25_snapshot(demo));
+  return true;
+}
+
+[[gnu::noinline]] bool ui_doc_render_lora(const char* screen_id, bool demo) {
+  const char* suffix = screen_id + 5;
+  static constexpr const char* names[] = {"overview", "nodes", "traffic", "map", "rf-health"};
+  uint8_t view = 0;
+  bool found = false;
+  for (uint8_t i = 0; i < std::size(names); ++i)
+    if (strcmp(suffix, names[i]) == 0) { view = i; found = true; }
+  if (!found) return false;
+  rtl_ui_active.store(true, std::memory_order_release);
+  rtl_ui_band = RtlBand::lora;
+  rtl_ui_frequency_hz = kLoraDefaultHz;
+  if (demo) {
+    lora_display_packets[0] = {};
+    strlcpy(lora_display_packets[0].text, "Position and telemetry received",
+            sizeof(lora_display_packets[0].text));
+    lora_display_packets[0].sender = 0xA1B2C3D4;
+    lora_display_packets[0].destination = 0xFFFFFFFF;
+    lora_display_packets[0].packet_id = 7;
+    lora_display_packets[0].received_ms = millis();
+    lora_display_packets[0].latitude_e7 = 100000000;
+    lora_display_packets[0].longitude_e7 = 200000000;
+    lora_display_packets[0].snr_tenths = 94;
+    lora_display_packets[0].signal_tenths = -720;
+    lora_display_packets[0].port = 1;
+    lora_node_positions[0] = {0xA1B2C3D4, millis(), 100000000, 200000000};
+    lora_messages.store(1, std::memory_order_relaxed);
+    lora_noise_dbfs.store(-80.0f, std::memory_order_relaxed);
+    lora_trigger_dbfs.store(-71.0f, std::memory_order_relaxed);
+    rtl_signal_dbfs_smooth = -54.0f;
+  }
+  orcsdr::lora::show_documentation_view(static_cast<orcsdr::lora::View>(view),
+                                        lora_dashboard_snapshot());
   return true;
 }
 
@@ -19220,15 +19297,9 @@ bool ui_doc_render(const char* screen_id, bool demo) {
     return ui_doc_render_settings(screen_id, demo);
   } else if (strncmp(screen_id, "fm.", 3) == 0 ||
              strcmp(screen_id, "overlay.volume") == 0) {
-    orcsdr::fm::View view = orcsdr::fm::View::listen;
-    if (strncmp(screen_id, "fm.", 3) == 0 &&
-        !ui_doc_view_for_suffix(screen_id + 3, &view)) return false;
-    orcsdr::fm::show_documentation_view(view, ui_doc_fm_snapshot(demo),
-                                        strcmp(screen_id, "overlay.volume") == 0);
+    if (!ui_doc_render_fm(screen_id, demo)) return false;
   } else if (strncmp(screen_id, "p25.", 4) == 0) {
-    orcsdr::p25::View view;
-    if (!ui_doc_view_for_suffix(screen_id + 4, &view)) return false;
-    orcsdr::p25::show_documentation_view(view, ui_doc_p25_snapshot(demo));
+    if (!ui_doc_render_p25(screen_id, demo)) return false;
   } else if (strncmp(screen_id, "adsb.", 5) == 0) {
     static constexpr const char* names[] = {"radar", "list", "target", "stats"};
     uint8_t view = 0;
@@ -19238,37 +19309,7 @@ bool ui_doc_render(const char* screen_id, bool demo) {
     if (!found) return false;
     orcsdr::adsb::show_documentation_view(view, adsb_settings);
   } else if (strncmp(screen_id, "lora.", 5) == 0) {
-    const char* suffix = screen_id + 5;
-    static constexpr const char* names[] = {"overview", "nodes", "traffic", "map", "rf-health"};
-    uint8_t view = 0;
-    bool found = false;
-    for (uint8_t i = 0; i < std::size(names); ++i)
-      if (strcmp(suffix, names[i]) == 0) { view = i; found = true; }
-    if (!found) return false;
-    rtl_ui_active.store(true, std::memory_order_release);
-    rtl_ui_band = RtlBand::lora;
-    rtl_ui_frequency_hz = kLoraDefaultHz;
-    if (demo) {
-      lora_display_packets[0] = {};
-      strlcpy(lora_display_packets[0].text, "Position and telemetry received",
-              sizeof(lora_display_packets[0].text));
-      lora_display_packets[0].sender = 0xA1B2C3D4;
-      lora_display_packets[0].destination = 0xFFFFFFFF;
-      lora_display_packets[0].packet_id = 7;
-      lora_display_packets[0].received_ms = millis();
-      lora_display_packets[0].latitude_e7 = 100000000;
-      lora_display_packets[0].longitude_e7 = 200000000;
-      lora_display_packets[0].snr_tenths = 94;
-      lora_display_packets[0].signal_tenths = -720;
-      lora_display_packets[0].port = 1;
-      lora_node_positions[0] = {0xA1B2C3D4, millis(), 100000000, 200000000};
-      lora_messages.store(1, std::memory_order_relaxed);
-      lora_noise_dbfs.store(-80.0f, std::memory_order_relaxed);
-      lora_trigger_dbfs.store(-71.0f, std::memory_order_relaxed);
-      rtl_signal_dbfs_smooth = -54.0f;
-    }
-    orcsdr::lora::show_documentation_view(static_cast<orcsdr::lora::View>(view),
-                                          lora_dashboard_snapshot());
+    if (!ui_doc_render_lora(screen_id, demo)) return false;
   } else {
     struct GenericBand { const char* name; RtlBand band; uint32_t frequency; };
     static constexpr GenericBand bands[] = {{"am.", RtlBand::am, kRtlAmDefaultHz},
